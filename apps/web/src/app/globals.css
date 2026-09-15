@@ -1,0 +1,72 @@
+@import "tailwindcss";
+
+:root {
+  --paper: #f4f2ea;
+  --ink: #171714;
+  --muted: #74746b;
+  --orange: #ff6838;
+}
+
+* { box-sizing: border-box; }
+html { background: var(--paper); }
+body {
+  margin: 0;
+  color: var(--ink);
+  background:
+    radial-gradient(circle at 14% 12%, rgba(255, 205, 157, .38), transparent 28rem),
+    radial-gradient(circle at 88% 78%, rgba(207, 226, 255, .34), transparent 32rem),
+    var(--paper);
+  font-family: var(--font-sans), sans-serif;
+}
+button, input, textarea, select { font: inherit; }
+::selection { background: rgba(255, 104, 56, .25); }
+
+.noise {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  opacity: .025;
+  z-index: 50;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 180 180' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.8' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.8'/%3E%3C/svg%3E");
+}
+
+.mono { font-family: var(--font-mono), monospace; }
+.balance { text-wrap: balance; }
+
+@keyframes pulseSoft { 0%, 100% { opacity: .45; } 50% { opacity: 1; } }
+
+.interactive-icon {
+  display: inline-grid;
+  width: 2.5rem;
+  height: 2.5rem;
+  place-items: center;
+  border-radius: 9999px;
+  color: #6d6d64;
+  transition: transform 150ms cubic-bezier(.23, 1, .32, 1), background-color 150ms cubic-bezier(.23, 1, .32, 1), color 150ms cubic-bezier(.23, 1, .32, 1), opacity 150ms cubic-bezier(.23, 1, .32, 1);
+}
+.interactive-icon:active { transform: scale(.97); }
+.interactive-icon:disabled { opacity: .35; pointer-events: none; }
+
+.interactive-text {
+  display: inline-flex;
+  align-items: center;
+  gap: .375rem;
+  border-radius: .5rem;
+  padding: .25rem .5rem;
+  color: #76766d;
+  font-size: .75rem;
+  font-weight: 600;
+  transition: transform 150ms cubic-bezier(.23, 1, .32, 1), background-color 150ms cubic-bezier(.23, 1, .32, 1), color 150ms cubic-bezier(.23, 1, .32, 1), opacity 150ms cubic-bezier(.23, 1, .32, 1);
+}
+.interactive-text:active { transform: scale(.97); }
+.interactive-text:disabled { opacity: .35; pointer-events: none; }
+
+@media (hover: hover) and (pointer: fine) {
+  .interactive-icon:hover,
+  .interactive-text:hover { color: #171714; background: rgba(0, 0, 0, .05); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; scroll-behavior: auto !important; }
+  *, *::before, *::after { transition-duration: .01ms !important; }
+}

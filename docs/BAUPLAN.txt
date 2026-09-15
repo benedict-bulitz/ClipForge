@@ -1,0 +1,1989 @@
+Das Entscheidende ist:
+
+Der Nutzer beschreibt nur, was er wissen oder sehen möchte. ClipForge entscheidet selbst, was recherchiert werden muss, welche Informationen wirklich nötig sind, wie lang das Video dafür sein sollte, wie es erzählt und visualisiert wird und erstellt daraus das komplette Video. Danach wird dasselbe Projekt über einen Chat weiterbearbeitet.
+
+Beispielsweise reicht als Eingabe:
+
+Was würde passieren, wenn Yellowstone morgen ausbricht?
+
+oder:
+
+Erstelle ein schnelles Video darüber, warum Concorde eingestellt wurde.
+
+oder sogar:
+
+Mach ein dramatisches Video über einen Astronauten, der allein auf einem verlassenen Mondstützpunkt aufwacht.
+
+Der Nutzer muss weder Skript noch Länge, Szenen, Suchbegriffe, Bilder, Sprechertext oder Schnitt angeben.
+
+1. Das neue Grundprinzip von ClipForge
+
+Der vollständige Ablauf wird:
+
+TEXT-PROMPT DES NUTZERS
+        ↓
+Prompt verstehen
+        ↓
+Absicht + Videotyp erkennen
+        ↓
+Falls nötig: recherchieren
+        ↓
+relevante Informationen auswählen
+        ↓
+entscheiden, wie viel davon ins Short gehört
+        ↓
+Story / Erklärstruktur entwickeln
+        ↓
+optimale Shortform-Länge bestimmen
+        ↓
+Hook + Skript
+        ↓
+Storyboard
+        ↓
+Videos/Bilder suchen
+        ↓
+Assets automatisch auswählen
+        ↓
+Voiceover
+        ↓
+echte Audiolänge bestimmen
+        ↓
+Szenen daran anpassen
+        ↓
+Smart Crop / Zoom / Bewegung
+        ↓
+Captions
+        ↓
+Musik + SFX
+        ↓
+Timeline
+        ↓
+FFmpeg Render
+        ↓
+KI schaut fertiges Video
+        ↓
+automatische Korrektur
+        ↓
+FINAL VIDEO
+        ↓
+CHAT
+        ↓
+"Mach die Einleitung kürzer"
+"Ändere den Clip bei 0:17"
+"Mach es dramatischer"
+...
+        ↓
+Nur betroffene Teile neu erzeugen
+        ↓
+NEUE VIDEO-VERSION
+
+Das ist die Architektur, auf die ich ClipForge festlegen würde.
+
+2. Keine festgelegte Videolänge mehr
+
+Hier war der vorige Bauplan zu starr.
+
+Es gibt kein Feld mehr wie
+
+target_duration = 30
+
+als notwendige Eingabe.
+
+Stattdessen:
+
+duration_mode = AUTO
+
+ClipForge bestimmt die Dauer erst nachdem es verstanden und gegebenenfalls recherchiert hat, was erzählt werden muss.
+
+3. Wie ClipForge die Länge bestimmt
+
+Wichtig ist die Reihenfolge.
+
+Nicht:
+
+Wir brauchen 45 Sekunden
+↓
+Fülle 45 Sekunden mit Informationen
+
+sondern:
+
+Was muss der Zuschauer wissen?
+↓
+Was davon ist wirklich wichtig?
+↓
+In welcher Reihenfolge versteht er es?
+↓
+Was lässt sich weglassen?
+↓
+Wie viele Wörter braucht die beste kompakte Erklärung?
+↓
+Wie lange dauert dieses Voiceover tatsächlich?
+
+Das verhindert sowohl künstlich aufgeblähte als auch verstümmelte Videos.
+
+4. Shortform bleibt trotzdem eine feste Produkteigenschaft
+
+AUTO bedeutet nicht:
+
+„Die KI darf daraus ein zwölfminütiges Video machen.“
+
+ClipForge bekommt eine globale Regel:
+
+SHORTFORM_MAX_DURATION = 180 seconds
+
+Aber keine Zielzeit.
+
+Ein Video kann deshalb beispielsweise sein:
+
+18 Sekunden
+34 Sekunden
+52 Sekunden
+1:17 Minuten
+1:43 Minuten
+2:26 Minuten
+
+je nachdem, was tatsächlich erforderlich ist.
+
+Die überwiegende Mehrzahl guter Videos sollte vermutlich irgendwo zwischen ungefähr 20 und 90 Sekunden landen – aber das ist ein Ergebnis und keine Vorgabe.
+
+Falls ein Thema drei Minuten Erklärzeit benötigen würde, versucht ClipForge zuerst stärker zu komprimieren und Nebendetails zu entfernen.
+
+5. Informationsdichte statt maximaler Kürze
+
+Hier würde ich ausdrücklich nicht programmieren:
+
+make it as short as possible
+
+Das würde zu hektischen und schwer verständlichen Videos führen.
+
+Stattdessen bekommt der Script-Agent die Regel:
+
+Use the minimum amount of narration required for a viewer with no prior knowledge to understand the answer without unnecessary detail.
+
+Damit optimieren wir gleichzeitig auf:
+
+Kompaktheit
++
+Verständlichkeit
++
+Informationsdichte
++
+Retention
+6. Die endgültige Technologiearchitektur
+
+Ich würde folgende Technologien fest einsetzen:
+
+Aufgabe	Technologie
+Web-App	Next.js + React + TypeScript
+Styling	Tailwind CSS + shadcn/ui
+Backend	Python + FastAPI
+DB	PostgreSQL
+ORM	SQLAlchemy 2
+DB-Migrationen	Alembic
+Strukturierte Modelle	Pydantic v2
+Queue	Celery
+Queue/Cache	Redis
+Storage	Cloudflare R2
+Haupt-KI	GPT-5.6 Terra
+günstige Hilfs-KI	GPT-5.6 Luna
+schwierige Eskalationen	GPT-5.6 Sol
+Video-QC	Gemini 3.8 Flash
+Recherche	Brave Search API
+Website Parsing	Trafilatura
+Lexikon	Wikipedia API
+Stockvideo/Bilder	Pexels API
+weitere Bilder	Wikimedia Commons
+semantisches Asset Ranking	OpenCLIP
+Videosegmentierung	PySceneDetect
+Videoanalyse	ffprobe
+Videoverarbeitung	FFmpeg
+Gesicht	MediaPipe
+Personen	MediaPipe Pose
+Tracking	OpenCV
+TTS günstig	Kokoro-82M
+TTS Premium	OpenAI gpt-4o-mini-tts
+Alignment	WhisperX
+ASR	faster-whisper
+Captions	ASS + libass
+Bild-/Textmessung	Pillow
+Rendering	FFmpeg
+Revisionen	JSON Patch
+Fehlertracking	Sentry
+Container	Docker
+
+Pexels bietet weiterhin programmgesteuerten Zugriff auf Fotos und Videos; die aktuelle Dokumentation weist inzwischen auf die /v1/videos/-Endpoints hin.
+
+7. Aufteilung der KI-Modelle
+
+Hier würde ich gegenüber meinem vorherigen Plan etwas verbessern.
+
+GPT-5.6 Terra = der eigentliche ClipForge-Agent
+
+Terra erledigt:
+
+Prompt verstehen
+Thema analysieren
+Recherche zusammenführen
+Fakten auswählen
+Story Angle bestimmen
+Skript schreiben
+Storyboard erstellen
+visuelle Ideen erzeugen
+komplizierte Asset-Auswahl
+Text-Änderungswünsche verstehen
+
+OpenAI positioniert Terra aktuell gerade als Modell zwischen Intelligenz und Kosten.
+
+8. GPT-5.6 Luna = billiger Arbeiter
+
+Luna bekommt Aufgaben wie:
+
+Suchbegriffe erstellen
+Pexels Keywords erstellen
+Assets grob klassifizieren
+Titelvarianten
+Hashtags
+einfache Metadaten
+Kategorien
+kleine JSON-Transformationen
+
+Luna kostet aktuell $0,20 pro Million Input- und $1,20 pro Million Output-Tokens und ist explizit für kostenkritische High-Volume-Aufgaben gedacht.
+
+9. GPT-5.6 Sol nur bei Problemen
+
+Sol wird nicht standardmäßig verwendet.
+
+Beispielsweise:
+
+komplizierte wissenschaftliche Behauptung
+widersprüchliche Quellen
+Terra liefert zweimal ungültige Planung
+schwierige Nutzeränderung
+komplexe narrative Umstrukturierung
+
+Dann:
+
+Terra confidence < threshold
+        ↓
+Sol
+
+Das hält Kosten niedrig.
+
+10. Schritt 1 – Startseite
+
+Die Startseite sollte extrem einfach sein.
+
+Großes Texteingabefeld:
+
+What should ClipForge create?
+
+Darunter beispielsweise:
+
+Ask a question, enter a topic or describe the video you want.
+
+Sonst zunächst nichts.
+
+Der Benutzer kann schreiben:
+
+Why did the Concorde disappear?
+
+und auf:
+
+Generate
+
+klicken.
+
+11. Optionale Einstellungen verstecken
+
+Man sollte trotzdem einen Button:
+
+Advanced
+
+anbieten.
+
+Dort kann man optional überschreiben:
+
+Sprache
+Stimme
+Stil
+Zielplattform
+maximale Länge
+Caption Style
+Musik
+Format
+
+Aber:
+
+Nichts davon muss ausgefüllt werden.
+
+Das ist wichtig.
+
+ClipForge soll auch mit einem einzigen Satz funktionieren.
+
+12. Schritt 2 – Project anlegen
+
+Backend:
+
+FastAPI
+
+Request:
+
+{
+  "prompt": "Why did the Concorde disappear?",
+  "mode": "auto"
+}
+
+Darauf entsteht:
+
+project_id
+revision_id
+13. Der Original-Prompt darf niemals überschrieben werden
+
+In PostgreSQL:
+
+projects
+
+enthält:
+
+id
+user_id
+original_prompt
+created_at
+current_revision
+
+Der Original-Prompt bleibt für immer erhalten.
+
+Alle späteren Änderungen sind Revisionen.
+
+14. Schritt 3 – Prompt Interpreter
+
+Jetzt bekommt:
+
+GPT-5.6 Terra
+
+nur den Nutzerprompt.
+
+Es erzeugt kein Skript.
+
+Zuerst erzeugt es ein:
+
+ProjectIntent
+
+Beispielsweise:
+
+{
+  "topic": "Concorde",
+  "intent": "explain",
+  "question": "Why was Concorde discontinued?",
+  "language": "en",
+  "content_type": "factual_explainer",
+  "tone": "fast_documentary",
+  "research_required": true,
+  "visual_style": "documentary_stock",
+  "shortform": true
+}
+15. Unterschiedliche Prompt-Arten erkennen
+
+ClipForge sollte automatisch unterscheiden:
+
+Frage
+Thema
+Erklärung
+Story
+historisches Ereignis
+aktuelles Ereignis
+Biografie
+Vergleich
+Top-Liste
+Mystery
+wissenschaftliches Thema
+Video-Beschreibung
+fiktionale Story
+
+Beispiel:
+
+„Warum wurde Concorde eingestellt?“
+
+→ Research Explainer.
+
+Aber:
+
+„Ein Astronaut wacht alleine auf einer Mondstation auf und merkt, dass die Erde verschwunden ist.“
+
+→ Story Mode.
+
+Damit wird keine unnötige Webrecherche gestartet.
+
+16. Schritt 4 – Research Planner
+
+Wenn:
+
+research_required = true
+
+plant GPT-5.6 Terra zunächst, was herausgefunden werden muss.
+
+Beispielsweise:
+
+{
+  "questions": [
+    "What caused Concorde's commercial decline?",
+    "How important were operating costs?",
+    "What role did the 2000 crash play?",
+    "Why did British Airways and Air France retire it?"
+  ]
+}
+17. Schritt 5 – Suchbegriffe
+
+Diese einfache Aufgabe geht an:
+
+GPT-5.6 Luna
+
+Beispielsweise:
+
+Concorde retirement reasons
+Concorde operating costs
+British Airways Concorde retirement 2003
+Air France Concorde retirement
+Concorde crash effect retirement
+18. Schritt 6 – Recherche
+
+Technologie:
+
+Brave Search API
+
+Ergänzend:
+
+Wikipedia API
+
+und für gefundene Seiten:
+
+HTTPX + Trafilatura
+
+Trafilatura extrahiert aus Websites den eigentlichen Artikeltext.
+
+19. Quellen-Ranking
+
+Terra bewertet:
+
+Autorität
+Aktualität
+Primärquelle?
+Relevanz
+Übereinstimmung mit anderen Quellen
+
+Beispielsweise:
+
+Behörde > Zeitung > Blog
+Hersteller > Zusammenfassungsseite
+wissenschaftliche Publikation > Social-Media-Post
+20. Fact Pack
+
+Das Resultat der Recherche wird nicht sofort zum Video.
+
+Zuerst:
+
+{
+  "facts": [
+    {
+      "id": "fact_01",
+      "claim": "...",
+      "sources": ["source_3", "source_7"],
+      "confidence": 0.97,
+      "importance": 0.88
+    }
+  ]
+}
+
+Das wird die „Wahrheitsschicht“ des Projekts.
+
+21. Schritt 7 – Informationen priorisieren
+
+Jetzt kommt ein entscheidender neuer Schritt:
+
+Information Compression Planner
+
+GPT-5.6 Terra sortiert Fakten in:
+
+MUST KNOW
+USEFUL
+OPTIONAL
+REMOVE
+
+Nur:
+
+MUST KNOW
+
+und eventuell wenige starke:
+
+USEFUL
+
+Fakten kommen ins Video.
+
+Das verhindert 90 Sekunden unnötiges Wikipedia-Gelaber.
+
+22. Beispiel
+
+Bei Concorde könnte der Research Agent 25 Fakten finden.
+
+Davon braucht das Video vielleicht nur:
+
+Concorde war extrem teuer im Betrieb
+begrenzte Strecken wegen Überschallknall
+kleiner Markt
+Crash 2000 beschädigte Vertrauen
+Airbus beendete Support
+BA/Air France stellten Betrieb 2003 ein
+
+Der Rest wird verworfen.
+
+23. Schritt 8 – Answer Skeleton
+
+Terra erstellt jetzt noch kein ausgeschriebenes Voiceover, sondern die minimale logische Erklärung.
+
+Beispiel:
+
+HOOK
+↓
+Concorde war technisch erfolgreich
+↓
+aber wirtschaftlich problematisch
+↓
+extrem hohe Betriebskosten
+↓
+begrenzter Markt
+↓
+Crash verschärfte Situation
+↓
+Betreiber stellten Flugzeug ein
+↓
+Payoff
+
+Das ist die narrative Wirbelsäule.
+
+24. Schritt 9 – automatische Längenplanung
+
+Erst jetzt darf ClipForge über Dauer nachdenken.
+
+Der Duration Planner bekommt:
+
+Informationspunkte
+Komplexität
+gewünschte Sprechgeschwindigkeit
+notwendige Pausen
+Hook
+Payoff
+
+und schätzt beispielsweise:
+
+{
+  "estimated_words": 137,
+  "estimated_voice_duration": 52,
+  "complexity": "medium"
+}
+
+Noch immer ist das keine feste Vorgabe.
+
+25. Schritt 10 – Skript
+
+Jetzt schreibt:
+
+GPT-5.6 Terra
+
+das Voiceover.
+
+Regeln:
+
+keine Begrüßung
+kein "Today we're going to..."
+sofort zum Thema
+kurze Sätze
+natürliche Sprache
+hohe Informationsdichte
+kein unnötiges Wiederholen
+starker Hook
+verständliche Übergänge
+Payoff am Ende
+26. Hook-Regel
+
+Nicht:
+
+„Did you know Concorde was an amazing airplane?“
+
+sondern eher:
+
+„Concorde could cross the Atlantic in half the time of a normal jet — and still became commercially impossible to keep flying.“
+
+Information + Neugier.
+
+27. Verständlichkeit prüfen
+
+Terra macht danach einen zweiten Durchlauf:
+
+Kann jemand ohne Vorwissen folgen?
+Sind Zusammenhänge übersprungen?
+Ist etwas redundant?
+Ist etwas unnötig kompliziert?
+
+Dann wird komprimiert.
+
+28. Kein sinnloses Fast-Talking
+
+Ein Fehler vieler automatischer Shorts wäre:
+
+einfach 220 Wörter pro Minute sprechen.
+
+Das würde ich verbieten.
+
+Der Video-Stil soll schnell sein, der Sprecher aber verständlich.
+
+Die Dynamik kommt hauptsächlich durch:
+
+Schnitt
+B-Roll
+Captions
+Zooms
+Text
+visuelle Wechsel
+
+und nicht dadurch, dass die Stimme unnatürlich schnell spricht.
+
+29. Schritt 11 – Faktencheck des fertigen Skripts
+
+Jede faktische Aussage wird gegen:
+
+Fact Pack
+
+gemappt.
+
+Beispiel:
+
+{
+  "sentence_id": "s7",
+  "supported_by": [
+    "fact_03",
+    "fact_08"
+  ]
+}
+
+Unsupported?
+
+rewrite
+
+Nicht:
+
+weiter rendern
+30. Schritt 12 – Visual Storyboard
+
+Jetzt nimmt Terra das Skript und zerlegt es in:
+
+Visual Beats.
+
+Nicht zwangsläufig nach Sätzen.
+
+Beispielsweise:
+
+0:00–0:01.6
+0:01.6–0:03.4
+0:03.4–0:05.2
+...
+
+Aber zunächst nur geschätzt.
+
+31. Schneller Shortform-Schnitt
+
+Richtwert:
+
+ungefähr alle 1–3 Sekunden ein visuelles Ereignis.
+
+Das muss nicht immer ein kompletter neuer Clip sein.
+
+Auch:
+
+Cut
+Zoom
+Pan
+Crop change
+Text pop
+Bild
+neuer Ausschnitt
+Map
+Detailaufnahme
+
+zählt.
+
+Bei einer komplizierten Information darf eine Szene auch länger stehen.
+
+32. Storyboard JSON
+
+Beispiel:
+
+{
+  "scene_id": "scene_08",
+  "narration": "But operating Concorde was incredibly expensive.",
+  "visual_goal": "Show Concorde maintenance or engines",
+  "preferred_media": "video",
+  "fallback_media": "image",
+  "search_queries": [
+    "Concorde engine closeup",
+    "Concorde maintenance",
+    "Concorde aircraft ground crew"
+  ],
+  "motion": "slow_push",
+  "importance": 0.86
+}
+33. Schritt 13 – visuelle Suchbegriffe
+
+Das übernimmt wieder:
+
+GPT-5.6 Luna.
+
+Dadurch verschwenden wir Terra nicht für:
+
+concorde takeoff
+concorde cockpit
+air france concorde
+jet engine closeup
+34. Schritt 14 – Pexels
+
+Primäre Stockquelle:
+
+Pexels API.
+
+Es werden Fotos und Videos gesucht. Pexels stellt beides über seine API bereit.
+
+Zunächst nur:
+
+Metadaten
+Preview
+Thumbnail
+
+abrufen.
+
+Nicht 20 Full-HD-Videos herunterladen.
+
+35. Schritt 15 – Wikimedia
+
+Wenn Pexels nicht reicht:
+
+Wikimedia Commons API.
+
+Extrem wichtig für:
+
+historische Personen
+historische Flugzeuge
+Ereignisse
+alte Gebäude
+Landkarten
+wissenschaftliche Bilder
+36. Source Metadata unbedingt speichern
+
+Jedes Asset:
+
+{
+  "provider": "pexels",
+  "original_id": "...",
+  "creator": "...",
+  "source_url": "...",
+  "license": "...",
+  "download_url": "..."
+}
+
+Dadurch kann später ein:
+
+license_manifest.json
+
+entstehen.
+
+37. Schritt 16 – lokale semantische Vorauswahl
+
+Eine Pexels-Suche liefert möglicherweise 30 Kandidaten.
+
+Die gehen nicht alle an eine bezahlte KI.
+
+Dafür:
+
+OpenCLIP.
+
+Verglichen wird:
+
+visual_goal
+↔
+thumbnail
+
+Dann bleiben z. B.:
+
+Top 5
+
+übrig.
+
+38. Schritt 17 – intelligente Endauswahl
+
+Diese fünf Kandidaten gehen an:
+
+GPT-5.6 Terra Vision.
+
+Aktuelle OpenAI-Modelle der Familie unterstützen Bildinput.
+
+Terra bekommt:
+
+Narration
+Visual Goal
+5 Previews
+
+und wählt das beste Asset.
+
+39. Schritt 18 – Videoabschnitt finden
+
+Ein Stockvideo kann 20 Sekunden lang sein.
+
+ClipForge benötigt vielleicht:
+
+2,1 Sekunden.
+
+Dafür:
+
+PySceneDetect
+
+zerlegt den Clip zunächst in Shots.
+
+Danach werden mit:
+
+FFmpeg
+
+Frames extrahiert.
+
+40. Schritt 19 – passendes Teilstück auswählen
+
+OpenCLIP bewertet die Shot-Frames.
+
+Dann wird beispielsweise festgelegt:
+
+source video:
+12.3 – 14.7 seconds
+
+Nur dieser Ausschnitt kommt ins Video.
+
+41. Schritt 20 – Smart Vertical Crop
+
+Aus:
+
+1920×1080
+
+muss:
+
+1080×1920
+
+werden.
+
+Aber nicht einfach stumpf die Mitte ausschneiden.
+
+Technologien:
+
+MediaPipe Face Detection
+MediaPipe Pose
+OpenCV
+
+erkennen relevante Personen.
+
+42. Crop-Tracking
+
+Pro Frame wird ein Focus Point berechnet:
+
+x/y
+
+Dann glättet OpenCV die Bewegung.
+
+Resultat:
+
+Der virtuelle 9:16-Ausschnitt kann dem Gesicht oder der Person folgen.
+
+43. Wenn kein Mensch im Bild ist
+
+Dann:
+
+OpenCLIP saliency
++
+OpenCV
+
+oder ein einfacher Content-Aware-Crop.
+
+Bei Landschaft:
+
+Center Crop.
+
+Bei Objekt links:
+
+Crop entsprechend verschieben.
+
+44. Schritt 21 – Fotos lebendig machen
+
+Fotos bleiben echte Fotos.
+
+Keine KI-Animation nötig.
+
+FFmpeg erzeugt:
+
+Push in
+Push out
+Pan left
+Pan right
+Pan up
+Pan down
+
+Beispielsweise:
+
+100 % → 107 %
+
+über wenige Sekunden.
+
+45. Schritt 22 – Voiceover
+
+Für möglichst geringe laufende Kosten:
+
+Kokoro-82M.
+
+Das Modell ist weiterhin öffentlich verfügbar.
+
+Korrektur dazu: Die OpenAI-Quelle oben betrifft Luna; für Kokoro ist die relevante öffentliche Modellquelle Hugging Face. Ich würde Kokoro technisch trotzdem als lokalen Default einsetzen und die TTS-Schicht austauschbar halten.
+
+Für bessere Premium-Stimmen:
+
+OpenAI gpt-4o-mini-tts.
+
+Die Anwendung erhält deshalb ein Interface:
+
+TTSProvider
+
+mit:
+
+KokoroProvider
+OpenAITTSProvider
+46. TTS in Blöcken
+
+Das Voiceover sollte nicht als eine einzige 90-Sekunden-Datei erzeugt werden.
+
+Stattdessen semantische Blöcke:
+
+voice_block_01
+voice_block_02
+voice_block_03
+...
+
+ungefähr einige Sekunden lang.
+
+Warum?
+
+Wegen der späteren Textbearbeitung.
+
+Ändert der Nutzer nur Satz 4, muss nicht das komplette Voiceover neu erzeugt werden.
+
+47. Schritt 23 – echtes Timing
+
+Jetzt erst kennen wir die wirkliche Dauer.
+
+Die Audio-Blöcke werden zusammengefügt.
+
+Dann:
+
+WhisperX + faster-whisper.
+
+WhisperX ist gerade für präzise Word-Level-Timestamps ausgelegt.
+
+Output:
+
+{
+  "word": "Concorde",
+  "start": 4.18,
+  "end": 4.72
+}
+48. Die endgültige Videolänge steht erst JETZT fest
+
+Beispielsweise:
+
+geschätzt:
+55 Sekunden
+
+echtes Voiceover:
+58,74 Sekunden
+
+Dann wird:
+
+duration = 58.74
+
+gesetzt.
+
+Nicht künstlich auf:
+
+60
+
+gestreckt.
+
+49. Schritt 24 – Storyboard neu timen
+
+Die bislang geschätzten Szenenzeiten werden nun an:
+
+echte Word-Timestamps
+
+angepasst.
+
+Dadurch liegen Cuts exakt dort, wo sich der Inhalt ändert.
+
+50. Schritt 25 – Captions
+
+Technologie:
+
+ASS + libass.
+
+WhisperX liefert die Wortpositionen.
+
+Caption Engine gruppiert beispielsweise:
+
+2–5 Wörter
+
+unter Berücksichtigung von:
+
+Sprechpause
+Satzstruktur
+Bildschirmbreite
+Lesbarkeit
+51. Pillow
+Pillow
+
+berechnet:
+
+Pixelbreite des Textes
+Zeilenumbruch
+Bounding Box
+
+Damit werden Wörter nicht zufällig abgeschnitten.
+
+52. Caption Highlighting
+
+Aktuell gesprochenes Wort kann:
+
+größer
+heller
+farbig
+
+erscheinen.
+
+Die Animation wird vollständig über:
+
+ASS/libass
+
+erstellt.
+
+Keine KI nötig.
+
+53. Schritt 26 – Musik
+
+ClipForge bekommt eine lokale, ordentlich lizenzierte Musikbibliothek.
+
+Tracks besitzen Tags wie:
+
+dark
+dramatic
+science
+documentary
+mystery
+positive
+technology
+
+Terra bestimmt lediglich:
+
+{
+  "music_mood": "dark_documentary",
+  "energy": 0.65
+}
+54. Schritt 27 – SFX
+
+Genauso:
+
+lokale CC0/lizenzierte SFX Library.
+
+Beispiele:
+
+impact
+whoosh
+rumble
+rise
+click
+transition
+
+Terra gibt nur die Stellen an.
+
+55. Schritt 28 – Audio-Mix
+
+FFmpeg:
+
+sidechaincompress
+amix
+loudnorm
+
+Voice bleibt dominant.
+
+Musik wird automatisch geduckt.
+
+56. Schritt 29 – das Herzstück: ProjectState
+
+Hier kommt die Architektur, die für deine neue Textbearbeitung entscheidend ist.
+
+ClipForge speichert nicht einfach eine MP4.
+
+Es speichert das komplette Video als strukturierbares Projekt:
+
+{
+  "project_id": "123",
+
+  "prompt": "...",
+
+  "research": {},
+  "facts": [],
+  "script": {},
+  "voice_blocks": [],
+  "scenes": [],
+  "captions": [],
+  "music": {},
+  "timeline": {},
+  "render": {}
+}
+
+Die MP4 ist nur die gerenderte Darstellung dieses Zustands.
+
+57. Warum das extrem wichtig ist
+
+Dadurch kann der Nutzer später schreiben:
+
+„Mach die ersten fünf Sekunden spannender.“
+
+ClipForge muss dann nicht versuchen, eine fertige MP4 irgendwie mit KI zu manipulieren.
+
+Es verändert stattdessen:
+
+ProjectState
+
+und rendert daraus eine neue Version.
+
+Das ist deutlich zuverlässiger.
+
+58. Schritt 30 – Timeline
+
+Alle Informationen werden zu:
+
+timeline.json
+
+zusammengeführt.
+
+Beispiel:
+
+{
+  "duration": 58.74,
+  "width": 1080,
+  "height": 1920,
+  "fps": 30,
+
+  "scenes": [
+    {
+      "id": "scene_1",
+      "start": 0,
+      "end": 1.86,
+      "asset": "clip_123.mp4",
+      "crop": "smart",
+      "motion": "push_in"
+    }
+  ]
+}
+59. Schritt 31 – Timeline Validator
+Python + Pydantic.
+
+Prüft:
+
+Lücken?
+Überlappungen?
+kaputte Dateien?
+Asset zu kurz?
+ungültiger Crop?
+Audio vorhanden?
+Caption außerhalb Timeline?
+
+Erst dann wird gerendert.
+
+60. Schritt 32 – Rendering
+FFmpeg.
+
+FFmpeg macht:
+
+trim
+scale
+crop
+overlay
+zoompan
+fade
+audio mix
+captions
+encode
+
+Output:
+
+1080×1920
+H.264
+AAC
+MP4
+61. Schritt 33 – technische QC
+ffprobe.
+
+Kontrolliert:
+
+Dauer
+Codec
+FPS
+Auflösung
+Audio
+beschädigte Frames
+62. Schritt 34 – die KI schaut das fertige Video
+
+Hier:
+
+Gemini 3.8 Flash.
+
+Das ist aktuell besonders passend, weil das Modell Text, Bild, Video und Audio direkt als Input unterstützt.
+
+Google unterstützt bei der Videoanalyse außerdem direkte Zeitstempel und Videoverständnis.
+
+63. QC-Prompt
+
+Gemini prüft:
+
+Passt jedes Visual zum gesprochenen Text?
+Gibt es falsche Bilder?
+Sind Captions lesbar?
+Sind Szenen zu lang?
+Sind Schnitte störend?
+Ist das Video langweilig?
+Gibt es schwarze Frames?
+Sind Personen abgeschnitten?
+Sind Wiederholungen vorhanden?
+Ist Sprache verständlich?
+Ist die Story logisch?
+64. QC-Ausgabe
+{
+  "score": 87,
+  "passed": false,
+  "issues": [
+    {
+      "scene": "scene_8",
+      "timestamp": 17.4,
+      "type": "visual_mismatch",
+      "severity": "medium"
+    }
+  ]
+}
+65. Schritt 35 – automatische Reparatur
+
+Nur:
+
+scene_8
+
+wird neu bearbeitet.
+
+Nicht das gesamte Video.
+
+Beispielsweise:
+
+neue Suche
+↓
+neues Asset
+↓
+neuer Crop
+↓
+timeline patch
+↓
+render v2
+66. Maximal zwei automatische QC-Runden
+
+Sonst könnte ClipForge endlos verändern.
+
+Render 1
+↓
+QC
+↓
+Fix
+↓
+Render 2
+↓
+QC
+↓
+gegebenenfalls Fix
+↓
+Render 3 FINAL
+67. Jetzt kommt deine zweite große Änderung: Bearbeiten per Text
+
+Nach dem Video erscheint unter dem Player ein Chat.
+
+Beispiel:
+
+What would you like to change?
+
+Der Nutzer schreibt einfach:
+
+Die ersten 5 Sekunden sind langweilig. Mach den Einstieg deutlich dramatischer, aber ändere die Fakten nicht.
+
+68. Edit Interpreter
+
+Das übernimmt:
+
+GPT-5.6 Terra.
+
+Aber Terra darf nicht einfach irgendetwas neu generieren.
+
+Es muss den Wunsch in strukturierte Operationen übersetzen.
+
+Beispiel:
+
+{
+  "operations": [
+    {
+      "type": "rewrite_script",
+      "scope": "hook",
+      "instruction": "make more dramatic",
+      "preserve_facts": true
+    },
+    {
+      "type": "replace_visuals",
+      "scope": "scenes_1_to_3"
+    }
+  ]
+}
+69. Beispiele für mögliche Textbefehle
+
+Der Nutzer kann dann einfach schreiben:
+
+Mach es kürzer.
+
+Mach die Stimme ernster.
+
+Der Anfang ist langweilig.
+
+Entferne den Satz über die Kosten.
+
+Ändere den Clip bei 17 Sekunden.
+
+Benutze weniger Bilder und mehr Videos.
+
+Mach die Schnitte schneller.
+
+Mach die Untertitel kleiner.
+
+Der gelbe Text gefällt mir nicht.
+
+Nimm eine weibliche Stimme.
+
+Der Teil über den Crash ist zu lang.
+
+Erkläre diesen Punkt etwas genauer.
+
+Füge noch hinzu, warum Überschallflüge über Land problematisch waren.
+
+Benutze einen anderen Concorde-Clip am Anfang.
+
+Mach das komplette Video etwas seriöser.
+
+Ändere nur die Musik.
+
+Lass alles gleich, aber mach es auf Deutsch.
+70. Edit Scope Resolver
+
+Ein normaler Python-Dienst entscheidet anhand des EditPlans:
+
+Was muss wirklich neu berechnet werden?
+
+Das ist extrem wichtig für Geschwindigkeit und Kosten.
+
+71. Beispiel: „Untertitel größer“
+
+Neu:
+
+Captions
+Render
+
+Nicht neu:
+
+Recherche
+Skript
+Medien
+Voice
+72. Beispiel: „Andere Musik“
+
+Nur:
+
+Music
+Audio Mix
+Render
+73. Beispiel: „Anderer Clip bei 0:14“
+
+Nur:
+
+Asset Search
+Scene 7
+Crop
+Render
+QC
+74. Beispiel: „Mach diesen Satz verständlicher“
+
+Dann:
+
+Script block
+↓
+Fact validation
+↓
+TTS block
+↓
+WhisperX block
+↓
+Scene timings dieses Bereichs
+↓
+Captions
+↓
+Render
+
+Alles andere bleibt erhalten.
+
+75. Beispiel: neue Information
+
+Nutzer:
+
+„Füge noch hinzu, wie teuer ein Concorde-Ticket damals war.“
+
+Dann reicht das bestehende Projekt möglicherweise nicht.
+
+Deshalb:
+
+Edit Interpreter
+↓
+new factual claim required
+↓
+Research Agent
+↓
+Fact Pack erweitern
+↓
+Script
+↓
+Voice
+↓
+Visual
+↓
+Render
+
+Das ist genau der Grund, warum der Dependency Resolver nötig ist.
+
+76. Dependency Graph
+
+Intern:
+
+Research
+   ↓
+Facts
+   ↓
+Script
+   ↓
+┌─────────┬───────────┐
+Voice     Storyboard
+ ↓             ↓
+Alignment     Assets
+ ↓             ↓
+Captions      Crops
+ └──────┬──────┘
+        ↓
+     Timeline
+        ↓
+      Render
+        ↓
+        QC
+
+Ändert sich etwas oben, werden nur die abhängigen Knoten ungültig.
+
+77. Technische Umsetzung davon
+
+Jedes Objekt bekommt:
+
+content_hash
+
+Beispielsweise:
+
+script_hash
+voice_hash
+scene_hash
+caption_hash
+
+Unverändert?
+
+Cache verwenden.
+
+Geändert?
+
+Neu erzeugen.
+78. Revision History
+
+Jede Nutzeränderung erzeugt:
+
+Revision 1
+Revision 2
+Revision 3
+...
+
+Dafür:
+
+PostgreSQL + JSON Patch.
+
+Beispielsweise:
+
+v1 Original
+v2 Dramatischer Hook
+v3 anderer Clip
+v4 Captions größer
+79. Undo
+
+Button:
+
+Undo
+
+setzt einfach:
+
+current_revision = previous_revision
+
+und lädt den vorherigen Render.
+
+Damit ist Bearbeiten per Chat sicher.
+
+80. Benutzer kann auch Änderungen rückgängig machen
+
+Zum Beispiel:
+
+„Mach die letzte Änderung wieder rückgängig.“
+
+Edit Interpreter erkennt:
+
+{
+  "operation": "undo",
+  "steps": 1
+}
+
+Keine AI-Neugenerierung erforderlich.
+
+81. Sehr wichtig: Chat bekommt Projektkontext
+
+Terra bekommt bei einem Edit nicht die komplette rohe Projektdatei.
+
+Stattdessen:
+
+Nutzerwunsch
++
+aktuelles Skript
++
+Scene Summary
++
+Timeline Summary
++
+Revision History
+
+und nur bei Bedarf:
+
+betroffene Assets
+Fact Pack
+
+Das reduziert Tokens massiv.
+
+82. Scene IDs sind dauerhaft
+
+Auch wenn sich Timing verändert:
+
+scene_a91f
+
+bleibt die gleiche Szene.
+
+Nicht:
+
+"scene at 17 seconds"
+
+als interne Identität.
+
+So funktionieren spätere Änderungen zuverlässig.
+
+83. UI nach der Generierung
+
+Ich würde die Oberfläche so gestalten:
+
+┌──────────────────────────────┐
+│                              │
+│          VIDEO               │
+│                              │
+└──────────────────────────────┘
+
+Revision 4       0:58
+
+[ Play ]
+
+────────────────────────────
+
+Ask ClipForge to change anything...
+
+> ___________________________
+
+              [ Send ]
+
+Darunter optional:
+
+Scenes
+Script
+Sources
+Captions
+Voice
+Export
+84. Nutzer muss die Timeline nicht verstehen
+
+Das ist wichtig.
+
+ClipForge soll kein Adobe Premiere mit KI werden.
+
+Primäre Bedienung bleibt:
+
+natürliche Sprache.
+
+Timeline/Scenes sind nur eine zusätzliche Expertenfunktion.
+
+85. Beispiel kompletter Durchlauf
+
+Nutzer schreibt:
+
+Warum ist der Himmel blau?
+
+ClipForge:
+
+Prompt Interpreter
+↓
+Factual Explainer
+↓
+Research
+↓
+Fact Pack
+↓
+Essenz bestimmen
+↓
+kurzes Erklärmodell entwickeln
+↓
+Skript
+↓
+ergibt beispielsweise 37 Sekunden Voice
+↓
+Visual Storyboard
+↓
+Pexels/Wikimedia
+↓
+Assets
+↓
+Voice
+↓
+Captions
+↓
+Render
+↓
+Gemini QC
+↓
+fertiges Video
+
+Das Video ist vielleicht:
+
+37 Sekunden.
+
+Nicht weil 37 Sekunden eingestellt wurden, sondern weil die vollständige kompakte Erklärung 37 Sekunden benötigt.
+
+86. Bei komplexerem Thema
+
+Prompt:
+
+Wie konnte die Finanzkrise 2008 entstehen?
+
+Vielleicht entscheidet der Planner:
+
+165 Wörter reichen nicht.
+
+Dann entstehen beispielsweise:
+
+1:42 Minuten.
+
+Immer noch:
+
+schnell
+vertikal
+visuell dynamisch
+Shortform
+
+aber verständlich.
+
+87. Bei extrem einfacher Frage
+
+Warum schwimmen Eiswürfel?
+
+Vielleicht reichen:
+
+18 Sekunden.
+
+Auch das ist okay.
+
+88. Das ist das entscheidende Ziel
+
+ClipForge optimiert nicht auf:
+
+VIDEO LENGTH
+
+sondern auf:
+
+MINIMAL NECESSARY EXPLANATION
+        ×
+UNDERSTANDABILITY
+        ×
+RETENTION
+        ×
+VISUAL DENSITY
+
+Die Länge ist nur das Resultat.
+
+89. Datenbank
+
+Ich würde mindestens diese Tabellen anlegen:
+
+users
+projects
+project_revisions
+user_prompts
+
+research_queries
+research_sources
+facts
+
+scripts
+script_blocks
+
+scenes
+scene_versions
+asset_candidates
+assets
+
+voice_blocks
+word_timings
+
+captions
+music_tracks
+sfx_events
+
+timelines
+render_jobs
+renders
+
+qc_runs
+edit_requests
+edit_operations
+
+usage
+costs
+90. Dateisystem / R2
+/projects/{project_id}/
+
+    research/
+    assets/
+    audio/
+    captions/
+    timelines/
+    renders/
+    qc/
+
+Revisionen:
+
+renders/v1.mp4
+renders/v2.mp4
+renders/v3.mp4
+91. Job-System
+Celery + Redis.
+
+Ein Projekt besteht aus vielen kleinen Jobs.
+
+Beispielsweise:
+
+interpret_prompt
+research
+build_fact_pack
+plan_content
+write_script
+validate_script
+build_storyboard
+search_assets
+rank_assets
+download_assets
+process_assets
+generate_voice
+align_voice
+build_captions
+build_timeline
+render
+qc
+repair
+92. Edit Jobs
+
+Später zusätzlich:
+
+interpret_edit
+resolve_dependencies
+invalidate_components
+regenerate_components
+patch_timeline
+render_revision
+qc_revision
+93. Fehlerbehandlung
+
+Jeder Job:
+
+PENDING
+RUNNING
+SUCCESS
+RETRYING
+FAILED
+
+Mit:
+
+1 s
+2 s
+4 s
+8 s
+
+Retry.
+
+94. Fortschritt im Frontend
+
+Nicht:
+
+Loading...
+
+sondern:
+
+Understanding your idea
+Researching
+Writing story
+Finding visuals
+Generating voice
+Building captions
+Editing video
+Reviewing video
+Finishing
+
+Dadurch wirkt der lange Prozess deutlich besser.
+
+95. Gemini als abschließender „Zuschauer“
+
+Ich würde Gemini tatsächlich behalten.
+
+Gemini 3.8 Flash ist seit September 2026 GA und verarbeitet Video und Audio direkt.
+
+Damit haben wir eine sehr schöne Trennung:
+
+Terra
+= Regisseur
+
+Luna
+= Assistent
+
+Brave
+= Rechercheur
+
+OpenCLIP
+= visueller Suchfilter
+
+Kokoro
+= Sprecher
+
+WhisperX
+= Timing
+
+MediaPipe/OpenCV
+= Kameramann
+
+FFmpeg
+= Cutter
+
+Gemini
+= Zuschauer / Qualitätsprüfer
+96. Was ich ausdrücklich NICHT machen würde
+
+Kein:
+
+"Schick Nutzerprompt an eine KI und lass sie irgendwie alles machen."
+
+Das klingt einfacher, wird aber extrem instabil.
+
+Auch würde ich für die Basisversion weiterhin keine generative Video-KI als Hauptquelle verwenden.
+
+Also nicht automatisch:
+
+Veo
+Sora
+Runway
+Kling
+
+für jede Szene.
+
+Google bietet mittlerweile selbst multimodale Videogenerierung und conversational video editing an, aber das würde Kosten, Renderzeit, Stilprobleme und reproduzierbare Bearbeitung unnötig erhöhen.
+
+Für ClipForge ist zunächst:
+
+echtes Bild-/Videomaterial + automatisierter intelligenter Schnitt
+
+die bessere Architektur.
+
+97. Entwicklungsreihenfolge
+
+Ich würde ClipForge jetzt exakt in diesen Phasen bauen:
+
+Project Core: Next.js + FastAPI + PostgreSQL + Projects + Revisions.
+Prompt Interpreter: Freitext → ProjectIntent.
+Research Engine: Prompt → Quellen → Fact Pack.
+Information Planner: Fact Pack → Must-Know-Informationen.
+Auto Duration Engine: Inhalt → notwendige Skriptmenge, ohne fixe Zielzeit.
+Script Engine: Hook + Shortform-Skript.
+Fact Validator.
+Storyboard Engine.
+Pexels/Wikimedia Media Search.
+OpenCLIP Media Ranking.
+Terra Vision Final Selection.
+PySceneDetect Asset Extraction.
+MediaPipe/OpenCV Smart Crop.
+Kokoro/OpenAI TTS.
+WhisperX Alignment.
+Dynamic Timing Engine.
+Caption Engine.
+Music/SFX Engine.
+Timeline Engine.
+FFmpeg Renderer.
+Technical QC.
+Gemini Video QC.
+Automatic Scene Repair.
+End-to-End Prompt → MP4.
+Chat Edit Interpreter.
+Dependency Resolver.
+Selective Regeneration.
+Revision/Undo-System.
+Chat + Video UI.
+Cloud Storage.
+Export.
+erst danach Social Publishing.
+98. Der erste echte Meilenstein ändert sich damit ebenfalls
+
+Ich würde jetzt ausdrücklich nicht mehr sagen:
+
+„Erstelle zunächst zuverlässig ein 20–30-Sekunden-Video.“
+
+Der erste Meilenstein sollte stattdessen heißen:
+
+Ein Nutzer gibt ausschließlich einen beliebigen Text-Prompt ein. ClipForge versteht die gewünschte Aussage selbst, recherchiert bei Bedarf, wählt nur die nötigen Informationen, bestimmt eigenständig die passende kompakte Shortform-Länge und erzeugt daraus ohne weitere Eingaben ein vollständig gerendertes 9:16-Video.
+
+Und der zweite große Meilenstein:
+
+Der Nutzer kann anschließend in normaler Sprache beliebige Änderungen verlangen, und ClipForge versteht, welche Teile des bestehenden Projekts betroffen sind, verändert ausschließlich diese und rendert eine neue Revision, ohne unnötig das komplette Video neu zu erstellen.
