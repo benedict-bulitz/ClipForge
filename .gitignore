@@ -58,6 +58,7 @@ renders/
 render/
 output/
 outputs/
+/Downloads/
 
 # Generated videos/audio
 *.mp4
@@ -80,11 +81,17 @@ __pycache__/
 .ruff_cache/
 *.pyc
 *.db
+*.sqlite
+*.sqlite3
 node_modules/
 .next/
 dist/
 coverage/
 projects/
+!apps/web/src/app/projects/
+apps/web/src/app/projects/*
+!apps/web/src/app/projects/[[]id[]]/
+!apps/web/src/app/projects/[[]id[]]/page.tsx
 
 
 # Generated Python package metadata
@@ -92,3 +99,16 @@ projects/
 
 # TypeScript build cache
 *.tsbuildinfo
+
+# ProjectAtlas machine-local indexes and runtime state
+.projectatlas/*.db*
+.projectatlas/*.toon
+.projectatlas/*.lock
+.projectatlas/projectatlas.mcp.json
+.projectatlas/projectatlas.claude.mcp.json
+.projectatlas/projectatlas.opencode.json
+.cursor/mcp.json
+apps/api/clipforge/visual_verifier_interrupted_backup.py
+
+# Accidental local pipe artifact
+pipe:1

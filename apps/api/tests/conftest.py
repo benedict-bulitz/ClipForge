@@ -1,9 +1,55 @@
+import keyring
 import pytest
+from keyring.backend import KeyringBackend
+from keyring.errors import PasswordDeleteError
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+
+class TestKeyring(KeyringBackend):
+    """In-memory keyring used before any ClipForge application module is imported."""
+
+    priority = 1
+
+    def __init__(self) -> None:
+        self.secrets: dict[tuple[str, str], str] = {}
+
+    def get_password(self, service: str, username: str) -> str | None:
+        return self.secrets.get((service, username))
+
+    def set_password(self, service: str, username: str, password: str) -> None:
+        self.secrets[(service, username)] = password
+
+    def delete_password(self, service: str, username: str) -> None:
+        try:
+            del self.secrets[(service, username)]
+        except KeyError as exc:
+            raise PasswordDeleteError("Secret does not exist") from exc
+
+
+TEST_KEYRING = TestKeyring()
+keyring.set_keyring(TEST_KEYRING)
+
+from clipforge.config import get_settings
 from clipforge.database import Base
+from clipforge.voice_preview import reset_preview_rate_limits
+
+
+@pytest.fixture(autouse=True)
+def reset_test_services():
+    TEST_KEYRING.secrets.clear()
+    get_settings.cache_clear()
+    reset_preview_rate_limits()
+    yield
+    TEST_KEYRING.secrets.clear()
+    get_settings.cache_clear()
+    reset_preview_rate_limits()
+
+
+@pytest.fixture()
+def test_keyring():
+    return TEST_KEYRING
 
 
 @pytest.fixture()

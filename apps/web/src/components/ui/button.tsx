@@ -10,8 +10,8 @@ const buttonVariants = cva(
       variant: {
         default: "bg-[#171714] px-5 py-3 text-white hover:bg-black hover:shadow-lg",
         accent: "bg-[#ff6838] px-5 py-3 text-white shadow-[0_8px_24px_rgba(255,104,56,.24)] hover:bg-[#ed5728]",
-        outline: "border border-black/10 bg-white/70 px-4 py-2.5 text-[#25251f] hover:bg-white",
-        ghost: "px-3 py-2 text-[#69695f] hover:bg-black/5 hover:text-[#171714]",
+        outline: "border border-black/10 bg-white/70 px-4 py-2.5 text-[#25251f] hover:bg-white dark:border-white/10 dark:bg-white/[.07] dark:text-[#efeee7] dark:hover:bg-white/[.11]",
+        ghost: "px-3 py-2 text-[#69695f] hover:bg-black/5 hover:text-[#171714] dark:text-[#aaa99f] dark:hover:bg-white/[.07] dark:hover:text-white",
       },
       size: { default: "h-11", sm: "h-9 text-xs", lg: "h-14 px-7 text-base", icon: "size-10 p-0" },
     },

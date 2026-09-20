@@ -23,8 +23,8 @@ export function ProjectPage({ projectId }: { projectId: string }) {
 
   if (error) {
     return (
-      <main className="grid min-h-screen place-items-center px-5">
-        <div className="max-w-md rounded-[24px] border border-black/10 bg-white/65 p-7 text-center shadow-sm">
+      <main className="theme-app grid min-h-screen place-items-center px-5">
+        <div className="cf-surface max-w-md rounded-[24px] border p-7 text-center shadow-sm">
           <Brand />
           <h1 className="mt-6 text-xl font-semibold">Project unavailable</h1>
           <p className="mt-2 text-sm leading-6 text-[#77776d]">{error}</p>
@@ -34,7 +34,7 @@ export function ProjectPage({ projectId }: { projectId: string }) {
     );
   }
   if (!project) {
-    return <main className="grid min-h-screen place-items-center"><div className="flex items-center gap-3 text-sm font-semibold text-[#77776d]"><LoaderCircle className="size-4 animate-spin text-[#ff6838]" /> Loading project…</div></main>;
+    return <main className="theme-app grid min-h-screen place-items-center"><div className="flex items-center gap-3 text-sm font-semibold text-[#77776d]"><LoaderCircle className="size-4 animate-spin text-[#ff6838]" /> Loading project…</div></main>;
   }
   return <ProjectWorkspace project={project} onProjectChange={setProject} />;
 }

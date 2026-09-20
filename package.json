@@ -3,12 +3,12 @@
   "private": true,
   "workspaces": ["apps/web"],
   "scripts": {
-    "dev": "concurrently -n web,api -c cyan,magenta \"npm run dev:web\" \"npm run dev:api\"",
+    "dev": "concurrently --kill-others-on-fail -n web,api -c cyan,magenta \"npm run dev:web\" \"npm run dev:api\"",
     "dev:web": "npm --workspace @clipforge/web run dev",
     "dev:api": "cd apps/api && ../../.venv/bin/uvicorn clipforge.main:app --reload --port 8000",
     "build": "npm --workspace @clipforge/web run build",
     "lint": "npm --workspace @clipforge/web run lint",
-    "test": "npm --workspace @clipforge/web run typecheck && .venv/bin/pytest apps/api/tests"
+    "test": "npm --workspace @clipforge/web run typecheck && npm --workspace @clipforge/web run test:unit && .venv/bin/pytest apps/api/tests"
   },
   "devDependencies": {
     "concurrently": "^9.2.1"
@@ -17,4 +17,3 @@
     "node": ">=22"
   }
 }
-

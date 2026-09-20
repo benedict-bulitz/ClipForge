@@ -3,12 +3,19 @@ import re
 from datetime import UTC, datetime
 from typing import Any
 
-from .ai import ai_plan_to_dict, plan_with_openai
+from .ai import ai_plan_to_dict, interpret_edit, plan_with_openai
+from .alignment import phrase_fallback_items
+from .attention import replan_attention, resolve_attention_preferences
 from .config import Settings
 from .dependencies import resolve_edit_scope
 from .hashing import attach_hashes
+from .hooks import STRATEGIES, select_hook, select_hook_candidate
+from .language import detect_text_language, resolve_language
+from .narration import clean_narration_text, clean_research_claim, clean_script_blocks
+from .progress import ProgressCallback, report_progress
 from .research import research_topic
 from .schemas import AdvancedOptions
+from .voice import apply_voice_preferences, initial_voice
 
 STAGE_LABELS = [
     ("intent", "Understanding your idea"),
@@ -21,25 +28,16 @@ STAGE_LABELS = [
     ("qc", "Reviewing video"),
 ]
 
+SPEAKING_RATE_WPM = 165
+AUTO_MIN_DURATION = 10
+
 
 class UnsupportedEdit(ValueError):
     pass
 
 
 def _language(prompt: str, override: str | None) -> str:
-    if override:
-        return {
-            "german": "de",
-            "deutsch": "de",
-            "de": "de",
-            "english": "en",
-            "englisch": "en",
-            "en": "en",
-        }.get(override.casefold(), override.casefold())
-    words = set(re.findall(r"[a-zäöüß]+", prompt.casefold()))
-    german = {"der", "die", "das", "warum", "erkläre", "erstelle", "mache", "wäre", "über"}
-    english = {"why", "what", "how", "explain", "create", "make", "about"}
-    return "de" if len(words & german) > len(words & english) else "en"
+    return resolve_language(prompt, override)
 
 
 def _intent(prompt: str, options: AdvancedOptions) -> dict[str, Any]:
@@ -68,7 +66,9 @@ def _intent(prompt: str, options: AdvancedOptions) -> dict[str, Any]:
         "language": language,
         "content_type": content_type,
         "tone": options.style or ("cinematic" if fictional else "fast_documentary"),
-        "research_required": not fictional,
+        "research_required": options.research == "on" or (
+            options.research == "auto" and not fictional
+        ),
         "visual_style": "cinematic_story" if fictional else "documentary_graphics",
         "shortform": True,
     }
@@ -105,49 +105,213 @@ def _factual_blocks(intent: dict[str, Any], facts: list[dict[str, Any]]) -> list
     de = intent["language"] == "de"
     if not facts:
         message = (
-            "Die Recherche war nicht erreichbar. Öffne Build readiness und verbinde einen Recherche-Anbieter."
+            "Ohne verlässliche Recherche kann ich diese Frage noch nicht gut beantworten."
             if de
-            else "Research was unavailable. Open Build readiness and connect a research provider."
+            else "I could not verify enough reliable information for a good answer yet."
         )
-        return [{"role": "status", "text": message}, {"role": "next_step", "text": intent["question"]}]
-    claims = [fact["claim"] for fact in facts[:4]]
-    hook = (
-        f"Die kurze Antwort auf „{intent['topic']}“ beginnt hier:"
-        if de
-        else f"The short answer to “{intent['topic']}” starts here:"
+        return [{"role": "status", "text": message}]
+    useful: list[str] = []
+    low_value = re.compile(
+        r"(?i)\b(?:covers?|area|acres?|square (?:miles|kilomet(?:er|re)s)|"
+        r"visitors?|founded|established|headquarters)\b"
     )
-    roles = ["context", "cause", "turn", "payoff"]
-    blocks = [{"role": "hook", "text": hook}]
-    blocks.extend(
-        {"role": roles[index], "text": claim}
-        for index, claim in enumerate(claims)
+    for fact in facts:
+        claim = clean_research_claim(fact.get("claim"))
+        if not claim or claim in useful or low_value.search(claim):
+            continue
+        useful.append(claim)
+        if len(useful) == 3:
+            break
+    if not useful:
+        useful = [
+            claim
+            for fact in facts
+            if (claim := clean_research_claim(fact.get("claim")))
+        ][:2]
+    roles = ["answer", "support", "context"]
+    blocks = [{"role": roles[index], "text": claim} for index, claim in enumerate(useful)]
+    hook = select_hook(intent, facts, body=useful[1] if len(useful) > 1 else (useful[0] if useful else None))
+    return ([{"role": "hook", "text": hook}] if hook else []) + blocks
+
+
+def _audience_hook(intent: dict[str, Any]) -> str | None:
+    question = clean_narration_text(intent.get("question") or "").strip()
+    if not question:
+        return None
+    question = re.sub(
+        r"(?i)^(?:please\s+)?(?:explain|tell me|show me|erkläre|erklaere|erzähl mir|erzaehl mir)\s+",
+        "",
+        question,
+    ).strip()
+    words = question.rstrip(".!?").split()
+    if len(words) <= 14:
+        return " ".join(words).rstrip(".!?") + "?"
+    topic = str(intent.get("topic") or "").strip(" .!?")
+    topic_words = topic.split()
+    if len(topic_words) > 7:
+        topic = " ".join(topic_words[:7])
+    if intent.get("language") == "de":
+        return f"Was ist das Überraschende an {topic}?" if topic else None
+    return f"What is surprising about {topic}?" if topic else None
+
+
+def _ensure_audience_hook(
+    blocks: list[dict[str, Any]], intent: dict[str, Any], facts: list[dict[str, Any]] | None = None, model_candidates: list[dict[str, Any]] | None = None
+) -> list[dict[str, Any]]:
+    if (
+        not blocks
+        or intent.get("content_type") == "fictional_story"
+        or str(blocks[0].get("role") or "").casefold() == "status"
+    ):
+        return blocks
+    first_role = str(blocks[0].get("role") or "").casefold()
+    evidence = facts or []
+    if first_role == "hook":
+        body = next((str(block.get("text") or "") for block in blocks[1:] if block.get("text")), "")
+        safe = select_hook(intent, evidence, body=body, existing=str(blocks[0].get("text") or ""), model_candidates=model_candidates)
+        if safe:
+            blocks[0]["text"] = safe
+        return blocks
+    body = str(blocks[0].get("text") or "")
+    hook = select_hook(intent, evidence, body=body, model_candidates=model_candidates)
+    return ([{"role": "hook", "text": hook}] if hook else []) + blocks
+
+
+def _authoritative_hook_blocks(
+    blocks: list[dict[str, Any]],
+    intent: dict[str, Any],
+    facts: list[dict[str, Any]] | None = None,
+    model_candidates: list[dict[str, Any]] | None = None,
+) -> tuple[list[dict[str, Any]], Any | None]:
+    """Select one hook independently of whether the model supplied a hook block.
+
+    Hook selection is performed before duration normalization so an inserted hook
+    participates in the normal word budget and can never be lost from the
+    canonical narration path.
+    """
+    if not blocks and not str(intent.get("question") or "").strip():
+        return blocks, None
+    existing = next(
+        (str(block.get("text") or "").strip() for block in blocks
+         if str(block.get("role") or "").casefold() == "hook" and str(block.get("text") or "").strip()),
+        None,
     )
-    return blocks
+    body = " ".join(
+        str(block.get("text") or "").strip()
+        for block in blocks
+        if str(block.get("role") or "").casefold() != "hook" and str(block.get("text") or "").strip()
+    )
+    candidate = select_hook_candidate(
+        intent,
+        facts or [],
+        body=body,
+        existing=existing,
+        model_candidates=model_candidates or [],
+    )
+    if not candidate:
+        return blocks, None
+    remaining = [
+        block for block in blocks
+        if str(block.get("role") or "").casefold() != "hook"
+    ]
+    return ([{"role": "hook", "text": candidate.text}, *remaining], candidate)
 
 
 def _words(text: str) -> list[str]:
     return re.findall(r"\S+", text)
 
 
-def _fit_blocks(blocks: list[dict[str, str]], max_duration: int, wpm: int = 155) -> list[dict[str, str]]:
+_VISUAL_FILLER = re.compile(r"(?i)\b(?:if i remember correctly|the answer is|provided material|according to the source|wenn ich mich recht erinnere|die antwort ist|bereitgestellten material)\b")
+
+
+def _visual_goal_valid(value: object) -> bool:
+    text = " ".join(str(value or "").split()).strip(" .!?—")
+    if len(text.split()) < 2 or _VISUAL_FILLER.search(text):
+        return False
+    return not re.match(r"(?i)^(?:liegt|also|nun|hier|ich|wir)\b", text)
+
+
+def _fallback_visual_intent(narration: str, language: str) -> dict[str, Any]:
+    text = " ".join(narration.split())
+    lowered = text.casefold()
+    if any(term in lowered for term in ("lighthouse", "leuchtturm")):
+        return {"visual_goal": "lighthouse by the sea", "objects": ["lighthouse", "sea"], "actions": [], "context": ["coast"], "visual_strategy": "literal", "media_queries": ["lighthouse by the sea", "lighthouse coast", "lighthouse ocean"]}
+    if any(term in lowered for term in ("haus", "house", "fundament", "foundation", "beton", "concrete", "bauen", "building")):
+        goal = "residential house construction process"
+        objects = ["house", "construction materials"]
+        actions = ["building", "assembling"]
+        context = ["construction site"]
+        queries = ["residential house construction", "workers building house", "construction materials house"]
+        return {"visual_goal": goal, "objects": objects, "actions": actions, "context": context, "visual_strategy": "process", "media_queries": queries}
+    if any(term in lowered for term in ("materie", "matter", "erde", "earth", "masse", "mass")):
+        return {"visual_goal": "materials being moved and assembled on Earth", "objects": ["materials", "Earth"], "actions": ["moving", "assembling"], "context": ["construction"], "visual_strategy": "physical_example", "media_queries": ["construction materials", "materials being assembled", "Earth materials"]}
+    words = [word.strip(".,!?;:") for word in _words(text) if len(word.strip(".,!?;:")) > 3]
+    goal = " ".join(words[:6]) or ("visual explanation" if language != "de" else "visuelle Erklärung")
+    return {"visual_goal": goal, "objects": words[:3], "actions": [], "context": [], "visual_strategy": "diagram_or_card", "media_queries": [goal]}
+
+
+def _is_hook_block(block: dict[str, Any]) -> bool:
+    return str(block.get("role") or "").casefold() == "hook"
+
+
+def _apply_selected_hook(
+    blocks: list[dict[str, Any]], selected_hook: str | None
+) -> list[dict[str, Any]]:
+    """Keep exactly one hook block whose text is the authoritative selected hook."""
+    hook_text = clean_narration_text(selected_hook or "").strip()
+    if not hook_text:
+        return blocks
+    remaining = [block for block in blocks if not _is_hook_block(block)]
+    return [{"role": "hook", "text": hook_text}, *remaining]
+
+
+def _fit_blocks(
+    blocks: list[dict[str, str]], max_duration: int, wpm: int = SPEAKING_RATE_WPM
+) -> list[dict[str, str]]:
     max_words = max(12, int(max_duration * wpm / 60))
     fitted = copy.deepcopy(blocks)
-    while len(fitted) > 2 and sum(len(_words(block["text"])) for block in fitted) > max_words:
-        removable = next(
-            (index for index in range(len(fitted) - 2, 0, -1) if fitted[index]["role"] not in {"hook", "payoff"}),
+
+    def total_words(items: list[dict[str, str]]) -> int:
+        return sum(len(_words(item["text"])) for item in items)
+
+    while len(fitted) > 1 and total_words(fitted) > max_words:
+        # Never drop the authoritative hook; trim trailing body blocks first.
+        drop_index = next(
+            (
+                index
+                for index in range(len(fitted) - 1, -1, -1)
+                if not _is_hook_block(fitted[index])
+            ),
             None,
         )
-        if removable is None:
+        if drop_index is None:
             break
-        fitted.pop(removable)
-    total = sum(len(_words(block["text"])) for block in fitted)
-    while total > max_words:
-        index = max(range(len(fitted)), key=lambda item: len(_words(fitted[item]["text"])))
-        words = _words(fitted[index]["text"])
-        if len(words) <= 4:
-            break
-        fitted[index]["text"] = " ".join(words[:-1]).rstrip(",:;") + "…"
-        total -= 1
+        fitted.pop(drop_index)
+    if total_words(fitted) <= max_words:
+        return fitted
+    # Still over budget: shorten non-hook body copy only. Truncating the hook
+    # produces broken grammar and breaks the canonical narration opening.
+    for index, block in enumerate(fitted):
+        if _is_hook_block(block):
+            continue
+        sentences = [
+            sentence.strip()
+            for sentence in re.split(r"(?<=[.!?])\s+", block["text"])
+            if sentence.strip()
+        ]
+        kept: list[str] = []
+        for sentence in sentences:
+            trial_text = " ".join([*kept, sentence]).strip()
+            trial_words = total_words(fitted) - len(_words(block["text"])) + len(
+                _words(trial_text)
+            )
+            if kept and trial_words > max_words:
+                break
+            kept.append(sentence)
+        if kept:
+            fitted[index]["text"] = " ".join(kept).strip()
+        if total_words(fitted) <= max_words:
+            return fitted
     return fitted
 
 
@@ -156,57 +320,108 @@ def _dimensions(aspect_ratio: str) -> tuple[int, int]:
 
 
 def _build_scenes(
-    blocks: list[dict[str, str]], total_duration: float, old_scenes: list[dict] | None = None
+    blocks: list[dict[str, str]],
+    total_duration: float,
+    old_scenes: list[dict] | None = None,
+    cut_pace: str = "fast",
+    visual_intents: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     total_words = max(1, sum(len(_words(block["text"])) for block in blocks))
-    old_by_block = {scene.get("block_id"): scene for scene in old_scenes or []}
+    old_by_block: dict[str, list[dict[str, Any]]] = {}
+    for scene in old_scenes or []:
+        old_by_block.setdefault(str(scene.get("block_id") or ""), []).append(scene)
     cursor = 0.0
     scenes: list[dict[str, Any]] = []
-    for index, block in enumerate(blocks):
-        share = len(_words(block["text"])) / total_words
-        end = total_duration if index == len(blocks) - 1 else round(cursor + total_duration * share, 2)
-        existing = old_by_block.get(block["id"], {})
-        scenes.append(
-            {
-                "id": existing.get("id", f"scene_{block['id'].removeprefix('voice_block_')}"),
-                "block_id": block["id"],
-                "start": round(cursor, 2),
-                "end": end,
-                "narration": block["text"],
-                "visual_goal": existing.get(
-                    "visual_goal", f"Illustrate {block['role']}: {block['text'][:88]}"
-                ),
-                "preferred_media": existing.get("preferred_media", "generated_card"),
-                "fallback_media": "generated_card",
-                "search_queries": _words(block["text"])[:5],
-                "motion": existing.get("motion", "slow_push" if index % 2 == 0 else "subtle_pan"),
-                "asset_status": existing.get("asset_status", "generated_card_ready"),
-            }
+    target_cut_seconds = {"fast": 3.0, "balanced": 5.5, "slow": 9.0}.get(cut_pace, 3.0)
+    chunks: list[tuple[dict[str, str], str, int, int]] = []
+    for block_index, block in enumerate(blocks):
+        words = _words(block["text"])
+        block_duration = total_duration * len(words) / total_words
+        max_readable_parts = max(1, (len(words) + 2) // 3)
+        part_count = max(
+            1,
+            min(max_readable_parts, round(block_duration / target_cut_seconds)),
         )
+        base_size, remainder = divmod(len(words), part_count)
+        offset = 0
+        for part_index in range(part_count):
+            size = base_size + (1 if part_index < remainder else 0)
+            chunks.append((block, " ".join(words[offset : offset + size]), part_index, block_index))
+            offset += size
+
+    for index, (block, narration, part_index, block_index) in enumerate(chunks):
+        share = len(_words(narration)) / total_words
+        end = total_duration if index == len(chunks) - 1 else round(cursor + total_duration * share, 2)
+        existing_options = old_by_block.get(block["id"], [])
+        existing = existing_options[part_index] if part_index < len(existing_options) else {}
+        suffix = block["id"].removeprefix("voice_block_")
+        intent = (visual_intents or [])[block_index] if block_index < len(visual_intents or []) else _fallback_visual_intent(narration, "en")
+        visual_goal = str(intent.get("visual_goal") or "")
+        if not _visual_goal_valid(visual_goal):
+            intent = _fallback_visual_intent(narration, "en")
+            visual_goal = intent["visual_goal"]
+        if existing.get("visual_goal") and not _visual_goal_valid(existing.get("visual_goal")):
+            intent = _fallback_visual_intent(narration, "en")
+            visual_goal = intent["visual_goal"]
+        scene = {
+            "id": existing.get("id", f"scene_{suffix}_{part_index + 1:02d}"),
+            "block_id": block["id"],
+            "start": round(cursor, 2),
+            "end": end,
+            "narration": narration,
+            "visual_goal": existing.get("visual_goal", visual_goal),
+            "visual_intent": intent,
+            "preferred_media": existing.get("preferred_media", "video"),
+            "fallback_media": "generated_card",
+            "search_queries": existing.get("search_queries", intent.get("media_queries", [])),
+            "motion": (
+                "fast_cut"
+                if cut_pace == "fast"
+                else ("slow_push" if cut_pace == "slow" else "subtle_pan")
+            ),
+            "asset_status": existing.get("asset_status", "search_required"),
+        }
+        if existing.get("media"):
+            scene["media"] = copy.deepcopy(existing["media"])
+        if existing.get("edit_instruction"):
+            scene["edit_instruction"] = existing["edit_instruction"]
+        scenes.append(scene)
         cursor = end
     return scenes
 
 
-def _build_captions(script: str, duration: float) -> list[dict[str, Any]]:
-    words = _words(script)
-    seconds_per_word = duration / max(1, len(words))
-    return [
-        {
-            "text": " ".join(words[index : index + 4]),
-            "start": round(index * seconds_per_word, 2),
-            "end": round(min(len(words), index + 4) * seconds_per_word, 2),
-        }
-        for index in range(0, len(words), 4)
-    ]
+def _build_captions(
+    script: str, duration: float, words_per_group: int = 4
+) -> list[dict[str, Any]]:
+    return phrase_fallback_items(script, duration, words_per_group)
 
 
-def _normalise_blocks(blocks: list[dict[str, Any]], max_duration: int) -> list[dict[str, str]]:
-    clean = [
-        {"role": str(block["role"]).strip(), "text": str(block["text"]).strip()}
-        for block in blocks
-        if str(block.get("role", "")).strip() and str(block.get("text", "")).strip()
-    ]
-    fitted = _fit_blocks(clean, max_duration)
+def _normalise_blocks(
+    blocks: list[dict[str, Any]],
+    max_duration: int,
+    wpm: int = SPEAKING_RATE_WPM,
+) -> list[dict[str, str]]:
+    clean = clean_script_blocks(blocks)
+    sentence_blocks: list[dict[str, str]] = []
+    for block in clean:
+        # Keep the authoritative hook as one block so duration fitting cannot
+        # split it into hook+detail fragments that later duplicate on restore.
+        if _is_hook_block(block):
+            sentence_blocks.append({"role": "hook", "text": block["text"]})
+            continue
+        sentences = [
+            sentence.strip()
+            for sentence in re.split(r"(?<=[.!?])\s+", block["text"])
+            if sentence.strip()
+        ]
+        for sentence_index, sentence in enumerate(sentences):
+            sentence_blocks.append(
+                {
+                    "role": block["role"] if sentence_index == 0 else "detail",
+                    "text": sentence,
+                }
+            )
+    fitted = _fit_blocks(sentence_blocks, max_duration, wpm)
     for index, block in enumerate(fitted, 1):
         block["id"] = f"voice_block_{index:02d}"
     return fitted
@@ -215,66 +430,72 @@ def _normalise_blocks(blocks: list[dict[str, Any]], max_duration: int) -> list[d
 def _refresh_script_derivatives(
     state: dict[str, Any], *, old_scenes: list[dict] | None = None
 ) -> None:
-    blocks = state["script"]["blocks"]
+    max_duration = int(state["duration"]["max_seconds"])
+    voice_speed = max(0.7, min(1.4, float(state.get("voice", {}).get("speed") or 1.0)))
+    wpm = max(1, round(SPEAKING_RATE_WPM * voice_speed))
+    blocks = _normalise_blocks(state["script"]["blocks"], max_duration, wpm)
+    state["script"]["blocks"] = blocks
     script_text = " ".join(block["text"] for block in blocks)
     word_count = len(_words(script_text))
-    wpm = int(state["duration"].get("speaking_rate_wpm", 155))
-    max_duration = int(state["duration"]["max_seconds"])
-    duration = round(min(max_duration, max(4, word_count / wpm * 60)), 2)
+    minimum = state["duration"].get("minimum_seconds")
+    natural_duration = round(max(4, word_count / wpm * 60), 2)
+    effective_minimum = int(minimum or AUTO_MIN_DURATION)
+    duration = round(min(max_duration, max(effective_minimum, natural_duration)), 2)
     state["script"]["text"] = script_text
     state["script"]["word_count"] = word_count
     state["duration"]["estimated_seconds"] = duration
+    state["duration"]["natural_seconds"] = natural_duration
+    state["duration"]["effective_minimum_seconds"] = effective_minimum
     state["duration"]["actual_seconds"] = None
-    state["scenes"] = _build_scenes(blocks, duration, old_scenes)
+    state["duration"]["speaking_rate_wpm"] = wpm
+    state["scenes"] = _build_scenes(
+        blocks,
+        duration,
+        old_scenes,
+        str(state.get("timeline", {}).get("cut_pace") or "fast"),
+    )
     state["storyboard"] = {"status": "ready", "scene_count": len(state["scenes"])}
     state["voice"]["blocks"] = [{"id": block["id"], "status": "awaiting_tts"} for block in blocks]
     state["voice"]["status"] = "regeneration_required"
-    state["captions"]["items"] = _build_captions(script_text, duration)
-    state["captions"]["timing"] = "estimated"
+    state["captions"]["items"] = _build_captions(
+        script_text, duration, int(state["captions"].get("words_per_group", 4))
+    )
+    state["captions"]["timing"] = "phrase_estimate"
+    state["captions"]["diagnostic"] = "Word alignment will run after narration is generated."
     state["timeline"]["duration"] = duration
     state["timeline"]["timing"] = "estimated"
     state["timeline"]["scene_ids"] = [scene["id"] for scene in state["scenes"]]
+    replan_attention(state)
 
 
 def build_initial_state(
-    prompt: str, options: AdvancedOptions, settings: Settings
+    prompt: str,
+    options: AdvancedOptions,
+    settings: Settings,
+    *,
+    progress: ProgressCallback | None = None,
 ) -> dict[str, Any]:
     intent = _intent(prompt, options)
-    ai_result = plan_with_openai(prompt, options, settings)
-    if ai_result.plan:
-        plan = ai_plan_to_dict(ai_result.plan)
-        plan["intent"]["language"] = intent["language"]
-    elif intent["content_type"] == "fictional_story":
-        plan = _fiction_plan(prompt, intent)
-    else:
-        plan = {
-            "intent": intent,
-            "research_questions": [
-                f"What is the direct answer to: {prompt}",
-                "Which facts are essential and attributable?",
-            ],
-            "facts": [],
-            "answer_skeleton": ["HOOK", "CONTEXT", "PAYOFF"],
-            "script_blocks": [],
-            "music_mood": "documentary_pulse",
-        }
-
+    resolved_options = options.model_copy(update={"language": intent["language"]})
     sources: list[dict] = []
+    facts: list[dict[str, Any]] = []
     research_status = "skipped"
     research_provider = "not_needed"
     research_error = None
     if intent["research_required"]:
+        report_progress(progress, "research", "Researching the topic", phase="start")
         result = research_topic(prompt, intent["language"], settings)
         research_status = result.status
         research_provider = result.provider
         research_error = result.error
         sources = result.sources
-        if result.facts:
-            plan["facts"] = result.facts
-            plan["script_blocks"] = _factual_blocks(intent, result.facts)
+        facts = result.facts
+        report_progress(progress, "research", "Researching the topic", phase="complete")
+    else:
+        report_progress(progress, "research", "Researching the topic", phase="skipped")
 
-    facts = plan.get("facts", [])
     for index, fact in enumerate(facts, 1):
+        fact["claim"] = clean_research_claim(fact.get("claim"))
         fact["id"] = f"fact_{index:02d}"
         fact["priority"] = fact.get("priority") or (
             "MUST_KNOW" if fact.get("importance", 0) >= 0.7 else "USEFUL"
@@ -288,14 +509,96 @@ def build_initial_state(
             or ("source_attributed" if fact["sources"] else "unverified_model_synthesis")
         )
 
-    max_duration = options.max_duration or settings.shortform_max_duration
+    report_progress(progress, "script", "Writing the narration", phase="start")
+    ai_result = plan_with_openai(
+        prompt,
+        resolved_options,
+        settings,
+        evidence=[fact["claim"] for fact in facts if fact.get("claim")],
+    )
+    plan_language_mismatch = False
+    if ai_result.plan:
+        plan = ai_plan_to_dict(ai_result.plan)
+        plan["intent"]["language"] = intent["language"]
+        planned_text = " ".join(
+            str(block.get("text", "")) for block in plan.get("script_blocks", [])
+        )
+        detected = detect_text_language(planned_text)
+        if detected not in {"unknown", intent["language"]}:
+            plan_language_mismatch = True
+            plan = _fiction_plan(prompt, intent) if intent["content_type"] == "fictional_story" else {}
+    elif intent["content_type"] == "fictional_story":
+        plan = _fiction_plan(prompt, intent)
+    else:
+        plan = {}
+
+    if facts:
+        plan["facts"] = facts
+    else:
+        facts = plan.get("facts", [])
+        for index, fact in enumerate(facts, 1):
+            fact["claim"] = clean_research_claim(fact.get("claim"))
+            fact["id"] = f"fact_{index:02d}"
+            fact["priority"] = (
+                "MUST_KNOW" if fact.get("importance", 0) >= 0.7 else "USEFUL"
+            )
+            label = fact.pop("source_label", None)
+            url = fact.pop("source_url", None)
+            fact["sources"] = [{"label": label, "url": url}] if label and url else []
+            fact["verification"] = (
+                "source_attributed" if fact["sources"] else "unverified_model_synthesis"
+            )
+    plan.setdefault(
+        "research_questions",
+        [
+            f"What is the direct answer to: {prompt}",
+            "Which facts are essential and attributable?",
+        ]
+        if intent["research_required"]
+        else [],
+    )
+    plan.setdefault("answer_skeleton", ["ANSWER", "SUPPORT"])
+    plan.setdefault("music_mood", "documentary")
+
+    max_duration = min(options.max_duration, settings.shortform_max_duration)
+    minimum_duration = options.min_duration
     raw_blocks = plan.get("script_blocks") or _factual_blocks(intent, facts)
-    blocks = _normalise_blocks(raw_blocks, max_duration)
+    raw_blocks, selected_hook_candidate = _authoritative_hook_blocks(
+        raw_blocks,
+        intent,
+        facts,
+        plan.get("hook_candidates") or [],
+    )
+    wpm = max(1, round(SPEAKING_RATE_WPM * float(options.voice_speed or 1.0)))
+    blocks = _normalise_blocks(raw_blocks, max_duration, wpm)
+    # Normalization must preserve the authoritative hook intact. Re-apply the
+    # pre-normalization selection so duration fitting cannot rewrite the opening.
+    if selected_hook_candidate:
+        blocks = _apply_selected_hook(blocks, selected_hook_candidate.text)
+        for index, block in enumerate(blocks, 1):
+            block["id"] = f"voice_block_{index:02d}"
+    hook_block = next((block for block in blocks if _is_hook_block(block)), None)
     script_text = " ".join(block["text"] for block in blocks)
     word_count = len(_words(script_text))
-    wpm = 155
-    estimated_duration = round(min(max_duration, max(4, word_count / wpm * 60)), 2)
-    scenes = _build_scenes(blocks, estimated_duration)
+    natural_duration = round(max(4, word_count / wpm * 60), 2)
+    effective_minimum = minimum_duration or AUTO_MIN_DURATION
+    estimated_duration = round(
+        min(max_duration, max(effective_minimum, natural_duration)), 2
+    )
+    report_progress(progress, "script", "Writing the narration", phase="complete")
+    report_progress(progress, "storyboard", "Building the storyboard", phase="start")
+    scenes = _build_scenes(
+        blocks, estimated_duration, cut_pace=resolved_options.pacing,
+        visual_intents=plan.get("visual_intents") or [],
+    )
+    report_progress(
+        progress,
+        "storyboard",
+        "Building the storyboard",
+        phase="complete",
+        completed_units=len(scenes),
+        total_units=len(scenes),
+    )
     width, height = _dimensions(options.aspect_ratio)
     factual_ready = not intent["research_required"] or bool(facts and sources)
     now = datetime.now(UTC).isoformat()
@@ -304,7 +607,7 @@ def build_initial_state(
         "created_at": now,
         "prompt": prompt,
         "mode": "auto",
-        "options": options.model_dump(mode="json"),
+        "options": resolved_options.model_dump(mode="json"),
         "intent": intent,
         "research": {
             "required": intent["research_required"],
@@ -323,6 +626,13 @@ def build_initial_state(
             "text": script_text,
             "word_count": word_count,
             "blocks": blocks,
+            "selected_hook": selected_hook_candidate.text if selected_hook_candidate else (str(hook_block.get("text")) if hook_block else None),
+            "selected_hook_strategy": selected_hook_candidate.strategy if selected_hook_candidate else None,
+            "hook_candidates": [
+                {"strategy": str(item.get("strategy") or "") if str(item.get("strategy") or "") in STRATEGIES else "evidence_insight", "text": str(item.get("text") or "")}
+                for item in (plan.get("hook_candidates") or [])
+                if str(item.get("text") or "").strip()
+            ][:5],
             "fact_map": [
                 {"block_id": block["id"], "fact_id": facts[min(index, len(facts) - 1)]["id"]}
                 for index, block in enumerate(blocks[1:])
@@ -330,29 +640,58 @@ def build_initial_state(
             ],
         },
         "duration": {
-            "mode": "AUTO",
+            "mode": "AUTO" if minimum_duration is None else "BOUNDED",
             "estimated_seconds": estimated_duration,
+            "natural_seconds": natural_duration,
             "actual_seconds": None,
+            "minimum_seconds": minimum_duration,
+            "effective_minimum_seconds": effective_minimum,
             "max_seconds": max_duration,
             "speaking_rate_wpm": wpm,
         },
         "voice": {
-            "provider": "openai_or_system",
-            "profile": options.voice or "warm_documentary",
+            "provider": "openai" if settings.openai_api_key else "macos_say",
+            "model": settings.openai_tts_model if settings.openai_api_key else "system",
+            **initial_voice(
+                options.voice,
+                voice_id=options.voice_id,
+                presentation=options.voice_presentation,
+                tone=options.voice_tone,
+                speed=options.voice_speed,
+            ),
             "blocks": [{"id": block["id"], "status": "awaiting_tts"} for block in blocks],
             "status": "awaiting_tts",
         },
         "storyboard": {"status": "ready", "scene_count": len(scenes)},
-        "assets": {"status": "generated_cards_ready", "license_manifest": []},
+        "assets": {"status": "search_required", "license_manifest": []},
         "scenes": scenes,
         "captions": {
-            "style": options.caption_style or "bold_clean",
-            "font_size": 72,
-            "highlight_color": "#ff6838",
-            "items": _build_captions(script_text, estimated_duration),
-            "timing": "estimated",
+            "enabled": options.captions_enabled,
+            "style": options.caption_style,
+            "position": options.caption_position,
+            "font_size": options.caption_font_size,
+            "text_color": options.caption_text_color,
+            "highlight_color": options.caption_highlight_color,
+            "words_per_group": options.caption_words_per_group,
+            "items": _build_captions(
+                script_text, estimated_duration, options.caption_words_per_group
+            ),
+            "timing": "phrase_estimate",
+            "alignment_provider": "pending",
+            "diagnostic": "Word alignment will run after narration is generated.",
         },
-        "music": {"mood": options.music or plan["music_mood"], "energy": 0.65, "status": "planned"},
+        "attention_preferences": resolve_attention_preferences(resolved_options.model_dump(mode="json")),
+        "attention_events": [],
+        "attention_plan": {"status": "pending", "event_count": 0},
+        "music": {
+            "enabled": options.music_enabled,
+            "mood": options.music_mood,
+            "volume": options.music_volume,
+            "ducking": options.music_ducking,
+            "fades": options.music_fades,
+            "source": "procedural_original",
+            "status": "planned" if options.music_enabled else "disabled",
+        },
         "timeline": {
             "duration": estimated_duration,
             "timing": "estimated",
@@ -360,22 +699,35 @@ def build_initial_state(
             "height": height,
             "aspect_ratio": options.aspect_ratio,
             "fps": 30,
-            "cut_pace": "balanced",
+            "cut_pace": options.pacing,
             "scene_ids": [scene["id"] for scene in scenes],
         },
         "render": {"status": "ready_to_render" if factual_ready else "blocked_by_research", "url": None},
+        "ai_review": {
+            "status": "pending",
+            "rounds": 0,
+            "items": [],
+            "automatic_corrections": [],
+        },
         "qc": {"status": "not_started", "round": 0, "max_rounds": 2, "issues": []},
         "integrations": {
             "director": ai_result.status,
             "research": research_provider if factual_ready else "unavailable",
-            "media": "pexels_connected" if settings.pexels_api_key else "generated_cards",
+            "media": "pexels_connected" if settings.pexels_api_key else "wikimedia_fallback",
             "voice": "openai_ready" if settings.openai_api_key else "system_voice",
             "render": "bundled_ffmpeg",
             "quality_review": "local_checks",
         },
         "provider_errors": {
             key: value
-            for key, value in {"director": ai_result.error, "research": research_error}.items()
+            for key, value in {
+                "director": (
+                    "Director returned the wrong script language; a safe local plan was used."
+                    if plan_language_mismatch
+                    else ai_result.error
+                ),
+                "research": research_error,
+            }.items()
             if value
         },
         "pipeline": [
@@ -394,6 +746,7 @@ def build_initial_state(
         ],
         "edit_history": [],
     }
+    replan_attention(state)
     return attach_hashes(state)
 
 
@@ -417,10 +770,20 @@ def apply_edit(
     previous: dict[str, Any], instruction: str, settings: Settings
 ) -> tuple[dict[str, Any], list[str]]:
     text = instruction.casefold()
+    directive = interpret_edit(instruction, previous, settings)
+    if not directive.components:
+        raise UnsupportedEdit(directive.clarification or "Please describe the change you want.")
     requested_language = _requested_language(text)
     state = copy.deepcopy(previous)
     state["version"] = int(previous.get("version", 1)) + 1
-    changed = resolve_edit_scope(instruction)
+    roots = {
+        "language": "script",
+        "format": "timeline",
+        "duration": "script",
+    }
+    changed = resolve_edit_scope(
+        instruction, {roots.get(component, component) for component in directive.components}
+    )
     applied: list[str] = []
 
     if requested_language and requested_language != state["intent"]["language"]:
@@ -433,14 +796,30 @@ def apply_edit(
         state = translated
         applied.append("language")
 
-    if any(word in text for word in ("untertitel", "caption", "text ")):
+    if "captions" in directive.components:
         captions = state["captions"]
-        if any(word in text for word in ("größer", "grösser", "groesser", "larger", "bigger")):
+        if directive.caption_action == "larger":
             captions["font_size"] = min(112, int(captions.get("font_size", 72)) + 10)
             applied.append("caption size")
-        if any(word in text for word in ("kleiner", "smaller")):
+        elif directive.caption_action == "smaller":
             captions["font_size"] = max(36, int(captions.get("font_size", 72)) - 10)
             applied.append("caption size")
+        elif directive.caption_action == "style":
+            captions["style"] = (
+                "minimal" if captions.get("style") != "minimal" else "bold"
+            )
+            applied.append("caption style")
+        elif directive.caption_action == "reduce":
+            captions["density"] = "reduced"
+            captions["items"] = captions.get("items", [])[::2]
+            applied.append("caption density")
+        elif directive.caption_action == "move":
+            captions["position"] = "upper" if any(word in text for word in ("up", "higher", "oben")) else "lower"
+            applied.append("caption position")
+        elif directive.caption_action is None:
+            captions["edit_instruction"] = instruction
+            captions["style"] = "karaoke"
+            applied.append("caption styling")
         colors = {
             "gelb": "#ffd166",
             "yellow": "#ffd166",
@@ -454,34 +833,46 @@ def apply_edit(
                 applied.append("caption color")
                 break
 
-    if any(word in text for word in ("musik", "music", "soundtrack")):
+    if "music" in directive.components:
         moods = {
-            "ruh": "subtle_editorial",
-            "calm": "subtle_editorial",
-            "dram": "dramatic_pulse",
-            "spann": "cinematic_suspense",
-            "upbeat": "upbeat_motion",
+            "ruh": "ambient",
+            "calm": "ambient",
+            "ambient": "ambient",
+            "doku": "documentary",
+            "documentary": "documentary",
+            "tech": "tech",
+            "dram": "cinematic",
+            "spann": "cinematic",
+            "cinematic": "cinematic",
         }
-        state["music"]["mood"] = next(
-            (mood for marker, mood in moods.items() if marker in text), "fresh_selection"
+        disabled = any(
+            phrase in text
+            for phrase in ("no music", "music off", "ohne musik", "musik aus")
         )
-        state["music"]["status"] = "reselection_required"
+        state["music"]["enabled"] = not disabled
+        if not disabled:
+            state["music"]["mood"] = next(
+                (mood for marker, mood in moods.items() if marker in text),
+                state["music"].get("mood", "ambient"),
+            )
+        state["music"]["status"] = "disabled" if disabled else "generation_required"
         applied.append("soundtrack")
 
-    if any(word in text for word in ("stimme", "voice", "sprecher", "speaker")):
-        state["voice"]["profile"] = (
-            "female_serious"
-            if any(word in text for word in ("weib", "female"))
-            else ("energetic" if "energet" in text else "serious_documentary")
+    if "voice" in directive.components:
+        apply_voice_preferences(
+            state["voice"],
+            gender=directive.voice_gender,
+            tone=directive.voice_tone,
+            speed=directive.voice_speed,
+            change_speaker=directive.change_speaker,
         )
-        state["voice"]["status"] = "regeneration_required"
         applied.append("voice")
 
     blocks = state["script"]["blocks"]
     old_scenes = copy.deepcopy(state["scenes"])
     script_changed = bool(requested_language and requested_language != previous["intent"]["language"])
 
-    if any(word in text for word in ("kürzer", "kuerzer", "shorter", "verkürz", "verkuerz")):
+    if directive.script_action == "shorter":
         if len(blocks) > 2:
             blocks.pop(-2)
         state["duration"]["max_seconds"] = max(
@@ -490,6 +881,25 @@ def apply_edit(
         blocks[:] = _normalise_blocks(blocks, state["duration"]["max_seconds"])
         script_changed = True
         applied.append("shorter script")
+
+    if directive.script_action in {"rewrite_intro", "stronger_hook"}:
+        de = state["intent"]["language"] == "de"
+        topic = state["intent"]["topic"]
+        blocks[0]["text"] = (
+            f"Was, wenn alles, was du über {topic} zu wissen glaubst, nur die halbe Wahrheit ist?"
+            if de
+            else f"What if everything you think you know about {topic} is only half the story?"
+        )
+        blocks[0]["role"] = "hook"
+        state["script"]["selected_hook"] = blocks[0]["text"]
+        script_changed = True
+        applied.append("rewritten opening" if directive.script_action == "rewrite_intro" else "stronger hook")
+
+    if directive.script_action == "clearer":
+        state["intent"]["tone"] = "clear_explainer"
+        state["script"]["clarity_instruction"] = instruction
+        script_changed = True
+        applied.append("clearer explanation")
 
     if any(word in text for word in ("entferne", "remove", "lösche", "loesche")):
         if len(blocks) <= 2:
@@ -545,8 +955,12 @@ def apply_edit(
 
     if script_changed:
         _refresh_script_derivatives(state, old_scenes=old_scenes)
+        for item in state["scenes"]:
+            item.pop("media", None)
+            item["asset_status"] = "search_required"
+        state["assets"].update(status="search_required", license_manifest=[])
 
-    if any(word in text for word in ("clip", "visual", "bild", "szene", "scene", "schnitt")):
+    if "assets" in directive.components:
         timestamp = _timestamp_seconds(text)
         scene = state["scenes"][0]
         if timestamp is not None:
@@ -559,15 +973,63 @@ def apply_edit(
             )
         if any(word in text for word in ("schneller", "faster", "fast cuts", "schnelle schnitte")):
             state["timeline"]["cut_pace"] = "fast"
+            state.setdefault("options", {})["pacing"] = "fast"
+            state["scenes"] = _build_scenes(
+                state["script"]["blocks"],
+                float(state["timeline"]["duration"]),
+                state["scenes"],
+                "fast",
+            )
+            state["storyboard"] = {"status": "ready", "scene_count": len(state["scenes"])}
+            state["timeline"]["scene_ids"] = [item["id"] for item in state["scenes"]]
             for item in state["scenes"]:
-                item["motion"] = "fast_cut"
+                item.pop("media", None)
+                item["asset_status"] = "search_required"
+            state["assets"].update(status="search_required", license_manifest=[])
             applied.append("cut pace")
         else:
-            scene["asset_status"] = "replacement_required"
-            scene["edit_instruction"] = instruction
-            applied.append(f"scene {scene['id']}")
+            targets = [scene] if timestamp is not None else state["scenes"]
+            for target in targets:
+                target["asset_status"] = "replacement_required"
+                target["preferred_media"] = "video"
+                target.pop("media", None)
+                target["edit_instruction"] = instruction
+                if directive.visual_action == "dynamic":
+                    target["motion"] = "dynamic"
+            state["assets"].update(
+                {"status": "search_required", "preference": directive.visual_action or "different"}
+            )
+            applied.append("visual footage")
+
+    duration_match = re.search(r"\b(\d{1,3})\s*(?:seconds?|sekunden?|s)\b", text)
+    if "duration" in directive.components and duration_match:
+        maximum = max(10, min(180, int(duration_match.group(1))))
+        state["duration"]["max_seconds"] = maximum
+        state.setdefault("options", {})["max_duration"] = maximum
+        blocks[:] = _normalise_blocks(blocks, maximum)
+        script_changed = True
+        _refresh_script_derivatives(state, old_scenes=old_scenes)
+        for item in state["scenes"]:
+            item.pop("media", None)
+            item["asset_status"] = "search_required"
+        state["assets"].update(status="search_required", license_manifest=[])
+        applied.append(f"{maximum} second duration")
 
     aspect = next((ratio for ratio in ("9:16", "1:1", "16:9") if ratio in instruction), None)
+    if aspect is None:
+        aspect = next(
+            (
+                ratio
+                for marker, ratio in (
+                    ("portrait", "9:16"),
+                    ("vertical", "9:16"),
+                    ("landscape", "16:9"),
+                    ("square", "1:1"),
+                )
+                if marker in text
+            ),
+            None,
+        )
     if aspect and aspect != state["timeline"].get("aspect_ratio"):
         width, height = _dimensions(aspect)
         state["timeline"].update({"width": width, "height": height, "aspect_ratio": aspect})
@@ -576,12 +1038,23 @@ def apply_edit(
 
     if not applied:
         raise UnsupportedEdit(
-            "I could not turn that request into a concrete edit. Mention script, captions, voice, music, visuals, duration, language, or format."
+            directive.clarification
+            or "I understood the area to change, but need a little more detail about the result you want."
         )
 
     for component in changed:
         if component == "render":
-            state["render"] = {"status": "regeneration_required", "url": None}
+            previous_render = copy.deepcopy(state.get("render", {}))
+            previous_url = previous_render.get("url")
+            state["render"] = {
+                **previous_render,
+                "status": "regeneration_required",
+                "url": previous_url,
+                "stale": bool(previous_url),
+            }
+            state.setdefault("ai_review", {}).update(
+                status="pending", items=[], automatic_corrections=[]
+            )
         elif component == "qc":
             state["qc"].update({"status": "not_started", "issues": []})
     state["edit_history"].append(

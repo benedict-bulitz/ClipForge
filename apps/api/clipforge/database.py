@@ -1,6 +1,6 @@
 from collections.abc import Generator
 
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, inspect
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from .config import get_settings
@@ -28,6 +28,30 @@ def ensure_runtime_schema() -> None:
     if not settings.database_url.startswith("sqlite"):
         return
     with engine.begin() as connection:
+        inspector = inspect(connection)
+        project_columns = {column["name"] for column in inspector.get_columns("projects")}
+        revision_columns = {
+            column["name"] for column in inspector.get_columns("project_revisions")
+        }
+        if "active_tip_revision" not in project_columns:
+            connection.exec_driver_sql(
+                "ALTER TABLE projects ADD COLUMN active_tip_revision INTEGER NOT NULL DEFAULT 1"
+            )
+            connection.exec_driver_sql(
+                "UPDATE projects SET active_tip_revision = current_revision"
+            )
+        if "kind" not in revision_columns:
+            connection.exec_driver_sql(
+                "ALTER TABLE project_revisions ADD COLUMN kind VARCHAR(16) NOT NULL DEFAULT 'user'"
+            )
+            connection.exec_driver_sql(
+                "UPDATE project_revisions SET kind = 'initial' WHERE parent_revision IS NULL"
+            )
+            connection.exec_driver_sql(
+                "UPDATE project_revisions SET kind = 'system' "
+                "WHERE instruction IN ('Render video', 'Export MP4', "
+                "'Clean exported project media')"
+            )
         connection.exec_driver_sql(
             "CREATE UNIQUE INDEX IF NOT EXISTS uq_project_revision_number "
             "ON project_revisions (project_id, number)"

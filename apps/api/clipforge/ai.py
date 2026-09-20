@@ -1,12 +1,37 @@
 import json
+import re
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 from openai import OpenAI, OpenAIError
 from pydantic import BaseModel, Field
 
 from .config import Settings
+from .narration import clean_research_claim
 from .schemas import AdvancedOptions
+
+DIRECTOR_INSTRUCTIONS = (
+    "You are ClipForge's short-form director. Write the shortest complete explanation that answers "
+    "the user's question well. Start with one very short curiosity hook or setup that makes sense to "
+    "a viewer who never saw the user's prompt, then reveal the answer immediately in the next sentence. "
+    "Before writing, compare three to five strategies internally: curiosity gap, counterintuitive insight, "
+    "direct reframe, common mistake, ego challenge, verified statistic, social proof, or proportionate consequence. "
+    "Return three to five topic-specific alternatives in hook_candidates and identify the winner in selected_hook_strategy; use only these strategy families when defensible: hot_take, direct_confrontation, curiosity_gap, counterintuitive_insight, direct_reframe, ego_challenge, common_mistake, high_stakes_consequence, verified_statistic, social_proof_or_trend, evidence_insight. script_blocks must contain only the selected audience-facing hook. Do not merely repeat the question when verified answer material exists. For each script block, return a concise visual_intents entry describing physical objects, actions, context, visual_strategy, and up to four English provider-facing media_queries. A visual goal must describe what should appear on screen, never conversational uncertainty, research prose, or meta commentary. "
+    "The hook must be honest, usually no more than fourteen words, and must not delay the useful answer. "
+    "Never open with 'The short answer to', 'Today we are going to', 'Have you ever wondered', "
+    "'Let's take a look', or other setup about the act of answering. Assume zero prior knowledge. "
+    "Use ordinary words, short sentences, and one useful idea at a time. Explain a necessary technical "
+    "term immediately in plain language. Do not pad toward the maximum duration. Stop when the answer "
+    "is complete. Omit low-value names, institutions, dates, dimensions, visitor counts, and repeated "
+    "examples unless they directly answer the question. Research is evidence: rewrite it as clean, "
+    "natural narration and never copy source formatting, HTML, Markdown, headings, ellipses, search "
+    "artifacts, attribution boilerplate, or editorial directions such as adding source links before "
+    "publication into speech. Internal roles such as answer, hook, context, detail, support, cause, "
+    "turn, and payoff are metadata and must never appear in spoken text. Do not invent claims or sources. "
+    "Write every script block in the requested language and never switch languages unless explicitly "
+    "asked. Never use a number, popularity/adoption claim, or words like everyone/currently/trending unless the supplied research evidence supports it. "
+    "Avoid generic controversy, personal attacks, and 'you've been lied to' style clichés. Keep narration within the maximum at roughly 165 words per minute."
+)
 
 
 class AIIntent(BaseModel):
@@ -34,6 +59,20 @@ class AIScriptBlock(BaseModel):
     text: str = Field(min_length=1)
 
 
+class AIHookCandidate(BaseModel):
+    strategy: str = Field(min_length=1)
+    text: str = Field(min_length=1)
+
+
+class AIVisualIntent(BaseModel):
+    visual_goal: str = Field(min_length=1)
+    objects: list[str] = Field(default_factory=list, max_length=6)
+    actions: list[str] = Field(default_factory=list, max_length=6)
+    context: list[str] = Field(default_factory=list, max_length=6)
+    visual_strategy: Literal["literal", "process", "physical_example", "diagram_or_card"] = "literal"
+    media_queries: list[str] = Field(default_factory=list, max_length=4)
+
+
 class AIProjectPlan(BaseModel):
     intent: AIIntent
     research_questions: list[str] = Field(min_length=0, max_length=6)
@@ -41,6 +80,35 @@ class AIProjectPlan(BaseModel):
     answer_skeleton: list[str] = Field(min_length=2, max_length=8)
     script_blocks: list[AIScriptBlock] = Field(min_length=2, max_length=8)
     music_mood: str = Field(min_length=1)
+    hook_candidates: list[AIHookCandidate] = Field(default_factory=list, max_length=5)
+    selected_hook_strategy: str | None = None
+    visual_intents: list[AIVisualIntent] = Field(default_factory=list, max_length=8)
+
+
+class AIEditDirective(BaseModel):
+    components: list[
+        Literal[
+            "voice",
+            "assets",
+            "script",
+            "captions",
+            "music",
+            "research",
+            "language",
+            "format",
+            "duration",
+        ]
+    ] = Field(default_factory=list)
+    voice_gender: Literal["masculine", "feminine", "neutral"] | None = None
+    voice_tone: Literal["deep", "warm", "energetic", "calm"] | None = None
+    voice_speed: Literal["slower", "faster", "normal"] | None = None
+    change_speaker: bool = False
+    visual_action: Literal[
+        "more_video", "real_footage", "less_text", "different", "dynamic", "relevant"
+    ] | None = None
+    script_action: Literal["shorter", "rewrite_intro", "stronger_hook", "clearer"] | None = None
+    caption_action: Literal["larger", "smaller", "style", "reduce", "move"] | None = None
+    clarification: str | None = None
 
 
 @dataclass(frozen=True)
@@ -51,7 +119,11 @@ class AIPlanResult:
 
 
 def plan_with_openai(
-    prompt: str, options: AdvancedOptions, settings: Settings
+    prompt: str,
+    options: AdvancedOptions,
+    settings: Settings,
+    *,
+    evidence: list[str] | None = None,
 ) -> AIPlanResult:
     """Create a schema-validated semantic plan and report provider failure explicitly."""
     if settings.clipforge_ai_mode != "openai":
@@ -60,21 +132,15 @@ def plan_with_openai(
         return AIPlanResult(None, "missing_key", "OPENAI_API_KEY is not configured")
 
     client = OpenAI(api_key=settings.openai_api_key)
-    instructions = (
-        "You are ClipForge's director. Build a compact short-form video plan. "
-        "Honor every option. For factual topics, do not invent sources or claims; only attach a "
-        "URL when you know the source precisely, and otherwise leave it null. Keep narration "
-        "short enough for the requested maximum duration at roughly 155 words per minute. "
-        "No greeting and no filler."
-    )
     request = {
         "prompt": prompt,
         "options": options.model_dump(mode="json", exclude_none=True),
+        "research_evidence": [clean_research_claim(item) for item in (evidence or []) if item],
     }
     try:
         response = client.responses.parse(
             model=settings.openai_director_model,
-            instructions=instructions,
+            instructions=DIRECTOR_INSTRUCTIONS,
             input=json.dumps(request, ensure_ascii=False),
             text_format=AIProjectPlan,
         )
@@ -88,3 +154,198 @@ def plan_with_openai(
 
 def ai_plan_to_dict(plan: AIProjectPlan) -> dict[str, Any]:
     return plan.model_dump(mode="json")
+
+
+def direct_edit_with_openai(
+    instruction: str, state: dict[str, Any], settings: Settings
+) -> AIEditDirective | None:
+    """Use the existing director for flexible language understanding when enabled."""
+    if settings.clipforge_ai_mode != "openai" or not settings.openai_api_key:
+        return None
+    request = {
+        "instruction": instruction,
+        "project": {
+            "language": state.get("intent", {}).get("language"),
+            "tone": state.get("intent", {}).get("tone"),
+            "voice_profile": state.get("voice", {}).get("profile"),
+            "aspect_ratio": state.get("timeline", {}).get("aspect_ratio"),
+        },
+    }
+    try:
+        response = OpenAI(api_key=settings.openai_api_key).responses.parse(
+            model=settings.openai_worker_model,
+            instructions=(
+                "You are ClipForge's edit director. Convert the user's natural-language request "
+                "into concrete edit preferences. Infer ordinary paraphrases, including narrator "
+                "gender presentation, vocal character and speed, visual footage requests, script "
+                "rewrites, captions, music, language, duration and format. Select only requested "
+                "components. If the desired change is genuinely unclear, return no components and "
+                "ask one short, useful clarification question."
+            ),
+            input=json.dumps(request, ensure_ascii=False),
+            text_format=AIEditDirective,
+        )
+        directive = response.output_parsed
+        return directive if isinstance(directive, AIEditDirective) else None
+    except (OpenAIError, ValueError, TypeError):
+        return None
+
+
+def interpret_edit(
+    instruction: str, state: dict[str, Any], settings: Settings
+) -> AIEditDirective:
+    """Interpret an edit semantically, with a broad offline fallback for common requests."""
+    directed = direct_edit_with_openai(instruction, state, settings)
+    text = instruction.casefold()
+    components: set[str] = set()
+    values: dict[str, Any] = {}
+
+    voice_context = bool(
+        re.search(r"\b(voice|narrat(?:or|ion)|speaker|stimme|sprecher|erzähler|erzaehler)\b", text)
+    )
+    gender = None
+    if re.search(r"\b(male|man|masculine|männlich|maennlich|maskulin)\b", text):
+        gender = "masculine"
+    elif re.search(r"\b(female|woman|feminine|weiblich|feminin)\b", text):
+        gender = "feminine"
+    tone = next(
+        (
+            value
+            for pattern, value in (
+                (r"\b(deep|deeper|lower|tief|tiefer)\b", "deep"),
+                (r"\b(warm|warmer|wärmer|waermer)\b", "warm"),
+                (r"\b(energetic|energy|lively|energisch|lebhaft)\b", "energetic"),
+                (r"\b(calm|calmer|ruhig|ruhiger)\b", "calm"),
+            )
+            if re.search(pattern, text)
+        ),
+        None,
+    )
+    voice_speed = next(
+        (
+            value
+            for pattern, value in (
+                (r"\b(slower|slow down|langsamer)\b", "slower"),
+                (r"\b(faster|speed up|schneller)\b", "faster"),
+                (r"\b(normal speed|normales tempo)\b", "normal"),
+            )
+            if re.search(pattern, text)
+        ),
+        None,
+    )
+    change_speaker = bool(
+        re.search(r"\b(change|switch|different|andere[nr]?|wechsel)\b.{0,24}\b(voice|speaker|narrator|stimme|sprecher|erzähler|erzaehler)\b", text)
+    )
+    if voice_context or gender or (tone and re.search(r"\b(sound|kling|narrat|voice|stimme)\b", text)):
+        components.add("voice")
+        values.update(
+            voice_gender=gender,
+            voice_tone=tone,
+            voice_speed=voice_speed,
+            change_speaker=change_speaker,
+        )
+
+    visual_action = next(
+        (
+            value
+            for pattern, value in (
+                (r"\b(more videos?|mehr videos?|mehr clips?)\b", "more_video"),
+                (r"\b(real (?:video |visual )?footage|echte[srn]? (?:aufnahmen|videos?))\b", "real_footage"),
+                (r"\b(less text|weniger text)\b", "less_text"),
+                (r"\b(different (?:clips?|visuals?|shots?)|andere (?:clips?|bilder|szenen))\b", "different"),
+                (r"\b(dynamic|dynamischer|mehr bewegung|more motion)\b", "dynamic"),
+                (r"\b(relevant (?:footage|visuals?|clips?)|passende (?:bilder|clips?|videos?))\b", "relevant"),
+            )
+            if re.search(pattern, text)
+        ),
+        None,
+    )
+    if visual_action or re.search(r"\b(change|improve|update|ändere|aendere)\b.{0,20}\b(visuals?|footage|clips?|bilder|szenen)\b", text):
+        components.add("assets")
+        values["visual_action"] = visual_action or "different"
+
+    script_action = next(
+        (
+            value
+            for pattern, value in (
+                (r"\b(shorter|kürzer|kuerzer|condense|tighten)\b", "shorter"),
+                (r"\b(rewrite|change|redo|schreib.{0,8}neu|ändere|aendere)\b.{0,18}\b(intro|opening|einleitung)\b", "rewrite_intro"),
+                (
+                    r"(?:\b(stronger|better|stärker|staerker)\b.{0,15}\b(hook|opening|einstieg)\b|"
+                    + r"\b(hook|opening|einstieg)\b.{0,15}\b(stronger|better|stärker|staerker)\b)",
+                    "stronger_hook",
+                ),
+                (r"\b(clearer|more clearly|clarify|verständlicher|klarer|einfacher erklären|einfacher erklaeren)\b", "clearer"),
+            )
+            if re.search(pattern, text)
+        ),
+        None,
+    )
+    script_context = bool(re.search(r"\b(script|intro|hook|opening|text|skript|einleitung|einstieg)\b", text))
+    short_video = script_action == "shorter" and bool(
+        re.search(r"\b(video|short|clip|film)\b", text)
+    )
+    if script_action and (
+        script_context
+        or short_video
+        or script_action in {"stronger_hook", "rewrite_intro", "clearer"}
+    ):
+        components.add("script")
+        values["script_action"] = script_action
+
+    caption_context = bool(re.search(r"\b(captions?|subtitles?|untertitel)\b", text))
+    if caption_context:
+        components.add("captions")
+        values["caption_action"] = next(
+            (
+                value
+                for pattern, value in (
+                    (r"\b(larger|bigger|größer|grösser|groesser)\b", "larger"),
+                    (r"\b(smaller|kleiner)\b", "smaller"),
+                    (r"\b(style|design|look|stil)\b", "style"),
+                    (r"\b(reduce|fewer|less|weniger|reduzier)\b", "reduce"),
+                    (r"\b(move|position|higher|lower|verschieb|oben|unten)\b", "move"),
+                )
+                if re.search(pattern, text)
+            ),
+            "style" if re.search(r"\b(change|different|ändere|aendere)\b", text) else None,
+        )
+
+    if re.search(r"\b(music|soundtrack|musik)\b", text):
+        components.add("music")
+    if re.search(r"\b(translate|language|deutsch|german|englisch|english|sprache|übersetz|uebersetz)\b", text):
+        components.add("language")
+    if re.search(r"\b(9:16|16:9|1:1|portrait|landscape|square|format|seitenverhältnis)\b", text):
+        components.add("format")
+    if re.search(r"\b(duration|seconds?|sekunden?|länge|laenge)\b", text):
+        components.add("duration")
+    if re.search(r"\b(research|fact|facts|recherch|fakt|quelle|source)\b", text):
+        components.add("research")
+
+    if not components:
+        if directed and (directed.components or directed.clarification):
+            return directed
+        return AIEditDirective(
+            clarification=(
+                "What would you like to change: the narration voice, wording, footage, captions, "
+                "music, duration, language, or video format?"
+            )
+        )
+    fallback = AIEditDirective(components=sorted(components), **values)
+    if not directed:
+        return fallback
+    merged = fallback.model_dump()
+    merged["components"] = sorted(set(fallback.components) | set(directed.components))
+    for field in (
+        "voice_gender",
+        "voice_tone",
+        "voice_speed",
+        "visual_action",
+        "script_action",
+        "caption_action",
+    ):
+        if getattr(directed, field) is not None:
+            merged[field] = getattr(directed, field)
+    merged["change_speaker"] = fallback.change_speaker or directed.change_speaker
+    merged["clarification"] = None
+    return AIEditDirective.model_validate(merged)

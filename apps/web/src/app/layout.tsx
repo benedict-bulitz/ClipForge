@@ -1,9 +1,15 @@
 import type { Metadata } from "next";
-import { DM_Mono, Manrope } from "next/font/google";
 import "./globals.css";
 
-const sans = Manrope({ variable: "--font-sans", subsets: ["latin"] });
-const mono = DM_Mono({ variable: "--font-mono", weight: ["400", "500"], subsets: ["latin"] });
+const themeScript = `(() => {
+  try {
+    const saved = localStorage.getItem("clipforge-theme");
+    const dark = saved === "dark" || (saved !== "light" && matchMedia("(prefers-color-scheme: dark)").matches);
+    document.documentElement.classList.toggle("dark", dark);
+    document.documentElement.dataset.theme = dark ? "dark" : "light";
+    document.documentElement.style.colorScheme = dark ? "dark" : "light";
+  } catch (_) {}
+})();`;
 
 export const metadata: Metadata = {
   title: "ClipForge — Idea to shortform video",
@@ -12,9 +18,9 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="en">
-      <body className={`${sans.variable} ${mono.variable}`}>{children}</body>
+    <html lang="en" suppressHydrationWarning>
+      <head><script dangerouslySetInnerHTML={{ __html: themeScript }} /></head>
+      <body>{children}</body>
     </html>
   );
 }
-

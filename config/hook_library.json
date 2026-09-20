@@ -1,0 +1,652 @@
+{
+  "schema_version": "1.0.0",
+  "library_id": "clipforge-hook-library-deine-hooks",
+  "title": "ClipForge Hook Strategy Library",
+  "source_document": {
+    "title": "DAS HOOK-MANIFEST",
+    "file_name": "Deine Hooks.pdf",
+    "language": "de",
+    "pages": 5,
+    "source_scope": "The five strategy families and 50 templates come from the source PDF. Integration/validation metadata below is added for ClipForge use."
+  },
+  "design_intent": {
+    "primary": "Use the library as strategy guidance after neutral research. The model should write a fresh, topic-specific hook from researched facts.",
+    "secondary": "If free strategy-guided generation fails quality validation, adapt one of the source templates more tightly.",
+    "last_resort": "Use a source template as a strict fill-in pattern only when both primary and guided fallback fail. Never use an unsupported statistic/trend just because a template contains one."
+  },
+  "recommended_pipeline": [
+    "1. Receive user topic/question.",
+    "2. Perform neutral research first; do not search to justify a preselected hook.",
+    "3. Extract hook signals: strongest fact, misconception, contrast, consequence, verified number, verified trend/social proof, self-check, viewer relevance.",
+    "4. Match those signals against strategy_families.",
+    "5. Generate 3-5 fresh hook candidates using the best-fitting family/families.",
+    "6. Validate factual support, natural language, strategy fit, question-echo, source contamination, and hook/body progression.",
+    "7. If a candidate is strong, select it.",
+    "8. If not, use guided_fallback with one suitable fallback template.",
+    "9. If guided fallback still fails, use strict_template_fallback.",
+    "10. Optionally run targeted follow-up research for the selected hook claim before final script generation.",
+    "11. Build the body to pay off the selected hook immediately."
+  ],
+  "source_principles": [
+    "Neutral informational hooks are often less reaction-provoking than clear statements or positions.",
+    "Provocation should attack an opinion, habit, assumption, or way of thinking - not a person.",
+    "A strong hot take must contain substance and remain defensible when challenged.",
+    "Templates are a starting point, not the end product; context and what is actually being discussed matter.",
+    "The strongest hooks are not necessarily the loudest; the viewer should take away a useful new perspective."
+  ],
+  "clipforge_quality_rules": {
+    "do": [
+      "Research before choosing a strategy.",
+      "Prefer concrete, defensible claims over vague hype.",
+      "Let the LLM write natural German or English from the pattern rather than copying the source wording.",
+      "Use viewer relevance when it is a real consequence, experience, risk, benefit, decision, cost, or mistake - not merely a pronoun.",
+      "Make the answer/body progress beyond the hook instead of repeating it."
+    ],
+    "do_not": [
+      "Do not treat any number, percentage, prevalence, trend, or business claim inside the template bank as factual evidence.",
+      "Do not force every topic into a provocative family.",
+      "Do not generate fake controversy, fake social proof, fake statistics, or fake personal stakes.",
+      "Do not prepend mechanical wrappers such as “Für dich heißt das” or “This affects you” merely to simulate relevance.",
+      "Do not literal-translate German templates into English when the result sounds unnatural.",
+      "Do not speak source/publisher/editorial boilerplate."
+    ]
+  },
+  "selection_signals": {
+    "hot_take": [
+      "common belief",
+      "habit",
+      "assumption",
+      "contrarian but defensible reframe",
+      "polarizing interpretation"
+    ],
+    "ego_challenge": [
+      "viewer self-check",
+      "common mistake",
+      "blind spot",
+      "knowledge gap",
+      "decision error"
+    ],
+    "social_proof": [
+      "verified trend",
+      "adoption pattern",
+      "group behavior",
+      "what others know/do",
+      "credible FOMO"
+    ],
+    "shock_number": [
+      "verified statistic",
+      "ratio",
+      "magnitude",
+      "time",
+      "cost",
+      "measurable contrast"
+    ],
+    "direct_confrontation": [
+      "misconception",
+      "not X but Y",
+      "wrong causal explanation",
+      "hard truth",
+      "clear correction"
+    ]
+  },
+  "fallback_policy": {
+    "primary_strategy_generation": {
+      "uses_templates_directly": false,
+      "instruction": "Use strategy family semantics and research signals. Generate original language."
+    },
+    "guided_fallback": {
+      "uses_templates_directly": true,
+      "instruction": "Choose one semantically suitable template, adapt its structure to the topic, then rewrite naturally. Keep evidence gates active."
+    },
+    "strict_template_fallback": {
+      "uses_templates_directly": true,
+      "instruction": "Fill only supported placeholders. If a template requires evidence that is unavailable, skip it and try another. If none fit, fall back to a safe factual hook or the original question/title."
+    }
+  },
+  "strategy_families": [
+    {
+      "id": "hot_take",
+      "source_name_de": "Hot Take – die angreifbare Meinung",
+      "source_trigger": "Eine klare, angreifbare Meinung, die sofort Zustimmung oder Widerspruch auslöst.",
+      "primary_pattern": "Challenge a common belief, habit, assumption, or default framing with a specific, defensible reframe.",
+      "use_when": [
+        "Research supports a genuine contrast or defensible contrarian interpretation.",
+        "There is a common assumption, habit, or framing worth challenging.",
+        "The claim can be defended with the researched facts."
+      ],
+      "avoid_when": [
+        "The only way to make it provocative is to exaggerate or invent controversy.",
+        "The hook would attack a person rather than an idea, habit, or assumption.",
+        "The topic is purely factual and has no defensible reframe."
+      ],
+      "evidence_policy": "Strong claims must be supportable by the research. Broad quantifiers such as “most” require evidence or must be softened into an explicitly framed opinion."
+    },
+    {
+      "id": "ego_challenge",
+      "source_name_de": "Ego-Challenge – die unbequeme Selbstprüfung",
+      "source_trigger": "Eine Selbstprüfung, bei der der Zuschauer wissen will, ob er selbst den Fehler macht oder betroffen ist.",
+      "primary_pattern": "Turn a researched mistake, blind spot, or decision into a self-check the viewer can immediately apply to themselves.",
+      "use_when": [
+        "The topic contains a concrete mistake, misconception, blind spot, or self-test.",
+        "The viewer can meaningfully evaluate their own behavior, decision, knowledge, or setup.",
+        "The challenge leads directly into useful information."
+      ],
+      "avoid_when": [
+        "There is no real self-assessment to make.",
+        "The hook would shame or insult the viewer.",
+        "A percentage or prevalence claim would need to be invented."
+      ],
+      "evidence_policy": "Any prevalence/statistical framing must be externally verified. The self-check itself may be qualitative if it accurately follows from the topic."
+    },
+    {
+      "id": "social_proof",
+      "source_name_de": "Social Proof – die Angst, etwas zu verpassen",
+      "source_trigger": "Die Angst, etwas zu verpassen, das plötzlich andere wissen, nutzen oder tun.",
+      "primary_pattern": "Use a real, researched pattern of adoption, behavior, discussion, or group difference to create a credible “what do they know?” gap.",
+      "use_when": [
+        "Research shows a real trend, adoption pattern, common behavior, or meaningful group difference.",
+        "The social signal is directly relevant to the topic.",
+        "The viewer can learn something concrete from the comparison."
+      ],
+      "avoid_when": [
+        "There is no verified trend or group behavior.",
+        "The hook relies on vague claims such as “everyone is switching”.",
+        "The social signal is unrelated to the actual answer."
+      ],
+      "evidence_policy": "Trend, popularity, adoption, “top performers”, and “everyone” claims require research support. Never manufacture social proof."
+    },
+    {
+      "id": "shock_number",
+      "source_name_de": "Schock-Zahlen – die Fakten-Bombe",
+      "source_trigger": "Eine konkrete Zahl oder Größenordnung macht die Bedeutung sofort greifbar.",
+      "primary_pattern": "Lead with a verified number, ratio, magnitude, time, cost, probability, or measurable contrast whose implication matters to the topic.",
+      "use_when": [
+        "Research contains a strong, relevant, verified number.",
+        "The number creates useful scale or consequence rather than decoration.",
+        "The number can be stated accurately and with the right scope."
+      ],
+      "avoid_when": [
+        "No reliable number exists.",
+        "The number is only illustrative or comes from an unverified template.",
+        "The statistic needs missing population/time/context to sound impressive."
+      ],
+      "evidence_policy": "Hard gate: every numeric/statistical claim must be supported by researched evidence with matching value and context. Numbers in this library are template examples, never evidence."
+    },
+    {
+      "id": "direct_confrontation",
+      "source_name_de": "Direkter Konfrontations-Hook – die harte Wahrheit",
+      "source_trigger": "Eine direkte “Nicht X, sondern Y”-Aussage, die eine Annahme des Zuschauers angreift, nicht die Person.",
+      "primary_pattern": "Directly replace a likely wrong explanation with a stronger researched explanation: not X, but Y.",
+      "use_when": [
+        "Research supports a clear misconception or causal reframe.",
+        "The contrast can be expressed simply and specifically.",
+        "The correction gives the viewer immediate value."
+      ],
+      "avoid_when": [
+        "The contrast would be false or oversimplified.",
+        "The wording becomes a personal attack.",
+        "The hook is confrontational only for style, without a real misconception."
+      ],
+      "evidence_policy": "Both sides of the reframe must be defensible. Do not turn nuance into a false binary."
+    }
+  ],
+  "fallback_templates": [
+    {
+      "id": "01",
+      "family": "hot_take",
+      "source_text_de": "Die meisten in [deiner Branche] verkaufen sich unter Wert, weil sie Angst haben vor …",
+      "role": "fallback_template_only",
+      "evidence_gate": "broad_claim_requires_support_or_softening",
+      "translation_policy": "For English output, translate the rhetorical structure and intent naturally; do not literal-translate wording if it sounds unnatural.",
+      "adaptation_policy": "Replace business-specific placeholders with topic-specific concepts only when semantically valid. Never invent facts merely to make the template fit."
+    },
+    {
+      "id": "02",
+      "family": "hot_take",
+      "source_text_de": "Rabatte sind das Schlimmste, was du deinem Geschäft antun kannst – weil sie zeigen, dass …",
+      "role": "fallback_template_only",
+      "evidence_gate": "topic_support_required",
+      "translation_policy": "For English output, translate the rhetorical structure and intent naturally; do not literal-translate wording if it sounds unnatural.",
+      "adaptation_policy": "Replace business-specific placeholders with topic-specific concepts only when semantically valid. Never invent facts merely to make the template fit."
+    },
+    {
+      "id": "03",
+      "family": "hot_take",
+      "source_text_de": "Wer in [deiner Branche] jedem gefallen will, verliert genau die Kunden, die …",
+      "role": "fallback_template_only",
+      "evidence_gate": "topic_support_required",
+      "translation_policy": "For English output, translate the rhetorical structure and intent naturally; do not literal-translate wording if it sounds unnatural.",
+      "adaptation_policy": "Replace business-specific placeholders with topic-specific concepts only when semantically valid. Never invent facts merely to make the template fit."
+    },
+    {
+      "id": "04",
+      "family": "hot_take",
+      "source_text_de": "Ich finde, man sollte in [deiner Branche] viel öfter Nein sagen zu …",
+      "role": "fallback_template_only",
+      "evidence_gate": "topic_support_required",
+      "translation_policy": "For English output, translate the rhetorical structure and intent naturally; do not literal-translate wording if it sounds unnatural.",
+      "adaptation_policy": "Replace business-specific placeholders with topic-specific concepts only when semantically valid. Never invent facts merely to make the template fit."
+    },
+    {
+      "id": "05",
+      "family": "hot_take",
+      "source_text_de": "Die besten [Berufsbezeichnung] arbeiten nicht mit jedem – sie arbeiten nur mit …",
+      "role": "fallback_template_only",
+      "evidence_gate": "broad_claim_requires_support_or_softening",
+      "translation_policy": "For English output, translate the rhetorical structure and intent naturally; do not literal-translate wording if it sounds unnatural.",
+      "adaptation_policy": "Replace business-specific placeholders with topic-specific concepts only when semantically valid. Never invent facts merely to make the template fit."
+    },
+    {
+      "id": "06",
+      "family": "hot_take",
+      "source_text_de": "Ein niedriger Preis ist kein Wettbewerbsvorteil. Er ist ein Eingeständnis, dass …",
+      "role": "fallback_template_only",
+      "evidence_gate": "topic_support_required",
+      "translation_policy": "For English output, translate the rhetorical structure and intent naturally; do not literal-translate wording if it sounds unnatural.",
+      "adaptation_policy": "Replace business-specific placeholders with topic-specific concepts only when semantically valid. Never invent facts merely to make the template fit."
+    },
+    {
+      "id": "07",
+      "family": "hot_take",
+      "source_text_de": "Kundenzufriedenheit ist überbewertet. Was wirklich zählt, ist …",
+      "role": "fallback_template_only",
+      "evidence_gate": "topic_support_required",
+      "translation_policy": "For English output, translate the rhetorical structure and intent naturally; do not literal-translate wording if it sounds unnatural.",
+      "adaptation_policy": "Replace business-specific placeholders with topic-specific concepts only when semantically valid. Never invent facts merely to make the template fit."
+    },
+    {
+      "id": "08",
+      "family": "hot_take",
+      "source_text_de": "Die meisten Betriebe scheitern nicht am Handwerk. Sie scheitern daran, sich zu trauen, …",
+      "role": "fallback_template_only",
+      "evidence_gate": "broad_claim_requires_support_or_softening",
+      "translation_policy": "For English output, translate the rhetorical structure and intent naturally; do not literal-translate wording if it sounds unnatural.",
+      "adaptation_policy": "Replace business-specific placeholders with topic-specific concepts only when semantically valid. Never invent facts merely to make the template fit."
+    },
+    {
+      "id": "09",
+      "family": "hot_take",
+      "source_text_de": "Wer immer für jeden erreichbar ist, wird nicht als Experte wahrgenommen, sondern als …",
+      "role": "fallback_template_only",
+      "evidence_gate": "topic_support_required",
+      "translation_policy": "For English output, translate the rhetorical structure and intent naturally; do not literal-translate wording if it sounds unnatural.",
+      "adaptation_policy": "Replace business-specific placeholders with topic-specific concepts only when semantically valid. Never invent facts merely to make the template fit."
+    },
+    {
+      "id": "10",
+      "family": "hot_take",
+      "source_text_de": "Empfehlungen sind kein Zufall. Sie entstehen, weil du bereit bist, …",
+      "role": "fallback_template_only",
+      "evidence_gate": "topic_support_required",
+      "translation_policy": "For English output, translate the rhetorical structure and intent naturally; do not literal-translate wording if it sounds unnatural.",
+      "adaptation_policy": "Replace business-specific placeholders with topic-specific concepts only when semantically valid. Never invent facts merely to make the template fit."
+    },
+    {
+      "id": "11",
+      "family": "ego_challenge",
+      "source_text_de": "90% der [Berufsbezeichnung] kennen diesen einen Fehler nicht, der sie jeden Monat …",
+      "role": "fallback_template_only",
+      "evidence_gate": "verified_number_required",
+      "translation_policy": "For English output, translate the rhetorical structure and intent naturally; do not literal-translate wording if it sounds unnatural.",
+      "adaptation_policy": "Replace business-specific placeholders with topic-specific concepts only when semantically valid. Never invent facts merely to make the template fit."
+    },
+    {
+      "id": "12",
+      "family": "ego_challenge",
+      "source_text_de": "Ich wette, du machst genau diesen Fehler bei deinen Preisen gerade selbst, wenn es um … geht.",
+      "role": "fallback_template_only",
+      "evidence_gate": "topic_support_required",
+      "translation_policy": "For English output, translate the rhetorical structure and intent naturally; do not literal-translate wording if it sounds unnatural.",
+      "adaptation_policy": "Replace business-specific placeholders with topic-specific concepts only when semantically valid. Never invent facts merely to make the template fit."
+    },
+    {
+      "id": "13",
+      "family": "ego_challenge",
+      "source_text_de": "Kennst du die drei Zahlen, die entscheiden, ob dein Betrieb in einem Jahr noch steht? Die meisten nicht.",
+      "role": "fallback_template_only",
+      "evidence_gate": "broad_claim_requires_support_or_softening",
+      "translation_policy": "For English output, translate the rhetorical structure and intent naturally; do not literal-translate wording if it sounds unnatural.",
+      "adaptation_policy": "Replace business-specific placeholders with topic-specific concepts only when semantically valid. Never invent facts merely to make the template fit."
+    },
+    {
+      "id": "14",
+      "family": "ego_challenge",
+      "source_text_de": "Wenn du deinen Kunden diesen einen Satz sagst, hast du den Auftrag wahrscheinlich schon verloren: …",
+      "role": "fallback_template_only",
+      "evidence_gate": "broad_claim_requires_support_or_softening",
+      "translation_policy": "For English output, translate the rhetorical structure and intent naturally; do not literal-translate wording if it sounds unnatural.",
+      "adaptation_policy": "Replace business-specific placeholders with topic-specific concepts only when semantically valid. Never invent facts merely to make the template fit."
+    },
+    {
+      "id": "15",
+      "family": "ego_challenge",
+      "source_text_de": "Frag dich ehrlich: Würdest du dein eigenes Angebot zu diesem Preis kaufen?",
+      "role": "fallback_template_only",
+      "evidence_gate": "topic_support_required",
+      "translation_policy": "For English output, translate the rhetorical structure and intent naturally; do not literal-translate wording if it sounds unnatural.",
+      "adaptation_policy": "Replace business-specific placeholders with topic-specific concepts only when semantically valid. Never invent facts merely to make the template fit."
+    },
+    {
+      "id": "16",
+      "family": "ego_challenge",
+      "source_text_de": "Die meisten in [deiner Branche] sitzen mit einem Bein schon im Preiskampf – und merken es nicht.",
+      "role": "fallback_template_only",
+      "evidence_gate": "broad_claim_requires_support_or_softening",
+      "translation_policy": "For English output, translate the rhetorical structure and intent naturally; do not literal-translate wording if it sounds unnatural.",
+      "adaptation_policy": "Replace business-specific placeholders with topic-specific concepts only when semantically valid. Never invent facts merely to make the template fit."
+    },
+    {
+      "id": "17",
+      "family": "ego_challenge",
+      "source_text_de": "Wenn du beim Lesen gerade nervös wirst, betrifft dich das hier wahrscheinlich.",
+      "role": "fallback_template_only",
+      "evidence_gate": "broad_claim_requires_support_or_softening",
+      "translation_policy": "For English output, translate the rhetorical structure and intent naturally; do not literal-translate wording if it sounds unnatural.",
+      "adaptation_policy": "Replace business-specific placeholders with topic-specific concepts only when semantically valid. Never invent facts merely to make the template fit."
+    },
+    {
+      "id": "18",
+      "family": "ego_challenge",
+      "source_text_de": "Die meisten, die sagen „ich habe keine Zeit für Werbung“, haben eigentlich kein Zeitproblem, sondern …",
+      "role": "fallback_template_only",
+      "evidence_gate": "broad_claim_requires_support_or_softening",
+      "translation_policy": "For English output, translate the rhetorical structure and intent naturally; do not literal-translate wording if it sounds unnatural.",
+      "adaptation_policy": "Replace business-specific placeholders with topic-specific concepts only when semantically valid. Never invent facts merely to make the template fit."
+    },
+    {
+      "id": "19",
+      "family": "ego_challenge",
+      "source_text_de": "Kennst du den Unterschied zwischen einem zufriedenen und einem begeisterten Kunden? Die meisten in [deiner Branche] nicht.",
+      "role": "fallback_template_only",
+      "evidence_gate": "broad_claim_requires_support_or_softening",
+      "translation_policy": "For English output, translate the rhetorical structure and intent naturally; do not literal-translate wording if it sounds unnatural.",
+      "adaptation_policy": "Replace business-specific placeholders with topic-specific concepts only when semantically valid. Never invent facts merely to make the template fit."
+    },
+    {
+      "id": "20",
+      "family": "ego_challenge",
+      "source_text_de": "Wenn dein letzter Kunde dich nicht von sich aus weiterempfohlen hat, liegt das wahrscheinlich an …",
+      "role": "fallback_template_only",
+      "evidence_gate": "broad_claim_requires_support_or_softening",
+      "translation_policy": "For English output, translate the rhetorical structure and intent naturally; do not literal-translate wording if it sounds unnatural.",
+      "adaptation_policy": "Replace business-specific placeholders with topic-specific concepts only when semantically valid. Never invent facts merely to make the template fit."
+    },
+    {
+      "id": "21",
+      "family": "social_proof",
+      "source_text_de": "Warum wechseln gerade so viele in [deiner Branche] zu …?",
+      "role": "fallback_template_only",
+      "evidence_gate": "verified_trend_or_group_evidence_required",
+      "translation_policy": "For English output, translate the rhetorical structure and intent naturally; do not literal-translate wording if it sounds unnatural.",
+      "adaptation_policy": "Replace business-specific placeholders with topic-specific concepts only when semantically valid. Never invent facts merely to make the template fit."
+    },
+    {
+      "id": "22",
+      "family": "social_proof",
+      "source_text_de": "Was machen die erfolgreichsten [Berufsbezeichnung] in deiner Stadt anders als du?",
+      "role": "fallback_template_only",
+      "evidence_gate": "verified_trend_or_group_evidence_required",
+      "translation_policy": "For English output, translate the rhetorical structure and intent naturally; do not literal-translate wording if it sounds unnatural.",
+      "adaptation_policy": "Replace business-specific placeholders with topic-specific concepts only when semantically valid. Never invent facts merely to make the template fit."
+    },
+    {
+      "id": "23",
+      "family": "social_proof",
+      "source_text_de": "Warum reden plötzlich alle Kunden über …, obwohl es das schon seit Jahren gibt?",
+      "role": "fallback_template_only",
+      "evidence_gate": "verified_trend_or_group_evidence_required",
+      "translation_policy": "For English output, translate the rhetorical structure and intent naturally; do not literal-translate wording if it sounds unnatural.",
+      "adaptation_policy": "Replace business-specific placeholders with topic-specific concepts only when semantically valid. Never invent facts merely to make the template fit."
+    },
+    {
+      "id": "24",
+      "family": "social_proof",
+      "source_text_de": "Was wissen die Top-Anbieter in [deiner Branche], das du nicht weißt?",
+      "role": "fallback_template_only",
+      "evidence_gate": "verified_trend_or_group_evidence_required",
+      "translation_policy": "For English output, translate the rhetorical structure and intent naturally; do not literal-translate wording if it sounds unnatural.",
+      "adaptation_policy": "Replace business-specific placeholders with topic-specific concepts only when semantically valid. Never invent facts merely to make the template fit."
+    },
+    {
+      "id": "25",
+      "family": "social_proof",
+      "source_text_de": "Warum kündigen gerade so viele einen sicheren Job, um stattdessen … zu machen?",
+      "role": "fallback_template_only",
+      "evidence_gate": "verified_trend_or_group_evidence_required",
+      "translation_policy": "For English output, translate the rhetorical structure and intent naturally; do not literal-translate wording if it sounds unnatural.",
+      "adaptation_policy": "Replace business-specific placeholders with topic-specific concepts only when semantically valid. Never invent facts merely to make the template fit."
+    },
+    {
+      "id": "26",
+      "family": "social_proof",
+      "source_text_de": "Diese eine Gewohnheit taucht bei fast jedem erfolgreichen [Berufsbezeichnung] auf, den ich kenne: …",
+      "role": "fallback_template_only",
+      "evidence_gate": "verified_trend_or_group_evidence_required",
+      "translation_policy": "For English output, translate the rhetorical structure and intent naturally; do not literal-translate wording if it sounds unnatural.",
+      "adaptation_policy": "Replace business-specific placeholders with topic-specific concepts only when semantically valid. Never invent facts merely to make the template fit."
+    },
+    {
+      "id": "27",
+      "family": "social_proof",
+      "source_text_de": "Warum meiden die klügsten Anbieter in [deiner Branche] genau einen bestimmten Kanal komplett?",
+      "role": "fallback_template_only",
+      "evidence_gate": "verified_trend_or_group_evidence_required",
+      "translation_policy": "For English output, translate the rhetorical structure and intent naturally; do not literal-translate wording if it sounds unnatural.",
+      "adaptation_policy": "Replace business-specific placeholders with topic-specific concepts only when semantically valid. Never invent facts merely to make the template fit."
+    },
+    {
+      "id": "28",
+      "family": "social_proof",
+      "source_text_de": "Was, wenn die Kunden, die du dir wünschst, genau das Gegenteil von dem suchen, was du gerade anbietest?",
+      "role": "fallback_template_only",
+      "evidence_gate": "topic_support_required",
+      "translation_policy": "For English output, translate the rhetorical structure and intent naturally; do not literal-translate wording if it sounds unnatural.",
+      "adaptation_policy": "Replace business-specific placeholders with topic-specific concepts only when semantically valid. Never invent facts merely to make the template fit."
+    },
+    {
+      "id": "29",
+      "family": "social_proof",
+      "source_text_de": "Warum zahlen manche Kunden das Doppelte – für etwas, das aussieht wie …?",
+      "role": "fallback_template_only",
+      "evidence_gate": "topic_support_required",
+      "translation_policy": "For English output, translate the rhetorical structure and intent naturally; do not literal-translate wording if it sounds unnatural.",
+      "adaptation_policy": "Replace business-specific placeholders with topic-specific concepts only when semantically valid. Never invent facts merely to make the template fit."
+    },
+    {
+      "id": "30",
+      "family": "social_proof",
+      "source_text_de": "Was haben alle erfolgreichen Betriebe in [deiner Branche] gemeinsam, über das keiner redet?",
+      "role": "fallback_template_only",
+      "evidence_gate": "verified_trend_or_group_evidence_required",
+      "translation_policy": "For English output, translate the rhetorical structure and intent naturally; do not literal-translate wording if it sounds unnatural.",
+      "adaptation_policy": "Replace business-specific placeholders with topic-specific concepts only when semantically valid. Never invent facts merely to make the template fit."
+    },
+    {
+      "id": "31",
+      "family": "shock_number",
+      "source_text_de": "73% der [Berufsbezeichnung] verdienen weniger, als sie könnten – weil sie …",
+      "role": "fallback_template_only",
+      "evidence_gate": "verified_number_required",
+      "translation_policy": "For English output, translate the rhetorical structure and intent naturally; do not literal-translate wording if it sounds unnatural.",
+      "adaptation_policy": "Replace business-specific placeholders with topic-specific concepts only when semantically valid. Never invent facts merely to make the template fit."
+    },
+    {
+      "id": "32",
+      "family": "shock_number",
+      "source_text_de": "Du verlierst jeden Monat Geld, ohne es zu merken – und zwar genau bei …",
+      "role": "fallback_template_only",
+      "evidence_gate": "topic_support_required",
+      "translation_policy": "For English output, translate the rhetorical structure and intent naturally; do not literal-translate wording if it sounds unnatural.",
+      "adaptation_policy": "Replace business-specific placeholders with topic-specific concepts only when semantically valid. Never invent facts merely to make the template fit."
+    },
+    {
+      "id": "33",
+      "family": "shock_number",
+      "source_text_de": "Die Hälfte deiner Anfragen wird nie zum Auftrag – meistens wegen …",
+      "role": "fallback_template_only",
+      "evidence_gate": "verified_number_required",
+      "translation_policy": "For English output, translate the rhetorical structure and intent naturally; do not literal-translate wording if it sounds unnatural.",
+      "adaptation_policy": "Replace business-specific placeholders with topic-specific concepts only when semantically valid. Never invent facts merely to make the template fit."
+    },
+    {
+      "id": "34",
+      "family": "shock_number",
+      "source_text_de": "Ein einziger Satz in deinem Angebot kann dich den Auftrag kosten: …",
+      "role": "fallback_template_only",
+      "evidence_gate": "topic_support_required",
+      "translation_policy": "For English output, translate the rhetorical structure and intent naturally; do not literal-translate wording if it sounds unnatural.",
+      "adaptation_policy": "Replace business-specific placeholders with topic-specific concepts only when semantically valid. Never invent facts merely to make the template fit."
+    },
+    {
+      "id": "35",
+      "family": "shock_number",
+      "source_text_de": "9 von 10 Betrieben in [deiner Branche] scheitern an genau einem Wort in ihrer Preisliste.",
+      "role": "fallback_template_only",
+      "evidence_gate": "verified_number_required",
+      "translation_policy": "For English output, translate the rhetorical structure and intent naturally; do not literal-translate wording if it sounds unnatural.",
+      "adaptation_policy": "Replace business-specific placeholders with topic-specific concepts only when semantically valid. Never invent facts merely to make the template fit."
+    },
+    {
+      "id": "36",
+      "family": "shock_number",
+      "source_text_de": "Die durchschnittliche Aufmerksamkeitsspanne liegt bei 8 Sekunden – so lange hast du, um zu zeigen, warum …",
+      "role": "fallback_template_only",
+      "evidence_gate": "verified_number_required",
+      "translation_policy": "For English output, translate the rhetorical structure and intent naturally; do not literal-translate wording if it sounds unnatural.",
+      "adaptation_policy": "Replace business-specific placeholders with topic-specific concepts only when semantically valid. Never invent facts merely to make the template fit."
+    },
+    {
+      "id": "37",
+      "family": "shock_number",
+      "source_text_de": "Wenn dein Angebot jeder sofort versteht, verkauft es wahrscheinlich niemandem etwas Besonderes.",
+      "role": "fallback_template_only",
+      "evidence_gate": "broad_claim_requires_support_or_softening",
+      "translation_policy": "For English output, translate the rhetorical structure and intent naturally; do not literal-translate wording if it sounds unnatural.",
+      "adaptation_policy": "Replace business-specific placeholders with topic-specific concepts only when semantically valid. Never invent facts merely to make the template fit."
+    },
+    {
+      "id": "38",
+      "family": "shock_number",
+      "source_text_de": "Ein zu niedriger Preis kostet dich mehr Vertrauen als ein zu hoher – vor allem bei …",
+      "role": "fallback_template_only",
+      "evidence_gate": "topic_support_required",
+      "translation_policy": "For English output, translate the rhetorical structure and intent naturally; do not literal-translate wording if it sounds unnatural.",
+      "adaptation_policy": "Replace business-specific placeholders with topic-specific concepts only when semantically valid. Never invent facts merely to make the template fit."
+    },
+    {
+      "id": "39",
+      "family": "shock_number",
+      "source_text_de": "Die meisten Kunden entscheiden sich in den ersten 30 Sekunden – nicht wegen des Preises, sondern wegen …",
+      "role": "fallback_template_only",
+      "evidence_gate": "verified_number_required",
+      "translation_policy": "For English output, translate the rhetorical structure and intent naturally; do not literal-translate wording if it sounds unnatural.",
+      "adaptation_policy": "Replace business-specific placeholders with topic-specific concepts only when semantically valid. Never invent facts merely to make the template fit."
+    },
+    {
+      "id": "40",
+      "family": "shock_number",
+      "source_text_de": "3 von 4 Kunden googeln dich, bevor sie anrufen – und finden dabei …",
+      "role": "fallback_template_only",
+      "evidence_gate": "verified_number_required",
+      "translation_policy": "For English output, translate the rhetorical structure and intent naturally; do not literal-translate wording if it sounds unnatural.",
+      "adaptation_policy": "Replace business-specific placeholders with topic-specific concepts only when semantically valid. Never invent facts merely to make the template fit."
+    },
+    {
+      "id": "41",
+      "family": "direct_confrontation",
+      "source_text_de": "Du bist nicht zu teuer. Du bist einfach nicht klar genug, warum du …",
+      "role": "fallback_template_only",
+      "evidence_gate": "topic_support_required",
+      "translation_policy": "For English output, translate the rhetorical structure and intent naturally; do not literal-translate wording if it sounds unnatural.",
+      "adaptation_policy": "Replace business-specific placeholders with topic-specific concepts only when semantically valid. Never invent facts merely to make the template fit."
+    },
+    {
+      "id": "42",
+      "family": "direct_confrontation",
+      "source_text_de": "Du hast kein Zeitproblem. Du hast ein Prioritätenproblem mit …",
+      "role": "fallback_template_only",
+      "evidence_gate": "topic_support_required",
+      "translation_policy": "For English output, translate the rhetorical structure and intent naturally; do not literal-translate wording if it sounds unnatural.",
+      "adaptation_policy": "Replace business-specific placeholders with topic-specific concepts only when semantically valid. Never invent facts merely to make the template fit."
+    },
+    {
+      "id": "43",
+      "family": "direct_confrontation",
+      "source_text_de": "Es liegt nicht an deinen Kunden. Es liegt daran, dass du …",
+      "role": "fallback_template_only",
+      "evidence_gate": "topic_support_required",
+      "translation_policy": "For English output, translate the rhetorical structure and intent naturally; do not literal-translate wording if it sounds unnatural.",
+      "adaptation_policy": "Replace business-specific placeholders with topic-specific concepts only when semantically valid. Never invent facts merely to make the template fit."
+    },
+    {
+      "id": "44",
+      "family": "direct_confrontation",
+      "source_text_de": "Du wirbst nicht zu selten. Du sagst einfach nichts, worüber es sich zu reden lohnt, über …",
+      "role": "fallback_template_only",
+      "evidence_gate": "topic_support_required",
+      "translation_policy": "For English output, translate the rhetorical structure and intent naturally; do not literal-translate wording if it sounds unnatural.",
+      "adaptation_policy": "Replace business-specific placeholders with topic-specific concepts only when semantically valid. Never invent facts merely to make the template fit."
+    },
+    {
+      "id": "45",
+      "family": "direct_confrontation",
+      "source_text_de": "Deine Konkurrenz ist nicht besser als du. Sie traut sich nur, lauter zu sagen, dass …",
+      "role": "fallback_template_only",
+      "evidence_gate": "topic_support_required",
+      "translation_policy": "For English output, translate the rhetorical structure and intent naturally; do not literal-translate wording if it sounds unnatural.",
+      "adaptation_policy": "Replace business-specific placeholders with topic-specific concepts only when semantically valid. Never invent facts merely to make the template fit."
+    },
+    {
+      "id": "46",
+      "family": "direct_confrontation",
+      "source_text_de": "Du scheiterst nicht, weil der Markt schwierig ist. Du scheiterst, weil du dich versteckst hinter …",
+      "role": "fallback_template_only",
+      "evidence_gate": "topic_support_required",
+      "translation_policy": "For English output, translate the rhetorical structure and intent naturally; do not literal-translate wording if it sounds unnatural.",
+      "adaptation_policy": "Replace business-specific placeholders with topic-specific concepts only when semantically valid. Never invent facts merely to make the template fit."
+    },
+    {
+      "id": "47",
+      "family": "direct_confrontation",
+      "source_text_de": "Dein Problem ist nicht zu wenig Nachfrage. Dein Problem ist, dass du zu jedem Ja sagst, der …",
+      "role": "fallback_template_only",
+      "evidence_gate": "topic_support_required",
+      "translation_policy": "For English output, translate the rhetorical structure and intent naturally; do not literal-translate wording if it sounds unnatural.",
+      "adaptation_policy": "Replace business-specific placeholders with topic-specific concepts only when semantically valid. Never invent facts merely to make the template fit."
+    },
+    {
+      "id": "48",
+      "family": "direct_confrontation",
+      "source_text_de": "Du bist nicht unsichtbar, weil deine Arbeit schlecht ist. Du bist unsichtbar, weil niemand weiß, warum …",
+      "role": "fallback_template_only",
+      "evidence_gate": "topic_support_required",
+      "translation_policy": "For English output, translate the rhetorical structure and intent naturally; do not literal-translate wording if it sounds unnatural.",
+      "adaptation_policy": "Replace business-specific placeholders with topic-specific concepts only when semantically valid. Never invent facts merely to make the template fit."
+    },
+    {
+      "id": "49",
+      "family": "direct_confrontation",
+      "source_text_de": "Wenn dich jeder Kunde mag, hast du wahrscheinlich noch nie klar gesagt, wofür du …",
+      "role": "fallback_template_only",
+      "evidence_gate": "broad_claim_requires_support_or_softening",
+      "translation_policy": "For English output, translate the rhetorical structure and intent naturally; do not literal-translate wording if it sounds unnatural.",
+      "adaptation_policy": "Replace business-specific placeholders with topic-specific concepts only when semantically valid. Never invent facts merely to make the template fit."
+    },
+    {
+      "id": "50",
+      "family": "direct_confrontation",
+      "source_text_de": "Du verlierst Aufträge nicht am Preis. Du verlierst sie daran, dass du nicht erklärst, warum …",
+      "role": "fallback_template_only",
+      "evidence_gate": "topic_support_required",
+      "translation_policy": "For English output, translate the rhetorical structure and intent naturally; do not literal-translate wording if it sounds unnatural.",
+      "adaptation_policy": "Replace business-specific placeholders with topic-specific concepts only when semantically valid. Never invent facts merely to make the template fit."
+    }
+  ],
+  "implementation_notes": {
+    "recommended_location": "config/hook_library.json",
+    "load_behavior": "Load once as static, non-secret application configuration. Do not hardcode all templates inside Python source.",
+    "prompt_usage": "Pass compact strategy summaries plus only the few best-matching fallback templates to the Content Director; do not dump all 50 templates into every prompt.",
+    "english_support": "Strategy metadata is language-neutral. For English generation, preserve rhetorical intent and rewrite natively in English.",
+    "future_extension": "Additional strategy families can be added later without changing the existing template IDs."
+  }
+}

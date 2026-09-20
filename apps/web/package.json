@@ -3,10 +3,11 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "node scripts/dev-with-cache-recovery.mjs",
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",
+    "test:unit": "node --experimental-strip-types --test src/lib/*.test.ts scripts/*.test.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -31,4 +32,3 @@
     "typescript": "^5.9.2"
   }
 }
-

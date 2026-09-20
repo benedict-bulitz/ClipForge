@@ -23,6 +23,13 @@ npm run dev
 
 Open [http://localhost:3000](http://localhost:3000). The API and its interactive docs run at [http://localhost:8000/docs](http://localhost:8000/docs).
 
+Verified final MP4 exports are saved to the repository-local `Downloads/` directory. After a
+successful export, ClipForge keeps project metadata while removing that project's generated media.
+
+Bootstrap installs ClipForge's local Faster Whisper word aligner in `.venv`. Its lightweight `tiny`
+model downloads into the Hugging Face cache only when narration is aligned for the first time. To
+upgrade an existing checkout, run `./.venv/bin/pip install -e "apps/api[dev]"`.
+
 The default `CLIPFORGE_AI_MODE=local` needs no keys. It creates a real persisted ProjectState with a deterministic development planner. To use the OpenAI director, copy `.env.example` to `.env`, set `CLIPFORGE_AI_MODE=openai`, and add `OPENAI_API_KEY`.
 
 For PostgreSQL, Redis, and the worker:
@@ -38,6 +45,12 @@ npm test
 npm run build
 ```
 
+The API tests run from the repository virtualenv installed by bootstrap:
+
+```bash
+./.venv/bin/pytest apps/api/tests
+```
+
 ## API
 
 | Method | Route | Purpose |
@@ -48,4 +61,3 @@ npm run build
 | `POST` | `/api/projects/{id}/undo` | Move to the previous revision |
 
 See [architecture notes](./docs/ARCHITECTURE.md) for state flow and the provider-backed production slices.
-

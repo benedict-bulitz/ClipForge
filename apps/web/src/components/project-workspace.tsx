@@ -1,10 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import {
   ArrowLeft,
+  AlertTriangle,
   Check,
+  ChevronUp,
   CircleDot,
   Download,
   ExternalLink,
@@ -14,21 +16,30 @@ import {
   LoaderCircle,
   MessageSquareText,
   MoreHorizontal,
+  RefreshCw,
   RotateCcw,
+  RotateCw,
   Send,
+  Settings,
   Sparkles,
   WandSparkles,
 } from "lucide-react";
 import {
-  editProjectAtRevision,
+  getProjectChat,
   getReadiness,
+  applySceneMediaCandidate,
+  getSceneMediaCandidates,
+  exportProject,
   mediaUrl,
   renderProject,
+  redoProject,
+  sendProjectMessage,
   undoProject,
 } from "@/lib/api";
-import type { Project, Readiness, Scene, Source } from "@/lib/types";
+import type { ChatMessage, Project, Readiness, Scene, Source, SceneMediaCandidates } from "@/lib/types";
 import { Brand } from "./brand";
 import { Button } from "./ui/button";
+import { ThemeToggle } from "./theme-toggle";
 import { cn } from "@/lib/utils";
 
 type Tab = "overview" | "script" | "scenes" | "sources";
@@ -38,6 +49,7 @@ const setupLinks: Record<string, { label: string; url: string }> = {
   research: { label: "Get Brave key", url: "https://api-dashboard.search.brave.com/app/keys" },
   media: { label: "Get Pexels key", url: "https://www.pexels.com/api/new/" },
   voice: { label: "Voice setup", url: "https://platform.openai.com/api-keys" },
+  alignment: { label: "Alignment setup", url: "https://pypi.org/project/faster-whisper/" },
   render: { label: "Install FFmpeg", url: "https://ffmpeg.org/download.html" },
   storage: { label: "Set up R2", url: "https://developers.cloudflare.com/r2/get-started/" },
   quality_review: { label: "Local checks", url: "https://ffmpeg.org/ffmpeg.html" },
@@ -51,14 +63,24 @@ export function ProjectWorkspace({
   onProjectChange: (project: Project) => void;
 }) {
   const [tab, setTab] = useState<Tab>("overview");
-  const [instruction, setInstruction] = useState("");
-  const [busy, setBusy] = useState<"edit" | "render" | "undo" | null>(null);
+  const [message, setMessage] = useState("");
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [loadingChat, setLoadingChat] = useState(true);
+  const [sending, setSending] = useState(false);
+  const [lastFailedMessage, setLastFailedMessage] = useState<string | null>(null);
+  const [chatError, setChatError] = useState<string | null>(null);
+  const [mobileChatOpen, setMobileChatOpen] = useState(false);
+  const [busy, setBusy] = useState<"render" | "export" | "undo" | "redo" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [moreOpen, setMoreOpen] = useState(false);
+  const [mediaBusy, setMediaBusy] = useState<number | null>(null);
+  const [mediaError, setMediaError] = useState<string | null>(null);
+  const [candidateScene, setCandidateScene] = useState<number | null>(null);
+  const [candidateSet, setCandidateSet] = useState<SceneMediaCandidates | null>(null);
+  const [candidateSelection, setCandidateSelection] = useState<string | null>(null);
   const [readiness, setReadiness] = useState<Readiness | null>(null);
   const state = project.revision.state;
   const duration = state.duration.actual_seconds ?? state.duration.estimated_seconds;
-  const downloadUrl = mediaUrl(state.render.url);
 
   useEffect(() => {
     let active = true;
@@ -68,18 +90,42 @@ export function ProjectWorkspace({
     return () => { active = false; };
   }, [project.current_revision]);
 
-  async function submitEdit() {
-    if (instruction.trim().length < 2 || busy) return;
-    setBusy("edit");
-    setError(null);
+  useEffect(() => {
+    let active = true;
+    getProjectChat(project.id)
+      .then((history) => { if (active) setMessages(history); })
+      .catch((reason) => { if (active) setChatError(reason instanceof Error ? reason.message : "Project chat could not be loaded."); })
+      .finally(() => { if (active) setLoadingChat(false); });
+    return () => { active = false; };
+  }, [project.id]);
+
+  async function submitMessage(retryMessage?: string) {
+    const content = (retryMessage ?? message).trim();
+    if (!content || sending) return;
+    const optimistic: ChatMessage = {
+      id: `pending-${Date.now()}`,
+      role: "user",
+      content,
+      tool_metadata: {},
+      created_at: new Date().toISOString(),
+    };
+    if (!retryMessage) setMessages((current) => [...current, optimistic]);
+    setSending(true);
+    setChatError(null);
+    setLastFailedMessage(null);
     try {
-      const next = await editProjectAtRevision(project.id, instruction, project.current_revision);
-      onProjectChange(next);
-      setInstruction("");
+      const turn = await sendProjectMessage(project.id, content);
+      setMessages(turn.messages);
+      onProjectChange(turn.project);
+      setMessage("");
+      if (turn.project.revision.state.render.status === "regeneration_failed") {
+        setError(turn.project.revision.state.render.error ?? "The edit was saved, but the updated video could not be rendered. The previous preview is still available.");
+      }
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "The edit could not be applied.");
+      setChatError(reason instanceof Error ? reason.message : "ClipForge could not answer that message.");
+      setLastFailedMessage(content);
     } finally {
-      setBusy(null);
+      setSending(false);
     }
   }
 
@@ -96,8 +142,40 @@ export function ProjectWorkspace({
     }
   }
 
-  async function undo() {
-    if (busy || project.current_revision <= 1) return;
+  async function chooseSceneMedia(sceneNumber: number) {
+    if (busy || mediaBusy !== null) return;
+    setMediaBusy(sceneNumber);
+    setMediaError(null);
+    setCandidateScene(sceneNumber);
+    setCandidateSet(null);
+    setCandidateSelection(null);
+    try {
+      setCandidateSet(await getSceneMediaCandidates(project.id, sceneNumber));
+    } catch (reason) {
+      setMediaError(reason instanceof Error ? reason.message : "Alternatives could not be loaded.");
+    } finally {
+      setMediaBusy(null);
+    }
+  }
+
+  async function applySelectedMedia() {
+    if (!candidateScene || !candidateSelection || mediaBusy !== null) return;
+    setMediaBusy(candidateScene);
+    setMediaError(null);
+    try {
+      onProjectChange(await applySceneMediaCandidate(project.id, candidateScene, candidateSelection, project.current_revision));
+      setCandidateScene(null);
+      setCandidateSet(null);
+      setCandidateSelection(null);
+    } catch (reason) {
+      setMediaError(reason instanceof Error ? reason.message : "The selected media could not be applied.");
+    } finally {
+      setMediaBusy(null);
+    }
+  }
+
+  const undo = useCallback(async () => {
+    if (busy || !project.can_undo) return;
     setBusy("undo");
     setError(null);
     try {
@@ -107,12 +185,66 @@ export function ProjectWorkspace({
     } finally {
       setBusy(null);
     }
+  }, [busy, onProjectChange, project.can_undo, project.current_revision, project.id]);
+
+  const redo = useCallback(async () => {
+    if (busy || !project.can_redo) return;
+    setBusy("redo");
+    setError(null);
+    try {
+      onProjectChange(await redoProject(project.id, project.current_revision));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Nothing to redo.");
+    } finally {
+      setBusy(null);
+    }
+  }, [busy, onProjectChange, project.can_redo, project.current_revision, project.id]);
+
+  useEffect(() => {
+    function handleHistoryShortcut(event: KeyboardEvent) {
+      const target = event.target;
+      if (
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        target instanceof HTMLSelectElement ||
+        (target instanceof HTMLElement && target.isContentEditable)
+      ) return;
+      const modifier = event.metaKey || event.ctrlKey;
+      if (!modifier || event.altKey) return;
+      const wantsUndo = event.key.toLowerCase() === "z" && !event.shiftKey;
+      const wantsRedo =
+        (event.key.toLowerCase() === "z" && event.shiftKey) ||
+        (event.ctrlKey && event.key.toLowerCase() === "y");
+      if (wantsUndo && project.can_undo && !busy) {
+        event.preventDefault();
+        void undo();
+      } else if (wantsRedo && project.can_redo && !busy) {
+        event.preventDefault();
+        void redo();
+      }
+    }
+    window.addEventListener("keydown", handleHistoryShortcut);
+    return () => window.removeEventListener("keydown", handleHistoryShortcut);
+  }, [busy, project.can_redo, project.can_undo, redo, undo]);
+
+  async function exportMp4() {
+    if (busy) return;
+    setBusy("export");
+    setError(null);
+    try {
+      const result = await exportProject(project.id, project.current_revision);
+      onProjectChange(result.project);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "The finished MP4 could not be exported.");
+    } finally {
+      setBusy(null);
+    }
   }
 
   return (
-    <main className="min-h-screen bg-[#eeece4]">
+    <main className="theme-app min-h-screen bg-[var(--background)]">
       <div className="noise" />
-      <header className="sticky top-0 z-40 border-b border-black/8 bg-[#f4f2ea]/92 backdrop-blur-xl">
+      <header className="sticky top-0 z-40 border-b border-[var(--border)] bg-[var(--surface)] backdrop-blur-xl">
         <div className="relative mx-auto flex min-h-16 max-w-[1600px] items-center gap-2 px-3 py-2 sm:gap-4 sm:px-5 lg:px-7">
           <Link href="/" aria-label="Back to start" className="interactive-icon">
             <ArrowLeft className="size-4" />
@@ -124,32 +256,43 @@ export function ProjectWorkspace({
             <p className="mono hidden text-[9px] uppercase tracking-[.12em] text-[#929289] xs:block sm:block">Project {project.id.slice(0, 8)}</p>
           </div>
           <div className="hidden items-center gap-2 rounded-full border border-emerald-700/10 bg-emerald-50 px-3 py-1.5 text-[11px] font-bold text-emerald-700 md:flex">
-            <CircleDot className="size-3" /> {state.render.status === "complete" ? "Rendered" : "Ready"}
+            <CircleDot className="size-3" /> {state.render.status === "complete" ? "Rendered" : state.render.stale ? "Previous preview" : "Ready"}
           </div>
-          <button onClick={() => void undo()} disabled={!!busy || project.current_revision <= 1} className="interactive-icon lg:hidden" aria-label="Undo latest edit">
-            <RotateCcw className="size-4" />
-          </button>
-          {downloadUrl ? (
-            <Button asChild variant="outline" size="sm">
-              <a href={downloadUrl} download><Download className="size-3.5" /><span className="hidden sm:inline">Export MP4</span></a>
+          <div className="flex items-center gap-1 lg:hidden">
+            <button onClick={() => void undo()} disabled={!!busy || !project.can_undo} className="interactive-icon" aria-label="Undo latest edit" title="Undo (⌘/Ctrl+Z)">
+              {busy === "undo" ? <LoaderCircle className="size-4 animate-spin" /> : <RotateCcw className="size-4" />}
+            </button>
+            <button onClick={() => void redo()} disabled={!!busy || !project.can_redo} className="interactive-icon" aria-label="Redo latest undone edit" title="Redo (⌘+Shift+Z / Ctrl+Y)">
+              {busy === "redo" ? <LoaderCircle className="size-4 animate-spin" /> : <RotateCw className="size-4" />}
+            </button>
+          </div>
+          <ThemeToggle />
+          {state.render.url ? (
+            <Button variant="outline" size="sm" onClick={() => void exportMp4()} disabled={!!busy}>
+              {busy === "export" ? <LoaderCircle className="size-3.5 animate-spin" /> : state.export?.status === "exported" ? <Check className="size-3.5" /> : <Download className="size-3.5" />}
+              <span className="hidden sm:inline">{busy === "export" ? "Exporting…" : state.export?.status === "exported" ? "Exported" : "Export MP4"}</span>
             </Button>
-          ) : (
+          ) : null}
+          {state.render.status !== "complete" && (
             <Button variant="accent" size="sm" onClick={() => void render()} disabled={!!busy || state.render.status === "blocked_by_research"}>
               {busy === "render" ? <LoaderCircle className="size-3.5 animate-spin" /> : <Film className="size-3.5" />}
               <span className="hidden sm:inline">Render video</span>
             </Button>
           )}
+          <Button asChild variant="ghost" size="icon">
+            <Link href="/settings/integrations" aria-label="Settings"><Settings className="size-4" /></Link>
+          </Button>
           <Button variant="ghost" size="icon" aria-label="Project history" aria-expanded={moreOpen} onClick={() => setMoreOpen((open) => !open)}>
             <MoreHorizontal className="size-5" />
           </Button>
           {moreOpen && (
-            <div className="absolute right-3 top-[calc(100%+.4rem)] z-50 w-[min(330px,calc(100vw-1.5rem))] origin-top-right rounded-[18px] border border-black/10 bg-[#fbfaf5] p-3 shadow-[0_18px_55px_rgba(30,27,17,.18)]">
+            <div className="cf-surface absolute right-3 top-[calc(100%+.4rem)] z-50 w-[min(330px,calc(100vw-1.5rem))] origin-top-right rounded-[18px] border p-3 shadow-[0_18px_55px_rgba(30,27,17,.18)]">
               <div className="mb-2 flex items-center gap-2 px-2 py-1 text-xs font-bold"><History className="size-3.5 text-[#ff6838]" /> Revision history</div>
               <div className="max-h-64 space-y-1 overflow-y-auto">
                 {project.revisions.map((revision) => (
                   <div key={revision.id} className={cn("rounded-xl px-3 py-2 text-xs", revision.is_current ? "bg-[#ff6838]/10" : "bg-black/[.025]")}>
                     <div className="flex items-center justify-between gap-2">
-                      <span className="font-semibold">v{revision.number}</span>
+                      <span className="font-semibold">v{revision.number}{revision.kind === "system" ? " · system" : ""}</span>
                       {revision.is_current && <span className="text-[9px] font-bold uppercase text-[#d94c20]">Current</span>}
                     </div>
                     <p className="mt-1 truncate text-[#77776d]">{revision.instruction}</p>
@@ -165,6 +308,17 @@ export function ProjectWorkspace({
         <section className="min-w-0 border-black/8 px-4 pb-32 pt-6 lg:border-r lg:px-8 lg:pb-10">
           <div className="mx-auto max-w-[1040px]">
             {error && <div role="alert" className="mb-5 rounded-[16px] border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">{error}</div>}
+            {state.export?.status === "exported" && (
+              <div role="status" className="mb-5 rounded-[16px] border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">
+                <p className="font-bold">Exported</p>
+                <p className="mt-0.5 break-all text-xs">{state.export.display_path}</p>
+                <p className="mt-1 text-xs text-emerald-800">
+                  {state.export.cleanup_status === "complete"
+                    ? "Temporary project media was cleaned."
+                    : state.export.cleanup_warnings.join(" ")}
+                </p>
+              </div>
+            )}
             <div className="grid items-start gap-7 md:grid-cols-[minmax(260px,420px)_minmax(0,1fr)]">
               <VideoPreview project={project} />
               <div className="min-w-0">
@@ -196,38 +350,49 @@ export function ProjectWorkspace({
             <div className="py-6">
               {tab === "overview" && <Overview project={project} readiness={readiness} />}
               {tab === "script" && <ScriptView project={project} />}
-              {tab === "scenes" && <ScenesView scenes={state.scenes} duration={duration} />}
+              {tab === "scenes" && <ScenesView scenes={state.scenes} duration={duration} assets={state.assets} mediaBusy={mediaBusy} mediaError={mediaError} candidateScene={candidateScene} candidateSet={candidateSet} candidateSelection={candidateSelection} onSelectCandidate={setCandidateSelection} onChooseSceneMedia={chooseSceneMedia} onApplyCandidate={applySelectedMedia} />}
               {tab === "sources" && <SourcesView project={project} />}
             </div>
           </div>
         </section>
 
-        <aside className="fixed inset-x-0 bottom-0 z-30 border-t border-black/10 bg-[#f7f5ee]/95 p-3 shadow-[0_-10px_35px_rgba(40,35,20,.08)] backdrop-blur-xl lg:sticky lg:top-16 lg:h-[calc(100vh-4rem)] lg:border-t-0 lg:bg-[#f7f5ee]/70 lg:p-0 lg:shadow-none">
+        <aside className="fixed inset-x-0 bottom-0 z-30 border-t border-[var(--border)] bg-[var(--surface-elevated)] p-3 shadow-[0_-10px_35px_rgba(40,35,20,.08)] backdrop-blur-xl lg:sticky lg:top-16 lg:h-[calc(100vh-4rem)] lg:border-t-0 lg:bg-[var(--surface-subtle)] lg:p-0 lg:shadow-none">
           <div className="hidden h-full flex-col lg:flex">
             <div className="border-b border-black/8 px-6 py-5">
               <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2 text-sm font-bold"><MessageSquareText className="size-4 text-[#ff6838]" /> Direct this video</div>
-                <button onClick={() => void undo()} disabled={!!busy || project.current_revision <= 1} className="interactive-text">
-                  <RotateCcw className="size-3.5" /> Undo
-                </button>
+                <div className="flex items-center gap-2 text-sm font-bold"><MessageSquareText className="size-4 text-[#ff6838]" /> Project assistant</div>
+                  <div className="flex items-center gap-1">
+                    <button onClick={() => void undo()} disabled={!!busy || !project.can_undo} className="interactive-text" aria-label="Undo latest edit" title="Undo (⌘/Ctrl+Z)">
+                      {busy === "undo" ? <LoaderCircle className="size-3.5 animate-spin" /> : <RotateCcw className="size-3.5" />} Undo
+                    </button>
+                    <button onClick={() => void redo()} disabled={!!busy || !project.can_redo} className="interactive-text" aria-label="Redo latest undone edit" title="Redo (⌘+Shift+Z / Ctrl+Y)">
+                      {busy === "redo" ? <LoaderCircle className="size-3.5 animate-spin" /> : <RotateCw className="size-3.5" />} Redo
+                    </button>
+                  </div>
               </div>
-              <p className="mt-2 text-xs leading-5 text-[#88887f]">Describe changes to script, captions, voice, music, visuals, language, or format.</p>
+              <p className="mt-2 text-xs leading-5 text-[#88887f]">Ask about this project or describe a change in your own words.</p>
             </div>
-            <div className="flex-1 space-y-4 overflow-y-auto px-5 py-6">
-              <AssistantMessage>Project v{project.current_revision} has {state.scenes.length} visual beats and a {formatTime(duration)} narration.</AssistantMessage>
-              {state.render.status !== "complete" && (
-                <AssistantMessage subtle>Edits invalidate the existing render. Use Render video when the project is ready.</AssistantMessage>
-              )}
-              {state.edit_history.map((edit) => (
-                <div key={`${edit.revision}-${edit.created_at}`} className="space-y-3">
-                  <div className="ml-auto max-w-[88%] rounded-[18px] rounded-br-[5px] bg-[#1b1b18] px-4 py-3 text-sm leading-5 text-white">{edit.instruction}</div>
-                  <AssistantMessage>Applied {edit.summary}. Saved in project revision {edit.revision}.</AssistantMessage>
-                </div>
-              ))}
-            </div>
-            <Composer value={instruction} setValue={setInstruction} submit={submitEdit} busy={busy === "edit"} />
+            <ChatMessages messages={messages} loading={loadingChat} sending={sending} project={project} />
+            <ChatError error={chatError} retry={lastFailedMessage ? () => void submitMessage(lastFailedMessage) : null} />
+            <Composer value={message} setValue={setMessage} submit={() => void submitMessage()} busy={sending} />
           </div>
-          <div className="lg:hidden"><Composer value={instruction} setValue={setInstruction} submit={submitEdit} busy={busy === "edit"} compact /></div>
+          <div className="lg:hidden">
+            {mobileChatOpen && (
+              <div className="cf-surface mb-3 flex max-h-[60vh] flex-col overflow-hidden rounded-[22px] border shadow-2xl">
+                <div className="flex items-center justify-between border-b border-black/8 px-4 py-3">
+                  <div className="flex items-center gap-2 text-sm font-bold"><MessageSquareText className="size-4 text-[#ff6838]" /> Project assistant</div>
+                  <button className="interactive-icon !size-8" onClick={() => setMobileChatOpen(false)} aria-label="Close project assistant"><ChevronUp className="size-4 rotate-180" /></button>
+                </div>
+                <ChatMessages messages={messages} loading={loadingChat} sending={sending} project={project} compact />
+                <ChatError error={chatError} retry={lastFailedMessage ? () => void submitMessage(lastFailedMessage) : null} />
+              </div>
+            )}
+            <button className="mb-2 flex w-full items-center justify-between px-2 text-xs font-bold" onClick={() => setMobileChatOpen((open) => !open)} aria-expanded={mobileChatOpen}>
+              <span className="flex items-center gap-2"><MessageSquareText className="size-3.5 text-[#ff6838]" /> {mobileChatOpen ? "Hide conversation" : "Open project assistant"}</span>
+              <ChevronUp className={cn("size-4 transition-transform", !mobileChatOpen && "rotate-180")} />
+            </button>
+            <Composer value={message} setValue={setMessage} submit={() => void submitMessage()} busy={sending} compact />
+          </div>
         </aside>
       </div>
     </main>
@@ -239,7 +404,7 @@ function VideoPreview({ project }: { project: Project }) {
   const hook = state.script.blocks[0]?.text ?? project.original_prompt;
   const source = mediaUrl(state.render.url);
   const vertical = state.timeline.height > state.timeline.width;
-  const label = source ? "Rendered preview" : "Storyboard preview";
+  const label = source ? (state.render.stale ? "Previous revision preview" : "Rendered preview") : "Storyboard preview";
   return (
     <div className="mx-auto w-full" style={{ maxWidth: vertical ? 292 : 520 }}>
       <div
@@ -260,8 +425,8 @@ function VideoPreview({ project }: { project: Project }) {
             </div>
             <div className="absolute inset-x-4 bottom-[21%] text-center">
               <p
-                className="font-extrabold uppercase leading-[1.02] tracking-[-.055em] drop-shadow-lg"
-                style={{ fontSize: Math.max(16, state.captions.font_size * 0.3), color: state.captions.highlight_color ?? "#ffffff" }}
+                className="inline rounded-lg bg-black/60 px-2 py-1 font-extrabold uppercase leading-[1.35] tracking-[-.045em] text-white shadow-[0_3px_16px_rgba(0,0,0,.85)] backdrop-blur-sm"
+                style={{ fontSize: Math.max(16, state.captions.font_size * 0.3) }}
               >
                 {hook.split(" ").slice(0, 11).join(" ")}
               </p>
@@ -277,7 +442,7 @@ function VideoPreview({ project }: { project: Project }) {
 
 function Pipeline({ stages }: { stages: Project["revision"]["state"]["pipeline"] }) {
   return (
-    <div className="mt-6 rounded-[20px] border border-black/8 bg-white/55 p-4 shadow-sm">
+    <div className="cf-surface mt-6 rounded-[20px] border p-4 shadow-sm">
       <div className="mb-3 flex items-center justify-between">
         <p className="text-xs font-bold uppercase tracking-[.12em] text-[#77776d]">Production map</p>
         <span className="mono text-[9px] text-[#9a9a91]">AUTO</span>
@@ -299,11 +464,23 @@ function Pipeline({ stages }: { stages: Project["revision"]["state"]["pipeline"]
 
 function Overview({ project, readiness }: { project: Project; readiness: Readiness | null }) {
   const state = project.revision.state;
-  const rows = readiness
-    ? Object.entries(readiness)
+  const projectReadiness = readiness ? { ...readiness } : null;
+  if (projectReadiness && state.captions.timing === "word_aligned") {
+    projectReadiness.alignment = { ...projectReadiness.alignment, ready: true, status: "Word alignment ready" };
+  } else if (projectReadiness && state.captions.timing === "phrase_fallback") {
+    const missing = state.captions.diagnostic?.toLowerCase().includes("dependency missing");
+    projectReadiness.alignment = {
+      ...projectReadiness.alignment,
+      ready: false,
+      status: missing ? "Alignment dependency missing" : "Alignment failed — phrase timing fallback used",
+    };
+  }
+  const rows = projectReadiness
+    ? Object.entries(projectReadiness)
     : Object.entries(state.integrations).map(([name, status]) => [name, { ready: !status.includes("unavailable"), status, key: null, url: setupLinks[name]?.url ?? "#" }] as const);
   return (
     <div className="grid gap-4 md:grid-cols-2">
+      <AIReviewPanel review={state.ai_review} />
       <Panel icon={<WandSparkles className="size-4" />} title="Creative direction">
         <div className="space-y-3 text-sm">
           <KeyValue label="Story type" value={state.intent.content_type.replaceAll("_", " ")} />
@@ -317,14 +494,16 @@ function Overview({ project, readiness }: { project: Project; readiness: Readine
         <div className="space-y-3">
           {rows.map(([name, item]) => {
             const link = setupLinks[name] ?? { label: "Setup", url: item.url };
+            const explanation = readinessExplanation(name, item);
             return (
-              <div key={name} className="rounded-xl border border-black/6 bg-[#faf9f4] p-3 text-xs">
+              <div key={name} className="cf-subtle rounded-xl border p-3 text-xs">
                 <div className="flex items-center justify-between gap-3">
-                  <span className="font-semibold capitalize text-[#4f4f48]">{name.replaceAll("_", " ")}</span>
-                  <span className={cn("rounded-full px-2 py-1 font-bold", item.ready ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700")}>{item.status.replaceAll("_", " ")}</span>
+                  <span className="font-semibold capitalize text-[var(--foreground)]">{name.replaceAll("_", " ")}</span>
+                  <span className={cn("rounded-full px-2 py-1 font-bold", explanation.level === "ready" ? "bg-emerald-50 text-emerald-700" : explanation.level === "degraded" ? "bg-amber-50 text-amber-800" : "bg-red-50 text-red-700")}>{explanation.badge}</span>
                 </div>
+                <p className="mt-2 leading-5 text-[var(--muted-foreground)]">{explanation.message}</p>
                 <div className="mt-2 flex items-center justify-between gap-2 text-[10px] text-[#8b8b82]">
-                  <span className="mono truncate">{item.key ?? "No key required"}</span>
+                  <span className="mono truncate">{name === "alignment" ? "Local caption timing" : item.key ?? "No key required"}</span>
                   <a href={link.url} target="_blank" rel="noreferrer" className="inline-flex shrink-0 items-center gap-1 font-bold text-[#d94c20] hover:text-[#a93210]">
                     {link.label} <ExternalLink className="size-2.5" />
                   </a>
@@ -332,7 +511,9 @@ function Overview({ project, readiness }: { project: Project; readiness: Readine
               </div>
             );
           })}
-          <p className="px-1 text-[10px] leading-4 text-[#898980]">Put keys in the root <span className="mono">.env</span> file, then restart the API.</p>
+          <p className="px-1 text-[10px] leading-4 text-[#898980]">
+            Manage provider keys in <Link href="/settings/integrations" className="font-bold text-[#d94c20] hover:text-[#a93210]">Settings → Integrations</Link>.
+          </p>
         </div>
       </Panel>
       <Panel icon={<Sparkles className="size-4" />} title="Answer skeleton" wide>
@@ -349,10 +530,70 @@ function Overview({ project, readiness }: { project: Project; readiness: Readine
   );
 }
 
-function ScriptView({ project }: { project: Project }) {
-  const blocks = project.revision.state.script.blocks;
+function AIReviewPanel({ review }: { review: Project["revision"]["state"]["ai_review"] }) {
+  const detailsId = useId();
+  const [expanded, setExpanded] = useState(false);
+  const status = review?.status ?? "pending";
+  const warning = status === "passed_with_warnings" || status === "needs_fix" || status === "failed" || status === "unavailable";
+  const label = status === "passed_with_warnings" ? "Passed with warnings" : status.replaceAll("_", " ");
+  const findings = review?.items ?? [];
+  const inconsistent = ["needs_fix", "failed", "passed_with_warnings"].includes(status) && findings.length === 0;
+  const expandable = warning || findings.length > 0 || Boolean(review?.automatic_corrections?.length);
   return (
-    <Panel icon={<MessageSquareText className="size-4" />} title={`Narration · ${project.revision.state.script.word_count} words`}>
+    <Panel icon={warning ? <AlertTriangle className="size-4 text-[var(--warning)]" /> : <Check className="size-4 text-[var(--success)]" />} title="AI Review" wide>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <p className="text-sm text-[var(--muted-foreground)]">Language, prompt fidelity, research, timing, visuals, captions, and render inputs.</p>
+        {expandable ? (
+          <button type="button" onClick={() => setExpanded((open) => !open)} aria-expanded={expanded} aria-controls={detailsId} className={cn("inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[10px] font-bold uppercase tracking-[.08em]", warning ? "bg-amber-50 text-amber-800" : "bg-emerald-50 text-emerald-800")}>
+            {label}<ChevronUp className={cn("size-3 transition-transform", !expanded && "rotate-180")} />
+          </button>
+        ) : (
+          <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-[10px] font-bold uppercase tracking-[.08em] text-emerald-800">{label}</span>
+        )}
+      </div>
+      {expandable && expanded && (
+        <div id={detailsId} className="mt-3 space-y-3">
+          {review?.automatic_corrections?.length ? <div className="rounded-xl border border-[var(--border)] bg-[var(--accent-soft)] p-3 text-xs"><strong>Automatically corrected</strong><ul className="mt-1 list-disc space-y-1 pl-4">{review.automatic_corrections.map((item) => <li key={item}>{item}</li>)}</ul></div> : null}
+          {findings.length ? <ul className="grid gap-2 sm:grid-cols-2">{findings.map((item, index) => <li key={`${item.check}-${index}`} className="cf-subtle rounded-xl border p-3 text-xs leading-5"><div className="flex items-center justify-between gap-2"><span className="font-bold capitalize">{item.check.replaceAll("_", " ")}</span><span className={cn("rounded-full px-2 py-0.5 text-[9px] font-bold uppercase", item.severity === "error" ? "bg-red-50 text-red-700" : item.severity === "warning" ? "bg-amber-50 text-amber-800" : "bg-blue-50 text-blue-700")}>{item.severity}</span></div><p className="mt-1 text-[var(--muted-foreground)]">{item.message}</p></li>)}</ul> : null}
+          {inconsistent && <p role="alert" className="rounded-xl border border-amber-300/50 bg-amber-50 p-3 text-xs font-medium text-amber-900">Review reported “{label}” but supplied no visible findings. Run review again before relying on this status.</p>}
+          {status === "unavailable" && <p className="text-xs font-medium text-[var(--warning)]">AI review was unavailable. Local checks remain visible, and factual verification is not claimed.</p>}
+        </div>
+      )}
+      {!expandable && status === "pending" && <p className="mt-3 text-xs text-[var(--muted-foreground)]">Review will run before the next completed render.</p>}
+    </Panel>
+  );
+}
+
+function readinessExplanation(name: string, item: Readiness[string]): { badge: string; message: string; level: "ready" | "degraded" | "blocked" } {
+  const status = item.status.toLowerCase();
+  if (name === "alignment") {
+    if (item.ready || status.includes("word alignment ready")) {
+      return { badge: "Word timing ready", message: "Precise word-level caption timing is available.", level: "ready" };
+    }
+    if (status.includes("preparing")) {
+      return { badge: "Preparing", message: "ClipForge is preparing the local caption-alignment model. Video generation can continue with fallback timing meanwhile.", level: "degraded" };
+    }
+    if (status.includes("dependency missing")) {
+      return { badge: "Phrase timing available", message: "Word-level caption timing needs the optional local alignment dependency. Videos can still be generated with less precise phrase timing.", level: "degraded" };
+    }
+    if (status.includes("model unavailable")) {
+      return { badge: "Phrase timing available", message: "The local alignment model is unavailable. Video generation can continue with less precise phrase timing.", level: "degraded" };
+    }
+    return { badge: "Phrase timing used", message: "The video remains usable, but captions use phrase timing instead of precise active-word alignment.", level: "degraded" };
+  }
+  if (item.ready) return { badge: item.status.replaceAll("_", " "), message: "This capability is ready for the current project.", level: "ready" };
+  return { badge: item.status.replaceAll("_", " "), message: "This capability needs setup before its part of production can run.", level: "blocked" };
+}
+
+function ScriptView({ project }: { project: Project }) {
+  const state = project.revision.state;
+  const blocks = state.script.blocks;
+  return (
+    <Panel icon={<MessageSquareText className="size-4" />} title={`Narration · ${state.script.word_count} words`}>
+      <div className="cf-subtle mb-4 rounded-xl border p-3 text-xs leading-5">
+        <div className="flex flex-wrap items-center justify-between gap-2"><strong>Caption timing</strong><span className="mono text-[9px] uppercase text-[var(--muted-foreground)]">{state.captions.timing?.replaceAll("_", " ") ?? "pending"}</span></div>
+        {state.captions.diagnostic && <p className="mt-1 text-[var(--muted-foreground)]">{state.captions.diagnostic}</p>}
+      </div>
       <div className="space-y-1">
         {blocks.map((block) => (
           <div key={block.id} className="group grid grid-cols-[74px_1fr] gap-3 rounded-xl px-2 py-3 transition-colors duration-150 hover:bg-black/[.025]">
@@ -365,10 +606,20 @@ function ScriptView({ project }: { project: Project }) {
   );
 }
 
-function ScenesView({ scenes, duration }: { scenes: Scene[]; duration: number }) {
+function ScenesView({ scenes, duration, assets, mediaBusy, mediaError, candidateScene, candidateSet, candidateSelection, onSelectCandidate, onChooseSceneMedia, onApplyCandidate }: { scenes: Scene[]; duration: number; assets: Project["revision"]["state"]["assets"]; mediaBusy: number | null; mediaError: string | null; candidateScene: number | null; candidateSet: SceneMediaCandidates | null; candidateSelection: string | null; onSelectCandidate: (token: string) => void; onChooseSceneMedia: (sceneNumber: number) => void; onApplyCandidate: () => void }) {
   return (
     <div className="space-y-3">
-      <div className="relative mb-6 flex h-16 overflow-hidden rounded-[16px] border border-black/8 bg-white p-1.5 shadow-sm">
+      {mediaError && (
+        <div role="alert" className="rounded-[16px] border border-red-700/15 bg-red-50 px-4 py-3 text-xs leading-5 text-red-700">
+          {mediaError}
+        </div>
+      )}
+      {assets.diagnostic && (
+        <div className="rounded-[16px] border border-amber-700/15 bg-amber-50 px-4 py-3 text-xs leading-5 text-amber-800">
+          {assets.diagnostic}
+        </div>
+      )}
+      <div className="cf-surface relative mb-6 flex h-16 overflow-hidden rounded-[16px] border p-1.5 shadow-sm">
         {scenes.map((scene, index) => (
           <div key={scene.id} title={scene.narration} style={{ width: `${((scene.end - scene.start) / Math.max(1, duration)) * 100}%` }} className={cn("relative min-w-[5%] overflow-hidden border-r border-white/50 last:border-0", ["bg-[#ff8b62]", "bg-[#2f4054]", "bg-[#dbb164]", "bg-[#8b9c77]"][index % 4])}>
             <span className="mono absolute bottom-1.5 left-2 text-[8px] text-white/80">{index + 1}</span>
@@ -376,16 +627,69 @@ function ScenesView({ scenes, duration }: { scenes: Scene[]; duration: number })
         ))}
       </div>
       {scenes.map((scene, index) => (
-        <div key={scene.id} className="grid grid-cols-[46px_minmax(0,1fr)] items-center gap-3 rounded-[18px] border border-black/8 bg-white/60 p-3 shadow-sm sm:grid-cols-[54px_minmax(0,1fr)_auto] sm:gap-4">
+        <div key={scene.id} className="cf-surface grid grid-cols-[46px_minmax(0,1fr)] items-center gap-3 rounded-[18px] border p-3 shadow-sm sm:grid-cols-[54px_minmax(0,1fr)_112px_auto] sm:gap-4">
           <div className={cn("grid aspect-square place-items-center rounded-xl text-sm font-extrabold text-white", ["bg-[#ff7950]", "bg-[#34475d]", "bg-[#c89941]", "bg-[#7c8f67]"][index % 4])}>{index + 1}</div>
           <div className="min-w-0">
             <p className="truncate text-sm font-semibold">{scene.visual_goal}</p>
             <p className="mt-1 truncate text-xs text-[#84847b]">{scene.narration}</p>
+            {scene.media && <p className="mt-1 text-[9px] font-semibold uppercase tracking-[.08em] text-[#88887f]"><a href={scene.media.source_url} target="_blank" rel="noreferrer" className="hover:text-[#ff6838]">{scene.media.kind} by {scene.media.creator} · {scene.media.provider}</a></p>}
           </div>
-          <div className="col-span-2 flex justify-between text-right sm:col-span-1 sm:block">
+          {scene.media?.cache_path ? (
+            <div className="col-span-2 overflow-hidden rounded-xl border border-black/8 bg-black/[.03] sm:col-span-1">
+              <p className="px-2 pt-1 text-[9px] font-bold uppercase tracking-[.08em] text-[#88887f]">Current media</p>
+              {scene.media.kind === "video" ? (
+                <video
+                  src={mediaUrl(`/media/${scene.media.cache_path}`) ?? undefined}
+                  controls
+                  preload="metadata"
+                  className="h-20 w-full bg-black object-cover"
+                  aria-label={`Scene ${index + 1} video preview`}
+                />
+              ) : (
+                /* Native img is intentional: cached media may be served by the API origin. */
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  src={mediaUrl(`/media/${scene.media.cache_path}`) ?? undefined}
+                  alt={`Scene ${index + 1}: ${scene.visual_goal}`}
+                  loading="lazy"
+                  className="h-20 w-full object-cover"
+                />
+              )}
+            </div>
+          ) : <div className="col-span-2 hidden sm:block" aria-hidden="true" />}
+          <div className="col-span-2 flex items-center justify-between gap-3 text-right sm:col-span-1 sm:block">
+            <button
+              type="button"
+              onClick={() => onChooseSceneMedia(index + 1)}
+              disabled={mediaBusy !== null}
+              className="inline-flex items-center gap-1.5 rounded-full border border-black/10 px-2.5 py-1.5 text-[9px] font-bold uppercase tracking-[.08em] text-[#66665d] transition hover:border-[#ff6838] hover:text-[#d94c20] disabled:cursor-wait disabled:opacity-60 sm:mb-2"
+              aria-label={`Choose media for scene ${index + 1}`}
+            >
+              <RefreshCw className={cn("size-3", mediaBusy === index + 1 && "animate-spin")} />
+              {mediaBusy === index + 1 ? "Finding media" : "Choose media"}
+            </button>
             <p className="mono text-[10px] font-medium">{formatTime(scene.start)}–{formatTime(scene.end)}</p>
             <p className="mt-1 text-[9px] uppercase tracking-[.08em] text-amber-700">{scene.asset_status.replaceAll("_", " ")}</p>
           </div>
+          {candidateScene === index + 1 && candidateSet && (
+            <div className="col-span-2 rounded-2xl border border-[#ff6838]/25 bg-[#fffaf6] p-3 sm:col-span-4">
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <p className="text-xs font-bold uppercase tracking-[.08em] text-[#66665d]">Alternatives · {candidateSet.preferred_kind} first</p>
+                <button type="button" onClick={onApplyCandidate} disabled={!candidateSelection || mediaBusy !== null} className="rounded-full bg-[#ff6838] px-3 py-1.5 text-[10px] font-bold uppercase tracking-[.08em] text-white disabled:opacity-50">Apply</button>
+              </div>
+              <div className="grid gap-2 sm:grid-cols-3">
+                {candidateSet.candidates.map((candidate) => (
+                  <button key={candidate.token} type="button" onClick={() => onSelectCandidate(candidate.token)} className={cn("overflow-hidden rounded-xl border text-left transition", candidateSelection === candidate.token ? "border-[#ff6838] ring-2 ring-[#ff6838]/20" : "border-black/10 hover:border-[#ff6838]/50")}>
+                    {candidate.kind === "video" ? <video src={candidate.preview_url} muted controls preload="metadata" className="h-24 w-full bg-black object-cover" aria-label={`${candidate.kind} candidate preview`} /> : (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img src={candidate.preview_url} alt={`${candidate.provider} candidate by ${candidate.creator}`} loading="lazy" className="h-24 w-full object-cover" />
+                    )}
+                    <span className="block px-2 py-1.5 text-[10px] leading-4"><strong className="uppercase">{candidate.kind}</strong> · {candidate.provider}<br />{candidate.creator}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       ))}
     </div>
@@ -421,12 +725,72 @@ function SourcesView({ project }: { project: Project }) {
   );
 }
 
+function ChatMessages({
+  messages,
+  loading,
+  sending,
+  project,
+  compact = false,
+}: {
+  messages: ChatMessage[];
+  loading: boolean;
+  sending: boolean;
+  project: Project;
+  compact?: boolean;
+}) {
+  const endRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    endRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }, [messages, sending]);
+
+  return (
+    <div className={cn("flex-1 space-y-4 overflow-y-auto px-5 py-6", compact && "min-h-0 px-4 py-4")} aria-live="polite">
+      {!loading && messages.length === 0 && (
+        <AssistantMessage>
+          I know this project’s script, scenes, voice, sources, timeline, and render state. Ask me a question or request a change.
+        </AssistantMessage>
+      )}
+      {messages.map((item) => item.role === "user" ? (
+        <div key={item.id} className="ml-auto max-w-[88%] whitespace-pre-wrap rounded-[18px] rounded-br-[5px] bg-[#1b1b18] px-4 py-3 text-sm leading-5 text-white">
+          {item.content}
+        </div>
+      ) : (
+        <div key={item.id}>
+          <AssistantMessage>{item.content}</AssistantMessage>
+          {item.tool_metadata.tools?.some((tool) => tool.mutating && tool.success) && (
+            <p className="mono ml-10 mt-1.5 text-[8px] uppercase tracking-[.1em] text-[#99998f]">
+              Project updated · v{item.tool_metadata.tools.findLast((tool) => tool.revision)?.revision ?? project.current_revision}
+            </p>
+          )}
+        </div>
+      ))}
+      {(loading || sending) && (
+        <div className="flex items-center gap-2 pl-1 text-xs font-medium text-[#88887f]">
+          <LoaderCircle className="size-3.5 animate-spin text-[#ff6838]" />
+          {loading ? "Reading conversation…" : "Reading project and working…"}
+        </div>
+      )}
+      <div ref={endRef} />
+    </div>
+  );
+}
+
+function ChatError({ error, retry }: { error: string | null; retry: (() => void) | null }) {
+  if (!error) return null;
+  return (
+    <div role="alert" className="mx-4 mb-2 flex items-center justify-between gap-3 rounded-xl bg-red-50 px-3 py-2 text-xs text-red-800">
+      <span>{error}</span>
+      {retry && <button onClick={retry} className="shrink-0 font-bold underline underline-offset-2">Retry</button>}
+    </div>
+  );
+}
+
 function Composer({ value, setValue, submit, busy, compact = false }: { value: string; setValue: (value: string) => void; submit: () => void; busy: boolean; compact?: boolean }) {
   return (
     <div className={cn("border-t border-black/8 p-4", compact && "border-0 p-0")}>
-      <div className="flex items-end gap-2 rounded-[20px] border border-black/10 bg-white p-2 shadow-sm transition-[border-color,box-shadow] duration-150 focus-within:border-[#ff6838]/35 focus-within:ring-4 focus-within:ring-[#ff6838]/5">
-        <textarea rows={compact ? 1 : 3} value={value} onChange={(event) => setValue(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void submit(); } }} placeholder="Ask ClipForge to change anything…" className="min-h-10 flex-1 resize-none bg-transparent px-2 py-2 text-sm leading-5 outline-none placeholder:text-[#9d9d94]" />
-        <Button variant="accent" size="icon" onClick={() => void submit()} disabled={value.trim().length < 2 || busy} aria-label="Send edit">
+      <div className="cf-surface flex items-end gap-2 rounded-[20px] border p-2 shadow-sm transition-[border-color,box-shadow] duration-150 focus-within:border-[#ff6838]/35 focus-within:ring-4 focus-within:ring-[#ff6838]/5">
+        <textarea rows={compact ? 1 : 3} value={value} onChange={(event) => setValue(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void submit(); } }} placeholder="Ask about this project or request a change…" className="min-h-10 flex-1 resize-none bg-transparent px-2 py-2 text-sm leading-5 outline-none placeholder:text-[#9d9d94]" />
+        <Button variant="accent" size="icon" onClick={() => void submit()} disabled={value.trim().length < 1 || busy} aria-label="Send message">
           {busy ? <LoaderCircle className="size-4 animate-spin" /> : <Send className="size-4" />}
         </Button>
       </div>
@@ -439,21 +803,21 @@ function AssistantMessage({ children, subtle = false }: { children: React.ReactN
   return (
     <div className="flex gap-2.5">
       <div className={cn("mt-0.5 grid size-7 shrink-0 place-items-center rounded-lg bg-[#ff6838] text-white", subtle && "bg-[#dedbd0] text-[#75756c]")}><Sparkles className="size-3.5" /></div>
-      <div className="rounded-[18px] rounded-tl-[5px] border border-black/7 bg-white/75 px-4 py-3 text-[13px] leading-5 text-[#5d5d55] shadow-sm">{children}</div>
+      <div className="cf-surface whitespace-pre-wrap rounded-[18px] rounded-tl-[5px] border px-4 py-3 text-[13px] leading-5 text-[var(--muted-foreground)] shadow-sm">{children}</div>
     </div>
   );
 }
 
 function Stat({ label, value, hint }: { label: string; value: string; hint: string }) {
-  return <div className="rounded-[16px] border border-black/8 bg-white/50 p-3"><p className="mono text-[8px] uppercase tracking-[.12em] text-[#929289]">{label}</p><p className="mt-1 text-xl font-semibold tracking-[-.04em]">{value}</p><p className="mt-0.5 truncate text-[9px] text-[#99998f]">{hint}</p></div>;
+  return <div className="cf-surface rounded-[16px] border p-3"><p className="mono text-[8px] uppercase tracking-[.12em] text-[var(--muted-foreground)]">{label}</p><p className="mt-1 text-xl font-semibold tracking-[-.04em]">{value}</p><p className="mt-0.5 truncate text-[9px] text-[var(--muted-foreground)]">{hint}</p></div>;
 }
 
 function Badge({ children }: { children: React.ReactNode }) {
-  return <span className="rounded-full border border-black/8 bg-white/60 px-3 py-1.5 text-[10px] font-bold uppercase tracking-[.09em] text-[#717168]">{children}</span>;
+  return <span className="cf-surface rounded-full border px-3 py-1.5 text-[10px] font-bold uppercase tracking-[.09em] text-[var(--muted-foreground)]">{children}</span>;
 }
 
 function Panel({ icon, title, children, wide = false }: { icon: React.ReactNode; title: string; children: React.ReactNode; wide?: boolean }) {
-  return <div className={cn("rounded-[20px] border border-black/8 bg-white/60 p-5 shadow-sm", wide && "md:col-span-2")}><div className="mb-4 flex items-center gap-2 text-sm font-bold">{icon}<span>{title}</span></div>{children}</div>;
+  return <div className={cn("cf-surface rounded-[20px] border p-5 shadow-sm", wide && "md:col-span-2")}><div className="mb-4 flex items-center gap-2 text-sm font-bold">{icon}<span>{title}</span></div>{children}</div>;
 }
 
 function KeyValue({ label, value }: { label: string; value: string }) {
@@ -461,7 +825,7 @@ function KeyValue({ label, value }: { label: string; value: string }) {
 }
 
 function EmptyState({ title, body }: { title: string; body: string }) {
-  return <div className="rounded-[24px] border border-dashed border-black/15 bg-white/35 px-6 py-12 text-center"><Film className="mx-auto size-6 text-[#aaa]" /><p className="mt-3 font-bold">{title}</p><p className="mx-auto mt-2 max-w-sm text-sm leading-6 text-[#77776d]">{body}</p></div>;
+  return <div className="cf-subtle rounded-[24px] border border-dashed px-6 py-12 text-center"><Film className="mx-auto size-6 text-[var(--muted-foreground)]" /><p className="mt-3 font-bold">{title}</p><p className="mx-auto mt-2 max-w-sm text-sm leading-6 text-[var(--muted-foreground)]">{body}</p></div>;
 }
 
 function formatTime(seconds: number) {
