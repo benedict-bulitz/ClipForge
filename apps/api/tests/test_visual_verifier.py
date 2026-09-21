@@ -2,8 +2,10 @@ from clipforge.media import MediaCandidate, media_relevance, verify_media_shortl
 from clipforge.visual_verifier import UnavailableVisualVerifier, VisualVerification
 
 
-def candidate(identifier: str, *, title: str = "", query: str = "house foundation") -> MediaCandidate:
-    return MediaCandidate(identifier, "video", "https://cdn.test/media", "https://source.test", "Tester", None, 1080, 1920, 8.0, query, 100, title=title, preview_url="https://cdn.test/preview.jpg")
+def candidate(
+    identifier: str, *, title: str = "", query: str = "house foundation", rank: float = 100
+) -> MediaCandidate:
+    return MediaCandidate(identifier, "video", "https://cdn.test/media", "https://source.test", "Tester", None, 1080, 1920, 8.0, query, rank, title=title, preview_url="https://cdn.test/preview.jpg")
 
 
 class FakeVerifier:
@@ -15,7 +17,8 @@ class FakeVerifier:
 
     def verify_candidate(self, item, texts):
         self.calls.append((item.provider_id, texts))
-        return VisualVerification(self.scores[item.provider_id], "verified", "fake")
+        value = self.scores[item.provider_id]
+        return value if isinstance(value, VisualVerification) else VisualVerification(value, "verified", "fake")
 
 
 def scene():
@@ -51,8 +54,9 @@ def test_verifier_unavailable_preserves_metadata_fallback():
 def test_visual_intent_text_is_bounded_and_structured():
     verifier = FakeVerifier({"known": 0.5})
     verify_media_shortlist([candidate("known", title="Workers pouring concrete foundation")], scene(), {"intent": {"topic": "house"}}, verifier)
-    assert len(verifier.calls[0][1]) == 3
-    assert "pouring house foundation concrete" in verifier.calls[0][1][0]
+    assert len(verifier.calls[0][1]) <= 4
+    assert any("pouring house foundation concrete" in prompt for prompt in verifier.calls[0][1])
+    assert verifier.calls[0][1].scene[0] == scene()["narration"]
 
 
 def test_visual_intent_text_adds_missing_global_subject_context():
@@ -74,4 +78,114 @@ def test_visual_intent_text_adds_missing_global_subject_context():
         verifier,
     )
     prompts = verifier.calls[0][1]
-    assert any("airplane window breather hole" in prompt for prompt in prompts)
+    assert prompts.subject == ["a photo of airplane window"]
+    assert all("airplane window" not in prompt for prompt in prompts.scene)
+
+
+def test_scene_score_dominates_global_subject_score():
+    local = candidate("local", title="Workers pouring concrete foundation")
+    generic = candidate("generic")
+    verifier = FakeVerifier(
+        {
+            "local": VisualVerification(
+                0.28,
+                "verified",
+                "fake",
+                subject_score=0.05,
+                scene_score=0.30,
+            ),
+            "generic": VisualVerification(
+                0.30,
+                "verified",
+                "fake",
+                subject_score=0.90,
+                scene_score=0.10,
+            ),
+        }
+    )
+
+    rows = verify_media_shortlist(
+        [local, generic], scene(), {"intent": {"topic": "house"}}, verifier
+    )
+
+    assert rows[0][0].provider_id == "local"
+    assert rows[0][1]["confidence"] in {"high", "acceptable"}
+    assert rows[1][1]["confidence"] == "rejected"
+
+
+def test_high_ranked_generic_candidate_is_rejected_below_local_scene_threshold():
+    generic = candidate("generic", title="Winter athlete catching breath", rank=500)
+    relevant = candidate("relevant", title="Water vapor condensing into fine droplets", rank=10)
+    verifier = FakeVerifier(
+        {
+            "generic": VisualVerification(
+                0.70,
+                "verified",
+                "fake",
+                subject_score=0.92,
+                scene_score=0.10,
+            ),
+            "relevant": VisualVerification(
+                0.32,
+                "verified",
+                "fake",
+                subject_score=0.10,
+                scene_score=0.34,
+            ),
+        }
+    )
+    mechanism_scene = {
+        "narration": "Water vapor condenses into fine droplets.",
+        "visual_goal": "condensation forming water droplets in mist",
+    }
+
+    rows = verify_media_shortlist(
+        [generic, relevant], mechanism_scene, {"intent": {"topic": "visible breath in winter"}}, verifier
+    )
+    result = {candidate.provider_id: relevance for candidate, relevance in rows}
+
+    assert result["generic"]["confidence"] == "rejected"
+    assert result["relevant"]["confidence"] in {"high", "acceptable"}
+
+
+def test_visual_flashcard_detection_rejects_otherwise_relevant_candidate():
+    item = candidate("card", title="Workers pouring concrete foundation")
+    result = VisualVerification(
+        0.30,
+        "verified",
+        "fake",
+        subject_score=0.30,
+        scene_score=0.30,
+        presentation_score=0.36,
+        photographic_score=0.20,
+        diagram_score=0.22,
+        presentation_risk=True,
+    )
+
+    rows = verify_media_shortlist(
+        [item], scene(), {"intent": {"topic": "house"}}, FakeVerifier({"card": result})
+    )
+
+    assert rows[0][1]["confidence"] == "rejected"
+    assert rows[0][1]["presentation_risk"]["source"] == "vision"
+
+
+def test_visual_diagram_signal_does_not_trigger_blanket_rejection():
+    item = candidate("diagram", title="Scientific diagram of concrete foundation layers")
+    result = VisualVerification(
+        0.30,
+        "verified",
+        "fake",
+        subject_score=0.25,
+        scene_score=0.31,
+        presentation_score=0.27,
+        photographic_score=0.18,
+        diagram_score=0.35,
+        presentation_risk=False,
+    )
+
+    rows = verify_media_shortlist(
+        [item], scene(), {"intent": {"topic": "house"}}, FakeVerifier({"diagram": result})
+    )
+
+    assert rows[0][1]["confidence"] in {"high", "acceptable"}

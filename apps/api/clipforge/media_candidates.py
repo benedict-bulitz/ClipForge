@@ -60,7 +60,14 @@ def _ordered(candidates: list[MediaCandidate], preferred: str, used: set[str], s
             unique.setdefault(candidate.identity, candidate)
     verified = list(unique.values())
     if scene is not None:
-        verified = [item for item in verified if media_relevance(item, scene, state).get("confidence") != "rejected"]
+        # This is an acceptance gate, not merely a ranking input.  Unknown
+        # metadata may be promoted later by strong scene-level visual evidence,
+        # but it must not be presented as a selectable fallback by itself.
+        verified = [
+            item
+            for item in verified
+            if media_relevance(item, scene, state).get("confidence") in {"high", "acceptable", "unknown"}
+        ]
 
     def key(item: MediaCandidate) -> tuple[int, float, int, float, str, str]:
         relevance = media_relevance(item, scene, state) if scene is not None else {"score": 0}
@@ -136,7 +143,7 @@ def discover_scene_media_candidates(
     selected = tuple(
         candidate
         for candidate, relevance in verified
-        if relevance.get("confidence") != "rejected"
+        if relevance.get("confidence") in {"high", "acceptable"}
     )[: max(1, min(limit, MAX_CANDIDATES))]
     _prune()
     token = uuid.uuid4().hex

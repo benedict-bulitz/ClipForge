@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from clipforge.config import Settings
-from clipforge.media import MediaCandidate, media_relevance
+from clipforge.media import MediaCandidate, derive_search_queries, media_relevance
 from clipforge.media_candidates import (
     CandidateError,
     clear_candidate_sets,
@@ -132,7 +132,7 @@ def test_relevant_photo_beats_unrelated_generic_hole_video():
     photo = MediaCandidate(
         "window-photo", "photo", "https://cdn.test/window", "https://source.test/window",
         "Creator", None, 1080, 1920, None, "airplane window hole", 10,
-        title="Airplane window close-up",
+        title="Airplane window with a middle-pane breather hole",
     )
     video = MediaCandidate(
         "hole-video", "video", "https://cdn.test/hole", "https://source.test/hole",
@@ -198,3 +198,184 @@ def test_german_scene_queries_are_provider_friendly():
     scene = {"narration": "Beim Hausbau wird zuerst das Fundament gegossen.", "visual_goal": "Hausbau Fundament"}
     queries = derive_search_queries(scene, {"intent": {"topic": "Hausbau"}})
     assert any("foundation" in query and "construction" in query for query in queries)
+
+
+def test_exact_scene_relevance_beats_generic_topic_relevance():
+    scene = {
+        "narration": "Water vapor condenses into fine droplets.",
+        "visual_goal": "condensation forming tiny water droplets",
+    }
+    state_data = {"intent": {"topic": "visible breath in winter"}}
+    exact = MediaCandidate(
+        "droplets", "photo", "https://cdn.test/droplets", "https://source.test/droplets",
+        "Creator", None, 1080, 1920, None, "condensation droplets", 20,
+        title="Water vapor condensation forming fine droplets",
+    )
+    generic = MediaCandidate(
+        "coat", "video", "https://cdn.test/coat", "https://source.test/coat",
+        "Creator", None, 1080, 1920, 8, "winter breath", 200,
+        title="Person wearing a winter coat",
+    )
+
+    exact_relevance = media_relevance(exact, scene, state_data)
+    generic_relevance = media_relevance(generic, scene, state_data)
+
+    assert exact_relevance["score"] > generic_relevance["score"]
+    assert exact_relevance["selection_tier"] > generic_relevance["selection_tier"]
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Flashcard with condensation definition",
+        "Screenshot of a document page about water droplets",
+    ],
+)
+def test_text_card_and_document_metadata_are_rejected(title):
+    scene = {
+        "narration": "Water vapor condenses into droplets.",
+        "visual_goal": "water condensation droplets",
+    }
+    item = MediaCandidate(
+        "card", "photo", "https://cdn.test/card", "https://source.test/card",
+        "Creator", None, 1080, 1920, None, "condensation droplets", 100,
+        title=title,
+    )
+
+    relevance = media_relevance(item, scene)
+
+    assert relevance["confidence"] == "rejected"
+    assert relevance["presentation_risk"]["rejected"] is True
+
+
+def test_ordinary_photographic_footage_remains_eligible():
+    scene = {
+        "narration": "Water droplets form in cold air.",
+        "visual_goal": "fine water droplets in cold air",
+    }
+    item = MediaCandidate(
+        "photo", "photo", "https://cdn.test/photo", "https://source.test/photo",
+        "Creator", None, 1080, 1920, None, "water droplets cold air", 50,
+        title="Close-up photograph of water droplets in cold air",
+    )
+
+    assert media_relevance(item, scene)["confidence"] in {"high", "acceptable"}
+
+
+def test_useful_real_diagram_is_not_globally_banned():
+    scene = {
+        "narration": "Water vapor condenses into droplets.",
+        "visual_goal": "water vapor condensation droplets",
+    }
+    item = MediaCandidate(
+        "diagram", "photo", "https://cdn.test/diagram", "https://source.test/diagram",
+        "Creator", None, 1080, 1920, None, "condensation diagram", 50,
+        title="Scientific diagram of water vapor condensation into droplets",
+    )
+
+    relevance = media_relevance(item, scene)
+
+    assert relevance["confidence"] in {"high", "acceptable"}
+    assert relevance["presentation_risk"]["rejected"] is False
+
+
+def test_unrelated_candidate_is_rejected_when_only_topic_word_matches():
+    scene = {
+        "narration": "Water vapor condenses into droplets.",
+        "visual_goal": "water condensation droplets",
+    }
+    state_data = {"intent": {"topic": "visible breath in winter"}}
+    item = MediaCandidate(
+        "fashion", "photo", "https://cdn.test/fashion", "https://source.test/fashion",
+        "Creator", None, 1080, 1920, None, "winter", 100,
+        title="Winter fashion portrait",
+    )
+
+    assert media_relevance(item, scene, state_data)["confidence"] == "rejected"
+
+
+def test_global_topic_is_not_mandatory_for_exact_local_match():
+    scene = {
+        "narration": "Water vapor condenses into droplets.",
+        "visual_goal": "water condensation droplets",
+    }
+    state_data = {"intent": {"topic": "airplane cabin window"}}
+    item = MediaCandidate(
+        "condensation", "photo", "https://cdn.test/condensation", "https://source.test/condensation",
+        "Creator", None, 1080, 1920, None, "condensation droplets", 50,
+        title="Water condensation and fine droplets",
+    )
+
+    relevance = media_relevance(item, scene, state_data)
+
+    assert relevance["confidence"] in {"high", "acceptable"}
+    assert relevance["subject_matches"] == []
+
+
+def test_scene_query_precedes_global_topic_fallback():
+    scene = {
+        "narration": "Water vapor condenses into droplets.",
+        "visual_goal": "water condensation droplets",
+        "visual_intent": {"visual_goal": "water condensation droplets", "media_queries": ["condensation droplets"]},
+    }
+    queries = derive_search_queries(scene, {"intent": {"topic": "visible breath in winter"}})
+
+    assert queries[0] == "condensation droplets"
+    assert "winter" not in queries[0]
+    assert any("winter" in query for query in queries[1:])
+
+
+def test_stale_scene_queries_do_not_override_a_coherent_visual_intent():
+    scene = {
+        "narration": "Water vapor condenses into fine droplets.",
+        "visual_goal": "materials being moved and assembled on Earth",
+        "search_queries": ["construction materials", "earth materials"],
+        "visual_intent": {
+            "visual_goal": "water condensation droplets",
+            "objects": ["water vapor", "droplets"],
+            "actions": ["condensing"],
+            "context": ["cold air"],
+            "media_queries": ["condensation water droplets"],
+        },
+    }
+
+    queries = derive_search_queries(scene, {"intent": {"topic": "visible breath in winter"}})
+
+    assert "condensation" in queries[0]
+    assert "construction" not in " ".join(queries)
+
+
+def test_negated_smoke_does_not_become_a_provider_query_or_eligible_media():
+    scene = {
+        "narration": "Visible breath is not smoke; water vapor condenses into mist droplets.",
+        "visual_goal": "mist droplets from water vapor condensation",
+    }
+    flame = MediaCandidate(
+        "flame", "video", "https://cdn.test/flame", "https://source.test/flame",
+        "Creator", None, 1080, 1920, 8, "visible breath", 200,
+        title="Burning match emitting smoke",
+    )
+
+    assert "smoke" not in " ".join(derive_search_queries(scene, {"intent": {"topic": "visible breath"}}))
+    assert media_relevance(flame, scene, {"intent": {"topic": "visible breath in winter"}})["confidence"] == "rejected"
+
+
+def test_global_topic_overlap_cannot_rescue_unrelated_person_footage():
+    scene = {
+        "narration": "Water vapor condenses into fine droplets.",
+        "visual_goal": "condensation forming water droplets in mist",
+    }
+    athlete = MediaCandidate(
+        "athlete", "video", "https://cdn.test/athlete", "https://source.test/athlete",
+        "Creator", None, 1080, 1920, 8, "winter breath", 250,
+        title="Winter athlete catching breath outdoors",
+    )
+    mist = MediaCandidate(
+        "mist", "photo", "https://cdn.test/mist", "https://source.test/mist",
+        "Creator", None, 1080, 1920, None, "condensation mist droplets", 10,
+        title="Fine water droplets condensing in cold mist",
+    )
+    state_data = {"intent": {"topic": "visible breath in winter"}}
+
+    assert media_relevance(athlete, scene, state_data)["confidence"] == "unknown"
+    assert media_relevance(mist, scene, state_data)["confidence"] in {"high", "acceptable"}

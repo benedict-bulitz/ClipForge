@@ -13,6 +13,7 @@ import httpx
 from .config import Settings
 from .progress import ProgressCallback, report_progress
 from .visual_verifier import (
+    SCENE_VISUAL_THRESHOLD,
     VISUAL_THRESHOLD,
     get_visual_verifier,
     global_subject_text,
@@ -386,44 +387,53 @@ def derive_search_queries(scene: dict[str, Any], state: dict[str, Any]) -> list[
         "about", "after", "also", "and", "because", "before", "could", "from", "have",
         "into", "more", "only", "over", "that", "their", "there", "these", "this", "through",
         "video", "visual", "what", "when", "where", "which", "with", "would", "your", "illustrate",
-        "aber", "auch", "dass", "dies", "eine", "einer", "eines", "für", "fuer", "haben", "hier",
+        "aber", "auch", "dass", "dies", "ein", "eine", "einer", "eines", "für", "fuer", "haben", "hier",
         "mehr", "nicht", "oder", "über", "ueber", "sich", "sind", "sein", "wenn", "wird", "zeigen", "beim", "zuerst", "erst", "danach", "dann", "der", "die", "das",
+        "man", "sieht", "sehen", "seine", "seinen", "seinem", "seiner", "diese", "dieser", "dabei", "zuvor", "wir", "als", "ist", "wie", "bei", "und", "aus", "zu",
+        "sondern", "kein", "keine", "unsere", "unser", "ähnlich", "kleine", "winziger", "kurz", "wieder",
         "answer", "cause", "context", "detail", "hook", "intro", "outro", "payoff",
         "setup", "support", "turn",
         "why", "warum",
     }
     visual_intent = scene.get("visual_intent") if isinstance(scene.get("visual_intent"), dict) else {}
-    # User/editor changes to visual_goal supersede stale structured intent.
     intent_goal = str(visual_intent.get("visual_goal") or "").strip()
-    intent_current = not scene.get("visual_goal") or scene.get("visual_goal") == intent_goal
+    narration = str(scene.get("narration") or "").strip()
+    scene_goal = str(scene.get("visual_goal") or "").strip()
+    intent_coherent = _scene_text_coherent(narration, _intent_text(visual_intent))
+    goal_coherent = _scene_text_coherent(narration, scene_goal)
+    explicitly_refreshed = isinstance(scene.get("search_queries"), list) and not scene["search_queries"]
+    if explicitly_refreshed:
+        query_values = []
+        visual_goal = scene_goal
+    elif intent_coherent:
+        query_values = visual_intent.get("media_queries") or []
+        visual_goal = intent_goal
+    elif goal_coherent:
+        query_values = [] if scene.get("edit_instruction") else scene.get("search_queries") or []
+        visual_goal = scene_goal
+    else:
+        # Never let a stale visual goal or previous search steer a new scene.
+        query_values = []
+        visual_goal = ""
     supplied = [
         query
-        for value in ((visual_intent.get("media_queries") or []) if intent_current else [])
+        for value in query_values
         if (query := _semantic_query(str(value), stop, limit=7))
-    ] + [
-        query
-        for value in scene.get("search_queries") or []
-        if (query := _semantic_query(str(value), stop, limit=6))
     ]
     scene_text = " ".join(
         value
         for value in (
             str(scene.get("edit_instruction") or ""),
-            str((visual_intent.get("visual_goal") if intent_current else None) or scene.get("visual_goal") or ""),
-            str(scene.get("narration") or ""),
+            visual_goal,
+            narration,
         )
         if value
     )
     primary = _semantic_query(scene_text, stop, limit=6)
     broader = _semantic_query(str(state.get("intent", {}).get("topic") or ""), stop, limit=4)
-    subject_terms = set(broader.split())
-    contextual = []
-    for query in [*supplied, primary]:
-        query_terms = set(query.split())
-        if subject_terms and not subject_terms.issubset(query_terms):
-            query = " ".join(dict.fromkeys([*broader.split(), *query.split()]))
-        contextual.append(_semantic_query(query, stop, limit=6))
-    queries = [query for query in [*contextual, broader] if query]
+    # Scene meaning drives retrieval. The topic remains a final broad fallback;
+    # prepending it to every query dilutes mechanism/action-specific searches.
+    queries = [query for query in [*supplied, primary, broader] if query]
     return list(dict.fromkeys(_provider_query(query) for query in queries))[:3]
 
 
@@ -433,6 +443,12 @@ _PROVIDER_TERMS = {
     "bauen": "building", "bau": "construction", "wände": "walls", "wand": "wall", "dach": "roof",
     "beton": "concrete", "arbeiter": "workers", "arbeitern": "workers", "erde": "earth", "materie": "matter",
     "kapazität": "capacity", "sparen": "saving", "geld": "money",
+    "atem": "breath", "atemluft": "breath air", "winter": "winter", "sichtbarer": "visible",
+    "qualm": "smoke", "nebel": "mist", "nebelwölkchen": "mist cloud", "wolken": "clouds",
+    "kalt": "cold", "kalte": "cold", "außenluft": "outside air", "aussenluft": "outside air", "warme": "warm",
+    "kondensiert": "condensation", "gasförmige": "water vapor", "wasser": "water",
+    "tröpfchen": "droplets", "schweben": "floating", "verschwinden": "dissipating",
+    "luft": "air", "feinen": "fine", "winzigen": "tiny",
 }
 
 
@@ -447,6 +463,11 @@ def _semantic_query(text: str, stop: set[str], *, limit: int) -> str:
         r"(?i)^\s*(?:illustrate|show|visuali[sz]e)\s+"
         r"(?:answer|cause|context|detail|hook|intro|outro|payoff|setup|support|turn)\s*[:—-]?",
         "",
+        text,
+    )
+    text = re.sub(
+        r"(?i)\b(?:kein(?:e|en|em|er)?|ohne|no|not)\s+[\wäöüß-]+",
+        " ",
         text,
     )
     words = [
@@ -466,10 +487,37 @@ _RELEVANCE_STOP = {
     "ein", "eine", "einer", "einem", "der", "die", "das", "und", "oder", "zu", "von", "im", "mit", "für",
     "wird", "werden", "ist", "sind", "war", "auf", "als", "auch", "nur", "bereits", "dass", "wenn", "beim",
     "new", "first", "then", "more", "only", "people", "person", "thing", "things", "show", "illustrate",
+    "man", "seine", "seinen", "seinem", "seiner", "sehen", "sieht", "diese", "dieser", "dabei",
+    "zuvor", "ähnlich", "kleine", "kleiner", "winzig", "winziger", "unsere", "unser", "kurz",
+    "dann", "wieder", "sondern", "kein", "keine", "also",
 }
-_GENERIC_DETAIL_TERMS = {
-    "glass", "hole", "holes", "pane", "panes", "window", "windows",
-    "lens", "element", "elements", "ash", "cloud", "clouds", "damage",
+
+_TEXT_HEAVY_METADATA_MARKERS = (
+    "flashcard",
+    "flash card",
+    "study card",
+    "quiz card",
+    "quote card",
+    "social media card",
+    "presentation slide",
+    "document page",
+    "worksheet",
+    "text overlay",
+    "text-heavy",
+    "screenshot of",
+    "infographic template",
+)
+
+_AMBIGUOUS_LOCAL_TERMS = {
+    "glass",
+    "hole",
+    "pane",
+    "window",
+    "lens",
+    "element",
+    "ash",
+    "cloud",
+    "damage",
 }
 
 
@@ -481,6 +529,12 @@ def _semantic_terms(value: str) -> set[str]:
         "assembling": "assemble", "airplanes": "airplane", "windows": "window",
         "smartphones": "smartphone", "cameras": "camera", "volcanoes": "volcano",
         "houses": "house", "volcanic": "volcano", "eruption": "volcano",
+        "atem": "breath", "atemluft": "breath", "sichtbarer": "visible", "qualm": "smoke",
+        "nebel": "mist", "nebelwölkchen": "mist", "wolken": "cloud", "kühlt": "cool",
+        "kalte": "cold", "außenluft": "air", "warme": "warm", "kondensiert": "condensation",
+        "gasförmige": "vapor", "wasser": "water", "tröpfchen": "droplet",
+        "schweben": "float", "verschwinden": "dissipate", "droplets": "droplet",
+        "condenses": "condensation", "condensing": "condensation", "condensed": "condensation",
     }
     return {
         aliases.get(token, token) for token in re.findall(r"[\wäöüß-]+", value.casefold(), flags=re.UNICODE)
@@ -488,44 +542,125 @@ def _semantic_terms(value: str) -> set[str]:
     }
 
 
+def _negated_terms(value: str) -> set[str]:
+    terms = re.findall(
+        r"(?i)\b(?:kein(?:e|en|em|er)?|ohne|no|not)\s+([\wäöüß-]+)",
+        value,
+    )
+    return _semantic_terms(" ".join(terms))
+
+
+def _intent_text(intent: dict[str, Any]) -> str:
+    return " ".join(
+        [
+            str(intent.get("visual_goal") or ""),
+            *(str(value) for key in ("objects", "actions", "context") for value in intent.get(key, [])),
+        ]
+    )
+
+
+def _scene_text_coherent(narration: str, candidate_text: str) -> bool:
+    narration_terms = _semantic_terms(narration)
+    candidate_terms = _semantic_terms(candidate_text)
+    # A deliberately concise shot direction (for example, "lighthouse") can
+    # validly stand in for a pronoun-heavy sentence.  Longer, unrelated
+    # directions are much more likely to be stale state from an earlier
+    # revision and must not steer retrieval.
+    return (
+        not narration_terms
+        or len(candidate_terms) <= 2
+        or bool(narration_terms & candidate_terms)
+    )
+
+
+def _metadata_presentation_risk(candidate: MediaCandidate) -> dict[str, Any]:
+    text = " ".join((candidate.title, candidate.description, *candidate.tags)).casefold()
+    markers = [marker for marker in _TEXT_HEAVY_METADATA_MARKERS if marker in text]
+    return {
+        "rejected": bool(markers),
+        "source": "metadata" if markers else None,
+        "markers": markers,
+    }
+
+
 def media_relevance(candidate: MediaCandidate, scene: dict[str, Any], state: dict[str, Any] | None = None) -> dict[str, Any]:
     visual_intent = scene.get("visual_intent") if isinstance(scene.get("visual_intent"), dict) else {}
-    scene_text = " ".join(str(scene.get(key) or "") for key in ("narration", "visual_goal", "edit_instruction"))
-    structured = " ".join(str(visual_intent.get(key) or "") for key in ("objects", "actions", "context", "visual_goal"))
+    narration = str(scene.get("narration") or "")
+    intent_text = _intent_text(visual_intent)
+    scene_goal = str(scene.get("visual_goal") or "")
+    explicitly_refreshed = isinstance(scene.get("search_queries"), list) and not scene["search_queries"]
+    if explicitly_refreshed:
+        structured = scene_goal
+        matching_goal = scene_goal
+    elif _scene_text_coherent(narration, intent_text):
+        structured = intent_text
+        matching_goal = str(visual_intent.get("visual_goal") or "")
+    elif _scene_text_coherent(narration, scene_goal):
+        structured = scene_goal
+        matching_goal = scene_goal
+    else:
+        structured = ""
+        matching_goal = ""
+    scene_text = " ".join(
+        value for value in (narration, structured, str(scene.get("edit_instruction") or "")) if value
+    )
     global_terms = _semantic_terms(global_subject_text(state))
-    local_terms = _semantic_terms(scene_text + " " + structured)
-    expected = local_terms | global_terms
+    negated_terms = _negated_terms(narration)
+    local_terms = _semantic_terms(scene_text) - negated_terms
     metadata = _semantic_terms(" ".join((candidate.title, candidate.description, *candidate.tags)))
     query_terms = _semantic_terms(candidate.query)
+    goal_terms = _semantic_terms(matching_goal)
+    # A concise visual direction may name a principal object plus its setting
+    # ("lighthouse by the sea").  Matching its principal object is useful
+    # evidence; a global topic alone is not.  This remains local evidence
+    # because it comes from the scene's own coherent visual direction.
+    goal_direct_match = bool(goal_terms & metadata)
     local_matches = local_terms & metadata
-    metadata_matches = expected & metadata
+    scene_specific_terms = local_terms - global_terms
+    scene_specific_matches = scene_specific_terms & metadata
     action_expected = _semantic_terms(str(scene.get("narration") or "")) & {"build", "construct", "pour", "move", "assemble", "fall", "rise", "increase", "decrease"}
     action_matches = action_expected & metadata
-    query_matches = expected & query_terms
+    query_matches = local_terms & query_terms
     global_matches = global_terms & metadata
-    global_subject_matches = global_terms & metadata
-    matched = sorted(metadata_matches | query_matches)
-    score = (
-        len(local_matches) * 18
-        + len(action_matches) * 16
-        + len(global_matches) * 10
-        + len(query_matches) * 2
+    presentation_risk = _metadata_presentation_risk(candidate)
+    matched = sorted(local_matches | global_matches)
+    contextual_only = not local_matches and len(global_matches) >= 2
+    global_only_match = (
+        bool(local_matches)
+        and not scene_specific_matches
+        and bool(scene_specific_terms)
+        and local_matches <= global_terms
+        and not goal_direct_match
     )
-    if metadata and not metadata_matches:
+    ambiguous_without_context = (
+        bool(local_matches)
+        and local_matches <= _AMBIGUOUS_LOCAL_TERMS
+        and not global_matches
+    )
+    score = (
+        len(local_matches) * 12
+        + len(scene_specific_matches) * 18
+        + len(action_matches) * 16
+        + len(global_matches) * 4
+    )
+    if metadata and not local_matches:
         score -= 45
-    subject_required = bool(global_terms)
-    subject_missing = subject_required and not global_subject_matches
-    generic_local_only = bool(local_matches) and local_matches <= _GENERIC_DETAIL_TERMS
-    if metadata and subject_missing:
-        score -= 80 if generic_local_only else 25
+    if contextual_only:
+        # Retain this as a ranking signal only. Acceptance below remains
+        # unknown until local visual evidence is available.
+        score += 70
     if not metadata:
         confidence = "unknown"
-    elif not metadata_matches or (subject_missing and generic_local_only):
+    elif presentation_risk["rejected"] or ambiguous_without_context:
         confidence = "rejected"
-    elif subject_missing:
+    elif contextual_only or global_only_match:
+        # Topic overlap is only a plausibility guard. It needs a strong local
+        # visual verification before it can become eligible media.
         confidence = "unknown"
+    elif not local_matches:
+        confidence = "rejected"
     else:
-        confidence = "high" if len(global_subject_matches) >= 1 and len(local_matches) >= 1 else "acceptable"
+        confidence = "high" if len(scene_specific_matches) >= 2 or bool(action_matches) else "acceptable"
     if not matched and not metadata:
         score -= 60
     return {
@@ -533,8 +668,12 @@ def media_relevance(candidate: MediaCandidate, scene: dict[str, Any], state: dic
         "matched_terms": matched,
         "confidence": confidence,
         "subject_terms": sorted(global_terms),
-        "subject_matches": sorted(global_subject_matches),
+        "subject_matches": sorted(global_matches),
         "scene_matches": sorted(local_matches),
+        "scene_specific_matches": sorted(scene_specific_matches),
+        "query_matches": sorted(query_matches),
+        "presentation_risk": presentation_risk,
+        "selection_tier": 3 if scene_specific_matches or action_matches else (2 if local_matches and not global_only_match else 0),
     }
 
 
@@ -587,6 +726,10 @@ def verify_media_shortlist(
             "provenance": None,
             "frame_scores": [],
             "frame_count": 0,
+            "presentation_score": None,
+            "photographic_score": None,
+            "diagram_score": None,
+            "presentation_risk": False,
         }
         if result is not None:
             visual_data = {
@@ -597,14 +740,93 @@ def verify_media_shortlist(
                 "provenance": result.provenance,
                 "frame_scores": list(result.frame_scores),
                 "frame_count": result.frame_count,
+                "presentation_score": result.presentation_score,
+                "photographic_score": result.photographic_score,
+                "diagram_score": result.diagram_score,
+                "presentation_risk": result.presentation_risk,
             }
         combined = dict(metadata, visual=visual_data)
-        if result is not None and result.status == "verified" and result.score is not None and result.score < VISUAL_THRESHOLD:
-            combined["confidence"] = "rejected"
-        elif metadata["confidence"] == "unknown" and result is not None and result.status == "verified" and (result.score or 0) >= VISUAL_THRESHOLD:
-            combined["confidence"] = "acceptable"
+        if result is not None and result.status == "verified":
+            scene_score = result.scene_score if result.scene_score is not None else result.score
+            if result.presentation_risk:
+                combined["confidence"] = "rejected"
+                combined["presentation_risk"] = {
+                    "rejected": True,
+                    "source": "vision",
+                    "markers": [],
+                }
+            elif scene_score is None or scene_score < SCENE_VISUAL_THRESHOLD:
+                combined["confidence"] = "rejected"
+            elif metadata["confidence"] == "unknown" and (result.score or 0) >= VISUAL_THRESHOLD:
+                combined["confidence"] = "acceptable"
+                combined["selection_tier"] = 1
         rows.append((candidate, combined))
     return rows
+
+
+def _rank_verified(
+    candidates: list[MediaCandidate],
+    scene: dict[str, Any],
+    state: dict[str, Any],
+    preferred_kind: str,
+    used: set[str],
+    verifier: Any | None,
+) -> list[tuple[MediaCandidate, dict[str, Any]]]:
+    unique: dict[str, MediaCandidate] = {}
+    for candidate in candidates:
+        if candidate.identity not in used:
+            unique.setdefault(candidate.identity, candidate)
+    shortlist = list(unique.values())
+    rows = verify_media_shortlist(shortlist, scene, state, verifier)
+    eligible = [row for row in rows if row[1]["confidence"] in {"high", "acceptable"}]
+    return sorted(
+        eligible,
+        key=lambda row: (
+            int(row[1].get("selection_tier") or 0),
+            float(row[1].get("visual", {}).get("scene_score") or -1),
+            float(row[1]["score"]),
+            int(row[0].kind == preferred_kind),
+            row[0].rank,
+        ),
+        reverse=True,
+    )
+
+
+def _cache_candidate(
+    candidate: MediaCandidate,
+    relevance: dict[str, Any],
+    *,
+    asset_root: Path,
+    render_root: Path,
+    pexels: Any | None,
+    wikimedia: Any,
+) -> dict[str, Any]:
+    suffix = ".mp4" if candidate.kind == "video" else ".jpg"
+    destination = asset_root / candidate.provider / f"{candidate.kind}-{candidate.provider_id}{suffix}"
+    downloader = pexels if candidate.provider == "pexels" else wikimedia
+    if downloader is None:
+        raise MediaProviderError("provider_error", "No downloader is available for this candidate.")
+    downloaded = downloader.download(candidate, destination)
+    relative = downloaded.relative_to(render_root.resolve()).as_posix()
+    return {
+        "identity": candidate.identity,
+        "provider": candidate.provider,
+        "provider_id": candidate.provider_id,
+        "kind": candidate.kind,
+        "cache_path": relative,
+        "source_url": candidate.source_url,
+        "creator": candidate.creator,
+        "creator_url": candidate.creator_url,
+        "width": candidate.width,
+        "height": candidate.height,
+        "duration": candidate.duration,
+        "query": candidate.query,
+        "title": candidate.title,
+        "description": candidate.description,
+        "tags": list(candidate.tags),
+        "preview_url": candidate.preview_url,
+        "relevance": relevance,
+    }
 
 
 def prepare_project_media(
@@ -670,103 +892,93 @@ def prepare_project_media(
         queries = derive_search_queries(scene, state)
         scene["search_queries"] = queries
         duration = max(1.0, float(scene.get("end", 0)) - float(scene.get("start", 0)))
-        candidate: MediaCandidate | None = None
-        candidate_relevance: dict[str, Any] | None = None
-        try:
-            video_candidates: list[MediaCandidate] = []
-            photo_candidates: list[MediaCandidate] = []
-            if pexels is not None:
-                preferred_kind = scene.get("preferred_media") or "video"
-                if preferred_kind == "photo":
+        preferred_kind = str(scene.get("preferred_media") or "video")
+        if preferred_kind not in {"video", "photo"}:
+            preferred_kind = "video"
+        metadata: dict[str, Any] | None = None
+        pexels_candidates: list[MediaCandidate] = []
+        if pexels is not None:
+            for query in queries:
+                search_kinds = (
+                    ("photo", "video")
+                    if preferred_kind == "photo"
+                    else ("video", "photo")
+                )
+                for search_kind in search_kinds:
                     try:
-                        for query in queries:
-                            photo_candidates.extend(
-                                pexels.search_photos(query, portrait=portrait)
-                            )
-                            candidate = _best_unused(photo_candidates, used, scene, state)
-                    except MediaProviderError as exc:
-                        failure = exc
-                if candidate is None:
-                    try:
-                        for query in queries:
-                            video_candidates.extend(
+                        if search_kind == "video":
+                            pexels_candidates.extend(
                                 pexels.search_videos(
-                                    query, portrait=portrait, scene_duration=duration
+                                    query,
+                                    portrait=portrait,
+                                    scene_duration=duration,
                                 )
                             )
-                            candidate = _best_unused(video_candidates, used, scene, state)
-                        candidate = _best_unused(video_candidates, used, scene, state)
-                    except MediaProviderError as exc:
-                        failure = exc
-                if candidate is None and preferred_kind != "photo":
-                    try:
-                        for query in queries:
-                            photo_candidates.extend(
+                        else:
+                            pexels_candidates.extend(
                                 pexels.search_photos(query, portrait=portrait)
                             )
-                            candidate = _best_unused(photo_candidates, used, scene, state)
                     except MediaProviderError as exc:
                         failure = exc
-                combined = [*video_candidates, *photo_candidates]
-                if combined:
-                    shortlist = [item for item in combined if item.identity not in used]
-                    verified = verify_media_shortlist(shortlist, scene, state, visual_verifier)
-                    verified = [row for row in verified if row[1]["confidence"] in {"high", "acceptable"}]
-                    if verified:
-                        selected_row = max(
-                            verified,
-                            key=lambda row: (
-                                float(row[1].get("visual", {}).get("score") or -1),
-                                float(row[1]["score"]),
-                                3 if row[0].kind == preferred_kind else 0,
-                                row[0].rank,
-                            ),
-                        )
-                        candidate, candidate_relevance = selected_row
-            if candidate is None:
-                commons_candidates: list[MediaCandidate] = []
-                for query in queries:
+            for candidate, relevance in _rank_verified(
+                pexels_candidates,
+                scene,
+                state,
+                preferred_kind,
+                used,
+                visual_verifier,
+            ):
+                try:
+                    metadata = _cache_candidate(
+                        candidate,
+                        relevance,
+                        asset_root=asset_root,
+                        render_root=settings.render_root,
+                        pexels=pexels,
+                        wikimedia=wikimedia,
+                    )
+                    break
+                except MediaProviderError as exc:
+                    failure = exc
+
+        # A failed Pexels download must not skip the remaining free source.
+        if metadata is None:
+            commons_candidates: list[MediaCandidate] = []
+            for query in queries:
+                try:
                     commons_candidates.extend(
                         wikimedia.search_photos(query, portrait=portrait)
                     )
-                    candidate = _best_unused(commons_candidates, used, scene, state)
-            if candidate is None:
-                related = _related_media(queries, selected_media)
-                if related is not None:
-                    scene["media"] = dict(related)
-                    scene["asset_status"] = "related_media_reused"
-                    manifest.append(dict(related))
-                    selected_count += 1
-                    report_progress(
-                        progress,
-                        "media",
-                        "Finding visuals",
-                        completed_units=scene_index,
-                        total_units=total_scenes,
+                except MediaProviderError as exc:
+                    failure = exc
+            for candidate, relevance in _rank_verified(
+                commons_candidates,
+                scene,
+                state,
+                preferred_kind,
+                used,
+                visual_verifier,
+            ):
+                try:
+                    metadata = _cache_candidate(
+                        candidate,
+                        relevance,
+                        asset_root=asset_root,
+                        render_root=settings.render_root,
+                        pexels=pexels,
+                        wikimedia=wikimedia,
                     )
-                    continue
-            if candidate is None:
-                if existing_usable:
-                    scene["media"] = existing
-                    scene["asset_status"] = "replacement_failed"
-                    scene["fallback_reason"] = "No replacement media was found; the previous asset was kept."
-                    manifest.append(existing)
-                    selected_media.append(existing)
-                    used.add(str(existing["identity"]))
-                    selected_count += 1
-                    replacement_failed_count += 1
-                    report_progress(
-                        progress,
-                        "media",
-                        "Finding visuals",
-                        completed_units=scene_index,
-                        total_units=total_scenes,
-                    )
-                    continue
-                scene["asset_status"] = "generated_card_fallback"
-                scene["fallback_reason"] = "No relevant real media was found after staged search."
-                scene.pop("media", None)
-                generated_card_count += 1
+                    break
+                except MediaProviderError as exc:
+                    failure = exc
+
+        if metadata is None:
+            related = _related_media(queries, selected_media)
+            if related is not None:
+                scene["media"] = dict(related)
+                scene["asset_status"] = "related_media_reused"
+                manifest.append(dict(related))
+                selected_count += 1
                 report_progress(
                     progress,
                     "media",
@@ -775,46 +987,11 @@ def prepare_project_media(
                     total_units=total_scenes,
                 )
                 continue
-
-            suffix = ".mp4" if candidate.kind == "video" else ".jpg"
-            root = asset_root / candidate.provider
-            destination = root / f"{candidate.kind}-{candidate.provider_id}{suffix}"
-            downloader = pexels if candidate.provider == "pexels" else wikimedia
-            assert downloader is not None
-            downloaded = downloader.download(candidate, destination)
-            relative = downloaded.relative_to(settings.render_root.resolve()).as_posix()
-            metadata = {
-                "identity": candidate.identity,
-                "provider": candidate.provider,
-                "provider_id": candidate.provider_id,
-                "kind": candidate.kind,
-                "cache_path": relative,
-                "source_url": candidate.source_url,
-                "creator": candidate.creator,
-                "creator_url": candidate.creator_url,
-                "width": candidate.width,
-                "height": candidate.height,
-                "duration": candidate.duration,
-                "query": candidate.query,
-                "title": candidate.title,
-                "description": candidate.description,
-                "tags": list(candidate.tags),
-                "preview_url": candidate.preview_url,
-                "relevance": candidate_relevance or media_relevance(candidate, scene, state),
-            }
-            scene["media"] = metadata
-            scene["preferred_media"] = candidate.kind
-            scene["asset_status"] = f"{candidate.kind}_ready"
-            used.add(candidate.identity)
-            manifest.append(metadata)
-            selected_media.append(metadata)
-            selected_count += 1
-        except MediaProviderError as exc:
-            failure = exc
+        if metadata is None:
             if existing_usable:
                 scene["media"] = existing
                 scene["asset_status"] = "replacement_failed"
-                scene["fallback_reason"] = f"{exc}; the previous asset was kept."
+                scene["fallback_reason"] = "No replacement media was found; the previous asset was kept."
                 manifest.append(existing)
                 selected_media.append(existing)
                 used.add(str(existing["identity"]))
@@ -829,9 +1006,30 @@ def prepare_project_media(
                 )
                 continue
             scene["asset_status"] = "generated_card_fallback"
-            scene["fallback_reason"] = str(exc)
+            scene["fallback_reason"] = (
+                str(failure)
+                if failure
+                else "No relevant real media was found after staged search."
+            )
             scene.pop("media", None)
             generated_card_count += 1
+            report_progress(
+                progress,
+                "media",
+                "Finding visuals",
+                completed_units=scene_index,
+                total_units=total_scenes,
+            )
+            continue
+
+        candidate_identity = str(metadata["identity"])
+        scene["media"] = metadata
+        scene["preferred_media"] = metadata["kind"]
+        scene["asset_status"] = f"{metadata['kind']}_ready"
+        used.add(candidate_identity)
+        manifest.append(metadata)
+        selected_media.append(metadata)
+        selected_count += 1
         report_progress(
             progress,
             "media",
@@ -896,7 +1094,9 @@ def _query_terms(value: str) -> set[str]:
 def _related_media(
     queries: list[str], selected_media: list[dict[str, Any]]
 ) -> dict[str, Any] | None:
-    desired = set().union(*(_query_terms(query) for query in queries)) if queries else set()
+    # Compare the focused scene query only; the final broad topic query is a
+    # plausibility fallback and must not make unrelated scenes look reusable.
+    desired = _query_terms(queries[0]) if queries else set()
     best: tuple[float, dict[str, Any]] | None = None
     for media in selected_media:
         existing = _query_terms(str(media.get("query") or ""))

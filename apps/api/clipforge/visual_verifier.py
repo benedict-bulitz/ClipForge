@@ -21,6 +21,8 @@ from PIL import Image
 MODEL_NAME = "ViT-B-32"
 MODEL_PRETRAINED = "laion2b_s34b_b79k"
 VISUAL_THRESHOLD = 0.18
+SCENE_VISUAL_THRESHOLD = 0.24
+PRESENTATION_RISK_MARGIN = 0.01
 MAX_IMAGE_CACHE = 128
 MAX_TEXT_CACHE = 64
 MAX_VERIFY_VIDEO_BYTES = 40 * 1024 * 1024
@@ -35,6 +37,10 @@ class VisualVerification:
     frame_count: int = 0
     subject_score: float | None = None
     scene_score: float | None = None
+    presentation_score: float | None = None
+    photographic_score: float | None = None
+    diagram_score: float | None = None
+    presentation_risk: bool = False
 
 
 class VisualPromptSet(list[str]):
@@ -174,18 +180,62 @@ class OpenClipVisualVerifier:
         scene_texts = list(getattr(texts, "scene", ())) or list(texts)
         subject_score = self.score_image(image, subject_texts or scene_texts, asset_identity=f"{asset_identity}:subject")
         scene_score = self.score_image(image, scene_texts, asset_identity=f"{asset_identity}:scene")
-        return subject_score, scene_score, (subject_score * 0.65) + (scene_score * 0.35)
+        combined = scene_score if not subject_texts else (scene_score * 0.85) + (subject_score * 0.15)
+        return subject_score, scene_score, combined
+
+    def _presentation_scores(
+        self, image: Image.Image, *, asset_identity: str
+    ) -> tuple[float, float, float, bool]:
+        presentation_score = self.score_image(
+            image,
+            [
+                "a flashcard with large printed text",
+                "a screenshot of a document or presentation slide",
+                "a text-heavy infographic or social media quote card",
+            ],
+            asset_identity=f"{asset_identity}:presentation",
+        )
+        photographic_score = self.score_image(
+            image,
+            [
+                "a natural photograph or real-world video frame",
+                "ordinary photographic footage without large text overlays",
+            ],
+            asset_identity=f"{asset_identity}:photographic",
+        )
+        diagram_score = self.score_image(
+            image,
+            [
+                "a useful scientific diagram explaining a physical mechanism",
+                "a clear data visualization that directly explains the subject",
+            ],
+            asset_identity=f"{asset_identity}:diagram",
+        )
+        risk = presentation_score >= max(photographic_score, diagram_score) + PRESENTATION_RISK_MARGIN
+        return presentation_score, photographic_score, diagram_score, risk
 
     def score_video_frames(self, frames: list[Image.Image], texts: list[str], *, asset_identity: str = "video") -> VisualVerification:
         scores = []
         subject_scores = []
         scene_scores = []
+        presentation_scores = []
+        photographic_scores = []
+        diagram_scores = []
+        presentation_risks = []
         for i, frame in enumerate(frames):
+            identity = f"{asset_identity}:frame:{i}"
             subject_score, scene_score, combined = self._score_prompt_groups(
-                frame, texts, asset_identity=f"{asset_identity}:frame:{i}"
+                frame, texts, asset_identity=identity
+            )
+            presentation_score, photographic_score, diagram_score, presentation_risk = (
+                self._presentation_scores(frame, asset_identity=identity)
             )
             subject_scores.append(subject_score)
             scene_scores.append(scene_score)
+            presentation_scores.append(presentation_score)
+            photographic_scores.append(photographic_score)
+            diagram_scores.append(diagram_score)
+            presentation_risks.append(presentation_risk)
             scores.append(combined)
         return (
             VisualVerification(
@@ -196,6 +246,10 @@ class OpenClipVisualVerifier:
                 len(scores),
                 float(statistics.median(subject_scores)),
                 float(statistics.median(scene_scores)),
+                float(statistics.median(presentation_scores)),
+                float(statistics.median(photographic_scores)),
+                float(statistics.median(diagram_scores)),
+                sum(presentation_risks) > len(presentation_risks) / 2,
             )
             if scores
             else VisualVerification(None, "unavailable_frames")
@@ -265,6 +319,10 @@ class OpenClipVisualVerifier:
                             result.frame_count,
                             result.subject_score,
                             result.scene_score,
+                            result.presentation_score,
+                            result.photographic_score,
+                            result.diagram_score,
+                            result.presentation_risk,
                         )
             except (OSError, ValueError, RuntimeError, httpx.HTTPError, subprocess.SubprocessError):
                 pass
@@ -278,6 +336,11 @@ class OpenClipVisualVerifier:
             subject_score, scene_score, combined = self._score_prompt_groups(
                 image, texts, asset_identity=str(getattr(candidate, "identity", "image"))
             )
+            presentation_score, photographic_score, diagram_score, presentation_risk = (
+                self._presentation_scores(
+                    image, asset_identity=str(getattr(candidate, "identity", "image"))
+                )
+            )
             return VisualVerification(
                 combined,
                 "verified",
@@ -286,6 +349,10 @@ class OpenClipVisualVerifier:
                 1,
                 subject_score,
                 scene_score,
+                presentation_score,
+                photographic_score,
+                diagram_score,
+                presentation_risk,
             )
         except (OSError, ValueError, RuntimeError, ImportError, httpx.HTTPError):
             return VisualVerification(None, "unavailable_preview")
@@ -311,7 +378,8 @@ def _subject_tokens(value: str) -> list[str]:
     stop = {
         "why", "how", "what", "when", "where", "which", "does", "do", "did", "are", "is",
         "the", "a", "an", "der", "die", "das", "ein", "eine", "haben", "hat", "warum",
-        "wieso", "wie", "sind", "werden", "wird", "kann", "können", "sich", "zu", "von",
+        "wieso", "wie", "sind", "werden", "wird", "kann", "können", "sich", "zu", "von", "im",
+        "man", "sieht", "sehen", "seine", "seinen", "seinem", "seiner",
         "for", "with", "about", "and", "or", "to", "in", "on", "write",
         "fictional", "story", "tell", "explain", "question", "keeper",
     }
@@ -342,23 +410,15 @@ def visual_intent_text(scene: dict[str, Any], state: dict[str, Any] | None = Non
     objects = [str(v).strip() for v in intent.get("objects", []) if str(v).strip()]
     actions = [str(v).strip() for v in intent.get("actions", []) if str(v).strip()]
     context = [str(v).strip() for v in intent.get("context", []) if str(v).strip()]
-    global_topic = str((state or {}).get("intent", {}).get("topic") or "").strip()
+    narration = str(scene.get("narration") or "").strip()
+    provider_queries = [
+        str(value).strip()
+        for value in (scene.get("search_queries") or intent.get("media_queries") or [])
+        if str(value).strip()
+    ]
     subject_topic = global_subject_text(state)
-    if global_topic:
-        global_terms = set(re.findall(r"[\wäöüß-]+", global_topic.casefold(), flags=re.UNICODE))
-        intent_terms = set(
-            re.findall(
-                r"[\wäöüß-]+",
-                " ".join([*objects, *actions, *context, goal]).casefold(),
-                flags=re.UNICODE,
-            )
-        )
-        meaningful_global = {
-            term for term in global_terms if len(term) > 3 and term not in {"warum", "haben", "what", "does", "why"}
-        }
-        if meaningful_global - intent_terms:
-            context.append(global_topic)
-    prompts = []
+    prompts = [narration] if narration else []
+    prompts.extend(provider_queries[:1])
     if objects or actions or context:
         subject = " ".join([*actions, *objects]).strip() or "visual subject"
         prompts.append(
@@ -371,7 +431,7 @@ def visual_intent_text(scene: dict[str, Any], state: dict[str, Any] | None = Non
     scene_prompts = list(dict.fromkeys(v for v in prompts if v))
     if state is None:
         return scene_prompts[:4] or ["a relevant visual scene"]
-    scene_prompts = scene_prompts[:2] or ["a relevant visual scene"]
+    scene_prompts = scene_prompts[:3] or ["a relevant visual scene"]
     subject_prompts = [f"a photo of {subject_topic}"] if subject_topic else []
     return VisualPromptSet(
         list(dict.fromkeys([*scene_prompts, *subject_prompts])),

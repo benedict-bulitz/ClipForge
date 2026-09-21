@@ -7,6 +7,7 @@ import pytest
 from clipforge.config import Settings
 from clipforge.media import (
     MediaCandidate,
+    MediaProviderError,
     derive_search_queries,
     parse_photo_results,
     parse_video_results,
@@ -288,6 +289,8 @@ def candidate(
     *,
     provider: str = "pexels",
     query: str = "lighthouse",
+    title: str | None = None,
+    rank: float | None = None,
 ) -> MediaCandidate:
     return MediaCandidate(
         provider_id=provider_id,
@@ -300,9 +303,9 @@ def candidate(
         height=1920,
         duration=12 if kind == "video" else None,
         query=query,
-        rank=100 - int(provider_id),
+        rank=100 - int(provider_id) if rank is None else rank,
         provider=provider,
-        title=query,
+        title=title or query,
     )
 
 
@@ -545,6 +548,32 @@ def test_wikimedia_is_attempted_after_pexels_before_card_fallback(tmp_path):
     assert scene["asset_status"] == "photo_ready"
 
 
+def test_wikimedia_is_used_after_relevant_pexels_download_fails(tmp_path):
+    settings = local_settings(tmp_path, pexels="unit-test-token")
+    state = sample_state(settings)
+    state["scenes"] = state["scenes"][:1]
+
+    class DownloadFailure(FakePexels):
+        def download(self, selected, destination):
+            raise MediaProviderError("network_error", "Pexels download failed")
+
+    commons = FakeWikimedia(
+        [candidate("11", "photo", provider="wikimedia", query="lighthouse storm")]
+    )
+
+    prepare_project_media(
+        state,
+        "project",
+        settings,
+        client=DownloadFailure([candidate("10", query="lighthouse storm")]),
+        fallback_client=commons,
+    )
+
+    assert commons.queries
+    assert state["scenes"][0]["media"]["provider"] == "wikimedia"
+    assert state["scenes"][0]["asset_status"] == "photo_ready"
+
+
 def test_relevant_media_can_be_reused_only_after_retrieval_attempts(tmp_path):
     settings = local_settings(tmp_path, pexels="unit-test-token")
     state = sample_state(settings)
@@ -566,6 +595,43 @@ def test_relevant_media_can_be_reused_only_after_retrieval_attempts(tmp_path):
     assert state["scenes"][0]["asset_status"] == "video_ready"
     assert state["scenes"][1]["asset_status"] == "related_media_reused"
     assert state["scenes"][0]["media"]["identity"] == state["scenes"][1]["media"]["identity"]
+
+
+def test_weak_top_ranked_candidate_does_not_block_a_later_local_match(tmp_path):
+    settings = local_settings(tmp_path, pexels="unit-test-token")
+    state = sample_state(settings)
+    state["scenes"] = state["scenes"][:1]
+    scene = state["scenes"][0]
+    scene.update(
+        narration="Water vapor condenses into fine droplets.",
+        visual_goal="condensation forming water droplets in mist",
+        visual_intent={
+            "visual_goal": "condensation forming water droplets in mist",
+            "objects": ["water vapor", "droplets"],
+            "actions": ["condensing"],
+            "context": ["cold air"],
+            "media_queries": ["condensation water droplets"],
+        },
+        search_queries=["condensation water droplets"],
+    )
+    state["intent"]["topic"] = "visible breath in winter"
+    weak = candidate(
+        "1", query="winter breath", title="Winter athlete catching breath outdoors", rank=500
+    )
+    relevant = candidate(
+        "2", query="condensation droplets", title="Water vapor condensing into fine droplets", rank=10
+    )
+
+    prepare_project_media(
+        state,
+        "project",
+        settings,
+        client=FakePexels([weak, relevant]),
+        fallback_client=FakeWikimedia(),
+    )
+
+    assert scene["media"]["provider_id"] == "2"
+    assert scene["asset_status"] == "video_ready"
 
 
 def test_generated_card_records_degraded_coverage_after_all_searches(tmp_path):
