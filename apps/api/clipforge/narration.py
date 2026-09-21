@@ -328,8 +328,8 @@ def begins_with_preamble(value: object) -> bool:
     return any(text.startswith(opening) for opening in BOILERPLATE_OPENINGS)
 
 
-def clean_script_blocks(blocks: list[dict[str, Any]]) -> list[dict[str, str]]:
-    clean: list[dict[str, str]] = []
+def clean_script_blocks(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    clean: list[dict[str, Any]] = []
     for block in blocks:
         role = str(block.get("role") or "detail").strip().casefold() or "detail"
         text = clean_narration_text(block.get("text"))
@@ -339,7 +339,11 @@ def clean_script_blocks(blocks: list[dict[str, Any]]) -> list[dict[str, str]]:
         ):
             continue
         if text:
-            clean.append({"role": role, "text": text})
+            cleaned = {"role": role, "text": text}
+            fact_ids = block.get("fact_ids")
+            if isinstance(fact_ids, list):
+                cleaned["fact_ids"] = [str(fact_id) for fact_id in fact_ids if str(fact_id).strip()]
+            clean.append(cleaned)
     return clean
 
 

@@ -3,6 +3,8 @@ import re
 from datetime import UTC, datetime
 from typing import Any
 
+from pydantic import ValidationError
+
 from .ai import ai_plan_to_dict, interpret_edit, plan_with_openai
 from .alignment import phrase_fallback_items
 from .attention import replan_attention, resolve_attention_preferences
@@ -11,10 +13,31 @@ from .dependencies import resolve_edit_scope
 from .hashing import attach_hashes
 from .hooks import STRATEGIES, select_hook, select_hook_candidate
 from .language import detect_text_language, resolve_language
-from .narration import clean_narration_text, clean_research_claim, clean_script_blocks
+from .narration import (
+    clean_narration_text,
+    clean_research_claim,
+    clean_script_blocks,
+    contamination_issues,
+)
 from .progress import ProgressCallback, report_progress
 from .research import research_topic
 from .schemas import AdvancedOptions
+from .script_review import (
+    OpenAIScriptReviewProvider,
+    ScriptReviewProvider,
+    ScriptReviewRequest,
+    compact_script_draft,
+    review_script_v2,
+)
+from .script_writer import (
+    OpenAIScriptWriterProvider,
+    ScriptBlockV2,
+    ScriptWriterFact,
+    ScriptWriterProvider,
+    ScriptWriterRequest,
+    ScriptWriterResult,
+    generate_script_v2,
+)
 from .voice import apply_voice_preferences, initial_voice
 
 STAGE_LABELS = [
@@ -132,6 +155,186 @@ def _factual_blocks(intent: dict[str, Any], facts: list[dict[str, Any]]) -> list
     blocks = [{"role": roles[index], "text": claim} for index, claim in enumerate(useful)]
     hook = select_hook(intent, facts, body=useful[1] if len(useful) > 1 else (useful[0] if useful else None))
     return ([{"role": "hook", "text": hook}] if hook else []) + blocks
+
+
+def _script_writer_fact(fact: dict[str, Any], index: int) -> ScriptWriterFact | None:
+    claim = clean_research_claim(fact.get("claim"))
+    if not claim or contamination_issues(claim):
+        return None
+    verification = str(fact.get("verification") or "unverified_model_synthesis")
+    if verification == "source_snippet":
+        verification = "source_attributed"
+    if verification not in {
+        "supported",
+        "source_attributed",
+        "uncertain",
+        "conflicting",
+        "unsupported",
+        "unverified_model_synthesis",
+    }:
+        verification = "unverified_model_synthesis"
+    return ScriptWriterFact(
+        id=str(fact.get("id") or f"fact_{index:02d}"),
+        claim=claim,
+        verification=verification,
+        confidence=fact.get("confidence"),
+        priority=fact.get("priority"),
+    )
+
+
+def _bounded_script_writer_summary(facts: list[ScriptWriterFact], limit: int = 2_000) -> str:
+    """Provide optional context without making it compete with structured facts."""
+    summary = ""
+    for fact in facts:
+        candidate = f"{summary} {fact.claim}".strip()
+        if len(candidate) > limit:
+            break
+        summary = candidate
+    return summary
+
+
+def _v2_body_blocks(draft_blocks: list[ScriptBlockV2]) -> list[dict[str, Any]]:
+    return [
+        {
+            "role": block.role,
+            "text": block.text,
+            "fact_ids": list(block.fact_ids),
+        }
+        for block in draft_blocks
+    ]
+
+
+def _generate_body_with_v2_or_fallback(
+    prompt: str,
+    intent: dict[str, Any],
+    options: AdvancedOptions,
+    settings: Settings,
+    facts: list[dict[str, Any]],
+    legacy_blocks: list[dict[str, Any]],
+    *,
+    provider: ScriptWriterProvider | None = None,
+    review_provider: ScriptReviewProvider | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    diagnostics: dict[str, Any] = {
+        "attempted": False,
+        "status": "legacy_fallback",
+        "provider": None,
+        "error": None,
+        "fact_ids": [],
+        "writer_draft": None,
+        "reviewed_draft": None,
+        "review": {"status": "not_run", "issues": [], "error": None},
+    }
+    if not settings.openai_api_key or intent.get("content_type") == "fictional_story":
+        diagnostics["reason"] = "unsupported_generation_mode"
+        return legacy_blocks, diagnostics
+
+    normalized_facts = [
+        normalized
+        for index, fact in enumerate(facts, 1)
+        if (normalized := _script_writer_fact(fact, index)) is not None
+    ]
+    if not normalized_facts:
+        diagnostics["reason"] = "no_normalized_facts"
+        return legacy_blocks, diagnostics
+
+    diagnostics["attempted"] = True
+    try:
+        request = ScriptWriterRequest(
+            prompt=prompt,
+            language=str(intent["language"]),
+            tone=str(intent.get("tone") or "fast_documentary"),
+            audience="general",
+            content_type=str(intent.get("content_type") or "factual_explainer"),
+            facts=normalized_facts,
+            research_summary=_bounded_script_writer_summary(normalized_facts),
+            target_duration={
+                "max_seconds": min(options.max_duration, settings.shortform_max_duration)
+            },
+            writing_requirements=[
+                "Write a body-only explanation; do not create a hook.",
+                "Stop when the explanation is complete.",
+            ],
+        )
+    except ValidationError as exc:
+        diagnostics["reason"] = "request_validation_failed"
+        diagnostics["error"] = "; ".join(
+            str(error.get("msg", "invalid request"))[:160] for error in exc.errors()
+        )[:240]
+        return legacy_blocks, diagnostics
+
+    selected_provider = provider or OpenAIScriptWriterProvider(settings)
+    result: ScriptWriterResult = generate_script_v2(request, selected_provider)
+    diagnostics["provider"] = getattr(selected_provider, "name", "custom")
+    diagnostics["status"] = "v2_success" if result.draft else "legacy_fallback"
+    diagnostics["error"] = result.error
+    if result.draft is None:
+        diagnostics["reason"] = (
+            "draft_validation_failed"
+            if result.status == "validation_error"
+            else "provider_failed"
+        )
+        return legacy_blocks, diagnostics
+    diagnostics["fact_ids"] = sorted(
+        {fact_id for block in result.draft.blocks for fact_id in block.fact_ids}
+    )
+    diagnostics["writer_draft"] = compact_script_draft(result.draft)
+    if review_provider is None and provider is not None:
+        diagnostics["review"] = {
+            "status": "not_run",
+            "issues": [],
+            "error": "custom writer provider has no review provider",
+        }
+        diagnostics["reviewed_draft"] = compact_script_draft(result.draft)
+        return _v2_body_blocks(result.draft.blocks), diagnostics
+
+    selected_review_provider = review_provider or OpenAIScriptReviewProvider(settings)
+    review_request = ScriptReviewRequest(
+        prompt=prompt,
+        language=str(intent["language"]),
+        tone=str(intent.get("tone") or "fast_documentary"),
+        audience="general",
+        content_type=str(intent.get("content_type") or "factual_explainer"),
+        draft=result.draft,
+        facts=normalized_facts,
+        target_duration={
+            "max_seconds": min(options.max_duration, settings.shortform_max_duration)
+        },
+        writing_requirements=[
+            "Preserve complete causal context needed to understand the answer.",
+            "Keep the body concise without optimizing for the shortest possible version.",
+        ],
+    )
+    try:
+        review_result = review_script_v2(review_request, selected_review_provider)
+    except Exception as exc:  # noqa: BLE001 - V2 review must not discard a valid writer draft
+        diagnostics["reviewed_draft"] = compact_script_draft(result.draft)
+        diagnostics["review"] = {
+            "status": "review_failed_kept_writer",
+            "issues": [],
+            "error": f"{type(exc).__name__}: {str(exc)[:180]}",
+            "provider": getattr(selected_review_provider, "name", "custom"),
+        }
+        return _v2_body_blocks(result.draft.blocks), diagnostics
+    diagnostics["review"] = {
+        "status": review_result.status,
+        "issues": (
+            [issue.model_dump(mode="json") for issue in review_result.response.issues]
+            if review_result.response
+            else []
+        ),
+        "error": review_result.error,
+        "provider": getattr(selected_review_provider, "name", "custom"),
+    }
+    if review_result.response and review_result.response.status == "revise":
+        reviewed = review_result.response.draft
+        if reviewed is not None:
+            diagnostics["reviewed_draft"] = compact_script_draft(reviewed)
+            return _v2_body_blocks(reviewed.blocks), diagnostics
+    diagnostics["reviewed_draft"] = compact_script_draft(result.draft)
+    if review_result.status not in {"approved", "revised"}:
+        diagnostics["review"]["status"] = "review_failed_kept_writer"
+    return _v2_body_blocks(result.draft.blocks), diagnostics
 
 
 def _audience_hook(intent: dict[str, Any]) -> str | None:
@@ -407,7 +610,13 @@ def _normalise_blocks(
         # Keep the authoritative hook as one block so duration fitting cannot
         # split it into hook+detail fragments that later duplicate on restore.
         if _is_hook_block(block):
-            sentence_blocks.append({"role": "hook", "text": block["text"]})
+            sentence_blocks.append(
+                {
+                    "role": "hook",
+                    "text": block["text"],
+                    "fact_ids": list(block.get("fact_ids") or []),
+                }
+            )
             continue
         sentences = [
             sentence.strip()
@@ -419,6 +628,7 @@ def _normalise_blocks(
                 {
                     "role": block["role"] if sentence_index == 0 else "detail",
                     "text": sentence,
+                    "fact_ids": list(block.get("fact_ids") or []),
                 }
             )
     fitted = _fit_blocks(sentence_blocks, max_duration, wpm)
@@ -474,6 +684,8 @@ def build_initial_state(
     settings: Settings,
     *,
     progress: ProgressCallback | None = None,
+    script_writer_provider: ScriptWriterProvider | None = None,
+    script_review_provider: ScriptReviewProvider | None = None,
 ) -> dict[str, Any]:
     intent = _intent(prompt, options)
     resolved_options = options.model_copy(update={"language": intent["language"]})
@@ -562,7 +774,17 @@ def build_initial_state(
 
     max_duration = min(options.max_duration, settings.shortform_max_duration)
     minimum_duration = options.min_duration
-    raw_blocks = plan.get("script_blocks") or _factual_blocks(intent, facts)
+    legacy_body_blocks = plan.get("script_blocks") or _factual_blocks(intent, facts)
+    raw_blocks, script_writer_diagnostics = _generate_body_with_v2_or_fallback(
+        prompt,
+        intent,
+        resolved_options,
+        settings,
+        facts,
+        legacy_body_blocks,
+        provider=script_writer_provider,
+        review_provider=script_review_provider,
+    )
     raw_blocks, selected_hook_candidate = _authoritative_hook_blocks(
         raw_blocks,
         intent,
@@ -626,6 +848,8 @@ def build_initial_state(
             "text": script_text,
             "word_count": word_count,
             "blocks": blocks,
+            "script_writer_v2": script_writer_diagnostics,
+            "narration_owned_by_v2": script_writer_diagnostics.get("status") == "v2_success",
             "selected_hook": selected_hook_candidate.text if selected_hook_candidate else (str(hook_block.get("text")) if hook_block else None),
             "selected_hook_strategy": selected_hook_candidate.strategy if selected_hook_candidate else None,
             "hook_candidates": [
@@ -634,9 +858,17 @@ def build_initial_state(
                 if str(item.get("text") or "").strip()
             ][:5],
             "fact_map": [
-                {"block_id": block["id"], "fact_id": facts[min(index, len(facts) - 1)]["id"]}
+                {
+                    "block_id": block["id"],
+                    "fact_ids": list(block.get("fact_ids") or []),
+                    "fact_id": (
+                        facts[min(index, len(facts) - 1)]["id"]
+                        if not block.get("fact_ids") and facts
+                        else None
+                    ),
+                }
                 for index, block in enumerate(blocks[1:])
-                if facts
+                if facts or block.get("fact_ids")
             ],
         },
         "duration": {

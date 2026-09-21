@@ -6,6 +6,9 @@ import pytest
 from pydantic import ValidationError
 
 from clipforge.config import Settings
+from clipforge.pipeline import _generate_body_with_v2_or_fallback, build_initial_state
+from clipforge.research import ResearchResult
+from clipforge.schemas import AdvancedOptions
 from clipforge.script_writer import (
     OpenAIScriptWriterProvider,
     ScriptBlockV2,
@@ -230,3 +233,291 @@ def test_openai_provider_returns_explicit_failure_for_invalid_result() -> None:
         result = OpenAIScriptWriterProvider(settings).generate(request())
     assert result.status == "validation_error"
     assert result.draft is None
+
+
+def _plan_for_integration(prompt: str, language: str = "de"):
+    class Plan:
+        def model_dump(self, mode="json"):
+            return {
+                "intent": {
+                    "topic": prompt.rstrip("?"),
+                    "intent": "explain",
+                    "question": prompt,
+                    "language": language,
+                    "content_type": "factual_explainer",
+                    "tone": "fast_documentary",
+                    "research_required": True,
+                    "visual_style": "documentary_graphics",
+                    "shortform": True,
+                },
+                "research_questions": ["What is the mechanism?"],
+                "facts": [],
+                "answer_skeleton": ["HOOK", "ANSWER"],
+                "script_blocks": [
+                    {"role": "hook", "text": "Legacy opening."},
+                    {"role": "answer", "text": "Legacy body."},
+                ],
+                "music_mood": "documentary",
+                "hook_candidates": [
+                    {"strategy": "evidence_insight", "text": "Existing safe-stage hook."}
+                ],
+                "selected_hook_strategy": "evidence_insight",
+                "visual_intents": [],
+            }
+
+    return Plan()
+
+
+def _integration_facts():
+    source = {"label": "Test source", "url": "https://source.test"}
+    return [
+        {
+            "claim": "Das kleine Loch gleicht den Druck zwischen den Fensterscheiben aus.",
+            "confidence": 0.95,
+            "importance": 0.95,
+            "sources": [source],
+            "verification": "source_snippet",
+        }
+    ], [source]
+
+
+class IntegrationProvider:
+    name = "fixture-v2"
+
+    def __init__(self, result: ScriptWriterResult):
+        self.result = result
+        self.requests: list[ScriptWriterRequest] = []
+
+    def generate(self, request: ScriptWriterRequest) -> ScriptWriterResult:
+        self.requests.append(request)
+        return self.result
+
+
+def test_fresh_generation_uses_v2_body_and_preserves_legacy_hook(monkeypatch) -> None:
+    prompt = "Warum haben Flugzeugfenster unten ein kleines Loch?"
+    facts, sources = _integration_facts()
+    provider = IntegrationProvider(
+        ScriptWriterResult(
+            ScriptDraftV2(
+                language="de",
+                blocks=[
+                    ScriptBlockV2(
+                        role="answer",
+                        text="Das Loch gleicht den Druck zwischen den Scheiben aus.",
+                        fact_ids=["fact_01"],
+                    ),
+                    ScriptBlockV2(
+                        role="payoff",
+                        text="So bleibt die äußere Scheibe besser geschützt.",
+                    ),
+                ],
+            ),
+            "connected",
+        )
+    )
+    monkeypatch.setattr(
+        "clipforge.pipeline.research_topic",
+        lambda *_args, **_kwargs: ResearchResult(
+            facts, sources, "verified_sources", "fixture"
+        ),
+    )
+    monkeypatch.setattr(
+        "clipforge.pipeline.plan_with_openai",
+        lambda *_args, **_kwargs: type(
+            "PlanResult",
+            (),
+            {"plan": _plan_for_integration(prompt), "status": "connected", "error": None},
+        )(),
+    )
+    state = build_initial_state(
+        prompt,
+        AdvancedOptions(language="de", research="on"),
+        Settings(clipforge_ai_mode="openai", openai_api_key="test-key"),
+        script_writer_provider=provider,
+    )
+    assert len(provider.requests) == 1
+    assert state["script"]["script_writer_v2"]["status"] == "v2_success"
+    assert state["script"]["blocks"][0]["role"] == "hook"
+    assert state["script"]["blocks"][0]["text"] != (
+        "Das Loch gleicht den Druck zwischen den Scheiben aus."
+    )
+    assert "Das Loch gleicht" in state["script"]["text"]
+    assert state["script"]["blocks"][1]["fact_ids"] == ["fact_01"]
+    assert [block["role"] for block in state["script"]["blocks"][1:]] == ["answer", "payoff"]
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        ScriptWriterResult(None, "provider_error", "offline"),
+        ScriptWriterResult(None, "validation_error", "unknown fact ID"),
+    ],
+)
+def test_fresh_generation_falls_back_to_legacy_body(monkeypatch, result) -> None:
+    prompt = "Warum haben Flugzeugfenster unten ein kleines Loch?"
+    facts, sources = _integration_facts()
+    provider = IntegrationProvider(result)
+    monkeypatch.setattr(
+        "clipforge.pipeline.research_topic",
+        lambda *_args, **_kwargs: ResearchResult(
+            facts, sources, "verified_sources", "fixture"
+        ),
+    )
+    monkeypatch.setattr(
+        "clipforge.pipeline.plan_with_openai",
+        lambda *_args, **_kwargs: type(
+            "PlanResult",
+            (),
+            {"plan": _plan_for_integration(prompt), "status": "connected", "error": None},
+        )(),
+    )
+    state = build_initial_state(
+        prompt,
+        AdvancedOptions(language="de", research="on"),
+        Settings(clipforge_ai_mode="openai", openai_api_key="test-key"),
+        script_writer_provider=provider,
+    )
+    assert state["script"]["script_writer_v2"]["status"] == "legacy_fallback"
+    assert state["script"]["script_writer_v2"]["error"] == result.error
+    assert "Legacy body." in state["script"]["text"]
+
+
+def test_local_mode_with_openai_key_uses_script_writer_provider(monkeypatch) -> None:
+    prompt = "Warum haben Flugzeugfenster unten ein kleines Loch?"
+    facts, sources = _integration_facts()
+    provider = IntegrationProvider(
+        ScriptWriterResult(
+            ScriptDraftV2(
+                language="de",
+                blocks=[
+                    ScriptBlockV2(
+                        role="answer",
+                        text="Das Loch gleicht den Druck aus.",
+                        fact_ids=["fact_01"],
+                    ),
+                    ScriptBlockV2(role="payoff", text="Darum ist es kein Schaden."),
+                ],
+            ),
+            "connected",
+        )
+    )
+    monkeypatch.setattr(
+        "clipforge.pipeline.research_topic",
+        lambda *_args, **_kwargs: ResearchResult(
+            facts, sources, "verified_sources", "fixture"
+        ),
+    )
+    monkeypatch.setattr(
+        "clipforge.pipeline.plan_with_openai",
+        lambda *_args, **_kwargs: type(
+            "PlanResult",
+            (),
+            {"plan": _plan_for_integration(prompt), "status": "connected", "error": None},
+        )(),
+    )
+    state = build_initial_state(
+        prompt,
+        AdvancedOptions(language="de", research="on"),
+        Settings(clipforge_ai_mode="local", openai_api_key="test-key"),
+        script_writer_provider=provider,
+    )
+    assert len(provider.requests) == 1
+    assert state["script"]["script_writer_v2"]["status"] == "v2_success"
+    assert "Das Loch gleicht" in state["script"]["text"]
+
+
+def test_no_openai_key_keeps_legacy_fallback(monkeypatch) -> None:
+    prompt = "Warum haben Flugzeugfenster unten ein kleines Loch?"
+    facts, sources = _integration_facts()
+    provider = IntegrationProvider(
+        ScriptWriterResult(None, "provider_error", "unexpected")
+    )
+    monkeypatch.setattr(
+        "clipforge.pipeline.research_topic",
+        lambda *_args, **_kwargs: ResearchResult(
+            facts, sources, "verified_sources", "fixture"
+        ),
+    )
+    monkeypatch.setattr(
+        "clipforge.pipeline.plan_with_openai",
+        lambda *_args, **_kwargs: type(
+            "PlanResult",
+            (),
+            {"plan": _plan_for_integration(prompt), "status": "connected", "error": None},
+        )(),
+    )
+    state = build_initial_state(
+        prompt,
+        AdvancedOptions(language="de", research="on"),
+        Settings(clipforge_ai_mode="local", openai_api_key=None),
+        script_writer_provider=provider,
+    )
+    assert provider.requests == []
+    assert state["script"]["script_writer_v2"]["status"] == "legacy_fallback"
+    assert state["script"]["script_writer_v2"]["reason"] == "unsupported_generation_mode"
+
+
+def test_large_production_shaped_research_is_bounded_before_v2_validation() -> None:
+    provider = IntegrationProvider(ScriptWriterResult(None, "provider_error", "offline"))
+    facts = [
+        {
+            "id": f"fact_{index:02d}",
+            "claim": (
+                "Flugzeugfenster bestehen aus mehreren Scheiben und diese technische "
+                "Konstruktion unterstützt den Druckausgleich. "
+                + ("Zusätzliche überprüfte Erklärung. " * 12)
+            ),
+            "verification": "source_snippet",
+            "confidence": 0.9,
+            "priority": "MUST_KNOW",
+        }
+        for index in range(1, 7)
+    ]
+    blocks, diagnostics = _generate_body_with_v2_or_fallback(
+        "Warum haben Flugzeugfenster unten ein kleines Loch?",
+        {
+            "language": "de",
+            "tone": "fast_documentary",
+            "content_type": "factual_explainer",
+        },
+        AdvancedOptions(language="de", max_duration=60),
+        Settings(clipforge_ai_mode="local", openai_api_key="test-key"),
+        facts,
+        [{"role": "answer", "text": "Legacy body."}],
+        provider=provider,
+    )
+
+    assert blocks == [{"role": "answer", "text": "Legacy body."}]
+    assert diagnostics["attempted"] is True
+    assert diagnostics["reason"] == "provider_failed"
+    assert len(provider.requests) == 1
+    assert len(provider.requests[0].research_summary or "") <= 2_000
+
+
+def test_invalid_v2_request_falls_back_without_calling_provider() -> None:
+    provider = IntegrationProvider(ScriptWriterResult(None, "provider_error", "unexpected"))
+    blocks, diagnostics = _generate_body_with_v2_or_fallback(
+        "Warum haben Flugzeugfenster unten ein kleines Loch?",
+        {
+            "language": "",
+            "tone": "fast_documentary",
+            "content_type": "factual_explainer",
+        },
+        AdvancedOptions(language="de"),
+        Settings(clipforge_ai_mode="local", openai_api_key="test-key"),
+        [
+            {
+                "claim": "Das Loch gleicht den Druck zwischen den Scheiben aus.",
+                "verification": "supported",
+            }
+        ],
+        [{"role": "answer", "text": "Legacy body."}],
+        provider=provider,
+    )
+
+    assert blocks == [{"role": "answer", "text": "Legacy body."}]
+    assert diagnostics["attempted"] is True
+    assert diagnostics["status"] == "legacy_fallback"
+    assert diagnostics["reason"] == "request_validation_failed"
+    assert diagnostics["error"]
+    assert provider.requests == []

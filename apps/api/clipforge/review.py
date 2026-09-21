@@ -443,7 +443,12 @@ def run_ai_review(
                 "message": "The AI review provider could not be reached.",
             }
             return state
-        if decision.corrected_script_blocks and decision.status == "needs_fix" and rounds == 1:
+        if (
+            decision.corrected_script_blocks
+            and decision.status == "needs_fix"
+            and rounds == 1
+            and not state.get("script", {}).get("narration_owned_by_v2")
+        ):
             old_scenes = copy.deepcopy(state.get("scenes", []))
             state["script"]["blocks"] = _normalise_blocks(
                 decision.corrected_script_blocks, int(state["duration"]["max_seconds"])
@@ -463,6 +468,13 @@ def run_ai_review(
                 "Rewrote the narration for language, directness, brevity, and clean spoken text."
             )
             continue
+        if (
+            decision.corrected_script_blocks
+            and decision.status == "needs_fix"
+            and state.get("script", {}).get("narration_owned_by_v2")
+        ):
+            corrections.append("Ignored narration correction because Script Writer V2 owns the body.")
+            decision = decision.model_copy(update={"corrected_script_blocks": None})
         break
     assert decision is not None
     merged_items = local_review_items(state) + [item.model_dump() for item in decision.items]
