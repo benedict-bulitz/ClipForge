@@ -10,6 +10,7 @@ from clipforge.pipeline import _generate_body_with_v2_or_fallback, build_initial
 from clipforge.research import ResearchResult
 from clipforge.schemas import AdvancedOptions
 from clipforge.script_writer import (
+    SCRIPT_WRITER_V2_INSTRUCTIONS,
     OpenAIScriptWriterProvider,
     ScriptBlockV2,
     ScriptDraftV2,
@@ -179,6 +180,20 @@ def test_provider_failure_has_no_python_fallback() -> None:
     result = generate_script_v2(request(), FailedProvider())
     assert result.status == "provider_error"
     assert result.draft is None
+
+
+def test_writer_instructions_prioritize_complete_direct_explanations() -> None:
+    instructions = SCRIPT_WRITER_V2_INSTRUCTIONS.casefold()
+    for phrase in (
+        "not reassurance",
+        "complete causal chain",
+        "do not repeat the same mechanism",
+        "shortest complete explanation",
+        "do not pad",
+        "payoff is optional",
+        "useful concluding information",
+    ):
+        assert phrase in instructions
 
 
 def test_openai_provider_uses_director_model_and_source_free_contract() -> None:

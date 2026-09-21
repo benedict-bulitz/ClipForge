@@ -7,6 +7,7 @@ from clipforge.research import ResearchResult
 from clipforge.review import ReviewDecision, ReviewFinding, run_ai_review
 from clipforge.schemas import AdvancedOptions
 from clipforge.script_review import (
+    SCRIPT_REVIEW_V2_INSTRUCTIONS,
     OpenAIScriptReviewProvider,
     ScriptReviewRequest,
     ScriptReviewResponse,
@@ -80,6 +81,20 @@ def test_review_approve_keeps_text_and_fact_ids() -> None:
     result = review_script_v2(_request(original), provider)
     assert result.status == "approved"
     assert compact_script_draft(_request(original).draft) == compact_script_draft(original)
+
+
+def test_review_instructions_cover_quality_without_forcing_brevity() -> None:
+    instructions = SCRIPT_REVIEW_V2_INSTRUCTIONS.casefold()
+    for phrase in (
+        "unnecessary reassurance",
+        "repeated causal explanations",
+        "artificial payoffs",
+        "shortest complete answer",
+        "do not shorten merely to shorten",
+        "useful causal context",
+        "payoff is not required",
+    ):
+        assert phrase in instructions
 
 
 def test_review_revise_accepts_valid_body_and_ids() -> None:
