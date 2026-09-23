@@ -583,6 +583,27 @@ def _metadata_presentation_risk(candidate: MediaCandidate) -> dict[str, Any]:
     }
 
 
+def is_real_media_allowed(value: MediaCandidate | dict[str, Any]) -> bool:
+    """Shared hard gate for candidates and persisted assets, independent of fit."""
+    data = value if isinstance(value, dict) else vars(value)
+    if data.get("kind") not in {"photo", "video"}:
+        return False
+    provider = str(data.get("provider") or str(data.get("identity", "")).split(":")[0])
+    if not provider:
+        parts = Path(str(data.get("cache_path") or "")).parts
+        provider = next((part for part in parts if part in {"pexels", "wikimedia"}), "")
+    if provider not in {"pexels", "wikimedia"}:
+        return False
+    markers = " ".join(str(data.get(key) or "") for key in ("type", "source_type", "asset_type", "cache_path", "identity" )).casefold()
+    if any(term in markers for term in ("generated_card", "text_card", "flashcard", "diagram_or_card", "placeholder", "synthetic_visual")):
+        return False
+    text = " ".join((str(data.get("title") or ""), str(data.get("description") or ""), *data.get("tags", ()))).casefold()
+    if any(marker in text for marker in (*_TEXT_HEAVY_METADATA_MARKERS, "quote card", "text card", "informational card", "generated card")):
+        return False
+    relevance = data.get("relevance") or {}
+    return not ((relevance.get("presentation_risk") or {}).get("rejected") or (relevance.get("visual") or {}).get("presentation_risk"))
+
+
 def media_relevance(candidate: MediaCandidate, scene: dict[str, Any], state: dict[str, Any] | None = None) -> dict[str, Any]:
     visual_intent = scene.get("visual_intent") if isinstance(scene.get("visual_intent"), dict) else {}
     narration = str(scene.get("narration") or "")
@@ -623,6 +644,8 @@ def media_relevance(candidate: MediaCandidate, scene: dict[str, Any], state: dic
     query_matches = local_terms & query_terms
     global_matches = global_terms & metadata
     presentation_risk = _metadata_presentation_risk(candidate)
+    if not is_real_media_allowed(candidate):
+        presentation_risk = {"rejected": True, "source": "eligibility", "markers": ["non_real_or_card"]}
     matched = sorted(local_matches | global_matches)
     contextual_only = not local_matches and len(global_matches) >= 2
     global_only_match = (
@@ -708,7 +731,7 @@ def verify_media_shortlist(
             pass
     rows: list[tuple[MediaCandidate, dict[str, Any]]] = []
     metadata_rows = sorted(
-        ((candidate, media_relevance(candidate, scene, state)) for candidate in candidates),
+        ((candidate, media_relevance(candidate, scene, state)) for candidate in candidates if is_real_media_allowed(candidate)),
         key=lambda row: (row[1]["confidence"] != "rejected", row[1]["score"], row[0].rank),
         reverse=True,
     )
@@ -801,6 +824,8 @@ def _cache_candidate(
     pexels: Any | None,
     wikimedia: Any,
 ) -> dict[str, Any]:
+    if not is_real_media_allowed(candidate):
+        raise MediaProviderError("ineligible_media", "Cards and synthetic placeholders are not allowed.")
     suffix = ".mp4" if candidate.kind == "video" else ".jpg"
     destination = asset_root / candidate.provider / f"{candidate.kind}-{candidate.provider_id}{suffix}"
     downloader = pexels if candidate.provider == "pexels" else wikimedia
@@ -839,7 +864,7 @@ def prepare_project_media(
     progress: ProgressCallback | None = None,
     visual_verifier: Any | None = None,
 ) -> dict[str, Any]:
-    """Attach cached real media to scenes, degrading to scene cards on provider failure."""
+    """Attach real media; broaden or reuse real footage, never synthesize cards."""
     assets = state.setdefault("assets", {})
     assets.setdefault("license_manifest", [])
     pexels = client or (PexelsMediaClient(settings.pexels_api_key) if settings.pexels_api_key else None)
@@ -849,7 +874,7 @@ def prepare_project_media(
     used: set[str] = set()
     manifest: list[dict[str, Any]] = []
     selected_count = 0
-    generated_card_count = 0
+    missing_media_count = 0
     replacement_failed_count = 0
     failure: MediaProviderError | None = None
     selected_media: list[dict[str, Any]] = []
@@ -869,7 +894,7 @@ def prepare_project_media(
         if existing:
             identity = str(existing.get("identity") or "")
             path = settings.render_root.resolve() / str(existing.get("cache_path") or "")
-            if identity and path.is_file() and scene.get("asset_status") != "replacement_required":
+            if identity and path.is_file() and is_real_media_allowed(existing) and scene.get("asset_status") != "replacement_required":
                 used.add(identity)
                 manifest.append(existing)
                 selected_media.append(existing)
@@ -887,6 +912,7 @@ def prepare_project_media(
             existing
             and str(existing.get("identity") or "")
             and path.is_file()
+            and is_real_media_allowed(existing)
         )
 
         queries = derive_search_queries(scene, state)
@@ -897,6 +923,7 @@ def prepare_project_media(
             preferred_kind = "video"
         metadata: dict[str, Any] | None = None
         pexels_candidates: list[MediaCandidate] = []
+        commons_candidates: list[MediaCandidate] = []
         if pexels is not None:
             for query in queries:
                 search_kinds = (
@@ -973,7 +1000,42 @@ def prepare_project_media(
                     failure = exc
 
         if metadata is None:
-            related = _related_media(queries, selected_media)
+            # Relevance is relaxed only here; the presentation/source gate never is.
+            pools = [pexels_candidates + commons_candidates]
+            broad_queries = list(dict.fromkeys([
+                " ".join(queries[0].split()[:2]) if queries else "nature",
+                global_subject_text(state), "nature landscape", "ocean water", "trees outdoors",
+            ]))
+            visual = visual_verifier or get_visual_verifier()
+            for broad_query in [None, *broad_queries]:
+                batch = pools[0] if broad_query is None else []
+                if broad_query:
+                    for provider in (pexels, wikimedia):
+                        if provider is None:
+                            continue
+                        try:
+                            batch.extend(provider.search_photos(broad_query, portrait=portrait))
+                        except MediaProviderError as exc:
+                            failure = exc
+                for candidate in batch[:24]:
+                    if candidate.identity in used or not is_real_media_allowed(candidate):
+                        continue
+                    if getattr(visual, "status", "") == "available":
+                        result = visual.verify_candidate(candidate, visual_intent_text(scene, state))
+                        if result is not None and result.presentation_risk:
+                            continue
+                    try:
+                        relevance = media_relevance(candidate, scene, state)
+                        relevance["fallback_stage"] = "real_media_only_relaxed_fit"
+                        metadata = _cache_candidate(candidate, relevance, asset_root=asset_root, render_root=settings.render_root, pexels=pexels, wikimedia=wikimedia)
+                        break
+                    except MediaProviderError as exc:
+                        failure = exc
+                if metadata is not None:
+                    break
+        if metadata is None:
+            safe_selected = [item for item in selected_media if is_real_media_allowed(item)]
+            related = _related_media(queries, safe_selected) or next(iter(safe_selected), None)
             if related is not None:
                 scene["media"] = dict(related)
                 scene["asset_status"] = "related_media_reused"
@@ -1005,14 +1067,14 @@ def prepare_project_media(
                     total_units=total_scenes,
                 )
                 continue
-            scene["asset_status"] = "generated_card_fallback"
+            scene["asset_status"] = "real_media_unavailable"
             scene["fallback_reason"] = (
                 str(failure)
                 if failure
                 else "No relevant real media was found after staged search."
             )
             scene.pop("media", None)
-            generated_card_count += 1
+            missing_media_count += 1
             report_progress(
                 progress,
                 "media",
@@ -1038,9 +1100,19 @@ def prepare_project_media(
             total_units=total_scenes,
         )
 
+    # Earlier scenes may reuse a real asset discovered for a later scene.
+    if selected_media:
+        for scene in scenes:
+            if scene.get("asset_status") == "real_media_unavailable":
+                scene["media"] = dict(selected_media[0])
+                scene["asset_status"] = "real_media_reused"
+                manifest.append(scene["media"])
+                selected_count += 1
+                missing_media_count -= 1
     assets["license_manifest"] = manifest
     assets["selected_count"] = selected_count
-    assets["generated_card_count"] = generated_card_count
+    assets.pop("generated_card_count", None)
+    assets["missing_media_count"] = missing_media_count
     if replacement_failed_count:
         diagnostic = (
             f"Could not replace {replacement_failed_count} scene(s); previous media was kept."
@@ -1058,11 +1130,11 @@ def prepare_project_media(
             provider=failure.category,
             diagnostic=str(failure),
         )
-    elif selected_count and generated_card_count:
+    elif selected_count and missing_media_count:
         assets.update(
             status="partial_fallback",
             provider=_provider_summary(manifest),
-            diagnostic=f"{generated_card_count} scene(s) use generated card fallback.",
+            diagnostic=f"{missing_media_count} scene(s) have no real media; rendering is blocked.",
         )
     elif selected_count:
         assets.update(status="media_ready", provider=_provider_summary(manifest), diagnostic=None)
@@ -1070,7 +1142,7 @@ def prepare_project_media(
         assets.update(
             status="fallback_only",
             provider="pexels+wikimedia" if settings.pexels_api_key else "wikimedia",
-            diagnostic="No relevant real media was found; generated scene cards were used.",
+            diagnostic="No real media is available. Rendering is blocked; retry free media discovery.",
         )
     if client is None and pexels is not None:
         pexels.close()

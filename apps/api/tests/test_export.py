@@ -1,5 +1,6 @@
 import copy
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -120,6 +121,32 @@ def test_same_title_projects_have_distinct_canonical_exports(tmp_path):
     assert first.filename != second.filename
     assert (settings.resolved_downloads_root / first.filename).is_file()
     assert (settings.resolved_downloads_root / second.filename).is_file()
+
+
+def test_export_mixes_selected_music_without_mutating_base_render(tmp_path, monkeypatch):
+    settings = export_settings(tmp_path)
+    project_id = "33333333-3333-4333-8333-333333333333"
+    state = state_for(project_id, settings)
+    state.update(timeline={"duration": 12}, music={"enabled": True, "volume": 0.2, "ducking": True, "fades": True, "track": {"id": "licensed", "file": "tracks/licensed.mp3"}})
+    source = settings.render_root / project_id / "renders" / "v2" / "clipforge.mp4"
+    original = source.read_bytes()
+    selected = tmp_path / "licensed.mp3"
+    selected.write_bytes(b"licensed music")
+    commands = []
+
+    def run(command, **_kwargs):
+        commands.append(command)
+        Path(command[-1]).write_bytes(b"m" * 20_000)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr("clipforge.exporter.resolve_track_path", lambda _music: selected)
+    monkeypatch.setattr("clipforge.exporter.ffmpeg_path", lambda: "ffmpeg")
+    monkeypatch.setattr("clipforge.exporter.subprocess.run", run)
+
+    finalize_export(project_id, "Music export", state, settings, verifier=accept_mp4)
+    assert "-filter_complex" in commands[0]
+    assert str(selected) in commands[0]
+    assert source.read_bytes() == original
 
 
 @pytest.mark.parametrize("project_id", ["../outside", "project/other", "/absolute"])

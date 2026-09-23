@@ -5,8 +5,10 @@ from unittest.mock import patch
 import pytest
 from pydantic import ValidationError
 
+from clipforge.ai import AIHookGenerationResult
 from clipforge.config import Settings
 from clipforge.pipeline import _generate_body_with_v2_or_fallback, build_initial_state
+from clipforge.renderer import RenderResult, _create_voice
 from clipforge.research import ResearchResult
 from clipforge.schemas import AdvancedOptions
 from clipforge.script_writer import (
@@ -21,6 +23,7 @@ from clipforge.script_writer import (
     generate_script_v2,
     validate_script_draft,
 )
+from clipforge.services import _render_state
 
 
 def fact(
@@ -218,6 +221,7 @@ def test_openai_provider_uses_director_model_and_source_free_contract() -> None:
     assert result.draft == parsed
     assert captured["model"] == "configured-director"
     assert captured["text_format"] is ScriptDraftV2
+    assert captured["instructions"] == SCRIPT_WRITER_V2_INSTRUCTIONS
     payload = json.loads(str(captured["input"]))
     assert payload["facts"][0]["id"] == "fact_01"
     assert "https://" not in str(payload)
@@ -225,6 +229,26 @@ def test_openai_provider_uses_director_model_and_source_free_contract() -> None:
     assert "hook" not in str(payload).casefold()
     assert "visual" not in str(payload).casefold()
     assert "media" not in str(payload).casefold()
+
+
+@pytest.mark.parametrize("requirement", [
+    "10–14 year old", "first listen", "everyday German", "one idea at a time",
+    "technical term immediately", "explain the idea first", "scientific distinctions",
+    "not facts", "nested clauses", "not from fixed templates",
+])
+def test_writer_readability_contract(requirement: str) -> None:
+    assert requirement in SCRIPT_WRITER_V2_INSTRUCTIONS
+
+
+def test_hook_readability_is_in_actual_director_prompt() -> None:
+    from clipforge.ai import DIRECTOR_INSTRUCTIONS
+
+    for requirement in (
+        "every hook candidate", "10–14 year old", "first listen", "everyday German",
+        "no unexplained jargon", "Simplify a difficult question", "factual meaning",
+        "clarity takes priority", "rigid hook templates",
+    ):
+        assert requirement in DIRECTOR_INSTRUCTIONS
 
 
 def test_openai_provider_returns_explicit_failure_for_invalid_result() -> None:
@@ -274,7 +298,7 @@ def _plan_for_integration(prompt: str, language: str = "de"):
                 ],
                 "music_mood": "documentary",
                 "hook_candidates": [
-                    {"strategy": "evidence_insight", "text": "Existing safe-stage hook."}
+                    {"strategy": "curiosity_gap", "text": "Was macht das kleine Loch im Fenster?"}
                 ],
                 "selected_hook_strategy": "evidence_insight",
                 "visual_intents": [],
@@ -344,6 +368,14 @@ def test_fresh_generation_uses_v2_body_and_preserves_legacy_hook(monkeypatch) ->
             {"plan": _plan_for_integration(prompt), "status": "connected", "error": None},
         )(),
     )
+    monkeypatch.setattr(
+        "clipforge.pipeline.generate_hook_candidates_with_openai",
+        lambda *_args, **_kwargs: AIHookGenerationResult(
+            [{"strategy": "direct_reframe", "text": "Das kleine Loch ist nicht kaputt, sondern gleicht den Druck aus."}],
+            "direct_reframe",
+            "connected",
+        ),
+    )
     state = build_initial_state(
         prompt,
         AdvancedOptions(language="de", research="on"),
@@ -359,6 +391,110 @@ def test_fresh_generation_uses_v2_body_and_preserves_legacy_hook(monkeypatch) ->
     assert "Das Loch gleicht" in state["script"]["text"]
     assert state["script"]["blocks"][1]["fact_ids"] == ["fact_01"]
     assert [block["role"] for block in state["script"]["blocks"][1:]] == ["answer", "payoff"]
+
+
+@pytest.mark.parametrize(
+    ("prompt", "body", "hook", "strategy"),
+    [
+        (
+            "Warum tränen unsere Augen beim Zwiebelschneiden?",
+            "Beim Schneiden setzt die Zwiebel reizende Stoffe frei.",
+            "Schneidest du mit einem stumpfen Messer? Das kann deine Augen stärker reizen.",
+            "ego_challenge",
+        ),
+        (
+            "Wieso kriegen wir Gänsehaut?",
+            "Kleine Muskeln an den Haarwurzeln stellen deine Haare auf.",
+            "Deine Haare stellen sich auf – aber warum eigentlich?",
+            "curiosity_gap",
+        ),
+    ],
+)
+def test_production_pipeline_uses_shared_post_body_hook_for_narration_tts_and_captions(
+    monkeypatch, tmp_path, prompt, body, hook, strategy
+) -> None:
+    source = {"label": "Test source", "url": "https://source.test"}
+    facts = [{
+        "claim": body,
+        "confidence": 0.95,
+        "importance": 0.95,
+        "sources": [source],
+        "verification": "source_snippet",
+    }]
+    provider = IntegrationProvider(ScriptWriterResult(ScriptDraftV2(
+        language="de",
+        blocks=[
+            ScriptBlockV2(role="answer", text=body, fact_ids=["fact_01"]),
+            ScriptBlockV2(role="payoff", text="Das erklärt den Effekt.", fact_ids=[]),
+        ],
+    ), "connected"))
+    monkeypatch.setattr(
+        "clipforge.pipeline.research_topic",
+        lambda *_args, **_kwargs: ResearchResult(facts, [source], "verified_sources", "fixture"),
+    )
+    monkeypatch.setattr(
+        "clipforge.pipeline.plan_with_openai",
+        lambda *_args, **_kwargs: type(
+            "PlanResult", (), {"plan": _plan_for_integration(prompt), "status": "connected", "error": None}
+        )(),
+    )
+    hook_inputs: list[str] = []
+
+    def generate_hook(_prompt, _intent, _facts, finalized_body, _settings):
+        hook_inputs.append(finalized_body)
+        return AIHookGenerationResult(
+            [{"strategy": strategy, "text": hook}], strategy, "connected"
+        )
+
+    monkeypatch.setattr("clipforge.pipeline.generate_hook_candidates_with_openai", generate_hook)
+    state = build_initial_state(
+        prompt,
+        AdvancedOptions(language="de", research="on"),
+        # This is the normal runtime shape: V2 uses OpenAI when configured,
+        # independently of the legacy planner mode. The hook must still flow
+        # into the persisted script, TTS input, captions, and render state.
+        Settings(clipforge_ai_mode="local", openai_api_key="test-key", render_root=tmp_path),
+        script_writer_provider=provider,
+    )
+    assert hook_inputs and hook_inputs[0].startswith(body)
+    assert state["script"]["selected_hook"] == hook
+    assert state["script"]["selected_hook_strategy"] == strategy
+    assert state["script"]["blocks"][0]["text"] == hook
+    assert state["script"]["text"].startswith(hook)
+    assert state["script"]["blocks"][1]["text"] == body
+    assert state["captions"]["items"][0]["text"].startswith(hook.split()[0])
+
+    captured: dict[str, object] = {}
+
+    class Speech:
+        def create(self, **kwargs):
+            captured.update(kwargs)
+            return type("Response", (), {"content": b"w" * 5000})()
+
+    class FakeOpenAI:
+        def __init__(self, **_kwargs):
+            self.audio = type("Audio", (), {"speech": Speech()})()
+
+    monkeypatch.setattr("clipforge.renderer.OpenAI", FakeOpenAI)
+    state["voice"].update(provider="openai", voice_id="marin", model="gpt-4o-mini-tts")
+    _create_voice(state, tmp_path, Settings(openai_api_key="test-key", render_root=tmp_path))
+    assert str(captured["input"]).startswith(hook)
+
+    rendered_input: dict[str, str] = {}
+    monkeypatch.setattr("clipforge.services.prepare_project_media", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("clipforge.services.run_ai_review", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        "clipforge.services.render_video",
+        lambda render_state, *_args, **_kwargs: (
+            rendered_input.update(text=render_state["script"]["text"])
+            or RenderResult("/media/test.mp4", 12.0, "openai", 100)
+        ),
+    )
+    rendered = _render_state(
+        state, "project-test", 2, Settings(openai_api_key="test-key", render_root=tmp_path)
+    )
+    assert rendered_input["text"].startswith(hook)
+    assert rendered["script"]["blocks"][0]["text"] == hook
 
 
 @pytest.mark.parametrize(

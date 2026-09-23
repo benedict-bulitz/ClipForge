@@ -447,7 +447,7 @@ def test_failed_media_replacement_keeps_previous_cached_asset(tmp_path):
     assert "previous media was kept" in state["assets"]["diagnostic"]
 
 
-def test_scene_card_is_last_resort_when_real_media_is_unavailable(tmp_path):
+def test_missing_real_media_blocks_render_instead_of_using_a_card(tmp_path):
     settings = local_settings(tmp_path, pexels="unit-test-token")
     state = sample_state(settings)
     state["scenes"] = state["scenes"][:1]
@@ -460,7 +460,7 @@ def test_scene_card_is_last_resort_when_real_media_is_unavailable(tmp_path):
         fallback_client=FakeWikimedia(),
     )
 
-    assert state["scenes"][0]["asset_status"] == "generated_card_fallback"
+    assert state["scenes"][0]["asset_status"] == "real_media_unavailable"
     assert "media" not in state["scenes"][0]
 
 
@@ -634,7 +634,7 @@ def test_weak_top_ranked_candidate_does_not_block_a_later_local_match(tmp_path):
     assert scene["asset_status"] == "video_ready"
 
 
-def test_generated_card_records_degraded_coverage_after_all_searches(tmp_path):
+def test_missing_real_media_records_degraded_coverage_after_all_searches(tmp_path):
     settings = local_settings(tmp_path, pexels="unit-test-token")
     state = sample_state(settings)
     state["scenes"] = state["scenes"][:1]
@@ -649,9 +649,9 @@ def test_generated_card_records_degraded_coverage_after_all_searches(tmp_path):
     )
 
     assert commons.queries
-    assert state["scenes"][0]["asset_status"] == "generated_card_fallback"
+    assert state["scenes"][0]["asset_status"] == "real_media_unavailable"
     assert state["scenes"][0]["fallback_reason"]
-    assert state["assets"]["generated_card_count"] == 1
+    assert state["assets"]["missing_media_count"] == 1
     assert state["assets"]["status"] == "fallback_only"
 
 

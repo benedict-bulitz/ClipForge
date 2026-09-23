@@ -5,7 +5,7 @@ import { Captions, ChevronDown, Film, Languages, Music2, RotateCcw, SlidersHoriz
 import type { CreateOptions } from "@/lib/creation-preferences";
 import { VoiceControls } from "./voice-controls";
 
-export function AdvancedOptions({ value, onChange, prompt, onReset }: { value: CreateOptions; onChange: (value: CreateOptions) => void; prompt: string; onReset: () => void }) {
+export function AdvancedOptions({ value, onChange, prompt, onReset, queueToggle }: { value: CreateOptions; onChange: (value: CreateOptions) => void; prompt: string; onReset: () => void; queueToggle?: React.ReactNode }) {
   const update = (key: string, next: string | number | boolean | null) => onChange({ ...value, [key]: next });
   const updateMaximum = (maximum: number) => onChange({
     ...value,
@@ -13,7 +13,7 @@ export function AdvancedOptions({ value, onChange, prompt, onReset }: { value: C
     min_duration: typeof value.min_duration === "number" && value.min_duration > maximum ? maximum : value.min_duration,
   });
   return <Accordion.Root type="single" collapsible className="w-full"><Accordion.Item value="advanced">
-    <div className="flex justify-center"><Accordion.Trigger className="group flex items-center gap-2 rounded-full px-3 py-2 text-sm font-medium text-[var(--muted-foreground)] transition hover:bg-[var(--surface-hover)] hover:text-[var(--foreground)]"><SlidersHorizontal className="size-4" /> Advanced settings <ChevronDown className="size-4 transition-transform group-data-[state=open]:rotate-180" /></Accordion.Trigger></div>
+    <div className="flex items-center justify-center gap-2"><Accordion.Trigger className="group flex items-center gap-2 rounded-full px-3 py-2 text-sm font-medium text-[var(--muted-foreground)] transition hover:bg-[var(--surface-hover)] hover:text-[var(--foreground)]"><SlidersHorizontal className="size-4" /> Advanced settings <ChevronDown className="size-4 transition-transform group-data-[state=open]:rotate-180" /></Accordion.Trigger>{queueToggle}</div>
     <Accordion.Content className="overflow-hidden"><div className="cf-surface mt-3 space-y-3 rounded-[26px] border p-3 text-left shadow-sm sm:p-4">
       <div className="flex items-center justify-between gap-3 px-1 pb-1"><div><p className="text-sm font-bold">Creation controls</p><p className="mt-0.5 text-xs text-[var(--muted-foreground)]">Saved on this device for your next new project.</p></div><button type="button" onClick={onReset} className="interactive-text shrink-0"><RotateCcw className="size-3.5" /> Reset defaults</button></div>
       <SettingsGroup icon={<Film className="size-4" />} title="Video" description="Format, length, and pacing." initiallyOpen><div className="settings-grid">

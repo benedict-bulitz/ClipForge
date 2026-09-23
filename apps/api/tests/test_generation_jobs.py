@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from fastapi import BackgroundTasks
 from sqlalchemy import func, select
 from sqlalchemy.orm import sessionmaker
 
@@ -10,6 +9,7 @@ from clipforge.config import Settings
 from clipforge.generation import (
     ProgressTracker,
     active_generation_job,
+    claim_next_generation_job,
     create_generation_job,
     mark_interrupted_generation_jobs,
     run_generation_job,
@@ -40,18 +40,18 @@ def test_generate_starts_trackable_job_with_early_eta(db):
     assert serialized["estimated_remaining_seconds"] > 0
 
 
-def test_duplicate_generate_reuses_active_job_and_schedules_once(db):
-    first_tasks = BackgroundTasks()
-    second_tasks = BackgroundTasks()
+def test_separate_generate_requests_create_distinct_projects(db, monkeypatch):
+    launched: list[str] = []
     settings = Settings(clipforge_ai_mode="local", openai_api_key=None)
+    monkeypatch.setattr("clipforge.main.schedule_next_generation", lambda _settings: launched.append("start"))
 
-    first = start_generation_job_route(payload(), first_tasks, db, settings)
-    second = start_generation_job_route(payload(), second_tasks, db, settings)
+    first = start_generation_job_route(payload(), db, settings)
+    second = start_generation_job_route(payload(), db, settings)
 
-    assert first["id"] == second["id"]
-    assert len(first_tasks.tasks) == 1
-    assert len(second_tasks.tasks) == 0
-    assert db.scalar(select(func.count()).select_from(GenerationJob)) == 1
+    assert first["id"] != second["id"]
+    assert first["project_id"] != second["project_id"]
+    assert launched == ["start", "start"]
+    assert db.scalar(select(func.count()).select_from(GenerationJob)) == 2
 
 
 def test_stage_plan_omits_disabled_work(db):
@@ -148,6 +148,11 @@ def test_eta_decreases_as_real_and_cached_work_completes(db):
 def test_media_reports_actual_scene_work_units_and_cache_hits(tmp_path):
     events: list[ProgressEvent] = []
     settings = Settings(render_root=tmp_path, openai_api_key=None)
+
+    class NoLookupMediaClient:
+        def search_photos(self, *_args, **_kwargs):
+            raise AssertionError("A valid cached asset must not trigger a media lookup.")
+
     scenes = []
     for index in range(2):
         relative = f"project/assets/cached-{index}.jpg"
@@ -161,7 +166,12 @@ def test_media_reports_actual_scene_work_units_and_cache_hits(tmp_path):
                 "end": index * 2 + 2,
                 "visual_goal": "blue daylight sky",
                 "asset_status": "photo_ready",
-                "media": {"identity": f"cached-{index}", "cache_path": relative},
+                "media": {
+                    "identity": f"wikimedia:photo:cached-{index}",
+                    "provider": "wikimedia",
+                    "kind": "photo",
+                    "cache_path": relative,
+                },
             }
         )
     state = {
@@ -170,7 +180,13 @@ def test_media_reports_actual_scene_work_units_and_cache_hits(tmp_path):
         "scenes": scenes,
     }
 
-    prepare_project_media(state, "project", settings, progress=events.append)
+    prepare_project_media(
+        state,
+        "project",
+        settings,
+        fallback_client=NoLookupMediaClient(),
+        progress=events.append,
+    )
 
     updates = [event for event in events if event.stage == "media"]
     assert [event.completed_units for event in updates if event.phase == "update"] == [1, 2]
@@ -188,6 +204,8 @@ def test_active_job_can_be_rediscovered_after_refresh(db):
 
 def test_restart_marks_active_jobs_retryable_without_touching_history(db):
     job, _ = create_generation_job(db, payload())
+    job.status = "running"
+    db.commit()
     revisions_before = db.scalar(select(func.count()).select_from(ProjectRevision))
 
     assert mark_interrupted_generation_jobs(db) == 1
@@ -215,6 +233,7 @@ def test_worker_completes_only_after_project_render_revision_is_persisted(
 ):
     request = payload()
     job, _ = create_generation_job(db, request)
+    assert claim_next_generation_job(db) is not None
 
     def fake_render(state, _project_id, revision, _settings, *, progress=None):
         if progress:
@@ -232,7 +251,6 @@ def test_worker_completes_only_after_project_render_revision_is_persisted(
     factory = sessionmaker(bind=db.get_bind(), expire_on_commit=True)
     run_generation_job(
         job.id,
-        request,
         Settings(
             clipforge_ai_mode="local",
             openai_api_key=None,

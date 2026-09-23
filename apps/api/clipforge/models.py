@@ -94,6 +94,9 @@ class GenerationJob(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     project_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
     request_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    # The queued request must survive an API restart; workers load this rather
+    # than relying on an in-memory FastAPI BackgroundTask payload.
+    request_payload: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
     active_key: Mapped[str | None] = mapped_column(String(96), nullable=True, unique=True)
     base_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="queued", index=True)

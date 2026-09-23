@@ -15,7 +15,8 @@ from pathlib import Path
 from typing import Any
 
 from .config import Settings
-from .renderer import ffmpeg_path
+from .music import resolve_track_path
+from .renderer import ffmpeg_path, music_filter_graph, music_input_args, music_render_config
 
 MIN_EXPORT_BYTES = 10_000
 GENERATED_PROJECT_DIRECTORIES = (
@@ -268,7 +269,30 @@ def finalize_export(
     backup = downloads / f".{filename}.{uuid.uuid4().hex}.previous.mp4"
     had_previous = destination.is_file()
     try:
-        shutil.copy2(source, staging)
+        music = state.get("music") if isinstance(state.get("music"), dict) else {}
+        track = resolve_track_path(music) if music.get("enabled") else None
+        if track is None:
+            shutil.copy2(source, staging)
+        else:
+            ffmpeg = ffmpeg_path()
+            if not ffmpeg:
+                raise ExportUnavailable("FFmpeg is unavailable, so ClipForge cannot mix the selected music.")
+            timeline = state.get("timeline") if isinstance(state.get("timeline"), dict) else {}
+            duration = max(1.0, float(timeline.get("duration") or 60))
+            command = [ffmpeg, "-y", "-v", "error", "-i", str(source), *music_input_args(track, duration)]
+            # The base render already contains the immutable narration. ffprobe is
+            # deliberately avoided here; -shortest safely follows the video source.
+            command.extend([
+                "-filter_complex", music_filter_graph(music_render_config(state), duration),
+                "-map", "0:v:0", "-map", "[mixed]", "-c:v", "copy", "-c:a", "aac",
+                "-shortest", "-movflags", "+faststart", str(staging),
+            ])
+            try:
+                completed = subprocess.run(command, capture_output=True, text=True, timeout=180, check=False)
+            except (OSError, subprocess.SubprocessError) as exc:
+                raise ExportUnavailable("The selected music could not be mixed into the export.") from exc
+            if completed.returncode != 0 or not staging.is_file():
+                raise ExportUnavailable("The selected music could not be mixed into the export.")
         verifier(staging)
         if had_previous:
             os.replace(destination, backup)

@@ -6,6 +6,7 @@ from pydantic import ValidationError
 from clipforge.ai import (
     DIRECTOR_INSTRUCTIONS,
     AIHookCandidate,
+    AIHookGenerationResult,
     AIIntent,
     AIPlanResult,
     AIProjectPlan,
@@ -119,12 +120,12 @@ def test_director_contract_is_answer_first_accessible_and_max_is_a_ceiling():
         [{"claim": "Blue light scatters more strongly."}],
     )
     assert not fallback[0]["text"].startswith("The short answer to")
-    assert fallback[0]["role"] == "hook"
-    assert fallback[1]["role"] == "answer"
-    assert "According to" not in fallback[1]["text"]
+    assert fallback[0]["role"] == "answer"
+    assert len(fallback) == 1
+    assert "According to" not in fallback[0]["text"]
 
 
-def test_earth_fallback_has_short_standalone_hook_then_early_answer():
+def test_earth_fallback_keeps_the_answer_when_no_real_hook_is_available():
     intent = {
         "language": "de",
         "question": "Warum wird die Erde nicht schwerer, wenn wir auf ihr bauen?",
@@ -147,12 +148,10 @@ def test_earth_fallback_has_short_standalone_hook_then_early_answer():
         ],
     )
 
-    assert blocks[0]["role"] == "hook"
-    assert blocks[0]["text"].endswith("?")
-    assert len(blocks[0]["text"].split()) <= 14
-    assert blocks[1]["role"] == "answer"
-    assert "Baumaterial" in blocks[1]["text"]
-    assert _audience_hook(intent) == blocks[0]["text"]
+    assert blocks[0]["role"] == "answer"
+    assert "Baumaterial" in blocks[0]["text"]
+    assert blocks[1]["role"] == "support"
+    assert _audience_hook(intent) != blocks[0]["text"]
 
 
 def test_editorial_publication_guidance_and_all_structural_labels_are_removed():
@@ -210,7 +209,7 @@ def test_fast_cut_speed_reaches_scenes_without_changing_voice_speed():
     assert fast["timeline"]["cut_pace"] == "fast"
     assert all(scene["motion"] == "fast_cut" for scene in fast["scenes"])
     assert all(scene["motion"] == "slow_push" for scene in relaxed["scenes"])
-    assert len(fast["scenes"]) > len(relaxed["scenes"])
+    assert len(fast["scenes"]) >= len(relaxed["scenes"])
     assert all(len(scene["narration"].split()) >= 2 for scene in fast["scenes"])
     assert fast["voice"]["speed"] == relaxed["voice"]["speed"]
 
@@ -261,7 +260,7 @@ def test_ai_review_correction_cleans_spoken_text():
 
     run_ai_review(project, settings(), provider=Provider())
     selected_hook = project["script"]["selected_hook"]
-    assert selected_hook
+    assert selected_hook is None
     assert project["script"]["text"] == "The answer is simple."
     assert contamination_issues(project["script"]["text"]) == []
 
@@ -382,8 +381,8 @@ def test_authoritative_hook_collapses_zero_one_and_many_input_hooks():
     ]
     candidates = [
         {
-            "strategy": "evidence_insight",
-            "text": "Beim Bauen wird Materie nur umverteilt, nicht hinzugefügt.",
+            "strategy": "direct_reframe",
+            "text": "Bauen macht die Erde nicht schwerer, sondern verteilt nur vorhandene Materie neu.",
         }
     ]
     body = [{"role": "answer", "text": facts[0]["claim"]}]
@@ -503,12 +502,12 @@ def test_earth_director_without_hook_block_still_opens_with_selected_hook(monkey
                 text="Warum bleibt die Erde beim Bauen gleich schwer?",
             ),
             AIHookCandidate(
-                strategy="evidence_insight",
-                text="Beim Bauen wird Materie nur umverteilt, nicht hinzugefügt.",
+                strategy="direct_reframe",
+                text="Bauen macht die Erde nicht schwerer, sondern verteilt nur vorhandene Materie neu.",
             ),
             AIHookCandidate(
                 strategy="direct_reframe",
-                text="Häuser machen die Erde nicht schwerer.",
+                text="Ein Haus macht die Erde nicht schwerer, sondern verteilt nur Materie neu.",
             ),
         ],
         selected_hook_strategy="evidence_insight",
@@ -518,6 +517,17 @@ def test_earth_director_without_hook_block_still_opens_with_selected_hook(monkey
     monkeypatch.setattr(
         "clipforge.pipeline.plan_with_openai",
         lambda *_args, **_kwargs: AIPlanResult(plan, "connected"),
+    )
+    monkeypatch.setattr(
+        "clipforge.pipeline.generate_hook_candidates_with_openai",
+        lambda *_args, **_kwargs: AIHookGenerationResult(
+            [{
+                "strategy": "direct_reframe",
+                "text": "Bauen macht die Erde nicht schwerer, sondern verteilt nur vorhandene Materie neu.",
+            }],
+            "direct_reframe",
+            "connected",
+        ),
     )
 
     state = build_initial_state(

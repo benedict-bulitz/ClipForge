@@ -157,10 +157,14 @@ def test_time_range_cut_changes_real_script_and_timeline(db, tmp_path):
     settings = agent_settings(tmp_path)
     project = project_for_agent(db, settings)
     before = current_revision(project).state
-    assert before["timeline"]["duration"] > 17
+    # No narration has been synthesized in this editor-only fixture, so the
+    # timeline uses the current natural-duration estimate rather than padding
+    # the project to an old fixed length.
+    assert before["duration"]["actual_seconds"] is None
+    assert before["timeline"]["duration"] > 7
 
     result = run_editor_turn(
-        db, project, "Cut seconds 13 to 17", settings, auto_render=False
+        db, project, "Cut seconds 3 to 7", settings, auto_render=False
     )
     after = current_revision(result.project).state
 
@@ -432,8 +436,8 @@ def test_timestamp_question_reads_the_intersecting_scenes(db, tmp_path):
     project = project_for_agent(db, settings)
 
     result = run_editor_turn(
-        db, project, "What happens between 00:13–00:17?", settings, auto_render=False
+        db, project, "What happens between 00:03–00:07?", settings, auto_render=False
     )
 
-    assert "Between 13 and 17 seconds" in result.assistant.content
+    assert "Between 3 and 7 seconds" in result.assistant.content
     assert "Scene" in result.assistant.content

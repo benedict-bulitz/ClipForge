@@ -1,8 +1,8 @@
 from pathlib import Path
-from subprocess import CompletedProcess
 
 import pytest
 
+from clipforge.ai import AIHookGenerationResult
 from clipforge.alignment import (
     align_narration,
     group_aligned_words,
@@ -12,7 +12,7 @@ from clipforge.config import Settings
 from clipforge.hooks import (
     select_hook_candidate,
 )
-from clipforge.language import resolve_language
+from clipforge.language import detect_text_language, resolve_language
 from clipforge.pipeline import apply_edit, build_initial_state
 from clipforge.renderer import (
     _create_music_track,
@@ -122,14 +122,14 @@ def test_german_prompt_auto_resolves_to_german():
             "Warum haben Flugzeugfenster unten ein kleines Loch?",
             "de",
             "Das Loch hilft, den Druck zwischen den Fensterscheiben auszugleichen und die Belastung der Scheiben zu verteilen.",
-            "Das Loch hilft, den Druck zwischen den Fensterscheiben auszugleichen und die Belastung der Scheiben zu verteilen.",
+            "Das kleine Loch ist nicht kaputt, sondern gleicht den Druck zwischen den Scheiben aus.",
             "Beim Aufstieg sinkt der Außendruck, während der Kabinendruck höher bleibt.",
         ),
         (
             "Why do airplane windows have a tiny hole at the bottom?",
             "en",
             "The hole helps equalize pressure between the window panes and distribute the load.",
-            "The hole helps equalize pressure between the window panes and distribute the load.",
+            "That tiny hole is not damage, but it balances pressure between the panes.",
             "At cruising altitude, cabin pressure stays higher than the outside pressure.",
         ),
     ],
@@ -165,10 +165,7 @@ def test_realistic_airplane_path_keeps_tier_one_through_review(
                 "research_questions": ["What does the hole do?"],
                 "facts": [],
                 "answer_skeleton": ["HOOK", "ANSWER"],
-                "script_blocks": [
-                    {"role": "hook", "text": mechanism},
-                    {"role": "answer", "text": mechanism},
-                ],
+                "script_blocks": [{"role": "answer", "text": mechanism}],
                 "music_mood": "documentary",
                 "hook_candidates": [
                     {"strategy": "evidence_insight", "text": tier_one},
@@ -191,6 +188,14 @@ def test_realistic_airplane_path_keeps_tier_one_through_review(
             (),
             {"plan": FakePlan(), "status": "connected", "error": None},
         )(),
+    )
+    monkeypatch.setattr(
+        "clipforge.pipeline.generate_hook_candidates_with_openai",
+        lambda *_args, **_kwargs: AIHookGenerationResult(
+            [{"strategy": "direct_reframe", "text": tier_one}],
+            "direct_reframe",
+            "connected",
+        ),
     )
     state = build_initial_state(
         prompt,
@@ -269,7 +274,7 @@ def test_german_project_sends_german_text_and_language_instructions_to_tts(
 
     assert captured["input"] == state["script"]["text"]
     assert "Natural de narration" in captured["instructions"]
-    assert "Astronautin" in captured["input"]
+    assert detect_text_language(captured["input"]) == "de"
 
 
 def test_review_accepts_matching_language_and_flags_wrong_language():
@@ -599,7 +604,7 @@ def test_caption_styles_have_distinct_renderer_configuration():
     assert len(signatures) == len(names)
 
 
-def test_music_off_has_no_track_and_mix_controls_are_functional(tmp_path, monkeypatch):
+def test_music_is_not_created_or_mixed_during_base_render(tmp_path):
     state = project_state(
         language="en",
         music_enabled=False,
@@ -610,19 +615,10 @@ def test_music_off_has_no_track_and_mix_controls_are_functional(tmp_path, monkey
     assert _create_music_track("ffmpeg", state, 2, tmp_path) is None
     assert music_render_config(state)["effective_volume"] == pytest.approx(0.11)
 
-    commands = []
-
-    def fake_run(command, **_kwargs):
-        commands.append(command)
-        Path(command[-1]).write_bytes(b"music")
-        return CompletedProcess(command, 0, "", "")
-
-    monkeypatch.setattr("clipforge.renderer._run_process", fake_run)
     state["music"].update(enabled=True, mood="tech", ducking=False)
     track = _create_music_track("ffmpeg", state, 2, tmp_path)
 
-    assert track and track.exists()
-    assert "130.81" in " ".join(commands[0])
+    assert track is None
     assert music_render_config(state)["effective_volume"] == pytest.approx(0.2)
     assert music_render_config(state)["fades"] is True
     graph = music_filter_graph(music_render_config(state), 8)

@@ -219,6 +219,54 @@ def test_openai_review_uses_worker_model_and_structured_output(monkeypatch) -> N
     assert result.status == "approved"
     assert captured["model"] == "worker-model"
     assert captured["text_format"] is ScriptReviewResponse
+    assert captured["instructions"] == SCRIPT_REVIEW_V2_INSTRUCTIONS
+
+
+def test_reviewer_readability_contract_preserves_facts_and_simple_wording() -> None:
+    for requirement in (
+        "10–14 year old", "first listen", "Rewrite unnecessarily difficult words",
+        "nested sentences", "everyday German", "idea first, term second",
+        "scientific distinctions", "factual meaning, and fact IDs",
+        "Do not add filler, reassurance, tangents", "already simple, accurate wording unchanged",
+        "fixed templates", "body-only",
+    ):
+        assert requirement in SCRIPT_REVIEW_V2_INSTRUCTIONS
+
+
+def test_readability_revision_preserves_model_wording_and_evidence(monkeypatch) -> None:
+    # Contract regression, not a live-model language-quality evaluation.
+    explanation = ScriptBlockV2(
+        role="explanation", fact_ids=["fact_01"], text="Das passiert in kalter Luft.",
+    )
+    academic = ScriptDraftV2(language="de", blocks=[ScriptBlockV2(
+        role="answer", fact_ids=["fact_01"],
+        text="Die Kondensation des in der Atemluft enthaltenen Wasserdampfs erzeugt Tröpfchen.",
+    ), explanation])
+    simple = ScriptDraftV2(language="de", blocks=[ScriptBlockV2(
+        role="answer", fact_ids=["fact_01"],
+        text="Das Wasser in deiner Atemluft wird zu winzigen Tröpfchen. Das nennt man Kondensation.",
+    ), explanation])
+    review_request = replace(_request(academic), prompt="Warum sieht man im Winter seinen Atem?",
+                            facts=[ScriptWriterFact(
+        id="fact_01", verification="supported",
+        claim="Wasserdampf in der Atemluft kondensiert in kalter Luft zu Wassertröpfchen.",
+    )])
+    responses = iter([
+        ScriptReviewResponse(status="revise", draft=simple),
+        ScriptReviewResponse(status="approve"),
+    ])
+    monkeypatch.setattr("clipforge.script_review.OpenAI", lambda **_: SimpleNamespace(
+        responses=SimpleNamespace(parse=lambda **_: SimpleNamespace(output_parsed=next(responses)))
+    ))
+    provider = OpenAIScriptReviewProvider(Settings(openai_api_key="test-key"))
+    revised = provider.review(review_request)
+    assert revised.status == "revised"
+    assert revised.response.draft == simple
+    review_request = replace(review_request, draft=simple)
+    approved = provider.review(review_request)
+    assert approved.status == "approved"
+    assert approved.response.draft is None
+    assert review_request.draft == simple
 
 
 def _plan(prompt: str):

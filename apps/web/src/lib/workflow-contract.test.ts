@@ -23,7 +23,7 @@ test("scene media chooser discovers candidates and applies through a revision", 
   assert.match(workspace, /getSceneMediaCandidates/);
   assert.match(workspace, /applySceneMediaCandidate/);
   assert.match(workspace, /mediaBusy/);
-  assert.match(workspace, /Finding media/);
+  assert.match(workspace, /Loading…/);
   assert.match(workspace, /Alternatives/);
   assert.match(workspace, />Apply</);
   assert.match(workspace, /candidate.preview_url/);

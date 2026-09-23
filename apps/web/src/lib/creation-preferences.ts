@@ -25,8 +25,8 @@ export const DEFAULT_CREATE_OPTIONS: CreateOptions = {
   caption_text_color: "#ffffff",
   caption_highlight_color: "#ff6838",
   caption_words_per_group: 4,
-  music_enabled: false,
-  music_mood: "ambient",
+  music_enabled: true,
+  music_mood: null,
   music_volume: 0.14,
   music_ducking: true,
   music_fades: true,
@@ -60,6 +60,7 @@ export function sanitizeCreatePreferences(value: unknown): CreateOptions {
     if (typeof item === "string" || typeof item === "number" || typeof item === "boolean" || item === null) clean[key] = item;
   }
   for (const [key, values] of Object.entries(choices)) {
+    if (key === "music_mood" && clean[key] === null) continue;
     if (!values.includes(String(clean[key]))) clean[key] = DEFAULT_CREATE_OPTIONS[key];
   }
   if (typeof clean.max_duration !== "number" || clean.max_duration < 10 || clean.max_duration > 180) clean.max_duration = 60;

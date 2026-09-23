@@ -5,7 +5,12 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from .ai import ai_plan_to_dict, interpret_edit, plan_with_openai
+from .ai import (
+    ai_plan_to_dict,
+    generate_hook_candidates_with_openai,
+    interpret_edit,
+    plan_with_openai,
+)
 from .alignment import phrase_fallback_items
 from .attention import replan_attention, resolve_attention_preferences
 from .config import Settings
@@ -13,6 +18,7 @@ from .dependencies import resolve_edit_scope
 from .hashing import attach_hashes
 from .hooks import STRATEGIES, select_hook, select_hook_candidate
 from .language import detect_text_language, resolve_language
+from .music import automatic_music_layer
 from .narration import (
     clean_narration_text,
     clean_research_claim,
@@ -420,6 +426,30 @@ def _authoritative_hook_blocks(
     return ([{"role": "hook", "text": candidate.text}, *remaining], candidate)
 
 
+def _generate_authoritative_hook_blocks(
+    blocks: list[dict[str, Any]],
+    prompt: str,
+    intent: dict[str, Any],
+    facts: list[dict[str, Any]],
+    settings: Settings,
+) -> tuple[list[dict[str, Any]], Any | None, Any]:
+    """Use the one post-body hook path shared by production and validation."""
+    body_blocks = [
+        block for block in blocks
+        if str(block.get("role") or "").casefold() != "hook"
+    ]
+    final_body = " ".join(
+        str(block.get("text") or "").strip() for block in body_blocks
+    )
+    hook_generation = generate_hook_candidates_with_openai(
+        prompt, intent, facts, final_body, settings
+    )
+    hooked_blocks, candidate = _authoritative_hook_blocks(
+        body_blocks, intent, facts, hook_generation.candidates
+    )
+    return hooked_blocks, candidate, hook_generation
+
+
 def _words(text: str) -> list[str]:
     return re.findall(r"\S+", text)
 
@@ -450,7 +480,7 @@ def _fallback_visual_intent(narration: str, language: str) -> dict[str, Any]:
         return {"visual_goal": "materials being moved and assembled on Earth", "objects": ["materials", "Earth"], "actions": ["moving", "assembling"], "context": ["construction"], "visual_strategy": "physical_example", "media_queries": ["construction materials", "materials being assembled", "Earth materials"]}
     words = [word.strip(".,!?;:") for word in _words(text) if len(word.strip(".,!?;:")) > 3]
     goal = " ".join(words[:6]) or ("visual explanation" if language != "de" else "visuelle Erklärung")
-    return {"visual_goal": goal, "objects": words[:3], "actions": [], "context": [], "visual_strategy": "diagram_or_card", "media_queries": [goal]}
+    return {"visual_goal": goal, "objects": words[:3], "actions": [], "context": [], "visual_strategy": "literal", "media_queries": [goal]}
 
 
 def _is_hook_block(block: dict[str, Any]) -> bool:
@@ -575,7 +605,7 @@ def _build_scenes(
             "visual_goal": existing.get("visual_goal", visual_goal),
             "visual_intent": intent,
             "preferred_media": existing.get("preferred_media", "video"),
-            "fallback_media": "generated_card",
+            "fallback_media": "real_stock",
             "search_queries": existing.get("search_queries", intent.get("media_queries", [])),
             "motion": (
                 "fast_cut"
@@ -785,12 +815,10 @@ def build_initial_state(
         provider=script_writer_provider,
         review_provider=script_review_provider,
     )
-    raw_blocks, selected_hook_candidate = _authoritative_hook_blocks(
-        raw_blocks,
-        intent,
-        facts,
-        plan.get("hook_candidates") or [],
+    raw_blocks, selected_hook_candidate, hook_generation = _generate_authoritative_hook_blocks(
+        raw_blocks, prompt, intent, facts, settings
     )
+    hook_candidates = hook_generation.candidates
     wpm = max(1, round(SPEAKING_RATE_WPM * float(options.voice_speed or 1.0)))
     blocks = _normalise_blocks(raw_blocks, max_duration, wpm)
     # Normalization must preserve the authoritative hook intact. Re-apply the
@@ -852,9 +880,14 @@ def build_initial_state(
             "narration_owned_by_v2": script_writer_diagnostics.get("status") == "v2_success",
             "selected_hook": selected_hook_candidate.text if selected_hook_candidate else (str(hook_block.get("text")) if hook_block else None),
             "selected_hook_strategy": selected_hook_candidate.strategy if selected_hook_candidate else None,
+            "hook_generation": {
+                "status": hook_generation.status,
+                "selected_strategy": hook_generation.selected_strategy,
+                "error": hook_generation.error,
+            },
             "hook_candidates": [
                 {"strategy": str(item.get("strategy") or "") if str(item.get("strategy") or "") in STRATEGIES else "evidence_insight", "text": str(item.get("text") or "")}
-                for item in (plan.get("hook_candidates") or [])
+                for item in hook_candidates
                 if str(item.get("text") or "").strip()
             ][:5],
             "fact_map": [
@@ -915,15 +948,19 @@ def build_initial_state(
         "attention_preferences": resolve_attention_preferences(resolved_options.model_dump(mode="json")),
         "attention_events": [],
         "attention_plan": {"status": "pending", "event_count": 0},
-        "music": {
-            "enabled": options.music_enabled,
-            "mood": options.music_mood,
-            "volume": options.music_volume,
-            "ducking": options.music_ducking,
-            "fades": options.music_fades,
-            "source": "procedural_original",
-            "status": "planned" if options.music_enabled else "disabled",
-        },
+        "music": automatic_music_layer(
+            enabled=options.music_enabled,
+            topic=intent.get("topic"),
+            content_type=intent.get("content_type"),
+            planned_mood=plan.get("music_mood"),
+            requested_mood=options.music_mood,
+            volume=options.music_volume,
+            ducking=options.music_ducking,
+            fades=options.music_fades,
+            script=script_text,
+            tone=intent.get("tone"),
+            variation_seed=now,
+        ),
         "timeline": {
             "duration": estimated_duration,
             "timing": "estimated",

@@ -4,7 +4,6 @@ import re
 import shutil
 import subprocess
 import tempfile
-import textwrap
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -20,7 +19,6 @@ from openai import (
     PermissionDeniedError,
     RateLimitError,
 )
-from PIL import Image, ImageDraw, ImageFont
 
 from .alignment import (
     align_narration,
@@ -30,6 +28,8 @@ from .alignment import (
 )
 from .attention import replan_attention
 from .config import Settings
+from .media import is_real_media_allowed
+from .music import attach_discovered_track, resolve_track_path
 from .narration import clean_narration_text, contamination_issues
 from .progress import ProgressCallback, report_progress
 from .smart_crop import analyze_scene_media
@@ -175,7 +175,7 @@ def render_video(
             captions["diagnostic"] = alignment.diagnostic
             group_size = int(captions.get("words_per_group", 4))
             captions["items"] = (
-                group_aligned_words(alignment.words, group_size)
+                group_aligned_words(alignment.words, group_size, state["script"]["text"])
                 if alignment.words
                 else phrase_fallback_items(state["script"]["text"], target, group_size)
             )
@@ -244,36 +244,19 @@ def render_video(
             "-i",
             str(audio),
         ]
-        music_enabled = bool(state.get("music", {}).get("enabled"))
+        music_enabled = bool(
+            state.get("music", {}).get("enabled") or state.get("music", {}).get("requested_enabled")
+        )
         report_progress(
             progress,
             "music",
-            "Preparing the audio mix",
-            phase="start" if music_enabled else "skipped",
+            "Music will be mixed on export",
+            phase="skipped",
         )
-        music = _create_music_track(ffmpeg, state, target, temp)
-        if music:
-            state.setdefault("music", {})["status"] = "mixed"
-            config = music_render_config(state)
-            command.extend(
-                [
-                    "-i",
-                    str(music),
-                    "-filter_complex",
-                    music_filter_graph(config, target),
-                    "-map",
-                    "0:v:0",
-                    "-map",
-                    "[mixed]",
-                ]
-            )
-        else:
-            state.setdefault("music", {})["status"] = "disabled"
-            command.extend(["-af", f"apad=pad_dur={target:.3f}"])
-        if music_enabled:
-            report_progress(
-                progress, "music", "Preparing the audio mix", phase="complete"
-            )
+        music_state = state.setdefault("music", {})
+        if not music_enabled:
+            music_state["status"] = "disabled"
+        command.extend(["-af", f"volume={float(state.get('voice', {}).get('volume', 1)):.3f},apad=pad_dur={target:.3f}"])
         command.extend([
             "-t",
             f"{target:.3f}",
@@ -321,6 +304,13 @@ def render_video(
             "Finalizing and checking the video",
             phase="complete",
         )
+        # Retain independent sources outside the export cleanup directories.
+        layers = settings.render_root.resolve() / project_id / "audio-layers" / f"v{revision_number}"
+        layers.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(output, layers / "picture.mp4")
+        shutil.copy2(audio, layers / "narration.wav")
+        state.setdefault("voice", {})["mix_source"] = (layers / "narration.wav").relative_to(settings.render_root.resolve()).as_posix()
+        state["voice"]["picture_source"] = (layers / "picture.mp4").relative_to(settings.render_root.resolve()).as_posix()
     relative = output.relative_to(settings.render_root.resolve()).as_posix()
     return RenderResult(
         url=f"/media/{relative}",
@@ -461,6 +451,8 @@ def music_render_config(state: dict) -> dict[str, object]:
         "ducking": ducking,
         "effective_volume": volume * (0.55 if ducking else 1.0),
         "fades": bool(music.get("fades", True)),
+        "track_id": str((music.get("track") or {}).get("id") or ""),
+        "voice_volume": max(0.0, min(1.0, float(state.get("voice", {}).get("volume", 1)))),
     }
 
 
@@ -473,48 +465,117 @@ def music_filter_graph(config: dict[str, object], duration: float) -> str:
         )
     return (
         f"[2:a]volume={float(config['effective_volume']):.3f}{fades}[bed];"
-        f"[1:a]apad=pad_dur={duration:.3f}[voice];"
+        f"[1:a]volume={float(config.get('voice_volume', 1)):.3f},apad=pad_dur={duration:.3f}[voice];"
         "[voice][bed]amix=inputs=2:duration=longest:normalize=0[mixed]"
     )
 
 
+def music_input_args(track: Path, duration: float) -> list[str]:
+    """Loop a real track and trim its input cleanly to the narration duration."""
+    return ["-stream_loop", "-1", "-t", f"{duration:.3f}", "-i", str(track)]
+
+
+def replace_scene_video(state: dict, project_id: str, title: str, scene_number: int, revision: int, settings: Settings) -> None:
+    """Replace one picture interval while copying the finished audio unchanged."""
+    from .exporter import ExportUnavailable, exported_video_path
+
+    root = settings.render_root.resolve()
+    project_root = (root / project_id).resolve()
+    url = str(state.get("render", {}).get("url", ""))
+    source = (root / url.removeprefix("/media/")).resolve()
+    if not url.startswith("/media/") or not source.is_relative_to(project_root) or not source.is_file():
+        try:
+            source = exported_video_path(project_id, title, state.get("export", {}), settings)
+        except ExportUnavailable as exc:
+            raise RenderUnavailable("Render this project before replacing a scene.") from exc
+    ffmpeg = ffmpeg_path()
+    if not ffmpeg:
+        raise RenderUnavailable("FFmpeg is unavailable.")
+    scene = state["scenes"][scene_number - 1]
+    start, end = float(scene["start"]), float(scene["end"])
+    output = project_root / "renders" / f"v{revision}" / "clipforge.mp4"
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="clipforge-replace-") as name:
+        temp = Path(name)
+        segment = _create_visual_segment(ffmpeg, state, scene, scene_number - 1, end - start, temp, settings, require_real_media=True)
+        # Render the existing caption/attention timeline onto just the replacement.
+        captions = _write_ass_captions(state, float(state["timeline"]["duration"]), temp)
+        graph = f"[1:v]setpts=PTS-STARTPTS+{start:.6f}/TB"
+        if state.get("captions", {}).get("enabled", True) or state.get("attention_events"):
+            graph += f",ass={captions}"
+        graph += f"[replacement];[0:v][replacement]overlay=eof_action=pass:repeatlast=0:enable='gte(t,{start:.6f})*lt(t,{end:.6f})'[video]"
+        command = [ffmpeg, "-y", "-v", "error", "-i", str(source), "-i", str(segment), "-filter_complex", graph, "-map", "[video]", "-map", "0:a:0", "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-c:a", "copy", "-movflags", "+faststart", str(output)]
+        result = _run_process(command, timeout=180, failure="Scene replacement timed out.")
+        if result.returncode != 0 or not output.is_file():
+            raise RenderUnavailable("Scene replacement could not be rendered.")
+    # Audio remixes must use the newly replaced picture even after export cleanup.
+    retained = project_root / "replacements" / f"picture-v{revision}.mp4"
+    retained.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(output, retained)
+    state.setdefault("voice", {})["picture_source"] = retained.relative_to(root).as_posix()
+    state.pop("export", None)
+    state["render"].update(status="complete", stale=False, exported=False, revision=revision, url=f"/media/{output.relative_to(root).as_posix()}", file_size=output.stat().st_size)
+
+
 def _create_music_track(
-    ffmpeg: str, state: dict, duration: float, temp: Path
+    _ffmpeg: str, state: dict, _duration: float, _temp: Path
 ) -> Path | None:
-    config = music_render_config(state)
-    if not config["enabled"]:
+    if not state.get("music", {}).get("enabled") and not state.get("music", {}).get("requested_enabled"):
         return None
-    roots = {
-        "ambient": (110.0, 164.81, 220.0),
-        "documentary": (98.0, 146.83, 196.0),
-        "tech": (130.81, 196.0, 261.63),
-        "cinematic": (82.41, 123.47, 164.81),
-    }
-    frequencies = roots.get(str(config["mood"]), roots["ambient"])
-    expression = "+".join(f"0.08*sin(2*PI*{value}*t)" for value in frequencies)
-    output = temp / "music-bed.wav"
-    completed = _run_process(
-        [
-            ffmpeg,
-            "-y",
-            "-v",
-            "error",
-            "-f",
-            "lavfi",
-            "-i",
-            f"aevalsrc={expression}:s=48000:d={duration:.3f}",
-            "-af",
-            "lowpass=f=1800",
-            "-c:a",
-            "pcm_s16le",
-            str(output),
-        ],
-        timeout=45,
-        failure="The procedural music bed could not be created.",
-    )
-    if completed.returncode != 0 or not output.exists():
-        raise RenderUnavailable("The procedural music bed could not be created.")
-    return output
+    # A selected track must be a real, validated local audio asset.  Never
+    # synthesize a tone as a fallback when the library is empty or stale.
+    return attach_discovered_track(state)
+
+
+def remix_project_audio(state: dict, project_id: str, revision: int, settings: Settings) -> None:
+    """Copy the finished picture and mix immutable narration/music sources."""
+    root = settings.render_root.resolve()
+    project_root = (root / project_id).resolve()
+    if project_root.parent != root:
+        raise RenderUnavailable("Invalid project audio path.")
+    voice = state.setdefault("voice", {})
+    source = (root / str(voice.get("mix_source", ""))).resolve()
+    picture = (root / str(voice.get("picture_source", ""))).resolve()
+    if not source.is_file() or not picture.is_file():
+        # Upgrade pre-controls projects only when their original narration exists.
+        candidates = list((project_root / "audio").glob("narration-*"))
+        url = str(state.get("render", {}).get("url", ""))
+        picture = (root / url.removeprefix("/media/")).resolve()
+        if len(candidates) != 1 or not url.startswith("/media/") or not picture.is_file():
+            raise RenderUnavailable("Original audio is unavailable. Render this project once to enable audio controls.")
+        source = candidates[0].resolve()
+    if not source.is_relative_to(project_root) or not picture.is_relative_to(project_root):
+        raise RenderUnavailable("Invalid project audio sources.")
+    layers = project_root / "audio-layers" / f"v{revision}"
+    layers.mkdir(parents=True, exist_ok=True)
+    if not voice.get("mix_source"):
+        shutil.copy2(source, layers / "narration.wav")
+        shutil.copy2(picture, layers / "picture.mp4")
+        source, picture = layers / "narration.wav", layers / "picture.mp4"
+        voice.update(mix_source=source.relative_to(root).as_posix(), picture_source=picture.relative_to(root).as_posix())
+    ffmpeg = ffmpeg_path()
+    if not ffmpeg:
+        raise RenderUnavailable("FFmpeg is unavailable.")
+    duration = _audio_duration(ffmpeg, picture)
+    output = project_root / "renders" / f"v{revision}" / "clipforge.mp4"
+    output.parent.mkdir(parents=True, exist_ok=True)
+    command = [ffmpeg, "-y", "-v", "error", "-i", str(picture), "-i", str(source)]
+    music = state.setdefault("music", {})
+    track = resolve_track_path(music) if music.get("enabled") else None
+    if music.get("enabled") and track is None:
+        raise RenderUnavailable("The selected music file is unavailable.")
+    if track:
+        command.extend(music_input_args(track, duration))
+        command.extend(["-filter_complex", music_filter_graph(music_render_config(state), duration), "-map", "0:v:0", "-map", "[mixed]"])
+    else:
+        command.extend(["-map", "0:v:0", "-map", "1:a:0", "-af", f"volume={voice['volume']:.3f},apad"])
+    command.extend(["-t", f"{duration:.3f}", "-c:v", "copy", "-c:a", "aac", "-movflags", "+faststart", str(output)])
+    result = _run_process(command, timeout=180, failure="Audio mix timed out.")
+    if result.returncode != 0 or not output.is_file():
+        raise RenderUnavailable("Audio mix failed.")
+    music["status"] = "mixed" if track else "disabled"
+    state.pop("export", None)
+    state["render"].update(status="complete", stale=False, exported=False, url=f"/media/{output.relative_to(root).as_posix()}", file_size=output.stat().st_size, revision=revision)
 
 
 def _ass_time(seconds: float) -> str:
@@ -717,12 +778,12 @@ def _scene_media_path(scene: dict, settings: Settings) -> tuple[Path | None, str
     media = scene.get("media") if isinstance(scene.get("media"), dict) else {}
     cache_path = media.get("cache_path")
     kind = str(media.get("kind") or "")
-    if not cache_path or kind not in {"video", "photo"}:
-        return None, "generated_card"
+    if not cache_path or not is_real_media_allowed(media):
+        return None, "real_media_unavailable"
     root = settings.render_root.resolve()
     candidate = (root / str(cache_path)).resolve()
     if not candidate.is_relative_to(root) or not candidate.is_file():
-        return None, "generated_card"
+        return None, "real_media_unavailable"
     return candidate, kind
 
 
@@ -734,14 +795,24 @@ def _create_visual_segment(
     duration: float,
     temp: Path,
     settings: Settings,
+    *,
+    require_real_media: bool = False,
 ) -> Path:
     width = int(state["timeline"]["width"])
     height = int(state["timeline"]["height"])
     fps = int(state["timeline"]["fps"])
     source, kind = _scene_media_path(scene, settings)
     if source is None:
-        source = _draw_scene(state, scene, index, temp)
-        kind = "generated_card"
+        if require_real_media:
+            raise RenderUnavailable("The replacement media is unavailable. Choose another real image or video.")
+        for other in state.get("scenes", []):
+            source, kind = _scene_media_path(other, settings)
+            if source is not None:
+                scene["media"] = dict(other["media"])
+                scene["asset_status"] = "real_media_reused"
+                break
+        if source is None:
+            raise RenderUnavailable("No real scene media is available. Retry media discovery; text cards are disabled.")
     output = temp / f"segment-{index:02d}.mp4"
     smart_crop = analyze_scene_media(scene, state, settings)
     if smart_crop:
@@ -824,49 +895,5 @@ def _audio_duration(ffmpeg: str, audio: Path) -> float:
 
 
 def _draw_scene(state: dict, scene: dict, index: int, temp: Path) -> Path:
-    width = int(state["timeline"]["width"])
-    height = int(state["timeline"]["height"])
-    palettes = [
-        ("#171714", "#ff6838"),
-        ("#243246", "#82a6c8"),
-        ("#4f341f", "#e3b362"),
-        ("#27382f", "#89a887"),
-    ]
-    background, accent = palettes[index % len(palettes)]
-    image = Image.new("RGB", (width, height), background)
-    draw = ImageDraw.Draw(image)
-    unit = min(width, height)
-    draw.ellipse(
-        (width * 0.52, -unit * 0.14, width * 1.12, unit * 0.46),
-        fill=accent,
-    )
-    draw.rectangle((width * 0.07, height * 0.1, width * 0.085, height * 0.26), fill=accent)
-    font = _font(max(30, int(unit * 0.063)), bold=True)
-    small = _font(max(18, int(unit * 0.018)), bold=True)
-    role = scene.get("block_id", f"scene {index + 1}").replace("voice_block_", "SCENE ")
-    draw.text((width * 0.08, height * 0.1), role.upper(), font=small, fill="#f7f5ee")
-    chars = 18 if width < height else 38
-    wrapped = textwrap.fill(scene["narration"], width=chars)
-    bbox = draw.multiline_textbbox((0, 0), wrapped, font=font, spacing=int(unit * 0.018))
-    text_height = bbox[3] - bbox[1]
-    draw.multiline_text(
-        (width * 0.08, (height - text_height) * 0.58),
-        wrapped,
-        font=font,
-        fill="#ffffff",
-        spacing=int(unit * 0.018),
-    )
-    output = temp / f"scene-{index:02d}.png"
-    image.save(output, optimize=True)
-    return output
-
-
-def _font(size: int, *, bold: bool = False):
-    candidates = [
-        "/System/Library/Fonts/Supplemental/Arial Bold.ttf" if bold else "/System/Library/Fonts/Supplemental/Arial.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-    ]
-    for candidate in candidates:
-        if Path(candidate).exists():
-            return ImageFont.truetype(candidate, size=size)
-    return ImageFont.load_default()
+    """Legacy entrypoint: synthetic text visuals are permanently disabled."""
+    raise RenderUnavailable("Synthetic scene cards are disabled. Real image/video media is required.")

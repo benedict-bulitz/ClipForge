@@ -33,6 +33,13 @@ def ensure_runtime_schema() -> None:
         revision_columns = {
             column["name"] for column in inspector.get_columns("project_revisions")
         }
+        generation_job_columns = {
+            column["name"] for column in inspector.get_columns("generation_jobs")
+        } if inspector.has_table("generation_jobs") else set()
+        if generation_job_columns and "request_payload" not in generation_job_columns:
+            connection.exec_driver_sql(
+                "ALTER TABLE generation_jobs ADD COLUMN request_payload JSON NOT NULL DEFAULT '{}'"
+            )
         if "active_tip_revision" not in project_columns:
             connection.exec_driver_sql(
                 "ALTER TABLE projects ADD COLUMN active_tip_revision INTEGER NOT NULL DEFAULT 1"
@@ -71,10 +78,14 @@ def ensure_runtime_schema() -> None:
             BEGIN SELECT RAISE(ABORT, 'project revisions are append-only'); END
             """
         )
+        # Direct revision deletion remains forbidden, while the foreign-key
+        # cascade from deleting its parent project is deliberately allowed.
+        connection.exec_driver_sql("DROP TRIGGER IF EXISTS protect_revision_delete")
         connection.exec_driver_sql(
             """
-            CREATE TRIGGER IF NOT EXISTS protect_revision_delete
+            CREATE TRIGGER protect_revision_delete
             BEFORE DELETE ON project_revisions
+            WHEN EXISTS (SELECT 1 FROM projects WHERE id = OLD.project_id)
             BEGIN SELECT RAISE(ABORT, 'project revisions are append-only'); END
             """
         )

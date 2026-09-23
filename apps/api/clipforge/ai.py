@@ -7,6 +7,7 @@ from openai import OpenAI, OpenAIError
 from pydantic import BaseModel, Field
 
 from .config import Settings
+from .hook_library import generation_playbook
 from .narration import clean_research_claim
 from .schemas import AdvancedOptions
 
@@ -14,10 +15,25 @@ DIRECTOR_INSTRUCTIONS = (
     "You are ClipForge's short-form director. Write the shortest complete explanation that answers "
     "the user's question well. Start with one very short curiosity hook or setup that makes sense to "
     "a viewer who never saw the user's prompt, then reveal the answer immediately in the next sentence. "
-    "Before writing, compare three to five strategies internally: curiosity gap, counterintuitive insight, "
-    "direct reframe, common mistake, ego challenge, verified statistic, social proof, or proportionate consequence. "
-    "Return three to five topic-specific alternatives in hook_candidates and identify the winner in selected_hook_strategy; use only these strategy families when defensible: hot_take, direct_confrontation, curiosity_gap, counterintuitive_insight, direct_reframe, ego_challenge, common_mistake, high_stakes_consequence, verified_statistic, social_proof_or_trend, evidence_insight. script_blocks must contain only the selected audience-facing hook. Do not merely repeat the question when verified answer material exists. For each script block, return a concise visual_intents entry describing physical objects, actions, context, visual_strategy, and up to four English provider-facing media_queries. A visual goal must describe what should appear on screen, never conversational uncertainty, research prose, or meta commentary. "
+    "The supplied hook_playbook is the canonical ClipForge hook manifest. Use its strategy definitions, "
+    "when-to-use and avoid guidance, quality rules, and evidence opportunities to write three to five "
+    "original topic-specific hook candidates. Return their matching manifest strategy IDs in hook_candidates "
+    "and identify the winner in selected_hook_strategy. Do not invent a competing strategy catalogue or copy "
+    "fallback templates. A curiosity or evidence hook is allowed only when no manifest family fits better. "
+    "script_blocks must contain only the selected audience-facing hook. With usable research evidence, never "
+    "repeat or lightly paraphrase the user's question: a question hook must add genuine tension, challenge, "
+    "contrast, implication, or insight. For each script block, return a concise visual_intents entry describing "
+    "physical objects, actions, context, visual_strategy, and up to four English provider-facing media_queries. "
+    "A visual goal must describe what should appear on screen, never conversational uncertainty, research prose, or meta commentary. "
     "The hook must be honest, usually no more than fourteen words, and must not delay the useful answer. "
+    "For every hook candidate and the selected opening, ask: would a typical 10–14 year old "
+    "understand this on first listen without prior knowledge? Use everyday German when writing "
+    "German: short, concrete, natural spoken wording, no unexplained jargon, abstract academic "
+    "phrasing, unnecessarily clever wording, fake sensationalism, or rigid hook templates. "
+    "Simplify a difficult question into clear everyday language while preserving its factual "
+    "meaning; clarity takes priority over novelty or a clever hook strategy. "
+    "Never begin a hook with an obscure specialist term. Explain the familiar effect first; name a necessary "
+    "technical term later in plain language. "
     "Never open with 'The short answer to', 'Today we are going to', 'Have you ever wondered', "
     "'Let's take a look', or other setup about the act of answering. Assume zero prior knowledge. "
     "Use ordinary words, short sentences, and one useful idea at a time. Explain a necessary technical "
@@ -85,6 +101,11 @@ class AIProjectPlan(BaseModel):
     visual_intents: list[AIVisualIntent] = Field(default_factory=list, max_length=8)
 
 
+class AIHookGenerationResponse(BaseModel):
+    hook_candidates: list[AIHookCandidate] = Field(min_length=1, max_length=5)
+    selected_hook_strategy: str = Field(min_length=1)
+
+
 class AIEditDirective(BaseModel):
     components: list[
         Literal[
@@ -118,6 +139,74 @@ class AIPlanResult:
     error: str | None = None
 
 
+@dataclass(frozen=True)
+class AIHookGenerationResult:
+    candidates: list[dict[str, str]]
+    selected_strategy: str | None
+    status: str
+    error: str | None = None
+
+
+HOOK_GENERATION_INSTRUCTIONS = (
+    "You are ClipForge's hook writer. The supplied body is final and must remain unchanged. "
+    "Generate only original spoken hook candidates for the opening of that body. The supplied "
+    "hook_playbook is the canonical strategy manifest: use its strategy definitions, when-to-use, "
+    "avoid guidance, and evidence opportunities; do not invent a competing strategy catalogue or "
+    "copy fallback templates. Choose only factually supportable strategies. A hook must create a "
+    "real reason to continue—curiosity, viewer involvement, tension, contrast, a correction, a "
+    "challenge, or a genuinely surprising insight—before the explanation. Never use a plain "
+    "restatement of the body as an evidence insight, repeat or lightly paraphrase the user's "
+    "question, use clickbait, or begin with unexplained specialist terminology. Keep German "
+    "everyday, short, concrete, and understandable on first listen by a typical 10–14 year old. "
+    "Return three to five candidates and select the strongest strategy. Return structured output only."
+)
+
+
+def generate_hook_candidates_with_openai(
+    prompt: str,
+    intent: dict[str, Any],
+    facts: list[dict[str, Any]],
+    body: str,
+    settings: Settings,
+) -> AIHookGenerationResult:
+    """Generate manifest-guided candidates after the body is finalized."""
+    if not settings.openai_api_key:
+        return AIHookGenerationResult([], None, "missing_key", "OPENAI_API_KEY is not configured")
+    request = {
+        "prompt": prompt,
+        "intent": {
+            key: intent.get(key)
+            for key in ("topic", "question", "language", "content_type", "tone")
+        },
+        "final_body": body,
+        "facts": [
+            {"claim": clean_research_claim(str(fact.get("claim") or ""))}
+            for fact in facts
+            if fact.get("claim")
+        ],
+        "hook_playbook": generation_playbook(facts),
+    }
+    try:
+        response = OpenAI(api_key=settings.openai_api_key).responses.parse(
+            model=settings.openai_director_model,
+            instructions=HOOK_GENERATION_INSTRUCTIONS,
+            input=json.dumps(request, ensure_ascii=False),
+            text_format=AIHookGenerationResponse,
+            max_output_tokens=900,
+            store=False,
+        )
+        parsed = response.output_parsed
+        if not isinstance(parsed, AIHookGenerationResponse):
+            return AIHookGenerationResult([], None, "provider_error", "No parsed hook result")
+        return AIHookGenerationResult(
+            [candidate.model_dump() for candidate in parsed.hook_candidates],
+            parsed.selected_hook_strategy,
+            "connected",
+        )
+    except (OpenAIError, ValueError, TypeError) as exc:
+        return AIHookGenerationResult([], None, "provider_error", str(exc)[:240])
+
+
 def plan_with_openai(
     prompt: str,
     options: AdvancedOptions,
@@ -136,6 +225,15 @@ def plan_with_openai(
         "prompt": prompt,
         "options": options.model_dump(mode="json", exclude_none=True),
         "research_evidence": [clean_research_claim(item) for item in (evidence or []) if item],
+        "hook_playbook": generation_playbook([
+            {
+                "claim": clean_research_claim(item),
+                "verification": "source_attributed",
+                "sources": [{"label": "research", "url": ""}],
+            }
+            for item in (evidence or [])
+            if item
+        ]),
     }
     try:
         response = client.responses.parse(

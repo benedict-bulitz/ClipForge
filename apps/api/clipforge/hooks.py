@@ -15,6 +15,7 @@ _CLICHE = re.compile(r"(?i)(?:they don't want you to know|you(?:'|’)ve been li
 _ATTACK = re.compile(r"(?i)\b(?:lazy|stupid|idiot|loser|du bist faul|dumm|versager)\b")
 _META = re.compile(r"(?i)\b(?:in this video|today we(?:'|’)re going to|here(?:'|’)s the answer|in diesem video|heute zeige ich)\b")
 _META_FILLER = re.compile(r"(?i)(?:that is the key to the answer|that answers the question|that's the answer|das beantwortet die frage|genau das ist die antwort|hier ist der grund|deshalb ist die antwort|und genau das erklärt es)")
+_OPENING_SPECIALIST_TERM = re.compile(r"(?i)^\s*(?:piloerektion)\b")
 _STOP = {"the", "and", "why", "what", "how", "are", "is", "was", "were", "for", "from", "with", "that", "this", "your", "you", "der", "die", "das", "und", "warum", "wie", "ist", "sind", "für", "von", "mit", "dass", "dies"}
 
 
@@ -82,6 +83,9 @@ def hook_issues(text: str, facts: list[dict[str, Any]], *, body: str = "", inten
     if _ATTACK.search(value): issues.append("personal_attack")
     if _META.search(raw) or _META.search(value): issues.append("meta_language")
     if _META_FILLER.search(value): issues.append("generic_meta_filler")
+    if _OPENING_SPECIALIST_TERM.search(value): issues.append("jargon_first")
+    if intent and (facts or body) and _is_question_echo(value, intent):
+        issues.append("question_echo")
     if _PREVALENCE.search(value) and not _PREVALENCE.search(" ".join(_evidence_facts(facts))): issues.append("unsupported_prevalence")
     if _NUMBER.search(value) and not _number_supported(value, facts, intent): issues.append("unsupported_statistic")
     if _TREND_WORDS.search(value):
@@ -95,12 +99,68 @@ def hook_issues(text: str, facts: list[dict[str, Any]], *, body: str = "", inten
     return issues
 
 
+def _is_question_echo(text: str, intent: dict[str, Any]) -> bool:
+    """Reject empty question restatements while retaining genuinely new questions."""
+    question = _question(intent).strip().casefold()
+    value = text.strip().rstrip("?!.").casefold()
+    if value == question:
+        return True
+    question_words = set(re.findall(r"[a-zäöüß]{2,}", question))
+    text_words = set(re.findall(r"[a-zäöüß]{2,}", value))
+    if len(question_words) < 2 or not text_words:
+        return False
+    overlap = len(question_words & text_words)
+    if "?" not in text and overlap != len(question_words):
+        return False
+    return overlap / len(question_words) >= 0.75 and overlap / len(text_words) >= 0.55
+
+
+def _plain_evidence_explanation(text: str, facts: list[dict[str, Any]], body: str) -> bool:
+    """Identify a near-verbatim causal proposition that belongs in the body.
+
+    This is deliberately structural, not a topic-specific vocabulary list. A
+    fresh wording of a surprising relationship can still be an evidence insight;
+    simply lifting the explanation from a fact or the body cannot.
+    """
+    candidate_words = _words(text)
+    if len(candidate_words) < 2:
+        return False
+    references = [str(fact.get("claim") or "") for fact in facts]
+    if body:
+        references.append(body)
+    for reference in references:
+        reference_words = _words(reference)
+        if reference_words and len(candidate_words & reference_words) / len(candidate_words) >= 0.8:
+            return True
+    return False
+
+
+def _evidence_insight_has_attention_value(
+    text: str, facts: list[dict[str, Any]], body: str, intent: dict[str, Any]
+) -> bool:
+    """Evidence insight is a hook only when it is more than the explanation."""
+    if _plain_evidence_explanation(text, facts, body):
+        return False
+    evidence_words = set().union(*(_words(str(fact.get("claim") or "")) for fact in facts)) if facts else set()
+    topic_words = _words(str(intent.get("topic") or "") + " " + _question(intent))
+    return bool(_words(text) & (evidence_words | topic_words))
+
+
+def _unlabelled_hook_has_mechanism(text: str, intent: dict[str, Any]) -> bool:
+    """Keep legacy hook blocks from bypassing strategy-based eligibility."""
+    return (
+        ("?" in text and not _is_question_echo(text, intent))
+        or _strategy_matches("direct_reframe", text)
+        or _strategy_matches("counterintuitive_insight", text)
+    )
+
+
 def _candidate_score(strategy: str, text: str, intent: dict[str, Any], facts: list[dict[str, Any]], body: str) -> float:
     topic_words, text_words, body_words = _words(str(intent.get("topic") or "") + " " + _question(intent)), _words(text), _words(body)
     score = 20 + min(30, len(topic_words & text_words) * 7) + min(24, len(text_words & body_words) * 6)
     if body and text_words and len(text_words & body_words) / len(text_words) >= 0.8: score -= 30
     score += 10 if len(text.split()) <= 14 else -min(12, (len(text.split()) - 14) * 2)
-    if text.rstrip("?") == _question(intent) and (body or facts): score -= 38
+    if _is_question_echo(text, intent) and (body or facts): score -= 70
     if strategy in {"counterintuitive_insight", "direct_reframe", "common_mistake", "high_stakes_consequence", "evidence_insight"} and body_words: score += 8
     if strategy == "verified_statistic": score += 14
     if strategy == "social_proof_or_trend": score += 8
@@ -173,6 +233,10 @@ def generate_hook_candidates(intent: dict[str, Any], facts: list[dict[str, Any]]
         issues = hook_issues(text, facts, body=body, intent=intent)
         if issues and not (strategy == "evidence_insight" and issues == ["repeats_body"]):
             continue
+        if strategy == "evidence_insight" and not _evidence_insight_has_attention_value(
+            text, facts, body, intent
+        ):
+            continue
         candidate = HookCandidate(strategy, text, _candidate_score(strategy, text, intent, facts, body), reason)
         key = " ".join(text.casefold().split())
         previous = seen.get(key)
@@ -193,11 +257,39 @@ def select_hook_candidate(intent: dict[str, Any], facts: list[dict[str, Any]], *
                 continue
             seen_text.add(normalized)
             declared = str(item.get("strategy") or "")
-            aliases = {"shock_number": "verified_statistic", "fomo": "social_proof_or_trend", "direct_challenge": "direct_confrontation"}
+            aliases = {"shock_number": "verified_statistic", "social_proof": "social_proof_or_trend", "fomo": "social_proof_or_trend", "direct_challenge": "direct_confrontation"}
             strategy = aliases.get(declared, declared) if declared in STRATEGIES or declared in aliases else "evidence_insight"
             if strategy in STRATEGIES and not _strategy_matches(strategy, text): strategy = "evidence_insight"
-            candidates.append(HookCandidate(strategy, text, _candidate_score(strategy, text, intent, facts, body), "Structured Content Director candidate."))
-    if existing and not hook_issues(existing, facts, body=body, intent=intent):
+            if strategy == "curiosity_gap" and "?" not in text:
+                strategy = "evidence_insight"
+            if strategy == "evidence_insight" and not _evidence_insight_has_attention_value(
+                text, facts, body, intent
+            ):
+                continue
+            score = _candidate_score(strategy, text, intent, facts, body)
+            # The director received the manifest and can supply an original rhetorical
+            # hook; give a modest preference to that valid alternative over a literal
+            # deterministic fact sentence, never over an eligibility failure.
+            evidence_words = set().union(*(_words(str(fact.get("claim") or "")) for fact in facts)) if facts else set()
+            rhetorical = {
+                "hot_take", "direct_confrontation", "direct_reframe", "ego_challenge",
+                "common_mistake", "counterintuitive_insight", "high_stakes_consequence",
+                "curiosity_gap", "verified_statistic", "social_proof_or_trend",
+            }
+            topic_words = _words(str(intent.get("topic") or "") + " " + _question(intent))
+            if strategy in rhetorical and (
+                len(_words(text) & evidence_words) >= 2
+                or len(_words(text) & topic_words) >= 2
+            ):
+                score += 16
+            candidates.append(HookCandidate(strategy, text, score, "Structured Content Director candidate."))
+    if (
+        existing
+        and " ".join(existing.casefold().split()) not in seen_text
+        and not hook_issues(existing, facts, body=body, intent=intent)
+        and not _plain_evidence_explanation(existing, facts, body)
+        and _unlabelled_hook_has_mechanism(existing, intent)
+    ):
         candidates.append(HookCandidate("model_selected", clean_narration_text(existing).strip(), _candidate_score("model_selected", existing, intent, facts, body), "Model candidate competes with deterministic candidates."))
     return max(candidates, key=lambda item: item.score, default=None)
 

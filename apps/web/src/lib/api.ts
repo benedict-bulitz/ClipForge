@@ -6,10 +6,14 @@ import type {
   IntegrationProvider,
   GenerationJob,
   Project,
+  ProjectOverview,
   ProjectExport,
   VoicePreview,
   VoicePreviewRequest,
   SceneMediaCandidates,
+  BulkProjectDeletePlan,
+  BulkProjectDeleteResult,
+  MusicTrack,
 } from "./types";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api";
@@ -57,6 +61,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     }
     throw new ApiError("ClipForge could not complete the request.", response.status);
   }
+  if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
 }
 
@@ -85,6 +90,18 @@ export function getGenerationJob(jobId: string, signal?: AbortSignal) {
     cache: "no-store",
     signal,
   });
+}
+
+export function listGenerationJobs(signal?: AbortSignal) {
+  return request<GenerationJob[]>("/generation-jobs", { cache: "no-store", signal });
+}
+
+export function removeQueuedGenerationJob(jobId: string) {
+  return request<void>(`/generation-jobs/${jobId}`, { method: "DELETE" });
+}
+
+export function clearGenerationQueue() {
+  return request<void>("/generation-jobs/queue", { method: "DELETE" });
 }
 
 export function getActiveGenerationJob(signal?: AbortSignal) {
@@ -142,8 +159,60 @@ export function getProject(projectId: string) {
   return request<Project>(`/projects/${projectId}`, { cache: "no-store" });
 }
 
+export function deleteProject(projectId: string) {
+  return request<void>(`/projects/${projectId}`, { method: "DELETE" });
+}
+
+export function updateProjectAudio(projectId: string, baseRevision: number, audio: { voice_volume: number; music_volume: number; music_enabled: boolean }) {
+  return request<Project>(`/projects/${projectId}/audio`, {
+    method: "PATCH",
+    body: JSON.stringify({ base_revision: baseRevision, ...audio }),
+  });
+}
+
+export function listProjectMusicTracks(projectId: string, mode: "ai_matched" | "all_music") {
+  return request<{ mode: "ai_matched" | "all_music"; tracks: MusicTrack[] }>(`/projects/${projectId}/music/tracks?mode=${mode}`, { cache: "no-store" });
+}
+
+export function updateProjectMusicSelection(projectId: string, baseRevision: number, trackId: string | null, mode: "ai_matched" | "all_music") {
+  return request<Project>(`/projects/${projectId}/music`, {
+    method: "PATCH",
+    body: JSON.stringify({ base_revision: baseRevision, track_id: trackId, mode }),
+  });
+}
+
+export function updateProjectSocialMetadata(projectId: string, baseRevision: number, hashtags: Record<"tiktok" | "instagram" | "youtube", string[]>, metadata?: Record<"tiktok" | "instagram" | "youtube", { title: string; description: string }>) {
+  return request<Project>(`/projects/${projectId}/social-metadata`, {
+    method: "PATCH",
+    body: JSON.stringify({ base_revision: baseRevision, hashtags, metadata }),
+  });
+}
+
+export function generateProjectSocialMetadata(projectId: string, baseRevision: number, platform?: "tiktok" | "instagram" | "youtube") {
+  return request<Project>(`/projects/${projectId}/social-metadata/generate`, {
+    method: "POST",
+    body: JSON.stringify({ base_revision: baseRevision, platform: platform ?? null }),
+  });
+}
+
 export function listProjects() {
   return request<Project[]>("/projects", { cache: "no-store" });
+}
+
+export function listProjectOverview() {
+  return request<ProjectOverview[]>("/projects/overview", { cache: "no-store" });
+}
+
+export function getProjectGenerationJob(projectId: string) {
+  return request<GenerationJob>(`/generation-jobs/projects/${projectId}`, { cache: "no-store" });
+}
+
+export function getBulkProjectDeletePlan() {
+  return request<BulkProjectDeletePlan>("/projects/delete-plan", { cache: "no-store" });
+}
+
+export function deleteAllProjects() {
+  return request<BulkProjectDeleteResult>("/projects", { method: "DELETE" });
 }
 
 export function renderProject(projectId: string, baseRevision: number) {

@@ -130,7 +130,16 @@ SCRIPT_WRITER_V2_INSTRUCTIONS = (
     "use source language, editorial attribution, URLs, citations, Markdown, or HTML. Use only "
     "these roles: answer, explanation, support, and payoff. A payoff may have no fact ID only "
     "when it adds no new factual claim. Never expose fact IDs in spoken text. Return only the "
-    "requested structured output."
+    "requested structured output. "
+    "Readability target: would a typical 10–14 year old understand each sentence on first listen, "
+    "without prior knowledge? For German narration use everyday German, short natural sentences, "
+    "active voice, concrete wording, and one idea at a time. Avoid unnecessary jargon, academic "
+    "or bureaucratic phrasing, abstract synonyms, long noun constructions, and nested clauses. "
+    "Explain an unfamiliar but necessary technical term immediately in simple words; preferably "
+    "explain the idea first, then name the term. Preserve scientific distinctions and factual "
+    "meaning: simplify language, not facts. Do not sound childish or add filler, reassurance, "
+    "tangents, or extra length merely to explain familiar ideas. Choose wording freely, not from "
+    "fixed templates. Silently check readability before returning the draft."
 )
 
 

@@ -86,7 +86,17 @@ SCRIPT_REVIEW_V2_INSTRUCTIONS = (
     "not a generic flourish. If the draft is sound, approve it. If it needs improvement, return "
     "a complete revised draft using only answer, explanation, support, and payoff roles. Preserve "
     "valid fact IDs for every factual block. Do not add hooks, sources, URLs, HTML, Markdown, or "
-    "source attribution. Return only the requested structured output."
+    "source attribution. Return only the requested structured output. "
+    "Explicit readability check: would a typical 10–14 year old understand each sentence on first "
+    "listen, without prior knowledge? Rewrite unnecessarily difficult words, unexplained jargon, "
+    "abstract academic phrasing, long noun constructions, and long or nested sentences into "
+    "everyday German when the requested language is German. Prefer short natural active sentences, "
+    "concrete wording, one idea at a time, and direct causal links. Explain necessary unfamiliar "
+    "technical terms immediately in simple words, preferably idea first, term second. Simplify "
+    "language, not facts: preserve scientific distinctions, factual meaning, and fact IDs. "
+    "Do not add filler, reassurance, tangents, or extra length to explain familiar ideas. Keep "
+    "already simple, accurate wording unchanged; do not rewrite merely for variety or impose "
+    "fixed templates. This readability review remains body-only; do not create or revise hooks."
 )
 
 

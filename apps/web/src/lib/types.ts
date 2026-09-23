@@ -42,6 +42,22 @@ export type SceneMediaCandidates = {
   candidates: SceneMediaCandidate[];
 };
 
+export type BulkProjectDeletePlan = {
+  project_count: number;
+  project_ids: string[];
+  total_bytes: number;
+  total_files: number;
+  total_directories: number;
+  shared_cache_excluded: boolean;
+};
+
+export type BulkProjectDeleteResult = {
+  deleted_projects: number;
+  freed_bytes: number;
+  failed_projects: Record<string, string>;
+  remaining_projects: number;
+};
+
 export type ScriptBlock = { id: string; role: string; text: string };
 
 export type PipelineStage = {
@@ -65,7 +81,7 @@ export type ProjectState = {
   facts: Array<{ id: string; claim: string; confidence: number; priority: string; verification: string; sources: Source[] }>;
   script: { text: string; word_count: number; blocks: ScriptBlock[] };
   duration: { mode: string; estimated_seconds: number; actual_seconds: number | null; max_seconds: number };
-  voice: { provider: string; profile: string; status: string; voice_id?: string; speed?: number; tone?: string; gender_presentation?: string };
+  voice: { provider: string; profile: string; status: string; voice_id?: string; speed?: number; tone?: string; gender_presentation?: string; volume?: number };
   assets: { status: string; provider?: string; diagnostic?: string | null; selected_count?: number };
   scenes: Scene[];
   captions: {
@@ -81,7 +97,12 @@ export type ProjectState = {
     diagnostic?: string | null;
     items: Array<{ text: string; start: number; end: number; timing?: string; words?: Array<{ text: string; start: number; end: number }> }>;
   };
-  music: { enabled?: boolean; mood: string; volume?: number; ducking?: boolean; fades?: boolean; status: string };
+  music: { enabled?: boolean; mood: string; volume?: number; ducking?: boolean; fades?: boolean; status: string; track?: { id: string; title: string }; selection?: { mode?: string } };
+  social_metadata?: {
+    status: "available" | "unavailable";
+    error?: string;
+    platforms: Partial<Record<"tiktok" | "instagram" | "youtube", { title?: string; description?: string; hashtags: string[]; manual?: boolean }>>;
+  };
   ai_review?: {
     status: "pending" | "passed" | "passed_with_warnings" | "needs_fix" | "failed" | "unavailable";
     provider?: string | null;
@@ -134,11 +155,26 @@ export type ProjectExport = {
   project: Project;
 };
 
+export type MusicTrack = {
+  id: string;
+  title: string;
+  mood: string;
+  energy: string;
+  tags: string[];
+  source: string;
+  license: string;
+  attribution: string | null;
+  description: string | null;
+  duration_seconds: number | null;
+  preview_url: string;
+};
+
 export type GenerationJob = {
   id: string;
   project_id: string;
+  prompt: string;
   base_revision: number | null;
-  status: "queued" | "running" | "completed" | "failed";
+  status: "queued" | "running" | "completed" | "failed" | "removed";
   current_stage: string;
   stage_label: string;
   progress: number;
@@ -151,6 +187,16 @@ export type GenerationJob = {
   estimated_remaining_seconds: number | null;
   failure_category: string | null;
   failure_message: string | null;
+  queue_position: number | null;
+};
+
+export type ProjectOverview = {
+  id: string;
+  title: string;
+  status: string;
+  current_revision: number | null;
+  created_at: string;
+  updated_at: string;
 };
 
 export type IntegrationProvider = "openai" | "brave" | "pexels";

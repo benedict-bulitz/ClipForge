@@ -1,4 +1,7 @@
+import copy
+from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -60,6 +63,70 @@ def test_discovery_is_bounded_preferred_and_deduplicated(local_settings):
     assert len({item["provider_id"] for item in results}) == len(results)
 
 
+def test_visual_rejections_do_not_prevent_wikimedia_fallback(local_settings, monkeypatch):
+    provider = FakeProvider()
+    provider.videos = [candidate(f"v{i}", "video", 100) for i in range(10)]
+    provider.photos = []
+    fallback = FakeProvider()
+    fallback.photos = [replace(candidate("real", "photo", 80), provider="wikimedia"), replace(candidate("card", "photo", 90), title="Lighthouse flashcard")]
+    def verify(items, *args):
+        return [(item, {"confidence": "acceptable" if item.provider == "wikimedia" else "rejected"}) for item in items]
+    monkeypatch.setattr("clipforge.media_candidates.verify_media_shortlist", verify)
+    _, results = discover_scene_media_candidates(state(), "p", 1, 1, local_settings(), client=provider, fallback_client=fallback)
+    assert [item["provider_id"] for item in results] == ["real"]
+
+
+def test_apply_reopens_and_exports_only_target_scene_with_existing_audio(db, tmp_path, monkeypatch):
+    from test_export import accept_mp4, export_settings, seed_project, state_for
+
+    from clipforge.media_candidates import apply_scene_media_candidate
+    from clipforge.services import export_project, get_project, serialize_project
+
+    settings = export_settings(tmp_path)
+    project_id = "11111111-1111-4111-8111-111111111111"
+    initial = state_for(project_id, settings)
+    initial.update(state())
+    initial["timeline"]["duration"] = 16
+    initial["scenes"].append({**copy.deepcopy(initial["scenes"][0]), "id": "scene-2", "start": 8, "end": 16})
+    initial.update(script={"text": "A lighthouse"}, captions={"enabled": True, "items": []}, music={"enabled": False, "volume": 0.2, "track": {"id": "saved-song"}}, voice={"volume": 0.6})
+    original = copy.deepcopy(initial)
+    project = seed_project(db, project_id, initial)
+    provider = FakeProvider()
+    def download(item, destination):
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(b"selected media")
+        return destination
+    provider.download = download
+    _, choices = discover_scene_media_candidates(initial, project_id, 1, 1, settings, client=provider, fallback_client=FakeWikimedia())
+    # Opening/canceling alternatives has no revision or state mutation.
+    assert project.current_revision == 1 and initial == original
+    commands = []
+    def run(command, **kwargs):
+        commands.append(command)
+        Path(command[-1]).write_bytes(b"v" * 20_000)
+        return SimpleNamespace(returncode=0)
+    monkeypatch.setattr("clipforge.renderer.ffmpeg_path", lambda: "ffmpeg")
+    monkeypatch.setattr("clipforge.renderer._create_visual_segment", lambda *args, **kwargs: tmp_path / "segment.mp4")
+    monkeypatch.setattr("clipforge.renderer._write_ass_captions", lambda *args: tmp_path / "captions.ass")
+    monkeypatch.setattr("clipforge.renderer._run_process", run)
+    monkeypatch.setattr("clipforge.exporter.verify_mp4", accept_mp4)
+    apply_scene_media_candidate(db, project, 1, choices[0]["token"], settings, client=provider)
+    db.expire_all()
+    reopened = get_project(db, project_id)
+    saved = serialize_project(reopened)["revision"]["state"]
+    assert saved["scenes"][0]["media"]["provider_id"] == choices[0]["provider_id"]
+    assert saved["scenes"][1] == original["scenes"][1]
+    for key in ("script", "captions", "music"):
+        assert saved[key] == original[key]
+    assert saved["voice"]["volume"] == 0.6
+    assert commands[-1][commands[-1].index("-c:a") + 1] == "copy"
+    _, exported = export_project(db, reopened, settings, base_revision=reopened.current_revision)
+    assert not exported.already_exported
+    assert (settings.render_root / saved["scenes"][0]["media"]["cache_path"]).is_file()
+    exported_state = serialize_project(reopened)["revision"]["state"]
+    assert exported_state["scenes"][0]["media"]["cache_path"] == saved["scenes"][0]["media"]["cache_path"]
+
+
 def test_current_media_is_not_returned_and_discovery_does_not_mutate_state(local_settings):
     current = candidate("v1", "video", 100)
     original = state()
@@ -74,6 +141,18 @@ def test_invalid_candidate_token_fails_without_accepting_urls():
         from clipforge.media_candidates import apply_scene_media_candidate
 
         apply_scene_media_candidate(None, type("Project", (), {"id": "p", "current_revision": 1})(), 1, "https://evil.test/file", type("Settings", (), {})())
+
+
+def test_missing_replacement_media_cannot_generate_a_card(local_settings, tmp_path, monkeypatch):
+    from clipforge.renderer import RenderUnavailable, _create_visual_segment
+
+    original = state()
+    original["timeline"]["fps"] = 30
+    def no_card(*args):
+        pytest.fail("Scene replacement must never generate a fallback card")
+    monkeypatch.setattr("clipforge.renderer._draw_scene", no_card)
+    with pytest.raises(RenderUnavailable, match="replacement media is unavailable"):
+        _create_visual_segment("ffmpeg", original, original["scenes"][0], 0, 8, tmp_path, local_settings(), require_real_media=True)
 
 
 def test_semantic_relevance_beats_format_and_technical_rank():

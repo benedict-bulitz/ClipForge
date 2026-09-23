@@ -6,10 +6,11 @@ import math
 import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime
+from threading import Lock, Thread
 from typing import Any
 
-from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
+from pydantic import ValidationError
+from sqlalchemy import exists, select, update
 from sqlalchemy.orm import Session, sessionmaker
 
 from .config import Settings
@@ -21,6 +22,7 @@ from .schemas import ProjectCreate
 
 ACTIVE_JOB_STATUSES = ("queued", "running")
 EMA_ALPHA = 0.3
+_SCHEDULER_LOCK = Lock()
 
 BASELINE_SECONDS = {
     "preparing": 0.5,
@@ -133,22 +135,13 @@ def create_generation_job(
     db: Session, payload: ProjectCreate
 ) -> tuple[GenerationJob, bool]:
     request_hash = _request_hash(payload)
-    active = db.scalar(
-        select(GenerationJob)
-        .where(
-            GenerationJob.request_hash == request_hash,
-            GenerationJob.status.in_(ACTIVE_JOB_STATUSES),
-        )
-        .order_by(GenerationJob.created_at.desc())
-    )
-    if active is not None:
-        return active, False
     project_id = str(uuid.uuid4())
     plan = build_stage_plan(db, payload)
     job = GenerationJob(
         project_id=project_id,
         request_hash=request_hash,
-        active_key=f"request:{request_hash}",
+        request_payload=payload.model_dump(mode="json"),
+        active_key=None,
         status="queued",
         current_stage="preparing",
         stage_label=STAGE_LABELS["preparing"],
@@ -161,18 +154,7 @@ def create_generation_job(
         ),
     )
     db.add(job)
-    try:
-        db.commit()
-    except IntegrityError:
-        db.rollback()
-        active = db.scalar(
-            select(GenerationJob).where(
-                GenerationJob.active_key == f"request:{request_hash}"
-            )
-        )
-        if active is None:
-            raise
-        return active, False
+    db.commit()
     db.refresh(job)
     return job, True
 
@@ -181,7 +163,7 @@ def active_generation_job(db: Session) -> GenerationJob | None:
     return db.scalar(
         select(GenerationJob)
         .where(GenerationJob.status.in_(ACTIVE_JOB_STATUSES))
-        .order_by(GenerationJob.updated_at.desc())
+        .order_by(GenerationJob.status.desc(), GenerationJob.created_at.asc())
     )
 
 
@@ -189,7 +171,9 @@ def get_generation_job(db: Session, job_id: str) -> GenerationJob | None:
     return db.get(GenerationJob, job_id)
 
 
-def serialize_generation_job(job: GenerationJob, *, now: datetime | None = None) -> dict:
+def serialize_generation_job(
+    job: GenerationJob, *, now: datetime | None = None, queue_position: int | None = None
+) -> dict:
     current = _utc(now or datetime.now(UTC))
     origin = job.started_at or job.created_at
     elapsed = max(0.0, (current - _utc(origin)).total_seconds())
@@ -215,6 +199,7 @@ def serialize_generation_job(job: GenerationJob, *, now: datetime | None = None)
     return {
         "id": job.id,
         "project_id": job.project_id,
+        "prompt": str(job.request_payload.get("prompt", "Untitled project")),
         "base_revision": job.base_revision,
         "status": job.status,
         "current_stage": job.current_stage,
@@ -229,7 +214,110 @@ def serialize_generation_job(job: GenerationJob, *, now: datetime | None = None)
         "estimated_remaining_seconds": round(eta, 1) if eta is not None else None,
         "failure_category": job.failure_category,
         "failure_message": job.failure_message,
+        "queue_position": queue_position,
     }
+
+
+def list_generation_jobs(db: Session) -> list[dict]:
+    """Return persisted queue state in FIFO order, including terminal history."""
+    jobs = db.scalars(
+        select(GenerationJob).order_by(GenerationJob.created_at.asc(), GenerationJob.id.asc())
+    ).all()
+    position = 0
+    serialized: list[dict] = []
+    for job in jobs:
+        queue_position = None
+        if job.status == "queued":
+            position += 1
+            queue_position = position
+        serialized.append(serialize_generation_job(job, queue_position=queue_position))
+    return serialized
+
+
+def remove_queued_generation_job(db: Session, job_id: str) -> bool:
+    """Remove one waiting job without deleting its project or job history."""
+    now = datetime.now(UTC)
+    result = db.execute(
+        update(GenerationJob)
+        .where(GenerationJob.id == job_id, GenerationJob.status == "queued")
+        .values(
+            status="removed",
+            current_stage="removed",
+            stage_label="Removed from queue",
+            estimated_remaining_seconds=0.0,
+            completed_at=now,
+            updated_at=now,
+        )
+    )
+    db.commit()
+    return result.rowcount == 1
+
+
+def clear_queued_generation_jobs(db: Session) -> int:
+    """Remove every waiting job, leaving any active job and all history intact."""
+    now = datetime.now(UTC)
+    result = db.execute(
+        update(GenerationJob)
+        .where(GenerationJob.status == "queued")
+        .values(
+            status="removed",
+            current_stage="removed",
+            stage_label="Removed from queue",
+            estimated_remaining_seconds=0.0,
+            completed_at=now,
+            updated_at=now,
+        )
+    )
+    db.commit()
+    return int(result.rowcount or 0)
+
+
+def claim_next_generation_job(db: Session) -> GenerationJob | None:
+    """Atomically claim the oldest queued job only when the sole worker is idle."""
+    candidate_id = db.scalar(
+        select(GenerationJob.id)
+        .where(GenerationJob.status == "queued")
+        .order_by(GenerationJob.created_at.asc(), GenerationJob.id.asc())
+        .limit(1)
+    )
+    if candidate_id is None:
+        return None
+    now = datetime.now(UTC)
+    no_running = ~exists(select(GenerationJob.id).where(GenerationJob.status == "running"))
+    result = db.execute(
+        update(GenerationJob)
+        .where(GenerationJob.id == candidate_id, GenerationJob.status == "queued", no_running)
+        .values(status="running", started_at=now, stage_started_at=now, updated_at=now)
+    )
+    if result.rowcount != 1:
+        db.rollback()
+        return None
+    db.commit()
+    return db.get(GenerationJob, candidate_id)
+
+
+def schedule_next_generation(
+    settings: Settings,
+    *,
+    session_factory: sessionmaker[Session] = SessionLocal,
+    launch: Callable[[str], None] | None = None,
+) -> str | None:
+    """Claim and start one durable FIFO job.  The claim prevents duplicate workers."""
+    with _SCHEDULER_LOCK:
+        with session_factory() as db:
+            job = claim_next_generation_job(db)
+        if job is None:
+            return None
+        if launch is not None:
+            launch(job.id)
+        else:
+            Thread(
+                target=run_generation_job,
+                args=(job.id, settings),
+                kwargs={"session_factory": session_factory},
+                daemon=True,
+            ).start()
+        return job.id
 
 
 class ProgressTracker:
@@ -380,7 +468,6 @@ class ProgressTracker:
 
 def run_generation_job(
     job_id: str,
-    payload: ProjectCreate,
     settings: Settings,
     *,
     session_factory: sessionmaker[Session] = SessionLocal,
@@ -388,6 +475,18 @@ def run_generation_job(
     from .services import create_project, render_project
 
     with session_factory() as db:
+        job = db.get(GenerationJob, job_id)
+        if job is None or job.status != "running":
+            return
+        try:
+            payload = ProjectCreate.model_validate(job.request_payload)
+        except ValidationError:
+            ProgressTracker(job_id, session=db).fail(
+                "Generation request data is unavailable. Create the project again.",
+                category="interrupted",
+            )
+            schedule_next_generation(settings, session_factory=session_factory)
+            return
         tracker = ProgressTracker(job_id, session=db)
         tracker(
             ProgressEvent(
@@ -435,11 +534,13 @@ def run_generation_job(
                     f"Generation stopped while {label.casefold()}. You can retry safely.",
                     category="generation_failed",
                 )
+    # A terminal job always releases the one worker slot before the next claim.
+    schedule_next_generation(settings, session_factory=session_factory)
 
 
 def mark_interrupted_generation_jobs(db: Session) -> int:
     jobs = db.scalars(
-        select(GenerationJob).where(GenerationJob.status.in_(ACTIVE_JOB_STATUSES))
+        select(GenerationJob).where(GenerationJob.status == "running")
     ).all()
     now = datetime.now(UTC)
     for job in jobs:

@@ -35,6 +35,8 @@ test("reset state is an independent default copy", () => {
   assert.equal(second.min_duration, null);
   assert.equal(second.max_duration, 60);
   assert.equal(second.pacing, "fast");
+  assert.equal(second.music_enabled, true);
+  assert.equal(second.music_mood, null);
 });
 
 test("valid existing pacing and duration preferences remain respected", () => {

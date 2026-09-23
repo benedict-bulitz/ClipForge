@@ -2,7 +2,7 @@ import re
 from contextlib import asynccontextmanager
 from typing import Annotated
 
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request, status
+from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -20,10 +20,13 @@ from .editor_agent import (
 from .exporter import ExportUnavailable, exported_video_path
 from .generation import (
     active_generation_job,
+    clear_queued_generation_jobs,
     create_generation_job,
     get_generation_job,
+    list_generation_jobs,
     mark_interrupted_generation_jobs,
-    run_generation_job,
+    remove_queued_generation_job,
+    schedule_next_generation,
     serialize_generation_job,
 )
 from .integrations import router as integrations_router
@@ -32,10 +35,12 @@ from .media_candidates import (
     apply_scene_media_candidate,
     discover_scene_media_candidates,
 )
-from .models import Project
+from .models import GenerationJob, Project
+from .music import available_music_tracks, ranked_music_tracks, resolve_track_path
 from .pipeline import UnsupportedEdit
 from .renderer import RenderUnavailable, VoiceGenerationError, readiness
 from .schemas import (
+    AudioSettingsUpdate,
     ChatCreate,
     ChatMessageRead,
     ChatTurnRead,
@@ -43,27 +48,39 @@ from .schemas import (
     ExportCreate,
     GenerationJobRead,
     HealthRead,
+    MusicSelectionUpdate,
     ProjectCreate,
     ProjectExportRead,
     ProjectRead,
     RenderCreate,
     SceneMediaCandidateApply,
     SceneMediaCandidatesRead,
+    SocialMetadataGenerate,
+    SocialMetadataUpdate,
     VoicePreviewCreate,
     VoicePreviewRead,
 )
 from .services import (
+    ProjectDeletionBusy,
+    ProjectDeletionError,
     RevisionConflict,
     canonical_export_metadata,
     create_project,
+    delete_all_projects,
+    delete_project,
     edit_project,
     effective_revision_state,
     export_project,
     get_project,
+    plan_bulk_project_deletion,
     redo_project,
+    regenerate_project_social_metadata,
     render_project,
     serialize_project,
     undo_project,
+    update_project_audio,
+    update_project_music_selection,
+    update_project_social_metadata,
 )
 from .voice_preview import (
     PreviewRateLimited,
@@ -78,6 +95,7 @@ async def lifespan(_app: FastAPI):
     ensure_runtime_schema()
     with SessionLocal() as db:
         mark_interrupted_generation_jobs(db)
+    schedule_next_generation(settings)
     yield
 
 
@@ -109,8 +127,75 @@ def build_readiness(config: SettingsDep) -> dict:
 
 @app.get("/api/projects", response_model=list[ProjectRead])
 def list_projects(db: DbSession) -> list[dict]:
-    projects = db.scalars(select(Project).order_by(Project.updated_at.desc()).limit(20)).all()
+    projects = db.scalars(select(Project).order_by(Project.updated_at.desc())).all()
     return [serialize_project(project) for project in projects]
+
+
+@app.get("/api/projects/overview")
+def list_project_overview(db: DbSession) -> list[dict]:
+    """Lightweight, complete history, including jobs awaiting their first revision."""
+    projects = db.scalars(select(Project).order_by(Project.created_at.desc())).all()
+    jobs = db.scalars(select(GenerationJob).order_by(GenerationJob.created_at.desc())).all()
+    latest_jobs = {}
+    for job in jobs:
+        latest_jobs.setdefault(job.project_id, job)
+    result = [
+        {
+            "id": project.id,
+            "title": project.title,
+            "status": latest_jobs[project.id].status if project.id in latest_jobs and latest_jobs[project.id].status in ("queued", "running", "failed") else project.status,
+            "current_revision": project.current_revision,
+            "created_at": project.created_at,
+            "updated_at": project.updated_at,
+        }
+        for project in projects
+    ]
+    project_ids = {project.id for project in projects}
+    for job in jobs:
+        if job.project_id not in project_ids:
+            result.append({
+                "id": job.project_id,
+                "title": str((job.request_payload or {}).get("prompt") or "Untitled project"),
+                "status": job.status,
+                "current_revision": None,
+                "created_at": job.created_at,
+                "updated_at": job.updated_at,
+            })
+            project_ids.add(job.project_id)
+    return sorted(result, key=lambda item: (item["created_at"], item["id"]), reverse=True)
+
+
+def _serialize_bulk_delete_plan(plan) -> dict:
+    return {
+        "project_count": len(plan.projects),
+        "project_ids": [item.project_id for item in plan.projects],
+        "total_bytes": plan.total_bytes,
+        "total_files": plan.total_files,
+        "total_directories": plan.total_directories,
+        "shared_cache_excluded": True,
+    }
+
+
+@app.get("/api/projects/delete-plan")
+def bulk_delete_plan_route(db: DbSession, config: SettingsDep) -> dict:
+    try:
+        return _serialize_bulk_delete_plan(plan_bulk_project_deletion(db, config))
+    except ProjectDeletionError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+
+@app.delete("/api/projects")
+def delete_all_projects_route(db: DbSession, config: SettingsDep) -> dict:
+    try:
+        result = delete_all_projects(db, config)
+    except ProjectDeletionError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    return {
+        "deleted_projects": result.deleted_projects,
+        "freed_bytes": result.freed_bytes,
+        "failed_projects": result.failed_projects,
+        "remaining_projects": result.remaining_projects,
+    }
 
 
 @app.post("/api/projects", response_model=ProjectRead, status_code=status.HTTP_201_CREATED)
@@ -129,20 +214,51 @@ def create_project_route(
 )
 def start_generation_job_route(
     payload: ProjectCreate,
-    background_tasks: BackgroundTasks,
     db: DbSession,
     config: SettingsDep,
 ) -> dict:
     job, created = create_generation_job(db, payload)
     if created:
-        background_tasks.add_task(run_generation_job, job.id, payload, config)
+        schedule_next_generation(config)
     return serialize_generation_job(job)
+
+
+@app.get("/api/generation-jobs", response_model=list[GenerationJobRead])
+def list_generation_jobs_route(db: DbSession) -> list[dict]:
+    return list_generation_jobs(db)
+
+
+@app.delete("/api/generation-jobs/queue", status_code=status.HTTP_204_NO_CONTENT)
+def clear_generation_queue_route(db: DbSession) -> None:
+    clear_queued_generation_jobs(db)
+
+
+@app.delete("/api/generation-jobs/{job_id}", status_code=status.HTTP_204_NO_CONTENT)
+def remove_generation_job_route(job_id: str, db: DbSession) -> None:
+    if remove_queued_generation_job(db, job_id):
+        return
+    job = get_generation_job(db, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Generation job not found")
+    raise HTTPException(status_code=409, detail="Only queued generation jobs can be removed")
 
 
 @app.get("/api/generation-jobs/active", response_model=GenerationJobRead | None)
 def active_generation_job_route(db: DbSession) -> dict | None:
     job = active_generation_job(db)
     return serialize_generation_job(job) if job is not None else None
+
+
+@app.get("/api/generation-jobs/projects/{project_id}", response_model=GenerationJobRead)
+def get_project_generation_job_route(project_id: str, db: DbSession) -> dict:
+    job = db.scalar(select(GenerationJob).where(GenerationJob.project_id == project_id).order_by(GenerationJob.created_at.desc()))
+    if job is None:
+        raise HTTPException(status_code=404, detail="Generation job not found")
+    position = next(
+        (item["queue_position"] for item in list_generation_jobs(db) if item["id"] == job.id),
+        None,
+    )
+    return serialize_generation_job(job, queue_position=position)
 
 
 @app.get("/api/generation-jobs/{job_id}", response_model=GenerationJobRead)
@@ -159,6 +275,17 @@ def get_project_route(project_id: str, db: DbSession) -> dict:
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     return serialize_project(project)
+
+
+@app.delete("/api/projects/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_project_route(project_id: str, db: DbSession, config: SettingsDep) -> None:
+    try:
+        delete_project(db, project_id, config)
+    except ProjectDeletionBusy as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except ProjectDeletionError as exc:
+        status_code = status.HTTP_404_NOT_FOUND if str(exc) == "Project not found." else status.HTTP_500_INTERNAL_SERVER_ERROR
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
 
 
 @app.get("/api/projects/{project_id}/chat", response_model=list[ChatMessageRead])
@@ -323,6 +450,96 @@ def render_project_route(
         ) from exc
     except RenderUnavailable as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    db.refresh(project)
+    return serialize_project(project)
+
+
+@app.patch("/api/projects/{project_id}/audio", response_model=ProjectRead)
+def update_audio_route(project_id: str, payload: AudioSettingsUpdate, db: DbSession, config: SettingsDep) -> dict:
+    project = get_project(db, project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    try:
+        update_project_audio(db, project, payload, config)
+    except RevisionConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except RenderUnavailable as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    db.refresh(project)
+    return serialize_project(project)
+
+
+def _serialize_music_track(track) -> dict:
+    return {
+        "id": track.id, "title": track.title, "mood": track.mood,
+        "energy": track.energy, "tags": list(track.tags), "source": track.source,
+        "license": track.license, "attribution": track.attribution,
+        "description": track.description, "duration_seconds": track.duration_seconds,
+        "preview_url": f"/api/music/tracks/{track.id}/preview",
+    }
+
+
+@app.get("/api/projects/{project_id}/music/tracks")
+def list_project_music_tracks_route(project_id: str, db: DbSession, mode: str = "all_music") -> dict:
+    project = get_project(db, project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    catalog = available_music_tracks()
+    if mode == "ai_matched":
+        catalog = ranked_music_tracks(effective_revision_state(project), catalog)
+    elif mode != "all_music":
+        raise HTTPException(status_code=422, detail="Unsupported music mode")
+    return {"mode": mode, "tracks": [_serialize_music_track(track) for track in catalog]}
+
+
+@app.get("/api/music/tracks/{track_id}/preview")
+def music_track_preview_route(track_id: str):
+    track = next((item for item in available_music_tracks() if item.id == track_id), None)
+    if track is None:
+        raise HTTPException(status_code=404, detail="Music track not found")
+    path = resolve_track_path({"track": {"file": track.file_path}})
+    if path is None:
+        raise HTTPException(status_code=404, detail="Music preview is unavailable")
+    return FileResponse(path, media_type="audio/mpeg", filename=path.name)
+
+
+@app.patch("/api/projects/{project_id}/music", response_model=ProjectRead)
+def update_music_selection_route(project_id: str, payload: MusicSelectionUpdate, db: DbSession) -> dict:
+    project = get_project(db, project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    try:
+        update_project_music_selection(db, project, payload)
+    except RevisionConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    db.refresh(project)
+    return serialize_project(project)
+
+
+@app.patch("/api/projects/{project_id}/social-metadata", response_model=ProjectRead)
+def update_social_metadata_route(project_id: str, payload: SocialMetadataUpdate, db: DbSession) -> dict:
+    project = get_project(db, project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    try:
+        update_project_social_metadata(db, project, payload)
+    except RevisionConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    db.refresh(project)
+    return serialize_project(project)
+
+
+@app.post("/api/projects/{project_id}/social-metadata/generate", response_model=ProjectRead)
+def generate_social_metadata_route(project_id: str, payload: SocialMetadataGenerate, db: DbSession, config: SettingsDep) -> dict:
+    project = get_project(db, project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    try:
+        regenerate_project_social_metadata(db, project, payload, config)
+    except RevisionConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     db.refresh(project)
     return serialize_project(project)
 

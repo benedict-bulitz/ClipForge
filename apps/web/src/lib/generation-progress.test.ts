@@ -8,31 +8,30 @@ const api = readFileSync(new URL("./api.ts", import.meta.url), "utf8");
 test("Generate uses a trackable backend job instead of blocking create and render calls", () => {
   assert.match(api, /\/generation-jobs/);
   assert.match(home, /startGeneration\(prompt, options\)/);
-  assert.match(home, /getGenerationJob\(activeJobId/);
+  assert.match(api, /listGenerationJobs/);
+  assert.match(home, /GenerationQueue/);
   assert.doesNotMatch(home, /await createProject\(prompt/);
   assert.doesNotMatch(home, /await renderProject\(/);
 });
 
-test("progress card renders backend percent, work units, ETA, and safe failure", () => {
-  assert.match(home, /job\.progress \* 100/);
+test("active queue row renders persisted progress and topic", () => {
+  assert.match(home, /item\.progress \* 100/);
   assert.match(home, /role="progressbar"/);
-  assert.match(home, /job\.completed_units/);
-  assert.match(home, /job\.estimated_remaining_seconds/);
-  assert.match(home, /job\.failure_message/);
-  assert.match(home, /Less than 10 sec remaining/);
+  assert.match(home, /item\.prompt/);
+  assert.match(home, /Wird erstellt/);
 });
 
-test("polling is non-overlapping, stops at terminal state, and survives refresh", () => {
-  assert.match(home, /window\.setTimeout\(poll, 750\)/);
-  assert.doesNotMatch(home, /setInterval/);
-  assert.match(home, /next\.status === "completed"/);
-  assert.match(home, /next\.status === "failed"/);
-  assert.match(home, /clipforge\.active-generation-job/);
-  assert.match(home, /getActiveGenerationJob/);
+test("queue state refreshes without navigation or a full page reload", () => {
+  assert.match(home, /window\.setTimeout\(\(\) => void poll\(\), 2500\)/);
+  assert.match(home, /listGenerationJobs\(\)/);
+  assert.match(home, /item\.queue_position/);
+  assert.match(home, /In Warteschlange/);
+  assert.doesNotMatch(home, /setQueue\(\(items\) => \[started/);
 });
 
 test("rapid Generate requests are guarded without fake timer progress", () => {
   assert.match(home, /generationRequest\.current/);
-  assert.match(home, /disabled=\{prompt\.trim\(\)\.length < 3 \|\| loading \|\| jobActive\}/);
+  assert.match(home, /disabled=\{prompt\.trim\(\)\.length < 3 \|\| loading\}/);
+  assert.doesNotMatch(home, /disabled=\{jobActive\}/);
   assert.doesNotMatch(home, /setProgress/);
 });

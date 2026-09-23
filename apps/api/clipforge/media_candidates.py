@@ -8,18 +8,26 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from .config import Settings
+from .hashing import attach_hashes
 from .media import (
     MediaCandidate,
     MediaProviderError,
     PexelsMediaClient,
     WikimediaMediaClient,
     derive_search_queries,
+    is_real_media_allowed,
     media_relevance,
     verify_media_shortlist,
 )
-from .services import RevisionConflict, mutate_project_state
+from .renderer import RenderUnavailable, replace_scene_video
+from .services import (
+    RevisionConflict,
+    _append_revision,
+    _next_revision_number,
+    effective_revision_state,
+)
 
-MAX_CANDIDATES = 5
+MAX_CANDIDATES = 8
 MAX_SETS = 64
 CANDIDATE_TTL_SECONDS = 15 * 60
 
@@ -56,7 +64,7 @@ def clear_candidate_sets() -> None:
 def _ordered(candidates: list[MediaCandidate], preferred: str, used: set[str], scene: dict[str, Any] | None = None, state: dict[str, Any] | None = None) -> list[MediaCandidate]:
     unique: dict[str, MediaCandidate] = {}
     for candidate in candidates:
-        if candidate.identity not in used:
+        if is_real_media_allowed(candidate) and candidate.identity not in used:
             unique.setdefault(candidate.identity, candidate)
     verified = list(unique.values())
     if scene is not None:
@@ -98,7 +106,7 @@ def discover_scene_media_candidates(
         preferred = "video"
     used = {
         str(media.get("identity"))
-        for item in scenes
+        for item in [scene]
         if isinstance(item, dict)
         for media in [item.get("media")]
         if isinstance(media, dict) and media.get("identity")
@@ -110,6 +118,19 @@ def discover_scene_media_candidates(
     found: list[MediaCandidate] = []
     portrait = int(state["timeline"]["height"]) >= int(state["timeline"]["width"])
     scene_duration = float(scene["end"] - scene["start"])
+    eligible: dict[str, MediaCandidate] = {}
+    checked: set[str] = set()
+    def accept_new() -> None:
+        ordered = _ordered(found, preferred, used | checked, scene, state)
+        for offset in range(0, min(len(ordered), 24), 6):
+            batch = ordered[offset:offset + 6]
+            checked.update(item.identity for item in batch)
+            for candidate, relevance in verify_media_shortlist(batch, scene, state, visual_verifier):
+                if relevance.get("confidence") in {"high", "acceptable"} and not relevance.get("presentation_risk", {}).get("rejected"):
+                    eligible.setdefault(candidate.identity, candidate)
+            if len(eligible) >= limit:
+                break
+
     for query in queries:
         if pexels is not None:
             search = pexels.search_videos if preferred == "video" else pexels.search_photos
@@ -120,7 +141,8 @@ def discover_scene_media_candidates(
                 found.extend(search(query, **kwargs))
             except MediaProviderError:
                 pass
-        if len(_ordered(found, preferred, used, scene, state)) < limit and pexels is not None:
+        accept_new()
+        if len(eligible) < limit and pexels is not None:
             search = pexels.search_photos if preferred == "video" else pexels.search_videos
             kwargs = {"portrait": portrait}
             if search.__name__ == "search_videos":
@@ -129,22 +151,20 @@ def discover_scene_media_candidates(
                 found.extend(search(query, **kwargs))
             except MediaProviderError:
                 pass
-        if len(_ordered(found, preferred, used, scene, state)) >= limit:
-            continue
+        accept_new()
+        if len(eligible) >= limit:
+            break
     # Wikimedia is a photo fallback and is queried only when the bounded Pexels pass is short.
-    if len(_ordered(found, preferred, used, scene, state)) < limit:
+    if len(eligible) < limit:
         for query in queries:
             try:
                 found.extend(wikimedia.search_photos(query, portrait=portrait))
             except MediaProviderError:
                 pass
-    ordered = _ordered(found, preferred, used, scene, state)
-    verified = verify_media_shortlist(ordered, scene, state, visual_verifier)
-    selected = tuple(
-        candidate
-        for candidate, relevance in verified
-        if relevance.get("confidence") in {"high", "acceptable"}
-    )[: max(1, min(limit, MAX_CANDIDATES))]
+            accept_new()
+            if len(eligible) >= limit:
+                break
+    selected = tuple(eligible.values())[: max(1, min(limit, MAX_CANDIDATES))]
     _prune()
     token = uuid.uuid4().hex
     _SETS[token] = CandidateSet(project_id, scene_number, base_revision, selected, time.monotonic())
@@ -157,7 +177,7 @@ def serialize_candidate(token: str, candidate: MediaCandidate, selected: bool = 
         "provider": candidate.provider,
         "provider_id": candidate.provider_id,
         "kind": candidate.kind,
-        "preview_url": candidate.preview_url or candidate.download_url,
+        "preview_url": candidate.download_url if candidate.kind == "video" else candidate.preview_url or candidate.download_url,
         "verification_url": candidate.verification_url,
         "source_url": candidate.source_url,
         "creator": candidate.creator,
@@ -192,14 +212,18 @@ def apply_scene_media_candidate(
     if candidate_set.base_revision != project.current_revision:
         raise RevisionConflict("Project changed since alternatives were fetched; reload before applying.")
     try:
+        if not index_text.isdecimal():
+            raise ValueError("Invalid candidate index")
         candidate = candidate_set.candidates[int(index_text)]
     except (ValueError, IndexError):
         raise CandidateError("That media candidate is not part of the fetched alternatives.")
     downloader = client if candidate.provider == "pexels" else fallback_client
+    if not is_real_media_allowed(candidate):
+        raise CandidateError("Only real images and videos may replace a scene.")
     if downloader is None:
         downloader = PexelsMediaClient(settings.pexels_api_key) if candidate.provider == "pexels" and settings.pexels_api_key else WikimediaMediaClient()
     suffix = ".mp4" if candidate.kind == "video" else ".jpg"
-    destination = settings.render_root.resolve() / project.id / "assets" / candidate.provider / f"{candidate.kind}-{candidate.provider_id}{suffix}"
+    destination = settings.render_root.resolve() / project.id / "replacements" / candidate.provider / f"{candidate.kind}-{candidate.provider_id}{suffix}"
     try:
         downloaded = downloader.download(candidate, destination)
         if not downloaded.is_file() or downloaded.stat().st_size <= 0:
@@ -220,6 +244,10 @@ def apply_scene_media_candidate(
         "height": candidate.height,
         "duration": candidate.duration,
         "query": candidate.query,
+        "title": candidate.title,
+        "description": candidate.description,
+        "tags": list(candidate.tags),
+        "manually_selected": True,
     }
 
     def mutate(state: dict[str, Any]) -> str:
@@ -238,9 +266,15 @@ def apply_scene_media_candidate(
         assets["status"] = "media_ready"
         return f"Applied {candidate.kind} media {candidate.provider_id} to scene {scene_number}."
 
-    result = mutate_project_state(
-        db, project, instruction=f"Choose media for scene {scene_number}", changed_roots={"assets"}, mutate=mutate,
-        settings=settings, base_revision=project.current_revision, auto_render=auto_render,
-    )
-    _SETS.pop(token, None)
+    state = effective_revision_state(project)
+    mutate(state)
+    if auto_render:
+        try:
+            replace_scene_video(state, project.id, project.title, scene_number, _next_revision_number(db, project.id), settings)
+        except RenderUnavailable as exc:
+            raise CandidateError(str(exc)) from exc
+    else:
+        state.setdefault("render", {}).update(status="regeneration_required", stale=True)
+    result = _append_revision(db, project, instruction=f"Choose media for scene {scene_number}", state=attach_hashes(state), changed=["assets", "scenes", "render"], base_revision=project.current_revision, status="rendered" if auto_render else "ready_for_production")
+    _SETS.pop(set_token, None)
     return result

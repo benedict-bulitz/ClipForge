@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import re
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -126,13 +127,91 @@ def align_narration(
     return AlignmentResult([], "phrase_fallback", "estimated_segments", diagnostic)
 
 
-def group_aligned_words(words: list[dict[str, Any]], words_per_group: int) -> list[dict[str, Any]]:
+_SENTENCE_ENDING = re.compile(r"[.!?…]+(?:[\"'”’\)\]]*)$")
+_PUNCTUATION_ONLY = re.compile(r"^[.!?…]+(?:[\"'”’\)\]]*)$")
+
+
+def _spoken_key(text: str) -> str:
+    """Comparison key for matching aligned tokens to the canonical narration."""
+    return "".join(character for character in text.casefold() if character.isalnum())
+
+
+def _source_words(script: str) -> list[dict[str, str]]:
+    """Return canonical spoken words and the sentence-ending suffix on each word."""
+    source: list[dict[str, str]] = []
+    for token in re.findall(r"\S+", script):
+        if _PUNCTUATION_ONLY.fullmatch(token):
+            if source:
+                source[-1]["ending"] += token
+            continue
+        key = _spoken_key(token)
+        if not key:
+            continue
+        ending = _SENTENCE_ENDING.search(token)
+        source.append({"key": key, "ending": ending.group(0) if ending else ""})
+    return source
+
+
+def _normalise_aligned_words(
+    words: list[dict[str, Any]], script: str | None = None
+) -> list[dict[str, Any]]:
+    """Keep punctuation on spoken words and restore sentence ends lost by alignment.
+
+    Some aligners emit punctuation as an independent token and others omit it.
+    Punctuation never has its own spoken timing, so a standalone token is folded
+    into the preceding aligned word without changing that word's timestamps.
+    """
+    normalised: list[dict[str, Any]] = []
+    for word in words:
+        text = str(word.get("text") or "").strip()
+        if not text:
+            continue
+        if _PUNCTUATION_ONLY.fullmatch(text):
+            if normalised:
+                normalised[-1]["text"] = f"{normalised[-1]['text']}{text}"
+            continue
+        copy = dict(word)
+        copy["text"] = text
+        normalised.append(copy)
+
+    if not script:
+        return normalised
+    source = _source_words(script)
+    source_index = 0
+    for word in normalised:
+        key = _spoken_key(str(word["text"]))
+        if not key:
+            continue
+        while source_index < len(source) and source[source_index]["key"] != key:
+            source_index += 1
+        if source_index == len(source):
+            break
+        ending = source[source_index]["ending"]
+        if ending and not _SENTENCE_ENDING.search(str(word["text"])):
+            word["text"] = f"{word['text']}{ending}"
+        source_index += 1
+    return normalised
+
+
+def _sentence_aware_groups(words: list[dict[str, Any]], size: int) -> list[list[dict[str, Any]]]:
+    groups: list[list[dict[str, Any]]] = []
+    group: list[dict[str, Any]] = []
+    for word in words:
+        group.append(word)
+        if len(group) >= size or _SENTENCE_ENDING.search(str(word["text"])):
+            groups.append(group)
+            group = []
+    if group:
+        groups.append(group)
+    return groups
+
+
+def group_aligned_words(
+    words: list[dict[str, Any]], words_per_group: int, script: str | None = None
+) -> list[dict[str, Any]]:
     size = max(2, min(8, words_per_group))
     items = []
-    for index in range(0, len(words), size):
-        group = words[index : index + size]
-        if not group:
-            continue
+    for group in _sentence_aware_groups(_normalise_aligned_words(words, script), size):
         items.append(
             {
                 "text": " ".join(str(word["text"]) for word in group),
@@ -146,9 +225,11 @@ def group_aligned_words(words: list[dict[str, Any]], words_per_group: int) -> li
 
 
 def phrase_fallback_items(script: str, duration: float, words_per_group: int) -> list[dict[str, Any]]:
-    words = script.split()
-    size = max(3, min(8, words_per_group))
-    groups = [words[index : index + size] for index in range(0, len(words), size)]
+    words = _normalise_aligned_words(
+        [{"text": word} for word in re.findall(r"\S+", script)], script
+    )
+    size = max(2, min(8, words_per_group))
+    groups = _sentence_aware_groups(words, size)
     if not groups:
         return []
     total_words = max(1, len(words))
@@ -160,7 +241,7 @@ def phrase_fallback_items(script: str, duration: float, words_per_group: int) ->
         end = duration * cursor / total_words
         items.append(
             {
-                "text": " ".join(group),
+                "text": " ".join(str(word["text"]) for word in group),
                 "start": round(start, 2),
                 "end": round(end, 2),
                 "timing": "phrase_estimate",

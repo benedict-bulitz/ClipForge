@@ -29,8 +29,8 @@ class AdvancedOptions(BaseModel):
     caption_text_color: str = Field(default="#ffffff", pattern=r"^#[0-9A-Fa-f]{6}$")
     caption_highlight_color: str = Field(default="#ff6838", pattern=r"^#[0-9A-Fa-f]{6}$")
     caption_words_per_group: int = Field(default=4, ge=2, le=8)
-    music_enabled: bool = False
-    music_mood: Literal["ambient", "documentary", "tech", "cinematic"] = "ambient"
+    music_enabled: bool = True
+    music_mood: Literal["ambient", "documentary", "tech", "cinematic"] | None = None
     music_volume: float = Field(default=0.14, ge=0, le=0.5)
     music_ducking: bool = True
     music_fades: bool = True
@@ -82,8 +82,9 @@ class ProjectCreate(BaseModel):
 class GenerationJobRead(BaseModel):
     id: str
     project_id: str
+    prompt: str
     base_revision: int | None
-    status: Literal["queued", "running", "completed", "failed"]
+    status: Literal["queued", "running", "completed", "failed", "removed"]
     current_stage: str
     stage_label: str
     progress: float = Field(ge=0, le=1)
@@ -96,6 +97,7 @@ class GenerationJobRead(BaseModel):
     estimated_remaining_seconds: float | None = Field(default=None, ge=0)
     failure_category: str | None
     failure_message: str | None
+    queue_position: int | None = None
 
 class EditCreate(BaseModel):
     instruction: str = Field(min_length=2, max_length=2_000)
@@ -115,6 +117,37 @@ class ExportCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     base_revision: int | None = Field(default=None, ge=1)
+
+
+class AudioSettingsUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    base_revision: int = Field(ge=1)
+    voice_volume: float = Field(ge=0, le=1)
+    music_volume: float = Field(ge=0, le=0.5)
+    music_enabled: bool
+
+
+class MusicSelectionUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    base_revision: int = Field(ge=1)
+    track_id: str | None = Field(default=None, min_length=1, max_length=256)
+    mode: Literal["ai_matched", "all_music"] = "all_music"
+
+
+class SocialMetadataUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    base_revision: int = Field(ge=1)
+    hashtags: dict[Literal["tiktok", "instagram", "youtube"], list[str]]
+    metadata: dict[Literal["tiktok", "instagram", "youtube"], dict[str, str]] | None = None
+
+
+class SocialMetadataGenerate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    base_revision: int = Field(ge=1)
+    platform: Literal["tiktok", "instagram", "youtube"] | None = None
 
 
 class ChatCreate(BaseModel):

@@ -1,8 +1,13 @@
 import copy
+import os
+import re
+import shutil
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -18,7 +23,8 @@ from .exporter import (
 )
 from .hashing import attach_hashes
 from .media import prepare_project_media
-from .models import Project, ProjectRevision
+from .models import GenerationJob, Project, ProjectChatMessage, ProjectRevision
+from .music import available_music_tracks, music_track_state
 from .pipeline import (
     _apply_selected_hook,
     _authoritative_hook_blocks,
@@ -31,11 +37,292 @@ from .pipeline import (
 from .progress import ProgressCallback, report_progress
 from .renderer import RenderUnavailable, VoiceGenerationError, render_video
 from .review import run_ai_review
-from .schemas import ProjectCreate
+from .schemas import (
+    AudioSettingsUpdate,
+    MusicSelectionUpdate,
+    ProjectCreate,
+    SocialMetadataGenerate,
+    SocialMetadataUpdate,
+)
+from .social_metadata import generate_social_metadata, normalize_hashtags
 
 
 class RevisionConflict(RuntimeError):
     pass
+
+
+class ProjectDeletionError(RuntimeError):
+    pass
+
+
+class ProjectDeletionBusy(ProjectDeletionError):
+    pass
+
+
+@dataclass(frozen=True)
+class ProjectDeletionResult:
+    reclaimed_bytes: int
+
+
+@dataclass(frozen=True)
+class ProjectDeletionPlan:
+    project_id: str
+    project_directory: Path
+    reclaimed_bytes: int
+    file_count: int
+    directory_count: int
+    database_records: dict[str, int]
+    excluded_shared_locations: tuple[Path, ...]
+
+
+_PROJECT_STORAGE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,127}")
+
+
+@dataclass(frozen=True)
+class BulkProjectDeletionPlan:
+    projects: tuple[ProjectDeletionPlan, ...]
+    total_bytes: int
+    total_files: int
+    total_directories: int
+
+
+@dataclass(frozen=True)
+class BulkProjectDeletionResult:
+    deleted_projects: int
+    freed_bytes: int
+    failed_projects: dict[str, str]
+    remaining_projects: int
+
+
+def _project_storage_directory(project_id: str, settings: Settings) -> Path:
+    """Return only a direct, non-symlink child of the configured project root."""
+    if not _PROJECT_STORAGE_ID.fullmatch(project_id):
+        raise ProjectDeletionError("The project storage identity is invalid.")
+    storage_root = settings.render_root.resolve()
+    project_dir = (storage_root / project_id).resolve()
+    if project_dir.parent != storage_root or project_dir.is_symlink():
+        raise ProjectDeletionError("Refused to remove an unsafe project storage path.")
+    return project_dir
+
+
+def _project_local_storage_stats(project_id: str, settings: Settings) -> tuple[int, int, int]:
+    """Report the size of files owned by this project's isolated storage directory."""
+    project_dir = _project_storage_directory(project_id, settings)
+    if not project_dir.exists():
+        return 0, 0, 0
+    total = 0
+    file_count = 0
+    directory_count = 1
+    for root, child_directories, child_files in os.walk(project_dir, followlinks=False):
+        directory_count += len(child_directories)
+        for name in [*child_directories, *child_files]:
+            candidate = Path(root) / name
+            if candidate.is_symlink():
+                continue
+            try:
+                total += candidate.stat().st_size
+                if candidate.is_file():
+                    file_count += 1
+            except OSError as exc:
+                raise ProjectDeletionError("Could not inspect project-local storage.") from exc
+    return total, file_count, directory_count
+
+
+def project_local_storage_bytes(project_id: str, settings: Settings) -> int:
+    return _project_local_storage_stats(project_id, settings)[0]
+
+
+def plan_project_deletion(db: Session, project_id: str, settings: Settings) -> ProjectDeletionPlan:
+    """Classify one project's owned records/files without changing database or storage."""
+    if get_project(db, project_id) is None:
+        raise ProjectDeletionError("Project not found.")
+    project_dir = _project_storage_directory(project_id, settings)
+    reclaimed_bytes, file_count, directory_count = _project_local_storage_stats(project_id, settings)
+    record_counts = {
+        "project": 1,
+        "revisions": int(
+            db.scalar(select(func.count()).where(ProjectRevision.project_id == project_id)) or 0
+        ),
+        "chat_messages": int(
+            db.scalar(select(func.count()).where(ProjectChatMessage.project_id == project_id)) or 0
+        ),
+        "generation_jobs": int(
+            db.scalar(select(func.count()).where(GenerationJob.project_id == project_id)) or 0
+        ),
+    }
+    return ProjectDeletionPlan(
+        project_id=project_id,
+        project_directory=project_dir,
+        reclaimed_bytes=reclaimed_bytes,
+        file_count=file_count,
+        directory_count=directory_count,
+        database_records=record_counts,
+        excluded_shared_locations=(
+            settings.render_root.resolve() / "voice-previews",
+            settings.resolved_downloads_root,
+            Path(__file__).resolve().parents[1] / "music-library" / "cache",
+        ),
+    )
+
+
+def plan_bulk_project_deletion(db: Session, settings: Settings) -> BulkProjectDeletionPlan:
+    """Validate every current project before any bulk deletion can begin."""
+    projects = db.scalars(select(Project).order_by(Project.created_at.asc())).all()
+    plans = tuple(plan_project_deletion(db, project.id, settings) for project in projects)
+    running_job = db.scalar(
+        select(GenerationJob.id).where(GenerationJob.status == "running").limit(1)
+    )
+    if running_job is not None:
+        raise ProjectDeletionBusy("A project is still being generated; bulk deletion cannot start.")
+    return BulkProjectDeletionPlan(
+        projects=plans,
+        total_bytes=sum(plan.reclaimed_bytes for plan in plans),
+        total_files=sum(plan.file_count for plan in plans),
+        total_directories=sum(plan.directory_count for plan in plans),
+    )
+
+
+def delete_project(db: Session, project_id: str, settings: Settings) -> ProjectDeletionResult:
+    """Delete one project and its isolated local storage, never shared caches/downloads."""
+    project = get_project(db, project_id, lock=True)
+    active_job = db.scalar(
+        select(GenerationJob.id).where(
+            GenerationJob.project_id == project_id,
+            GenerationJob.status == "running",
+        )
+    )
+    if active_job is not None:
+        raise ProjectDeletionBusy("This project is still being generated. Try again when it finishes.")
+    if project is None:
+        # A queued request has a durable project id before expensive generation
+        # creates its first Project revision. Removing that job is sufficient:
+        # it owns no project-local render directory and can never be claimed.
+        queued_job = db.scalar(
+            select(GenerationJob.id).where(
+                GenerationJob.project_id == project_id,
+                GenerationJob.status == "queued",
+            )
+        )
+        if queued_job is None:
+            raise ProjectDeletionError("Project not found.")
+        db.execute(delete(GenerationJob).where(GenerationJob.id == queued_job))
+        db.commit()
+        return ProjectDeletionResult(reclaimed_bytes=0)
+    plan = plan_project_deletion(db, project_id, settings)
+
+    project_dir = plan.project_directory
+    if project_dir.exists():
+        try:
+            shutil.rmtree(project_dir)
+        except OSError as exc:
+            raise ProjectDeletionError(
+                "Project-local files could not be removed; the project was not deleted."
+            ) from exc
+
+    try:
+        # Generation jobs are project-keyed but intentionally not FK-linked.
+        # Revisions and chat messages are removed by the project's DB cascades.
+        db.execute(delete(GenerationJob).where(GenerationJob.project_id == project_id))
+        db.execute(delete(Project).where(Project.id == project_id))
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        raise ProjectDeletionError(
+            "Project files were removed, but database cleanup failed. The project was not fully deleted."
+        ) from exc
+    return ProjectDeletionResult(reclaimed_bytes=plan.reclaimed_bytes)
+
+
+def delete_all_projects(db: Session, settings: Settings) -> BulkProjectDeletionResult:
+    """Delete validated projects sequentially; stop and report accurately on first failure."""
+    plan = plan_bulk_project_deletion(db, settings)
+    # Queued work has no Project row yet. It is safe to remove before project
+    # cleanup, and no running job reaches this point (the plan blocks those).
+    db.execute(delete(GenerationJob).where(GenerationJob.status == "queued"))
+    db.commit()
+    deleted_projects = 0
+    freed_bytes = 0
+    failed_projects: dict[str, str] = {}
+    for project in plan.projects:
+        try:
+            result = delete_project(db, project.project_id, settings)
+        except ProjectDeletionError as exc:
+            failed_projects[project.project_id] = str(exc)
+            break
+        deleted_projects += 1
+        freed_bytes += result.reclaimed_bytes
+    remaining_projects = int(db.scalar(select(func.count()).select_from(Project)) or 0)
+    return BulkProjectDeletionResult(
+        deleted_projects=deleted_projects,
+        freed_bytes=freed_bytes,
+        failed_projects=failed_projects,
+        remaining_projects=remaining_projects,
+    )
+
+
+def update_project_audio(db: Session, project: Project, payload: AudioSettingsUpdate, settings: Settings) -> ProjectRevision:
+    if payload.base_revision != project.current_revision:
+        raise RevisionConflict("Project changed; reload before saving audio settings.")
+    state = effective_revision_state(project)
+    music = state.setdefault("music", {})
+    music.update(volume=payload.music_volume, enabled=payload.music_enabled, requested_enabled=payload.music_enabled)
+    state.setdefault("voice", {})["volume"] = payload.voice_volume
+    state.pop("export", None)
+    return _append_revision(db, project, base_revision=payload.base_revision, instruction="Adjust export audio", state=attach_hashes(state), changed=["music", "voice"], status=project.status)
+
+
+def update_project_music_selection(
+    db: Session, project: Project, payload: MusicSelectionUpdate
+) -> ProjectRevision:
+    if payload.base_revision != project.current_revision:
+        raise RevisionConflict("Project changed; reload before changing music.")
+    state = effective_revision_state(project)
+    music = state.setdefault("music", {})
+    if payload.track_id is None:
+        music.update(enabled=False, requested_enabled=False, status="disabled", selection={"mode": payload.mode})
+    else:
+        tracks = {track.id: track for track in available_music_tracks()}
+        track = tracks.get(payload.track_id)
+        if track is None:
+            raise ValueError("The selected music track is unavailable.")
+        music.update(enabled=True, requested_enabled=True, status="planned", track=music_track_state(track), selection={"mode": payload.mode, "basis": "catalog_selection"})
+    state.pop("export", None)
+    return _append_revision(db, project, base_revision=payload.base_revision, instruction="Change export music", state=attach_hashes(state), changed=["music"], status=project.status)
+
+
+def update_project_social_metadata(
+    db: Session, project: Project, payload: SocialMetadataUpdate
+) -> ProjectRevision:
+    if payload.base_revision != project.current_revision:
+        raise RevisionConflict("Project changed; reload before saving hashtags.")
+    state = effective_revision_state(project)
+    metadata = state.setdefault("social_metadata", {"status": "available", "platforms": {}})
+    platforms = metadata.setdefault("platforms", {})
+    for platform, values in payload.hashtags.items():
+        previous = platforms.get(platform) or {}
+        fields = (payload.metadata or {}).get(platform) or {}
+        platforms[platform] = {
+            "title": str(fields.get("title", previous.get("title", ""))).strip(),
+            "description": str(fields.get("description", previous.get("description", ""))).strip(),
+            "hashtags": normalize_hashtags(values),
+            "manual": True,
+        }
+    metadata["status"] = "available"
+    return _append_revision(db, project, base_revision=payload.base_revision, instruction="Edit social hashtags", state=attach_hashes(state), changed=["social_metadata"], status=project.status)
+
+
+def regenerate_project_social_metadata(
+    db: Session, project: Project, payload: SocialMetadataGenerate, settings: Settings
+) -> ProjectRevision:
+    if payload.base_revision != project.current_revision:
+        raise RevisionConflict("Project changed; reload before generating hashtags.")
+    state = effective_revision_state(project)
+    generated = generate_social_metadata(state, settings)
+    if payload.platform and generated.get("status") == "available":
+        previous = (state.get("social_metadata") or {}).get("platforms") or {}
+        generated["platforms"] = {**previous, payload.platform: generated["platforms"][payload.platform]}
+    state["social_metadata"] = generated
+    return _append_revision(db, project, base_revision=payload.base_revision, instruction="Generate social hashtags", state=attach_hashes(state), changed=["social_metadata"], status=project.status)
 
 
 def create_project(
@@ -295,13 +582,15 @@ def render_project(
         settings,
         **render_kwargs,
     )
+    # Secondary metadata never changes the outcome of a completed render.
+    state["social_metadata"] = generate_social_metadata(state, settings)
     return _append_revision(
         db,
         project,
         base_revision=base_revision,
         instruction="Render video",
         state=state,
-        changed=["voice", "alignment", "captions", "timeline", "render", "qc"],
+        changed=["voice", "alignment", "captions", "timeline", "render", "qc", "social_metadata"],
         status="rendered",
         kind="system",
     )
@@ -390,6 +679,8 @@ def export_project(
     asset_status = "cleaned_after_export" if cleanup.status == "complete" else "cleanup_warning"
     cleanup_state.setdefault("assets", {})["status"] = asset_status
     for scene in cleanup_state.get("scenes", []):
+        if (scene.get("media") or {}).get("manually_selected"):
+            continue
         scene["asset_status"] = asset_status
         media = scene.get("media")
         if isinstance(media, dict):
@@ -659,6 +950,8 @@ def effective_revision_state(
     if export.get("cleanup_status") in {"complete", "warning"}:
         state.setdefault("assets", {})["status"] = "regeneration_required"
         for scene in state.get("scenes", []):
+            if (scene.get("media") or {}).get("manually_selected"):
+                continue
             scene["asset_status"] = "regeneration_required"
             media = scene.get("media")
             if isinstance(media, dict):

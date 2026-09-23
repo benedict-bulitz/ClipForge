@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import {
   ArrowLeft,
@@ -22,12 +23,14 @@ import {
   Send,
   Settings,
   Sparkles,
+  Trash2,
   WandSparkles,
 } from "lucide-react";
 import {
   getProjectChat,
   getReadiness,
   applySceneMediaCandidate,
+  deleteProject,
   getSceneMediaCandidates,
   exportProject,
   mediaUrl,
@@ -35,14 +38,76 @@ import {
   redoProject,
   sendProjectMessage,
   undoProject,
+  updateProjectAudio,
+  generateProjectSocialMetadata,
+  updateProjectSocialMetadata,
+  API_ORIGIN,
+  listProjectMusicTracks,
+  updateProjectMusicSelection,
 } from "@/lib/api";
-import type { ChatMessage, Project, Readiness, Scene, Source, SceneMediaCandidates } from "@/lib/types";
+import type { ChatMessage, MusicTrack, Project, Readiness, Scene, Source, SceneMediaCandidates } from "@/lib/types";
 import { Brand } from "./brand";
 import { Button } from "./ui/button";
 import { ThemeToggle } from "./theme-toggle";
 import { cn } from "@/lib/utils";
 
 type Tab = "overview" | "script" | "scenes" | "sources";
+
+function AudioControls({ project, disabled, onDirty, onSave }: {
+  project: Project;
+  disabled: boolean;
+  onDirty: () => void;
+  onSave: (audio: { voice_volume: number; music_volume: number; music_enabled: boolean }) => Promise<void>;
+}) {
+  const state = project.revision.state;
+  const [voice, setVoice] = useState(state.voice.volume ?? 1);
+  const [music, setMusic] = useState(state.music.volume ?? 0.14);
+  const [enabled, setEnabled] = useState(state.music.enabled ?? false);
+  const [dirty, setDirty] = useState(false);
+  const changed = () => { setDirty(true); onDirty(); };
+  return <fieldset disabled={disabled} className="mt-4 space-y-3 rounded-xl border p-4 text-sm">
+    <legend className="px-1 font-semibold">Audio</legend>
+    <label className="block">Voice · {Math.round(voice * 100)}%
+      <input aria-label="Voice volume" type="range" min="0" max="1" step="0.01" value={voice} className="block w-full" onChange={(e) => { setVoice(Number(e.target.value)); changed(); }} />
+    </label>
+    <p>Music · {state.music.track?.title ?? "No selected track"}</p>
+    <label className="block">Music volume · {Math.round(music * 100)}%
+      <input aria-label="Music volume" type="range" min="0" max="0.5" step="0.01" value={music} className="block w-full" onChange={(e) => { setMusic(Number(e.target.value)); changed(); }} />
+    </label>
+    <label className="flex items-center gap-2"><input type="checkbox" checked={!enabled} disabled={!state.music.track} onChange={(e) => { setEnabled(!e.target.checked); changed(); }} />No music</label>
+    <Button size="sm" disabled={!dirty || disabled} onClick={() => void onSave({ voice_volume: voice, music_volume: music, music_enabled: enabled })}>{disabled ? "Saving audio…" : "Save audio"}</Button>
+    {dirty && <p className="text-xs">Save audio to update the preview and enable export.</p>}
+  </fieldset>;
+}
+
+function MusicControls({ project, disabled, onChange }: { project: Project; disabled: boolean; onChange: (project: Project) => void }) {
+  type Mode = "ai_matched" | "all_music";
+  const music = project.revision.state.music;
+  const [mode, setMode] = useState<Mode>(music.selection?.mode === "automatic" || music.selection?.mode === "ai_matched" ? "ai_matched" : "all_music");
+  const [open, setOpen] = useState(false);
+  const [tracks, setTracks] = useState<MusicTrack[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [feedback, setFeedback] = useState<string | null>(null);
+  const previewUrl = music.track?.id ? `${API_ORIGIN}/api/music/tracks/${encodeURIComponent(music.track.id)}/preview` : null;
+
+  async function load(nextMode: Mode) {
+    setMode(nextMode); setLoading(true); setFeedback(null);
+    try { const result = await listProjectMusicTracks(project.id, nextMode); setTracks(result.tracks); }
+    catch { setFeedback("Musikkatalog ist derzeit nicht verfügbar."); } finally { setLoading(false); }
+  }
+  async function select(trackId: string | null) {
+    setLoading(true); setFeedback(null);
+    try { onChange(await updateProjectMusicSelection(project.id, project.current_revision, trackId, mode)); setOpen(false); }
+    catch { setFeedback("Musik konnte nicht ausgewählt werden."); } finally { setLoading(false); }
+  }
+  return <section className="mt-4 rounded-xl border p-4 text-sm" aria-label="Background music">
+    <div className="flex flex-wrap items-center justify-between gap-2"><div><h2 className="font-semibold">Background music</h2><p className="mt-1 text-xs text-[var(--muted-foreground)]">{music.track?.title ?? "No track selected"}</p></div><Button size="sm" variant="outline" disabled={disabled || loading} onClick={() => { setOpen((value) => !value); if (!open) void load(mode); }}>Change music</Button></div>
+    {previewUrl && <audio className="mt-3 w-full" controls preload="none" src={previewUrl}>Track preview unavailable.</audio>}
+    {!music.track && <p className="mt-3 text-xs text-[var(--muted-foreground)]">You can still export without music.</p>}
+    {open && <div className="mt-4 border-t pt-4"><div className="flex gap-2"><Button size="sm" variant={mode === "ai_matched" ? "accent" : "outline"} disabled={loading} onClick={() => void load("ai_matched")}>AI Matched</Button><Button size="sm" variant={mode === "all_music" ? "accent" : "outline"} disabled={loading} onClick={() => void load("all_music")}>All Music</Button></div>{mode === "ai_matched" && <p className="mt-2 text-xs text-[var(--muted-foreground)]">Ranked from the available licensed catalog for this project.</p>}<div className="mt-3 grid gap-2">{tracks.map((track) => <div key={track.id} className="flex items-center justify-between gap-3 rounded-lg border p-2"><div className="min-w-0"><p className="truncate font-medium">{track.title}</p><p className="truncate text-xs text-[var(--muted-foreground)]">{track.mood} · {track.energy}</p></div><div className="flex shrink-0 gap-2"><audio controls preload="none" className="h-8 w-28" src={`${API_ORIGIN}${track.preview_url}`} /><Button size="sm" variant="outline" disabled={loading} onClick={() => void select(track.id)}>Select</Button></div></div>)}</div>{tracks.length === 0 && !loading && <p className="mt-3 text-xs text-[var(--muted-foreground)]">No usable licensed tracks are available.</p>}<button type="button" className="mt-3 text-xs text-[#d94c20]" disabled={loading} onClick={() => void select(null)}>Use no music</button></div>}
+    {feedback && <p role="status" className="mt-2 text-xs text-[var(--muted-foreground)]">{feedback}</p>}
+  </section>;
+}
 
 const setupLinks: Record<string, { label: string; url: string }> = {
   director: { label: "Get OpenAI key", url: "https://platform.openai.com/api-keys" },
@@ -62,6 +127,7 @@ export function ProjectWorkspace({
   project: Project;
   onProjectChange: (project: Project) => void;
 }) {
+  const router = useRouter();
   const [tab, setTab] = useState<Tab>("overview");
   const [message, setMessage] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -70,7 +136,8 @@ export function ProjectWorkspace({
   const [lastFailedMessage, setLastFailedMessage] = useState<string | null>(null);
   const [chatError, setChatError] = useState<string | null>(null);
   const [mobileChatOpen, setMobileChatOpen] = useState(false);
-  const [busy, setBusy] = useState<"render" | "export" | "undo" | "redo" | null>(null);
+  const [busy, setBusy] = useState<"render" | "export" | "undo" | "redo" | "audio" | "delete" | null>(null);
+  const [audioDirty, setAudioDirty] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [moreOpen, setMoreOpen] = useState(false);
   const [mediaBusy, setMediaBusy] = useState<number | null>(null);
@@ -79,6 +146,8 @@ export function ProjectWorkspace({
   const [candidateSet, setCandidateSet] = useState<SceneMediaCandidates | null>(null);
   const [candidateSelection, setCandidateSelection] = useState<string | null>(null);
   const [readiness, setReadiness] = useState<Readiness | null>(null);
+  const [deleteConfirmationOpen, setDeleteConfirmationOpen] = useState(false);
+  const [socialBusy, setSocialBusy] = useState(false);
   const state = project.revision.state;
   const duration = state.duration.actual_seconds ?? state.duration.estimated_seconds;
 
@@ -241,6 +310,21 @@ export function ProjectWorkspace({
     }
   }
 
+  async function confirmProjectDeletion() {
+    if (busy) return;
+    setBusy("delete");
+    setError(null);
+    try {
+      await deleteProject(project.id);
+      setMessages([]);
+      router.replace("/");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Das Projekt konnte nicht gelöscht werden.");
+      setDeleteConfirmationOpen(false);
+      setBusy(null);
+    }
+  }
+
   return (
     <main className="theme-app min-h-screen bg-[var(--background)]">
       <div className="noise" />
@@ -268,7 +352,7 @@ export function ProjectWorkspace({
           </div>
           <ThemeToggle />
           {state.render.url ? (
-            <Button variant="outline" size="sm" onClick={() => void exportMp4()} disabled={!!busy}>
+            <Button variant="outline" size="sm" onClick={() => void exportMp4()} disabled={!!busy || audioDirty}>
               {busy === "export" ? <LoaderCircle className="size-3.5 animate-spin" /> : state.export?.status === "exported" ? <Check className="size-3.5" /> : <Download className="size-3.5" />}
               <span className="hidden sm:inline">{busy === "export" ? "Exporting…" : state.export?.status === "exported" ? "Exported" : "Export MP4"}</span>
             </Button>
@@ -299,10 +383,30 @@ export function ProjectWorkspace({
                   </div>
                 ))}
               </div>
+              <div className="mt-3 border-t pt-3">
+                <Button variant="outline" size="sm" className="w-full border-red-200 text-red-700 hover:bg-red-50" onClick={() => { setMoreOpen(false); setDeleteConfirmationOpen(true); }}>
+                  <Trash2 className="size-3.5" /> Projekt löschen
+                </Button>
+              </div>
             </div>
           )}
         </div>
       </header>
+
+      {deleteConfirmationOpen && (
+        <div className="fixed inset-0 z-[70] grid place-items-center bg-black/45 p-4" role="dialog" aria-modal="true" aria-labelledby="delete-project-title">
+          <div className="cf-surface w-full max-w-md rounded-[24px] border p-6 shadow-[0_22px_70px_rgba(0,0,0,.25)]">
+            <h2 id="delete-project-title" className="text-lg font-semibold">Projekt wirklich löschen?</h2>
+            <p className="mt-2 text-sm leading-6 text-[var(--muted-foreground)]">Das Projekt und seine zugehörigen Dateien werden dauerhaft gelöscht.</p>
+            <div className="mt-6 flex justify-end gap-2">
+              <Button variant="ghost" onClick={() => setDeleteConfirmationOpen(false)} disabled={busy === "delete"}>Abbrechen</Button>
+              <Button variant="accent" onClick={() => void confirmProjectDeletion()} disabled={busy === "delete"}>
+                {busy === "delete" ? <LoaderCircle className="size-3.5 animate-spin" /> : <Trash2 className="size-3.5" />} Projekt löschen
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="mx-auto grid max-w-[1600px] grid-cols-1 lg:grid-cols-[minmax(560px,1fr)_390px]">
         <section className="min-w-0 border-black/8 px-4 pb-32 pt-6 lg:border-r lg:px-8 lg:pb-10">
@@ -320,7 +424,20 @@ export function ProjectWorkspace({
               </div>
             )}
             <div className="grid items-start gap-7 md:grid-cols-[minmax(260px,420px)_minmax(0,1fr)]">
-              <VideoPreview project={project} />
+              <div>
+                <VideoPreview key={state.render.url ?? `${project.id}:${project.current_revision}`} project={project} onRender={() => void render()} rendering={busy === "render"} />
+                {state.render.url && <AudioControls key={`${project.id}:${project.current_revision}`} project={project} disabled={!!busy || sending} onDirty={() => setAudioDirty(true)} onSave={async (audio) => {
+                  setBusy("audio");
+                  setError(null);
+                  try {
+                    onProjectChange(await updateProjectAudio(project.id, project.current_revision, audio));
+                    setAudioDirty(false);
+                  } catch (reason) {
+                    setError(reason instanceof Error ? reason.message : "Audio settings could not be saved.");
+                  } finally { setBusy(null); }
+                }} />}
+                {state.render.url && <MusicControls project={project} disabled={!!busy || sending} onChange={onProjectChange} />}
+              </div>
               <div className="min-w-0">
                 <div className="mb-5 flex flex-wrap items-center gap-2">
                   <Badge>{state.intent.content_type.replaceAll("_", " ")}</Badge>
@@ -337,6 +454,8 @@ export function ProjectWorkspace({
               </div>
             </div>
 
+            <SocialMetadata key={`${project.id}:${project.current_revision}`} project={project} busy={socialBusy} onChange={onProjectChange} setBusy={setSocialBusy} />
+
             <div className="mt-8 border-b border-black/10">
               <nav className="flex gap-1 overflow-x-auto" aria-label="Project detail tabs">
                 {(["overview", "script", "scenes", "sources"] as Tab[]).map((item) => (
@@ -350,7 +469,7 @@ export function ProjectWorkspace({
             <div className="py-6">
               {tab === "overview" && <Overview project={project} readiness={readiness} />}
               {tab === "script" && <ScriptView project={project} />}
-              {tab === "scenes" && <ScenesView scenes={state.scenes} duration={duration} assets={state.assets} mediaBusy={mediaBusy} mediaError={mediaError} candidateScene={candidateScene} candidateSet={candidateSet} candidateSelection={candidateSelection} onSelectCandidate={setCandidateSelection} onChooseSceneMedia={chooseSceneMedia} onApplyCandidate={applySelectedMedia} />}
+              {tab === "scenes" && <ScenesView scenes={state.scenes} duration={duration} assets={state.assets} mediaBusy={mediaBusy} mediaError={mediaError} candidateScene={candidateScene} candidateSet={candidateSet} candidateSelection={candidateSelection} onSelectCandidate={setCandidateSelection} onChooseSceneMedia={chooseSceneMedia} onApplyCandidate={applySelectedMedia} onCancel={() => { setCandidateScene(null); setCandidateSet(null); setCandidateSelection(null); }} />}
               {tab === "sources" && <SourcesView project={project} />}
             </div>
           </div>
@@ -399,11 +518,12 @@ export function ProjectWorkspace({
   );
 }
 
-function VideoPreview({ project }: { project: Project }) {
+function VideoPreview({ project, onRender, rendering }: { project: Project; onRender: () => void; rendering: boolean }) {
   const state = project.revision.state;
   const hook = state.script.blocks[0]?.text ?? project.original_prompt;
   const source = mediaUrl(state.render.url);
   const vertical = state.timeline.height > state.timeline.width;
+  const [videoUnavailable, setVideoUnavailable] = useState(false);
   const label = source ? (state.render.stale ? "Previous revision preview" : "Rendered preview") : "Storyboard preview";
   return (
     <div className="mx-auto w-full" style={{ maxWidth: vertical ? 292 : 520 }}>
@@ -414,8 +534,8 @@ function VideoPreview({ project }: { project: Project }) {
         )}
         style={{ aspectRatio: `${state.timeline.width} / ${state.timeline.height}` }}
       >
-        {source ? (
-          <video key={source} src={source} controls playsInline preload="metadata" className="size-full bg-black object-contain" aria-label="ClipForge video preview" />
+        {source && !videoUnavailable ? (
+          <video key={source} src={source} controls playsInline preload="metadata" className="size-full bg-black object-contain" aria-label="ClipForge video preview" onError={() => setVideoUnavailable(true)} />
         ) : (
           <>
             <div className="absolute inset-0 bg-[radial-gradient(circle_at_66%_22%,#ffb178_0,transparent_22%),radial-gradient(circle_at_30%_70%,#253449_0,transparent_30%),linear-gradient(155deg,#7d2a16_0%,#191914_45%,#080809_100%)]" />
@@ -430,6 +550,7 @@ function VideoPreview({ project }: { project: Project }) {
               >
                 {hook.split(" ").slice(0, 11).join(" ")}
               </p>
+              {source && videoUnavailable && <div role="alert" className="mt-3 rounded-xl bg-black/70 px-3 py-2 text-xs text-white">Die gespeicherte Videodatei ist nicht verfügbar. <button onClick={onRender} disabled={rendering} className="ml-1 font-bold text-[#ffb178] underline">{rendering ? "Wird gerendert…" : "Video erneut rendern"}</button></div>}
               <span className="mt-2 inline-block h-1 w-12 rounded-full bg-[#ff6838]" />
             </div>
           </>
@@ -460,6 +581,55 @@ function Pipeline({ stages }: { stages: Project["revision"]["state"]["pipeline"]
       </div>
     </div>
   );
+}
+
+function SocialMetadata({ project, busy, onChange, setBusy }: {
+  project: Project;
+  busy: boolean;
+  onChange: (project: Project) => void;
+  setBusy: (busy: boolean) => void;
+}) {
+  const metadata = project.revision.state.social_metadata;
+  type Platform = "tiktok" | "instagram" | "youtube";
+  type Draft = { title: string; description: string; hashtags: string };
+  const [drafts, setDrafts] = useState<Record<Platform, Draft>>(() => {
+    const platforms = metadata?.platforms ?? {};
+    return {
+      tiktok: { title: platforms.tiktok?.title ?? "", description: platforms.tiktok?.description ?? "", hashtags: (platforms.tiktok?.hashtags ?? []).join(" ") },
+      instagram: { title: platforms.instagram?.title ?? "", description: platforms.instagram?.description ?? "", hashtags: (platforms.instagram?.hashtags ?? []).join(" ") },
+      youtube: { title: platforms.youtube?.title ?? "", description: platforms.youtube?.description ?? "", hashtags: (platforms.youtube?.hashtags ?? []).join(" ") },
+    };
+  });
+  const [feedback, setFeedback] = useState<string | null>(null);
+  const parse = (value: string) => value.split(/[,\s]+/).filter(Boolean);
+  async function save() {
+    setBusy(true); setFeedback(null);
+    try {
+      onChange(await updateProjectSocialMetadata(project.id, project.current_revision, {
+        tiktok: parse(drafts.tiktok.hashtags), instagram: parse(drafts.instagram.hashtags), youtube: parse(drafts.youtube.hashtags),
+      }, {
+        tiktok: { title: drafts.tiktok.title, description: drafts.tiktok.description },
+        instagram: { title: drafts.instagram.title, description: drafts.instagram.description },
+        youtube: { title: drafts.youtube.title, description: drafts.youtube.description },
+      }));
+      setFeedback("Gespeichert");
+    } catch { setFeedback("Hashtags konnten nicht gespeichert werden."); } finally { setBusy(false); }
+  }
+  async function regenerate(platform?: "tiktok" | "instagram" | "youtube") {
+    setBusy(true); setFeedback(null);
+    try { onChange(await generateProjectSocialMetadata(project.id, project.current_revision, platform)); }
+    catch { setFeedback("Hashtags konnten nicht generiert werden."); } finally { setBusy(false); }
+  }
+  async function copy(value: string) {
+    try { await navigator.clipboard.writeText(value); setFeedback("Kopiert"); }
+    catch { setFeedback("Kopieren nicht verfügbar."); }
+  }
+  return <section className="mt-8 rounded-[20px] border p-5" aria-label="Social Metadata">
+    <div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="font-semibold">Social Metadata</h2><p className="mt-1 text-xs text-[var(--muted-foreground)]">Titel, Beschreibung und Hashtags für jede Plattform.</p></div><Button size="sm" variant="outline" disabled={busy} onClick={() => void regenerate()}>{busy ? <LoaderCircle className="size-3.5 animate-spin" /> : <RefreshCw className="size-3.5" />}{metadata ? "Neu generieren" : "Metadaten generieren"}</Button></div>
+    {metadata?.status === "unavailable" && <p className="mt-3 text-sm text-[var(--muted-foreground)]">Hashtags derzeit nicht verfügbar. Du kannst es erneut versuchen.</p>}
+    <div className="mt-4 grid gap-3 md:grid-cols-3">{(["tiktok", "instagram", "youtube"] as const).map((platform) => <div key={platform} className="rounded-xl border p-3"><div className="flex items-center justify-between"><strong className="text-sm">{{ tiktok: "TikTok", instagram: "Instagram", youtube: "YouTube" }[platform]}</strong><button className="interactive-text text-xs" onClick={() => void copy(`${drafts[platform].title}\n\n${drafts[platform].description}\n\n${drafts[platform].hashtags}`)}>Copy all</button></div><label className="mt-3 block text-[11px] font-semibold">Title <button className="float-right interactive-text font-normal" onClick={() => void copy(drafts[platform].title)}>Copy</button><input aria-label={`${platform} title`} value={drafts[platform].title} onChange={(event) => setDrafts((current) => ({ ...current, [platform]: { ...current[platform], title: event.target.value } }))} className="mt-1 w-full rounded-lg border bg-transparent p-2 text-xs outline-none" /></label><label className="mt-2 block text-[11px] font-semibold">Description <button className="float-right interactive-text font-normal" onClick={() => void copy(drafts[platform].description)}>Copy</button><textarea aria-label={`${platform} description`} value={drafts[platform].description} onChange={(event) => setDrafts((current) => ({ ...current, [platform]: { ...current[platform], description: event.target.value } }))} className="mt-1 min-h-16 w-full resize-y rounded-lg border bg-transparent p-2 text-xs outline-none" /></label><label className="mt-2 block text-[11px] font-semibold">Hashtags <button className="float-right interactive-text font-normal" onClick={() => void copy(drafts[platform].hashtags)}>Copy</button><textarea aria-label={`${platform} hashtags`} value={drafts[platform].hashtags} onChange={(event) => setDrafts((current) => ({ ...current, [platform]: { ...current[platform], hashtags: event.target.value } }))} className="mt-1 min-h-16 w-full resize-y rounded-lg border bg-transparent p-2 text-xs outline-none" placeholder="#Hashtags" /></label><button className="mt-2 text-xs text-[#d94c20]" disabled={busy} onClick={() => void regenerate(platform)}>Neu generieren</button></div>)}</div>
+    <div className="mt-4 flex items-center gap-3"><Button size="sm" disabled={busy} onClick={() => void save()}>Metadaten speichern</Button>{feedback && <span role="status" className="text-xs text-[var(--muted-foreground)]">{feedback}</span>}</div>
+  </section>;
 }
 
 function Overview({ project, readiness }: { project: Project; readiness: Readiness | null }) {
@@ -606,7 +776,7 @@ function ScriptView({ project }: { project: Project }) {
   );
 }
 
-function ScenesView({ scenes, duration, assets, mediaBusy, mediaError, candidateScene, candidateSet, candidateSelection, onSelectCandidate, onChooseSceneMedia, onApplyCandidate }: { scenes: Scene[]; duration: number; assets: Project["revision"]["state"]["assets"]; mediaBusy: number | null; mediaError: string | null; candidateScene: number | null; candidateSet: SceneMediaCandidates | null; candidateSelection: string | null; onSelectCandidate: (token: string) => void; onChooseSceneMedia: (sceneNumber: number) => void; onApplyCandidate: () => void }) {
+function ScenesView({ scenes, duration, assets, mediaBusy, mediaError, candidateScene, candidateSet, candidateSelection, onSelectCandidate, onChooseSceneMedia, onApplyCandidate, onCancel }: { scenes: Scene[]; duration: number; assets: Project["revision"]["state"]["assets"]; mediaBusy: number | null; mediaError: string | null; candidateScene: number | null; candidateSet: SceneMediaCandidates | null; candidateSelection: string | null; onSelectCandidate: (token: string) => void; onChooseSceneMedia: (sceneNumber: number) => void; onApplyCandidate: () => void; onCancel: () => void }) {
   return (
     <div className="space-y-3">
       {mediaError && (
@@ -666,7 +836,7 @@ function ScenesView({ scenes, duration, assets, mediaBusy, mediaError, candidate
               aria-label={`Choose media for scene ${index + 1}`}
             >
               <RefreshCw className={cn("size-3", mediaBusy === index + 1 && "animate-spin")} />
-              {mediaBusy === index + 1 ? "Finding media" : "Choose media"}
+              {mediaBusy === index + 1 ? "Loading…" : "Replace"}
             </button>
             <p className="mono text-[10px] font-medium">{formatTime(scene.start)}–{formatTime(scene.end)}</p>
             <p className="mt-1 text-[9px] uppercase tracking-[.08em] text-amber-700">{scene.asset_status.replaceAll("_", " ")}</p>
@@ -675,8 +845,10 @@ function ScenesView({ scenes, duration, assets, mediaBusy, mediaError, candidate
             <div className="col-span-2 rounded-2xl border border-[#ff6838]/25 bg-[#fffaf6] p-3 sm:col-span-4">
               <div className="mb-3 flex items-center justify-between gap-3">
                 <p className="text-xs font-bold uppercase tracking-[.08em] text-[#66665d]">Alternatives · {candidateSet.preferred_kind} first</p>
+                <button type="button" onClick={onCancel} disabled={mediaBusy !== null} className="text-xs">Cancel</button>
                 <button type="button" onClick={onApplyCandidate} disabled={!candidateSelection || mediaBusy !== null} className="rounded-full bg-[#ff6838] px-3 py-1.5 text-[10px] font-bold uppercase tracking-[.08em] text-white disabled:opacity-50">Apply</button>
               </div>
+              {candidateSet.candidates.length === 0 && <p role="status" className="mb-3 text-sm">No suitable real media found for this scene. Try again later; the current scene is unchanged.</p>}
               <div className="grid gap-2 sm:grid-cols-3">
                 {candidateSet.candidates.map((candidate) => (
                   <button key={candidate.token} type="button" onClick={() => onSelectCandidate(candidate.token)} className={cn("overflow-hidden rounded-xl border text-left transition", candidateSelection === candidate.token ? "border-[#ff6838] ring-2 ring-[#ff6838]/20" : "border-black/10 hover:border-[#ff6838]/50")}>

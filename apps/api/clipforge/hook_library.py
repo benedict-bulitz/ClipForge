@@ -239,3 +239,24 @@ def strategy_guidance(profile: HookOpportunityProfile) -> list[dict[str, Any]]:
         for family in strategy_families()
         if family["id"] in eligible
     ]
+
+
+def generation_playbook(facts: list[dict[str, Any]]) -> dict[str, Any]:
+    """Return the manifest-derived guidance sent to the live hook writer.
+
+    Templates deliberately stay out of this primary path.  The manifest says
+    they are fallback material; the model receives the strategy semantics and
+    evidence opportunities so it can write an original, topic-specific hook.
+    """
+    library = load_hook_library()
+    profile = analyze_hook_opportunities(facts)
+    return {
+        "library_id": library["library_id"],
+        "design_intent": library["design_intent"]["primary"],
+        "source_principles": library["source_principles"],
+        "quality_rules": library["clipforge_quality_rules"],
+        "strategy_families": strategy_families(),
+        "evidence_opportunities": profile.as_dict(),
+        "eligible_strategy_ids": eligible_strategy_ids(profile),
+        "template_policy": "Do not copy fallback_templates. Write original spoken language from strategy semantics.",
+    }
