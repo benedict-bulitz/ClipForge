@@ -106,6 +106,10 @@ class AIHookGenerationResponse(BaseModel):
     selected_hook_strategy: str = Field(min_length=1)
 
 
+class AIMusicRecommendations(BaseModel):
+    track_ids: list[str] = Field(default_factory=list, max_length=12)
+
+
 class AIEditDirective(BaseModel):
     components: list[
         Literal[
@@ -147,6 +151,13 @@ class AIHookGenerationResult:
     error: str | None = None
 
 
+@dataclass(frozen=True)
+class AIMusicRecommendationResult:
+    track_ids: list[str]
+    status: str
+    error: str | None = None
+
+
 HOOK_GENERATION_INSTRUCTIONS = (
     "You are ClipForge's hook writer. The supplied body is final and must remain unchanged. "
     "Generate only original spoken hook candidates for the opening of that body. The supplied "
@@ -160,6 +171,37 @@ HOOK_GENERATION_INSTRUCTIONS = (
     "everyday, short, concrete, and understandable on first listen by a typical 10–14 year old. "
     "Return three to five candidates and select the strongest strategy. Return structured output only."
 )
+
+MUSIC_MATCHING_INSTRUCTIONS = (
+    "You are ClipForge's music supervisor. Rank background tracks for this specific short video using "
+    "its topic, script, mood, pacing, tone, and content style. Return only track_ids from the supplied "
+    "candidate catalog, in best-first order. Never invent an ID, title, URL, or any other track."
+)
+
+
+def rank_music_with_openai(state: dict[str, Any], candidates: list[dict[str, Any]], settings: Settings) -> AIMusicRecommendationResult:
+    """Ask the configured provider to order a bounded, real catalog shortlist."""
+    if settings.clipforge_ai_mode != "openai":
+        return AIMusicRecommendationResult([], "local_planner")
+    if not settings.openai_api_key:
+        return AIMusicRecommendationResult([], "missing_key", "OPENAI_API_KEY is not configured")
+    intent = state.get("intent") if isinstance(state.get("intent"), dict) else {}
+    music = state.get("music") if isinstance(state.get("music"), dict) else {}
+    script = state.get("script") if isinstance(state.get("script"), dict) else {}
+    timeline = state.get("timeline") if isinstance(state.get("timeline"), dict) else {}
+    request = {"video": {"topic": intent.get("topic"), "script": script.get("text"), "mood": music.get("mood"), "tone": intent.get("tone"), "content_style": intent.get("content_type"), "pacing": {"duration_seconds": timeline.get("duration"), "scene_count": len(state.get("scenes") or [])}}, "candidates": candidates}
+    try:
+        response = OpenAI(api_key=settings.openai_api_key).responses.parse(
+            model=settings.openai_worker_model, instructions=MUSIC_MATCHING_INSTRUCTIONS,
+            input=json.dumps(request, ensure_ascii=False), text_format=AIMusicRecommendations,
+            max_output_tokens=500, store=False,
+        )
+        parsed = response.output_parsed
+        if not isinstance(parsed, AIMusicRecommendations):
+            return AIMusicRecommendationResult([], "provider_error", "No parsed music recommendations")
+        return AIMusicRecommendationResult(parsed.track_ids, "connected")
+    except (OpenAIError, ValueError, TypeError) as exc:
+        return AIMusicRecommendationResult([], "provider_error", str(exc)[:240])
 
 
 def generate_hook_candidates_with_openai(

@@ -171,7 +171,7 @@ export function updateProjectAudio(projectId: string, baseRevision: number, audi
 }
 
 export function listProjectMusicTracks(projectId: string, mode: "ai_matched" | "all_music") {
-  return request<{ mode: "ai_matched" | "all_music"; tracks: MusicTrack[] }>(`/projects/${projectId}/music/tracks?mode=${mode}`, { cache: "no-store" });
+  return request<{ mode: "ai_matched" | "all_music"; tracks: MusicTrack[]; revision: number }>(`/projects/${projectId}/music/tracks?mode=${mode}`, { cache: "no-store" });
 }
 
 export function updateProjectMusicSelection(projectId: string, baseRevision: number, trackId: string | null, mode: "ai_matched" | "all_music") {

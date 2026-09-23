@@ -11,6 +11,7 @@ from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from .ai import rank_music_with_openai
 from .config import Settings
 from .dependencies import expand_dependencies
 from .exporter import (
@@ -24,7 +25,7 @@ from .exporter import (
 from .hashing import attach_hashes
 from .media import prepare_project_media
 from .models import GenerationJob, Project, ProjectChatMessage, ProjectRevision
-from .music import available_music_tracks, music_track_state
+from .music import MusicTrack, available_music_tracks, music_track_state, ranked_music_tracks
 from .pipeline import (
     _apply_selected_hook,
     _authoritative_hook_blocks,
@@ -289,6 +290,29 @@ def update_project_music_selection(
         music.update(enabled=True, requested_enabled=True, status="planned", track=music_track_state(track), selection={"mode": payload.mode, "basis": "catalog_selection"})
     state.pop("export", None)
     return _append_revision(db, project, base_revision=payload.base_revision, instruction="Change export music", state=attach_hashes(state), changed=["music"], status=project.status)
+
+
+def project_music_recommendations(db: Session, project: Project, catalog: tuple[MusicTrack, ...], settings: Settings) -> tuple[MusicTrack, ...]:
+    """Generate AI-assisted recommendations once, then reuse the persisted validated result."""
+    state = effective_revision_state(project)
+    music = state.setdefault("music", {})
+    persisted = music.get("recommendations")
+    catalog_by_id = {track.id: track for track in catalog}
+    if isinstance(persisted, dict) and isinstance(persisted.get("track_ids"), list):
+        return tuple(catalog_by_id[track_id] for track_id in persisted["track_ids"] if track_id in catalog_by_id)
+    deterministic = ranked_music_tracks(state, catalog)
+    shortlist = deterministic[:12] or catalog[:12]
+    candidates = [{"id": track.id, "title": track.title, "mood": track.mood, "energy": track.energy, "tags": list(track.tags), "description": track.description} for track in shortlist]
+    result = rank_music_with_openai(state, candidates, settings)
+    candidate_ids = {track.id for track in shortlist}
+    ai_ids: list[str] = []
+    for track_id in result.track_ids:
+        if track_id in candidate_ids and track_id not in ai_ids:
+            ai_ids.append(track_id)
+    ordered_ids = ai_ids + [track.id for track in deterministic if track.id not in ai_ids]
+    music["recommendations"] = {"track_ids": ordered_ids, "provider_status": result.status, "candidate_ids": [track.id for track in shortlist]}
+    _append_revision(db, project, base_revision=project.current_revision, instruction="Match music for this project", state=attach_hashes(state), changed=["music"], status=project.status, kind="system")
+    return tuple(catalog_by_id[track_id] for track_id in ordered_ids if track_id in catalog_by_id)
 
 
 def update_project_social_metadata(

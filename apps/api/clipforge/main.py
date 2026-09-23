@@ -36,7 +36,7 @@ from .media_candidates import (
     discover_scene_media_candidates,
 )
 from .models import GenerationJob, Project
-from .music import available_music_tracks, ranked_music_tracks, resolve_track_path
+from .music import available_music_tracks, resolve_track_path
 from .pipeline import UnsupportedEdit
 from .renderer import RenderUnavailable, VoiceGenerationError, readiness
 from .schemas import (
@@ -74,6 +74,7 @@ from .services import (
     export_project,
     get_project,
     plan_bulk_project_deletion,
+    project_music_recommendations,
     redo_project,
     regenerate_project_social_metadata,
     regenerate_project_thumbnails,
@@ -522,16 +523,16 @@ def _serialize_music_track(track) -> dict:
 
 
 @app.get("/api/projects/{project_id}/music/tracks")
-def list_project_music_tracks_route(project_id: str, db: DbSession, mode: str = "all_music") -> dict:
+def list_project_music_tracks_route(project_id: str, db: DbSession, config: SettingsDep, mode: str = "all_music") -> dict:
     project = get_project(db, project_id)
     if project is None:
         raise HTTPException(status_code=404, detail="Project not found")
     catalog = available_music_tracks()
     if mode == "ai_matched":
-        catalog = ranked_music_tracks(effective_revision_state(project), catalog)
+        catalog = project_music_recommendations(db, project, catalog, config)
     elif mode != "all_music":
         raise HTTPException(status_code=422, detail="Unsupported music mode")
-    return {"mode": mode, "tracks": [_serialize_music_track(track) for track in catalog]}
+    return {"mode": mode, "tracks": [_serialize_music_track(track) for track in catalog], "revision": project.current_revision}
 
 
 @app.get("/api/music/tracks/{track_id}/preview")

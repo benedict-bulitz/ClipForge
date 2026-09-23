@@ -88,25 +88,26 @@ function MusicControls({ project, disabled, onChange }: { project: Project; disa
   const [mode, setMode] = useState<Mode>(music.selection?.mode === "automatic" || music.selection?.mode === "ai_matched" ? "ai_matched" : "all_music");
   const [open, setOpen] = useState(false);
   const [tracks, setTracks] = useState<MusicTrack[]>([]);
+  const [musicRevision, setMusicRevision] = useState(project.current_revision);
   const [loading, setLoading] = useState(false);
   const [feedback, setFeedback] = useState<string | null>(null);
   const previewUrl = music.track?.id ? `${API_ORIGIN}/api/music/tracks/${encodeURIComponent(music.track.id)}/preview` : null;
 
   async function load(nextMode: Mode) {
     setMode(nextMode); setLoading(true); setFeedback(null);
-    try { const result = await listProjectMusicTracks(project.id, nextMode); setTracks(result.tracks); }
+    try { const result = await listProjectMusicTracks(project.id, nextMode); setTracks(result.tracks); setMusicRevision(result.revision); }
     catch { setFeedback("Musikkatalog ist derzeit nicht verfügbar."); } finally { setLoading(false); }
   }
   async function select(trackId: string | null) {
     setLoading(true); setFeedback(null);
-    try { onChange(await updateProjectMusicSelection(project.id, project.current_revision, trackId, mode)); setOpen(false); }
+    try { onChange(await updateProjectMusicSelection(project.id, musicRevision, trackId, mode)); setOpen(false); }
     catch { setFeedback("Musik konnte nicht ausgewählt werden."); } finally { setLoading(false); }
   }
   return <section className="mt-4 rounded-xl border p-4 text-sm" aria-label="Background music">
     <div className="flex flex-wrap items-center justify-between gap-2"><div><h2 className="font-semibold">Background music</h2><p className="mt-1 text-xs text-[var(--muted-foreground)]">{music.track?.title ?? "No track selected"}</p></div><Button size="sm" variant="outline" disabled={disabled || loading} onClick={() => { setOpen((value) => !value); if (!open) void load(mode); }}>Change music</Button></div>
     {previewUrl && <audio className="mt-3 w-full" controls preload="none" src={previewUrl}>Track preview unavailable.</audio>}
     {!music.track && <p className="mt-3 text-xs text-[var(--muted-foreground)]">You can still export without music.</p>}
-    {open && <div className="mt-4 border-t pt-4"><div className="flex gap-2"><Button size="sm" variant={mode === "ai_matched" ? "accent" : "outline"} disabled={loading} onClick={() => void load("ai_matched")}>AI Matched</Button><Button size="sm" variant={mode === "all_music" ? "accent" : "outline"} disabled={loading} onClick={() => void load("all_music")}>All Music</Button></div>{mode === "ai_matched" && <p className="mt-2 text-xs text-[var(--muted-foreground)]">Ranked from the available licensed catalog for this project.</p>}<div className="mt-3 grid gap-2">{tracks.map((track) => <div key={track.id} className="flex items-center justify-between gap-3 rounded-lg border p-2"><div className="min-w-0"><p className="truncate font-medium">{track.title}</p><p className="truncate text-xs text-[var(--muted-foreground)]">{track.mood} · {track.energy}</p></div><div className="flex shrink-0 gap-2"><audio controls preload="none" className="h-8 w-28" src={`${API_ORIGIN}${track.preview_url}`} /><Button size="sm" variant="outline" disabled={loading} onClick={() => void select(track.id)}>Select</Button></div></div>)}</div>{tracks.length === 0 && !loading && <p className="mt-3 text-xs text-[var(--muted-foreground)]">No usable licensed tracks are available.</p>}<button type="button" className="mt-3 text-xs text-[#d94c20]" disabled={loading} onClick={() => void select(null)}>Use no music</button></div>}
+    {open && <div className="mt-4 border-t pt-4"><div className="flex gap-2"><Button size="sm" variant={mode === "ai_matched" ? "accent" : "outline"} disabled={loading} onClick={() => void load("ai_matched")}>AI Matched</Button><Button size="sm" variant={mode === "all_music" ? "accent" : "outline"} disabled={loading} onClick={() => void load("all_music")}>All Music</Button></div>{mode === "ai_matched" && <p className="mt-2 text-xs text-[var(--muted-foreground)]">AI-assisted recommendations from the available licensed catalog for this project.</p>}<div className="mt-3 grid gap-2">{tracks.map((track, index) => <div key={track.id} className="flex items-center justify-between gap-3 rounded-lg border p-2"><div className="min-w-0"><p className="truncate font-medium">{track.title}{mode === "ai_matched" && index === 0 ? " · Recommended" : ""}</p><p className="truncate text-xs text-[var(--muted-foreground)]">{track.mood} · {track.energy}</p></div><div className="flex shrink-0 gap-2"><audio controls preload="none" className="h-8 w-28" src={`${API_ORIGIN}${track.preview_url}`} /><Button size="sm" variant="outline" disabled={loading} onClick={() => void select(track.id)}>Select</Button></div></div>)}</div>{tracks.length === 0 && !loading && <p className="mt-3 text-xs text-[var(--muted-foreground)]">No usable licensed tracks are available.</p>}<button type="button" className="mt-3 text-xs text-[#d94c20]" disabled={loading} onClick={() => void select(null)}>Use no music</button></div>}
     {feedback && <p role="status" className="mt-2 text-xs text-[var(--muted-foreground)]">{feedback}</p>}
   </section>;
 }
