@@ -45,6 +45,7 @@ from .schemas import (
     SocialMetadataUpdate,
 )
 from .social_metadata import generate_social_metadata, normalize_hashtags
+from .thumbnails import build_project_thumbnails
 
 
 class RevisionConflict(RuntimeError):
@@ -584,15 +585,73 @@ def render_project(
     )
     # Secondary metadata never changes the outcome of a completed render.
     state["social_metadata"] = generate_social_metadata(state, settings)
+    # Covers are secondary too: unavailable project imagery must never fail a
+    # finished video render.
+    try:
+        state["thumbnails"] = build_project_thumbnails(state, project.id, settings)
+    except Exception as exc:  # noqa: BLE001 - thumbnail failure is non-fatal
+        state["thumbnails"] = {
+            "status": "unavailable",
+            "error": str(exc),
+            "selected_variant_id": None,
+            "variants": [],
+        }
     return _append_revision(
         db,
         project,
         base_revision=base_revision,
         instruction="Render video",
         state=state,
-        changed=["voice", "alignment", "captions", "timeline", "render", "qc", "social_metadata"],
+        changed=["voice", "alignment", "captions", "timeline", "render", "qc", "social_metadata", "thumbnails"],
         status="rendered",
         kind="system",
+    )
+
+
+def regenerate_project_thumbnails(
+    db: Session,
+    project: Project,
+    settings: Settings,
+    *,
+    base_revision: int | None = None,
+) -> ProjectRevision:
+    state = copy.deepcopy(effective_revision_state(project))
+    state["thumbnails"] = build_project_thumbnails(state, project.id, settings)
+    return _append_revision(
+        db,
+        project,
+        base_revision=base_revision,
+        instruction="Build cover thumbnails",
+        state=attach_hashes(state),
+        changed=["thumbnails"],
+        status=project.status,
+        kind="system",
+    )
+
+
+def select_project_thumbnail(
+    db: Session,
+    project: Project,
+    variant_id: str,
+    *,
+    base_revision: int | None = None,
+) -> ProjectRevision:
+    state = copy.deepcopy(effective_revision_state(project))
+    thumbnails = state.get("thumbnails") or {}
+    variants = thumbnails.get("variants") or []
+    if not any(str(item.get("id")) == variant_id for item in variants if isinstance(item, dict)):
+        raise ValueError("Thumbnail variant not found.")
+    thumbnails["selected_variant_id"] = variant_id
+    state["thumbnails"] = thumbnails
+    return _append_revision(
+        db,
+        project,
+        base_revision=base_revision,
+        instruction="Select cover thumbnail",
+        state=attach_hashes(state),
+        changed=["thumbnails"],
+        status=project.status,
+        kind="user",
     )
 
 

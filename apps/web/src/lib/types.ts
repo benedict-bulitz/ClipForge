@@ -103,6 +103,20 @@ export type ProjectState = {
     error?: string;
     platforms: Partial<Record<"tiktok" | "instagram" | "youtube", { title?: string; description?: string; hashtags: string[]; manual?: boolean }>>;
   };
+  thumbnails?: {
+    status: "available" | "unavailable";
+    error?: string | null;
+    selected_variant_id?: string | null;
+    variants: Array<{
+      id: string;
+      platform: "tiktok" | "instagram" | "youtube";
+      url: string;
+      source_scene_id?: string;
+      text?: string;
+      width: number;
+      height: number;
+    }>;
+  };
   ai_review?: {
     status: "pending" | "passed" | "passed_with_warnings" | "needs_fix" | "failed" | "unavailable";
     provider?: string | null;

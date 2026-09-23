@@ -57,6 +57,7 @@ from .schemas import (
     SceneMediaCandidatesRead,
     SocialMetadataGenerate,
     SocialMetadataUpdate,
+    ThumbnailSelectionUpdate,
     VoicePreviewCreate,
     VoicePreviewRead,
 )
@@ -75,7 +76,9 @@ from .services import (
     plan_bulk_project_deletion,
     redo_project,
     regenerate_project_social_metadata,
+    regenerate_project_thumbnails,
     render_project,
+    select_project_thumbnail,
     serialize_project,
     undo_project,
     update_project_audio,
@@ -450,6 +453,45 @@ def render_project_route(
         ) from exc
     except RenderUnavailable as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    db.refresh(project)
+    return serialize_project(project)
+
+
+@app.post("/api/projects/{project_id}/thumbnails/generate", response_model=ProjectRead)
+def generate_project_thumbnails_route(
+    project_id: str,
+    payload: RenderCreate,
+    db: DbSession,
+    config: SettingsDep,
+) -> dict:
+    project = get_project(db, project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    try:
+        regenerate_project_thumbnails(db, project, config, base_revision=payload.base_revision)
+    except RevisionConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    db.refresh(project)
+    return serialize_project(project)
+
+
+@app.patch("/api/projects/{project_id}/thumbnails", response_model=ProjectRead)
+def select_project_thumbnail_route(
+    project_id: str,
+    payload: ThumbnailSelectionUpdate,
+    db: DbSession,
+) -> dict:
+    project = get_project(db, project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    try:
+        select_project_thumbnail(db, project, payload.variant_id, base_revision=payload.base_revision)
+    except RevisionConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     db.refresh(project)
     return serialize_project(project)
 

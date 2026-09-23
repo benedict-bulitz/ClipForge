@@ -195,6 +195,20 @@ export function generateProjectSocialMetadata(projectId: string, baseRevision: n
   });
 }
 
+export function generateProjectThumbnails(projectId: string, baseRevision: number) {
+  return request<Project>(`/projects/${projectId}/thumbnails/generate`, {
+    method: "POST",
+    body: JSON.stringify({ base_revision: baseRevision }),
+  });
+}
+
+export function selectProjectThumbnail(projectId: string, baseRevision: number, variantId: string) {
+  return request<Project>(`/projects/${projectId}/thumbnails`, {
+    method: "PATCH",
+    body: JSON.stringify({ base_revision: baseRevision, variant_id: variantId }),
+  });
+}
+
 export function listProjects() {
   return request<Project[]>("/projects", { cache: "no-store" });
 }

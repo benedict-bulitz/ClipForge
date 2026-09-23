@@ -41,6 +41,8 @@ import {
   updateProjectAudio,
   generateProjectSocialMetadata,
   updateProjectSocialMetadata,
+  generateProjectThumbnails,
+  selectProjectThumbnail,
   API_ORIGIN,
   listProjectMusicTracks,
   updateProjectMusicSelection,
@@ -455,6 +457,7 @@ export function ProjectWorkspace({
             </div>
 
             <SocialMetadata key={`${project.id}:${project.current_revision}`} project={project} busy={socialBusy} onChange={onProjectChange} setBusy={setSocialBusy} />
+            <ThumbnailControls key={`${project.id}:${project.current_revision}`} project={project} disabled={!!busy || sending} onChange={onProjectChange} />
 
             <div className="mt-8 border-b border-black/10">
               <nav className="flex gap-1 overflow-x-auto" aria-label="Project detail tabs">
@@ -629,6 +632,33 @@ function SocialMetadata({ project, busy, onChange, setBusy }: {
     {metadata?.status === "unavailable" && <p className="mt-3 text-sm text-[var(--muted-foreground)]">Hashtags derzeit nicht verfügbar. Du kannst es erneut versuchen.</p>}
     <div className="mt-4 grid gap-3 md:grid-cols-3">{(["tiktok", "instagram", "youtube"] as const).map((platform) => <div key={platform} className="rounded-xl border p-3"><div className="flex items-center justify-between"><strong className="text-sm">{{ tiktok: "TikTok", instagram: "Instagram", youtube: "YouTube" }[platform]}</strong><button className="interactive-text text-xs" onClick={() => void copy(`${drafts[platform].title}\n\n${drafts[platform].description}\n\n${drafts[platform].hashtags}`)}>Copy all</button></div><label className="mt-3 block text-[11px] font-semibold">Title <button className="float-right interactive-text font-normal" onClick={() => void copy(drafts[platform].title)}>Copy</button><input aria-label={`${platform} title`} value={drafts[platform].title} onChange={(event) => setDrafts((current) => ({ ...current, [platform]: { ...current[platform], title: event.target.value } }))} className="mt-1 w-full rounded-lg border bg-transparent p-2 text-xs outline-none" /></label><label className="mt-2 block text-[11px] font-semibold">Description <button className="float-right interactive-text font-normal" onClick={() => void copy(drafts[platform].description)}>Copy</button><textarea aria-label={`${platform} description`} value={drafts[platform].description} onChange={(event) => setDrafts((current) => ({ ...current, [platform]: { ...current[platform], description: event.target.value } }))} className="mt-1 min-h-16 w-full resize-y rounded-lg border bg-transparent p-2 text-xs outline-none" /></label><label className="mt-2 block text-[11px] font-semibold">Hashtags <button className="float-right interactive-text font-normal" onClick={() => void copy(drafts[platform].hashtags)}>Copy</button><textarea aria-label={`${platform} hashtags`} value={drafts[platform].hashtags} onChange={(event) => setDrafts((current) => ({ ...current, [platform]: { ...current[platform], hashtags: event.target.value } }))} className="mt-1 min-h-16 w-full resize-y rounded-lg border bg-transparent p-2 text-xs outline-none" placeholder="#Hashtags" /></label><button className="mt-2 text-xs text-[#d94c20]" disabled={busy} onClick={() => void regenerate(platform)}>Neu generieren</button></div>)}</div>
     <div className="mt-4 flex items-center gap-3"><Button size="sm" disabled={busy} onClick={() => void save()}>Metadaten speichern</Button>{feedback && <span role="status" className="text-xs text-[var(--muted-foreground)]">{feedback}</span>}</div>
+  </section>;
+}
+
+function ThumbnailControls({ project, disabled, onChange }: { project: Project; disabled: boolean; onChange: (project: Project) => void }) {
+  const thumbnails = project.revision.state.thumbnails;
+  const [busy, setBusy] = useState(false);
+  const [feedback, setFeedback] = useState<string | null>(null);
+  async function generate() {
+    setBusy(true); setFeedback(null);
+    try { onChange(await generateProjectThumbnails(project.id, project.current_revision)); }
+    catch (reason) { setFeedback(reason instanceof Error ? reason.message : "Cover konnte nicht erstellt werden."); }
+    finally { setBusy(false); }
+  }
+  async function select(variantId: string) {
+    setBusy(true); setFeedback(null);
+    try { onChange(await selectProjectThumbnail(project.id, project.current_revision, variantId)); }
+    catch (reason) { setFeedback(reason instanceof Error ? reason.message : "Cover konnte nicht ausgewählt werden."); }
+    finally { setBusy(false); }
+  }
+  return <section className="mt-8 rounded-[20px] border p-5" aria-label="Cover thumbnails">
+    <div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="font-semibold">Cover</h2><p className="mt-1 text-xs text-[var(--muted-foreground)]">Projektbezogene Varianten für Shorts, TikTok und Reels.</p></div><Button size="sm" variant="outline" disabled={disabled || busy} onClick={() => void generate()}>{busy ? <LoaderCircle className="size-3.5 animate-spin" /> : <RefreshCw className="size-3.5" />}{thumbnails?.status === "available" ? "Neu erstellen" : "Cover erstellen"}</Button></div>
+    {thumbnails?.status === "unavailable" && <p className="mt-3 text-sm text-[var(--muted-foreground)]">{thumbnails.error ?? "Keine geeigneten Projektbilder verfügbar."}</p>}
+    {thumbnails?.variants?.length ? <div className="mt-4 grid grid-cols-3 gap-3">{thumbnails.variants.map((variant) => <button key={variant.id} type="button" disabled={disabled || busy} onClick={() => void select(variant.id)} className={cn("overflow-hidden rounded-xl border-2 text-left transition", thumbnails.selected_variant_id === variant.id ? "border-[#ff6838] ring-2 ring-[#ff6838]/20" : "border-transparent hover:border-black/20")} aria-label={`Select ${variant.platform} cover`}>
+      {/* Runtime API media is intentionally not routed through next/image's remote loader. */}
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img src={mediaUrl(variant.url) ?? ""} alt={variant.text ?? "Project cover"} className="aspect-[9/16] w-full object-cover" /><span className="block px-2 py-2 text-[10px] font-bold uppercase tracking-[.08em]">{variant.platform}{thumbnails.selected_variant_id === variant.id ? " · selected" : ""}</span></button>)}</div> : null}
+    {feedback && <p role="status" className="mt-3 text-xs text-[var(--muted-foreground)]">{feedback}</p>}
   </section>;
 }
 

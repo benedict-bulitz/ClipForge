@@ -79,6 +79,11 @@ class ProjectCreate(BaseModel):
         return " ".join(value.split()) if isinstance(value, str) else value
 
 
+class ThumbnailSelectionUpdate(BaseModel):
+    base_revision: int
+    variant_id: str = Field(min_length=1, max_length=160)
+
+
 class GenerationJobRead(BaseModel):
     id: str
     project_id: str
