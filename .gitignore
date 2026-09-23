@@ -89,6 +89,7 @@ dist/
 coverage/
 projects/
 apps/api/music-library/cache/
+.clipforge-runtime/
 !apps/web/src/app/projects/
 apps/web/src/app/projects/*
 !apps/web/src/app/projects/[[]id[]]/
