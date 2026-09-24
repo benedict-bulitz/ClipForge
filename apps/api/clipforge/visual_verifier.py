@@ -26,6 +26,7 @@ PRESENTATION_RISK_MARGIN = 0.01
 MAX_IMAGE_CACHE = 128
 MAX_TEXT_CACHE = 64
 MAX_VERIFY_VIDEO_BYTES = 40 * 1024 * 1024
+THUMBNAIL_VISUAL_SHORTLIST = 5
 
 
 @dataclass(frozen=True)
@@ -41,6 +42,11 @@ class VisualVerification:
     photographic_score: float | None = None
     diagram_score: float | None = None
     presentation_risk: bool = False
+    primary_visual_score: float | None = None
+    secondary_visual_score: float | None = None
+    context_visual_score: float | None = None
+    visual_margin: float | None = None
+    confidence: str = "low"
 
 
 class VisualPromptSet(list[str]):
@@ -294,6 +300,41 @@ class OpenClipVisualVerifier:
 
     def score_video_file(self, path: Path, texts: list[str], *, asset_identity: str | None = None) -> VisualVerification:
         return self.score_video_frames(self._extract_frames(path), texts, asset_identity=asset_identity or str(path))
+
+    def verify_thumbnail_image(
+        self,
+        path: Path,
+        *,
+        primary_texts: list[str],
+        secondary_texts: list[str] | None = None,
+        context_texts: list[str] | None = None,
+        asset_identity: str | None = None,
+    ) -> VisualVerification:
+        """Compare one thumbnail image with subject and context concepts."""
+        try:
+            image = Image.open(path).convert("RGB")
+            identity = asset_identity or str(path)
+            primary = self.score_image(image, primary_texts, asset_identity=f"{identity}:primary") if primary_texts else None
+            secondary = self.score_image(image, secondary_texts or [], asset_identity=f"{identity}:secondary") if secondary_texts else None
+            context = self.score_image(image, context_texts or [], asset_identity=f"{identity}:context") if context_texts else None
+            subject_scores = [score for score in (primary, secondary) if score is not None]
+            subject = max(subject_scores, default=None)
+            margin = round(subject - context, 6) if subject is not None and context is not None else None
+            confidence = "high" if margin is not None and margin >= 0.08 else "medium" if margin is not None and margin >= 0.05 else "low"
+            return VisualVerification(
+                subject,
+                "verified",
+                "local_thumbnail",
+                subject_score=subject,
+                scene_score=subject,
+                primary_visual_score=primary,
+                secondary_visual_score=secondary,
+                context_visual_score=context,
+                visual_margin=margin,
+                confidence=confidence,
+            )
+        except (OSError, ValueError, RuntimeError, TypeError):
+            return VisualVerification(None, "unavailable_image", "local_thumbnail")
 
     def verify_candidate(self, candidate: Any, texts: list[str]) -> VisualVerification:
         if str(getattr(candidate, "kind", "photo")) == "video" and getattr(candidate, "verification_url", ""):

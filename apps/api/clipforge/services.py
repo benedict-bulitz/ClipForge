@@ -673,7 +673,16 @@ def regenerate_project_thumbnails(
     base_revision: int | None = None,
 ) -> ProjectRevision:
     state = copy.deepcopy(effective_revision_state(project))
-    state["thumbnails"] = build_project_thumbnails(state, project.id, settings)
+    previous = state.get("thumbnails") if isinstance(state.get("thumbnails"), dict) else {}
+    previous_selection = previous.get("selected_variant_id")
+    thumbnails = build_project_thumbnails(state, project.id, settings)
+    if previous_selection and any(
+        str(item.get("id")) == str(previous_selection)
+        for item in thumbnails.get("variants", [])
+        if isinstance(item, dict)
+    ):
+        thumbnails["selected_variant_id"] = previous_selection
+    state["thumbnails"] = thumbnails
     return _append_revision(
         db,
         project,

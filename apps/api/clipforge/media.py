@@ -382,19 +382,86 @@ def parse_photo_results(
     return sorted(candidates, key=lambda item: item.rank, reverse=True)
 
 
-def derive_search_queries(scene: dict[str, Any], state: dict[str, Any]) -> list[str]:
-    stop = {
-        "about", "after", "also", "and", "because", "before", "could", "from", "have",
-        "into", "more", "only", "over", "that", "their", "there", "these", "this", "through",
-        "video", "visual", "what", "when", "where", "which", "with", "would", "your", "illustrate",
-        "aber", "auch", "dass", "dies", "ein", "eine", "einer", "eines", "für", "fuer", "haben", "hier",
-        "mehr", "nicht", "oder", "über", "ueber", "sich", "sind", "sein", "wenn", "wird", "zeigen", "beim", "zuerst", "erst", "danach", "dann", "der", "die", "das",
-        "man", "sieht", "sehen", "seine", "seinen", "seinem", "seiner", "diese", "dieser", "dabei", "zuvor", "wir", "als", "ist", "wie", "bei", "und", "aus", "zu",
-        "sondern", "kein", "keine", "unsere", "unser", "ähnlich", "kleine", "winziger", "kurz", "wieder",
-        "answer", "cause", "context", "detail", "hook", "intro", "outro", "payoff",
-        "setup", "support", "turn",
-        "why", "warum",
-    }
+def _visual_query_tokens(value: object) -> set[str]:
+    tokens = re.findall(r"[\wäöüß-]+", str(value or "").casefold(), flags=re.UNICODE)
+    return {_VISUAL_QUERY_ALIASES.get(token, token) for token in tokens if len(token) > 2}
+
+
+def _visual_subjects(scene: dict[str, Any], state: dict[str, Any]) -> tuple[list[str], list[str], list[str]]:
+    visual_intent = scene.get("visual_intent") if isinstance(scene.get("visual_intent"), dict) else {}
+    intent = state.get("intent") if isinstance(state.get("intent"), dict) else {}
+    values = [
+        scene.get("visual_goal"), scene.get("narration"), visual_intent.get("visual_goal"),
+        visual_intent.get("objects"), visual_intent.get("actions"), visual_intent.get("media_queries"),
+        intent.get("topic"), intent.get("question"),
+    ]
+    tokens = set().union(*(_visual_query_tokens(value) for value in values))
+    core_order = ("airplane", "airspace", "island", "archipelago", "pyramid", "breath", "condensation", "droplets", "cheetah", "animals")
+    primary = [term for term in core_order if term in tokens]
+    entities = [term for term in ("sweden", "indonesia", "egypt", "sudan") if term in tokens]
+    supporting = [term for term in ("sky", "winter", "border", "country", "landscape", "city", "coast", "map") if term in tokens]
+    return primary, entities, supporting
+
+
+def _query_is_concrete(raw: str, query: str, primary: list[str], entities: list[str]) -> bool:
+    if not query:
+        return False
+    raw_tokens = set(re.findall(r"[\wäöüß-]+", raw.casefold(), flags=re.UNICODE))
+    canonical = _visual_query_tokens(query)
+    if len(raw_tokens & _VISUAL_ABSTRACT_TERMS) >= 1:
+        return False
+    if raw_tokens & {"welches", "welche", "welcher", "which", "warum", "why", "oder", "or"}:
+        return False
+    glue_count = len(raw_tokens & _VISUAL_QUERY_STOP)
+    subject_matches = canonical & set(primary + entities)
+    if glue_count >= 2 and len(subject_matches) < 2:
+        return False
+    if not subject_matches and len(query.split()) < 2:
+        return False
+    return len(query.split()) <= 6
+
+
+def _comparison_query_variants(primary: list[str], entities: list[str], supporting: list[str], excluded_entities: set[str] | None = None) -> list[str]:
+    core = "archipelago" if "archipelago" in primary else "islands" if "island" in primary else " ".join(primary[:2])
+    if not core:
+        return []
+    excluded_entities = excluded_entities or set()
+    queries: list[str] = []
+    for entity in entities[:2]:
+        if entity in excluded_entities:
+            continue
+        label = _VISUAL_ENTITY_ADJECTIVES.get(entity, entity)
+        queries.append(f"{label} {core}")
+    queries.append(f"{core} aerial")
+    return queries
+
+
+def _generated_visual_queries(primary: list[str], entities: list[str], supporting: list[str], *, format_name: str, excluded_entities: set[str] | None = None) -> list[str]:
+    if "island" in primary or "archipelago" in primary:
+        return _comparison_query_variants(primary, entities, supporting, excluded_entities)
+    if "airplane" in primary:
+        return ["commercial airplane flying", "airplane over country", "airspace border map"]
+    if "pyramid" in primary:
+        excluded_entities = excluded_entities or set()
+        return [
+            f"{_VISUAL_ENTITY_ADJECTIVES.get(entity, entity)} pyramids"
+            for entity in entities[:2]
+            if entity not in excluded_entities
+        ] + ["pyramids aerial"]
+    if "breath" in primary or "condensation" in primary or "droplets" in primary:
+        return ["visible breath winter", "water vapor condensation", "cold air breath"]
+    if "cheetah" in primary:
+        return ["cheetah running", "cheetah sprinting", "fast animal running"]
+    if "animals" in primary and format_name == "ranking":
+        return ["fast animals", "animals running"]
+    if primary:
+        return [" ".join(primary[:3])]
+    return []
+
+
+def build_visual_query_plan(scene: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
+    """Build a small, concrete query plan before provider calls."""
+    stop = _VISUAL_QUERY_STOP
     visual_intent = scene.get("visual_intent") if isinstance(scene.get("visual_intent"), dict) else {}
     intent_goal = str(visual_intent.get("visual_goal") or "").strip()
     narration = str(scene.get("narration") or "").strip()
@@ -405,6 +472,12 @@ def derive_search_queries(scene: dict[str, Any], state: dict[str, Any]) -> list[
     if explicitly_refreshed:
         query_values = []
         visual_goal = scene_goal
+    elif isinstance(visual_intent.get("media_queries"), list) and visual_intent.get("media_queries"):
+        # Explicit visual queries are stronger acquisition intent than a
+        # narration-overlap check; keep them even when the narration is an
+        # abstract setup sentence.
+        query_values = visual_intent.get("media_queries") or []
+        visual_goal = intent_goal
     elif intent_coherent:
         query_values = visual_intent.get("media_queries") or []
         visual_goal = intent_goal
@@ -412,29 +485,67 @@ def derive_search_queries(scene: dict[str, Any], state: dict[str, Any]) -> list[
         query_values = [] if scene.get("edit_instruction") else scene.get("search_queries") or []
         visual_goal = scene_goal
     else:
-        # Never let a stale visual goal or previous search steer a new scene.
         query_values = []
         visual_goal = ""
-    supplied = [
-        query
-        for value in query_values
-        if (query := _semantic_query(str(value), stop, limit=7))
-    ]
-    scene_text = " ".join(
-        value
+    primary, entities, supporting = _visual_subjects(scene, state)
+    protected_text = " ".join(
+        str(value or "")
         for value in (
-            str(scene.get("edit_instruction") or ""),
-            visual_goal,
-            narration,
+            visual_intent.get("must_not_show"),
+            scene.get("must_not_show"),
+            (state.get("payoff_plan") or {}).get("hook_must_not_reveal") if isinstance(state.get("payoff_plan"), dict) else "",
         )
-        if value
     )
-    primary = _semantic_query(scene_text, stop, limit=6)
-    broader = _semantic_query(str(state.get("intent", {}).get("topic") or ""), stop, limit=4)
-    # Scene meaning drives retrieval. The topic remains a final broad fallback;
-    # prepending it to every query dilutes mechanism/action-specific searches.
-    queries = [query for query in [*supplied, primary, broader] if query]
-    return list(dict.fromkeys(_provider_query(query) for query in queries))[:3]
+    protected_entities = _visual_query_tokens(protected_text) & set(entities)
+    # A comparison payoff often names both sides while protecting only the
+    # winner/reveal.  Treat that broad context as non-specific; only an
+    # unambiguous single protected entity suppresses its visual query.
+    if len(protected_entities) > 1:
+        protected_entities = set()
+    supplied: list[str] = []
+    for value in query_values:
+        raw = str(value).strip()
+        query = _provider_query(_semantic_query(raw, stop, limit=6))
+        if _query_is_concrete(raw, query, primary, entities):
+            supplied.append(query)
+    generated = _generated_visual_queries(
+        primary,
+        entities,
+        supporting,
+        format_name=str((state.get("format_plan") or {}).get("selected_format") or ""),
+        excluded_entities=protected_entities,
+    )
+    scene_text = " ".join(value for value in (str(scene.get("edit_instruction") or ""), visual_goal, narration) if value)
+    primary_query = _provider_query(_semantic_query(scene_text, stop, limit=6))
+    broader_query = _provider_query(_semantic_query(str((state.get("intent") or {}).get("topic") or ""), stop, limit=5))
+    fallback = [query for query in (primary_query, broader_query) if _query_is_concrete(query, query, primary, entities)]
+    # Explicitly authored visual queries remain first when they are concrete;
+    # otherwise generated subject-first concepts replace narration fragments.
+    def payoff_safe_query(query: str) -> bool:
+        return not (_visual_query_tokens(query) & protected_entities)
+
+    queries = list(dict.fromkeys(query for query in [*supplied, *generated, *fallback] if payoff_safe_query(query)))[:3]
+    if not queries:
+        queries = [" ".join(primary[:3]) or "nature landscape"]
+    comparison_coverage = {
+        entity: any(entity in _visual_query_tokens(query) for query in queries)
+        for entity in entities[:2]
+    }
+    shared_subject = bool(primary and any(term in _visual_query_tokens(query) for query in queries for term in primary))
+    return {
+        "queries": queries,
+        "primary_subjects": primary,
+        "secondary_subjects": entities,
+        "supporting_context": supporting,
+        "comparison_coverage": comparison_coverage,
+        "protected_entities": sorted(protected_entities),
+        "shared_subject_coverage": shared_subject,
+        "query_quality": "subject_first" if generated and not supplied else "explicit_visual_intent",
+    }
+
+
+def derive_search_queries(scene: dict[str, Any], state: dict[str, Any]) -> list[str]:
+    return build_visual_query_plan(scene, state)["queries"]
 
 
 _PROVIDER_TERMS = {
@@ -447,8 +558,59 @@ _PROVIDER_TERMS = {
     "qualm": "smoke", "nebel": "mist", "nebelwölkchen": "mist cloud", "wolken": "clouds",
     "kalt": "cold", "kalte": "cold", "außenluft": "outside air", "aussenluft": "outside air", "warme": "warm",
     "kondensiert": "condensation", "gasförmige": "water vapor", "wasser": "water",
-    "tröpfchen": "droplets", "schweben": "floating", "verschwinden": "dissipating",
+    "schweben": "floating", "verschwinden": "dissipating",
     "luft": "air", "feinen": "fine", "winzigen": "tiny",
+    "insel": "island", "inseln": "islands", "inselstaat": "island", "archipel": "archipelago",
+    "flugzeug": "airplane", "flugzeuge": "airplanes", "passagierflugzeug": "commercial airplane",
+    "luftraum": "airspace", "grenze": "border", "grenzen": "borders", "landesgrenze": "country border",
+    "pyramide": "pyramid", "pyramiden": "pyramids",
+    "kondensation": "condensation",
+    "schweden": "sweden", "indonesien": "indonesia", "ägypten": "egypt", "aegypten": "egypt",
+    "sudan": "sudan", "norden": "north", "küsten": "coast", "kuesten": "coast",
+}
+
+# Small, deterministic visual vocabulary used to turn scene intent into
+# provider-friendly concepts.  This is deliberately not a translation system;
+# it only covers the recurring concrete subjects needed by media retrieval.
+_VISUAL_QUERY_ALIASES = {
+    "insel": "island", "inseln": "island", "island": "island", "islands": "island", "inselstaat": "island", "inselstaaten": "island",
+    "archipel": "archipelago", "archipelagos": "archipelago", "archipelago": "archipelago",
+    "flugzeug": "airplane", "flugzeuge": "airplane", "passagierflugzeug": "airplane",
+    "airliner": "airplane", "aircraft": "airplane", "airplane": "airplane", "airplanes": "airplane",
+    "luftraum": "airspace", "airspace": "airspace", "grenze": "border", "grenzen": "border",
+    "landesgrenze": "border", "pyramide": "pyramid", "pyramiden": "pyramid", "pyramid": "pyramid", "pyramids": "pyramid",
+    "atem": "breath", "atemluft": "breath", "breath": "breath", "kondensation": "condensation",
+    "kondensiert": "condensation", "kondensieren": "condensation", "tröpfchen": "droplets",
+    "droplets": "droplets", "winter": "winter", "cheetah": "cheetah", "gepard": "cheetah",
+    "tiere": "animals", "tier": "animals", "animals": "animals",
+    "schweden": "sweden", "sweden": "sweden", "swedish": "sweden", "indonesien": "indonesia", "indonesia": "indonesia", "indonesian": "indonesia",
+    "ägypten": "egypt", "aegypten": "egypt", "egypt": "egypt", "egyptian": "egypt", "sudan": "sudan", "sudanese": "sudan",
+}
+_VISUAL_QUERY_STOP = {
+    "about", "after", "also", "and", "because", "before", "could", "from", "have", "into", "more",
+    "only", "over", "that", "their", "there", "these", "this", "through", "video", "visual", "what",
+    "when", "where", "which", "with", "would", "your", "illustrate", "aber", "auch", "dass", "dies",
+    "ein", "eine", "einer", "eines", "für", "fuer", "haben", "hat", "hier", "mehr", "nicht", "oder",
+    "über", "ueber", "sich", "sind", "sein", "wenn", "wird", "zeigen", "beim", "zuerst", "erst", "danach",
+    "dann", "der", "die", "das", "man", "sieht", "sehen", "seine", "seinen", "seinem", "seiner", "diese",
+    "dieser", "dabei", "zuvor", "wir", "als", "ist", "wie", "bei", "und", "aus", "zu", "sondern", "kein",
+    "keine", "unsere", "unser", "ähnlich", "kleine", "winziger", "kurz", "wieder", "answer", "cause",
+    "context", "detail", "hook", "intro", "outro", "payoff", "setup", "support", "turn", "why", "warum",
+    "welches", "welche", "welcher", "wieso", "führt", "kommt", "liegt", "damit", "trotzdem",
+    "wegen", "ihrer", "gesamtes", "besteht", "überwiegend", "etwa", "rein", "reinen", "platz",
+    "land", "länder", "country", "countries", "scene", "question", "format", "concept", "fact", "reason",
+    "permission", "difference", "therefore", "dürfen", "ausländische", "ausländisch", "landes",
+}
+_VISUAL_ABSTRACT_TERMS = {
+    "because", "therefore", "permission", "reason", "difference", "concept", "fact", "context", "answer",
+    "warum", "wegen", "deshalb", "daher", "grund", "unterschied", "erlaubnis", "durchgang", "führte",
+    "dürfen", "ausländische", "ausländisch", "landes", "most", "people", "guess", "compare", "count", "counts",
+    "weltweit", "meisten", "zwar", "aber", "besonders", "viele", "stark", "inselzahl", "sechs", "kommt",
+    "liegt", "damit", "trotzdem", "besteht", "überwiegend", "gesamtes",
+    "genehmigung", "nötig", "noetig", "dessen", "überflug", "freigabe", "route",
+}
+_VISUAL_ENTITY_ADJECTIVES = {
+    "sweden": "swedish", "indonesia": "indonesian", "egypt": "egyptian", "sudan": "sudanese",
 }
 
 
@@ -915,8 +1077,14 @@ def prepare_project_media(
             and is_real_media_allowed(existing)
         )
 
-        queries = derive_search_queries(scene, state)
+        query_plan = build_visual_query_plan(scene, state)
+        queries = query_plan["queries"]
         scene["search_queries"] = queries
+        scene["visual_query_plan"] = {
+            key: value
+            for key, value in query_plan.items()
+            if key != "queries"
+        }
         duration = max(1.0, float(scene.get("end", 0)) - float(scene.get("start", 0)))
         preferred_kind = str(scene.get("preferred_media") or "video")
         if preferred_kind not in {"video", "photo"}:

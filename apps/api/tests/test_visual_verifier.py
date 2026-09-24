@@ -1,5 +1,11 @@
+from PIL import Image
+
 from clipforge.media import MediaCandidate, media_relevance, verify_media_shortlist
-from clipforge.visual_verifier import UnavailableVisualVerifier, VisualVerification
+from clipforge.visual_verifier import (
+    OpenClipVisualVerifier,
+    UnavailableVisualVerifier,
+    VisualVerification,
+)
 
 
 def candidate(
@@ -189,3 +195,28 @@ def test_visual_diagram_signal_does_not_trigger_blanket_rejection():
     )
 
     assert rows[0][1]["confidence"] in {"high", "acceptable"}
+
+
+def test_thumbnail_image_verification_reports_subject_context_margin(tmp_path, monkeypatch):
+    image_path = tmp_path / "candidate.jpg"
+    Image.new("RGB", (128, 128), "blue").save(image_path)
+    verifier = OpenClipVisualVerifier()
+
+    def fake_score(_image, texts, *, asset_identity):
+        if asset_identity.endswith(":context"):
+            return 0.18
+        return 0.34 if "island" in " ".join(texts) else 0.29
+
+    monkeypatch.setattr(verifier, "score_image", fake_score)
+    result = verifier.verify_thumbnail_image(
+        image_path,
+        primary_texts=["a photo of islands"],
+        secondary_texts=["a photo of Sweden"],
+        context_texts=["a generic tropical road"],
+        asset_identity="candidate",
+    )
+    assert result.status == "verified"
+    assert result.primary_visual_score == 0.34
+    assert result.context_visual_score == 0.18
+    assert result.visual_margin == 0.16
+    assert result.confidence == "high"

@@ -6,7 +6,12 @@ from types import SimpleNamespace
 import pytest
 
 from clipforge.config import Settings
-from clipforge.media import MediaCandidate, derive_search_queries, media_relevance
+from clipforge.media import (
+    MediaCandidate,
+    build_visual_query_plan,
+    derive_search_queries,
+    media_relevance,
+)
 from clipforge.media_candidates import (
     CandidateError,
     clear_candidate_sets,
@@ -277,6 +282,68 @@ def test_german_scene_queries_are_provider_friendly():
     scene = {"narration": "Beim Hausbau wird zuerst das Fundament gegossen.", "visual_goal": "Hausbau Fundament"}
     queries = derive_search_queries(scene, {"intent": {"topic": "Hausbau"}})
     assert any("foundation" in query and "construction" in query for query in queries)
+
+
+def test_narration_fragment_is_replaced_by_primary_subject_queries():
+    state = {
+        "intent": {
+            "topic": "Which country has more islands, Sweden or Indonesia?",
+            "question": "Which country has more islands, Sweden or Indonesia?",
+        },
+        "format_plan": {"selected_format": "comparison"},
+    }
+    scene = {
+        "narration": "Beim Inselzählen führt nicht Indonesien.",
+        "visual_goal": "clear ordinal progression",
+        "visual_intent": {"media_queries": ["Welches Land hat mehr Inseln – Schweden oder Indonesien?"]},
+    }
+
+    queries = derive_search_queries(scene, state)
+
+    assert queries == ["swedish islands", "indonesian islands", "islands aerial"]
+    assert all("welches" not in query and "führt" not in query for query in queries)
+
+
+def test_comparison_query_plan_covers_both_subjects_and_shared_islands():
+    state = {"intent": {"topic": "Sweden vs Indonesia islands", "question": "Sweden or Indonesia: which has more islands?"}}
+    plan = build_visual_query_plan({"narration": "Compare the island counts."}, state)
+
+    assert plan["primary_subjects"] == ["island"]
+    assert plan["comparison_coverage"] == {"sweden": True, "indonesia": True}
+    assert plan["shared_subject_coverage"] is True
+    assert len(plan["queries"]) <= 3
+
+
+def test_protected_comparison_subject_is_not_used_for_setup_query():
+    state = {
+        "intent": {"topic": "Egypt or Sudan pyramids", "question": "Which has more pyramids, Egypt or Sudan?"},
+        "payoff_plan": {"hook_must_not_reveal": "Sudan"},
+    }
+    scene = {
+        "narration": "Most people guess Egypt.",
+        "visual_intent": {"media_queries": ["Egypt or Sudan pyramids"], "must_not_show": ["Sudan"]},
+    }
+
+    queries = derive_search_queries(scene, state)
+
+    assert all("sudan" not in query for query in queries)
+    assert any("pyramid" in query for query in queries)
+
+
+def test_explanation_and_ranking_queries_name_depictable_subjects():
+    explanation = {
+        "intent": {"topic": "Why does breath turn white in winter?"},
+        "format_plan": {"selected_format": "explanation"},
+    }
+    ranking = {
+        "intent": {"topic": "Fastest animals", "question": "Top fastest animals"},
+        "format_plan": {"selected_format": "ranking"},
+    }
+    breath_scene = {"narration": "Water vapor condenses in cold air.", "visual_goal": "visible breath in winter"}
+    cheetah_scene = {"narration": "The cheetah is the fastest land animal.", "visual_goal": "cheetah running"}
+
+    assert derive_search_queries(breath_scene, explanation)[0] == "visible breath winter"
+    assert "cheetah running" in derive_search_queries(cheetah_scene, ranking)
 
 
 def test_exact_scene_relevance_beats_generic_topic_relevance():
