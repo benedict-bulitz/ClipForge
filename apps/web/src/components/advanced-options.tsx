@@ -38,7 +38,7 @@ export function AdvancedOptions({ value, onChange, prompt, onReset, queueToggle 
       <SettingsGroup icon={<Music2 className="size-4" />} title="Music" description="A locally generated original tone bed is mixed under narration."><div className="settings-grid">
         <Toggle label="Music bed" checked={Boolean(value.music_enabled)} onChange={(next) => update("music_enabled", next)} />
         <Select disabled={!value.music_enabled} label="Mood" value={String(value.music_mood)} onChange={(next) => update("music_mood", next)} options={[["ambient", "Ambient"], ["documentary", "Documentary"], ["tech", "Tech"], ["cinematic", "Cinematic"]]} />
-        <Range disabled={!value.music_enabled} label={`Volume · ${Math.round(Number(value.music_volume) * 100)}%`} min={0} max={0.5} step={0.01} value={Number(value.music_volume)} onChange={(next) => update("music_volume", next)} />
+        <Range disabled={!value.music_enabled} label={`Volume · ${Math.round(Number(value.music_volume) * 100)}%`} min={0} max={1} step={0.01} value={Number(value.music_volume)} onChange={(next) => update("music_volume", next)} />
         <Toggle disabled={!value.music_enabled} label="Lower under narration" checked={Boolean(value.music_ducking)} onChange={(next) => update("music_ducking", next)} />
         <Toggle disabled={!value.music_enabled} label="Fade in and out" checked={Boolean(value.music_fades)} onChange={(next) => update("music_fades", next)} />
       </div></SettingsGroup>

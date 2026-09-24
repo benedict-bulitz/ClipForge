@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { ArrowLeft, LoaderCircle } from "lucide-react";
 import { ApiError, deleteProject, getProject, getProjectGenerationJob } from "@/lib/api";
@@ -10,6 +11,7 @@ import { ProjectWorkspace } from "./project-workspace";
 import { Button } from "./ui/button";
 
 export function ProjectPage({ projectId }: { projectId: string }) {
+  const router = useRouter();
   const [project, setProject] = useState<Project | null>(null);
   const [job, setJob] = useState<GenerationJob | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -44,7 +46,7 @@ export function ProjectPage({ projectId }: { projectId: string }) {
 
   async function confirmDelete() {
     setDeleting(true);
-    try { await deleteProject(projectId); window.location.assign("/"); }
+    try { await deleteProject(projectId); router.push("/"); }
     catch (reason) { setError(reason instanceof Error ? reason.message : "Projekt konnte nicht gelöscht werden."); setDeleteOpen(false); setDeleting(false); }
   }
 

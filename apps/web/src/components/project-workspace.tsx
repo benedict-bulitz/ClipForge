@@ -46,6 +46,8 @@ import {
   API_ORIGIN,
   listProjectMusicTracks,
   updateProjectMusicSelection,
+  musicVolumeGain,
+  musicDisplayName,
 } from "@/lib/api";
 import type { ChatMessage, MusicTrack, Project, Readiness, Scene, Source, SceneMediaCandidates } from "@/lib/types";
 import { Brand } from "./brand";
@@ -55,10 +57,11 @@ import { cn } from "@/lib/utils";
 
 type Tab = "overview" | "script" | "scenes" | "sources";
 
-function AudioControls({ project, disabled, onDirty, onSave }: {
+function AudioControls({ project, disabled, onDirty, onMusicVolumeChange, onSave }: {
   project: Project;
   disabled: boolean;
   onDirty: () => void;
+  onMusicVolumeChange: (volume: number) => void;
   onSave: (audio: { voice_volume: number; music_volume: number; music_enabled: boolean }) => Promise<void>;
 }) {
   const state = project.revision.state;
@@ -67,14 +70,14 @@ function AudioControls({ project, disabled, onDirty, onSave }: {
   const [enabled, setEnabled] = useState(state.music.enabled ?? false);
   const [dirty, setDirty] = useState(false);
   const changed = () => { setDirty(true); onDirty(); };
-  return <fieldset disabled={disabled} className="mt-4 space-y-3 rounded-xl border p-4 text-sm">
+  return <fieldset disabled={disabled} className="workspace-card mt-4 space-y-3 p-4 text-sm">
     <legend className="px-1 font-semibold">Audio</legend>
     <label className="block">Voice · {Math.round(voice * 100)}%
       <input aria-label="Voice volume" type="range" min="0" max="1" step="0.01" value={voice} className="block w-full" onChange={(e) => { setVoice(Number(e.target.value)); changed(); }} />
     </label>
     <p>Music · {state.music.track?.title ?? "No selected track"}</p>
     <label className="block">Music volume · {Math.round(music * 100)}%
-      <input aria-label="Music volume" type="range" min="0" max="0.5" step="0.01" value={music} className="block w-full" onChange={(e) => { setMusic(Number(e.target.value)); changed(); }} />
+      <input aria-label="Music volume" type="range" min="0" max="1" step="0.01" value={music} className="block w-full" onChange={(e) => { const value = Number(e.target.value); setMusic(value); onMusicVolumeChange(value); changed(); }} />
     </label>
     <label className="flex items-center gap-2"><input type="checkbox" checked={!enabled} disabled={!state.music.track} onChange={(e) => { setEnabled(!e.target.checked); changed(); }} />No music</label>
     <Button size="sm" disabled={!dirty || disabled} onClick={() => void onSave({ voice_volume: voice, music_volume: music, music_enabled: enabled })}>{disabled ? "Saving audio…" : "Save audio"}</Button>
@@ -82,7 +85,7 @@ function AudioControls({ project, disabled, onDirty, onSave }: {
   </fieldset>;
 }
 
-function MusicControls({ project, disabled, onChange }: { project: Project; disabled: boolean; onChange: (project: Project) => void }) {
+function MusicControls({ project, disabled, onChange, onPreview }: { project: Project; disabled: boolean; onChange: (project: Project) => void; onPreview: () => void }) {
   type Mode = "ai_matched" | "all_music";
   const music = project.revision.state.music;
   const [mode, setMode] = useState<Mode>(music.selection?.mode === "automatic" || music.selection?.mode === "ai_matched" ? "ai_matched" : "all_music");
@@ -92,6 +95,7 @@ function MusicControls({ project, disabled, onChange }: { project: Project; disa
   const [loading, setLoading] = useState(false);
   const [feedback, setFeedback] = useState<string | null>(null);
   const previewUrl = music.track?.id ? `${API_ORIGIN}/api/music/tracks/${encodeURIComponent(music.track.id)}/preview` : null;
+  const currentTrackName = musicDisplayName(music.track?.title ?? "No track selected");
 
   async function load(nextMode: Mode) {
     setMode(nextMode); setLoading(true); setFeedback(null);
@@ -103,11 +107,11 @@ function MusicControls({ project, disabled, onChange }: { project: Project; disa
     try { onChange(await updateProjectMusicSelection(project.id, musicRevision, trackId, mode)); setOpen(false); }
     catch { setFeedback("Musik konnte nicht ausgewählt werden."); } finally { setLoading(false); }
   }
-  return <section className="mt-4 rounded-xl border p-4 text-sm" aria-label="Background music">
-    <div className="flex flex-wrap items-center justify-between gap-2"><div><h2 className="font-semibold">Background music</h2><p className="mt-1 text-xs text-[var(--muted-foreground)]">{music.track?.title ?? "No track selected"}</p></div><Button size="sm" variant="outline" disabled={disabled || loading} onClick={() => { setOpen((value) => !value); if (!open) void load(mode); }}>Change music</Button></div>
-    {previewUrl && <audio className="mt-3 w-full" controls preload="none" src={previewUrl}>Track preview unavailable.</audio>}
+  return <section className="workspace-card mt-4 p-4 text-sm" aria-label="Background music" aria-busy={loading}>
+    <div className="flex flex-wrap items-center justify-between gap-2"><div className="min-w-0"><h2 className="font-semibold">Background music</h2><p className="mt-1 truncate text-xs text-[var(--muted-foreground)]" title={currentTrackName} tabIndex={0} aria-label={`Current music track: ${currentTrackName}`}>{currentTrackName}</p></div><Button type="button" size="sm" variant="outline" disabled={disabled || loading} aria-expanded={open} aria-controls="music-track-list" onClick={() => { setOpen((value) => !value); if (!open) void load(mode); }}>Change music</Button></div>
+    {previewUrl && <><Button type="button" size="sm" variant="accent" className="mt-3" disabled={disabled} onClick={onPreview}>Preview with Music</Button><audio className="mt-3 w-full" controls preload="none" src={previewUrl} aria-label={`Track preview: ${currentTrackName}`}>Track preview unavailable.</audio></>}
     {!music.track && <p className="mt-3 text-xs text-[var(--muted-foreground)]">You can still export without music.</p>}
-    {open && <div className="mt-4 border-t pt-4"><div className="flex gap-2"><Button size="sm" variant={mode === "ai_matched" ? "accent" : "outline"} disabled={loading} onClick={() => void load("ai_matched")}>AI Matched</Button><Button size="sm" variant={mode === "all_music" ? "accent" : "outline"} disabled={loading} onClick={() => void load("all_music")}>All Music</Button></div>{mode === "ai_matched" && <p className="mt-2 text-xs text-[var(--muted-foreground)]">AI-assisted recommendations from the available licensed catalog for this project.</p>}<div className="mt-3 grid gap-2">{tracks.map((track, index) => <div key={track.id} className="flex items-center justify-between gap-3 rounded-lg border p-2"><div className="min-w-0"><p className="truncate font-medium">{track.title}{mode === "ai_matched" && index === 0 ? " · Recommended" : ""}</p><p className="truncate text-xs text-[var(--muted-foreground)]">{track.mood} · {track.energy}</p></div><div className="flex shrink-0 gap-2"><audio controls preload="none" className="h-8 w-28" src={`${API_ORIGIN}${track.preview_url}`} /><Button size="sm" variant="outline" disabled={loading} onClick={() => void select(track.id)}>Select</Button></div></div>)}</div>{tracks.length === 0 && !loading && <p className="mt-3 text-xs text-[var(--muted-foreground)]">No usable licensed tracks are available.</p>}<button type="button" className="mt-3 text-xs text-[#d94c20]" disabled={loading} onClick={() => void select(null)}>Use no music</button></div>}
+    {open && <div id="music-track-list" className="mt-4 min-w-0 overflow-hidden border-t pt-4"><div className="flex flex-wrap gap-2"><Button type="button" size="sm" variant={mode === "ai_matched" ? "accent" : "outline"} aria-pressed={mode === "ai_matched"} disabled={loading} onClick={() => void load("ai_matched")}>AI Matched</Button><Button type="button" size="sm" variant={mode === "all_music" ? "accent" : "outline"} aria-pressed={mode === "all_music"} disabled={loading} onClick={() => void load("all_music")}>All Music</Button></div>{mode === "ai_matched" && <p className="mt-2 text-xs text-[var(--muted-foreground)]">AI-assisted recommendations from the available licensed catalog for this project.</p>}<div className="mt-3 grid min-w-0 gap-2">{tracks.map((track, index) => { const displayName = musicDisplayName(track.title); return <div key={track.id} className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-[.7rem] border p-2"><div className="min-w-0 overflow-hidden"><p className="truncate font-medium" title={displayName} tabIndex={0} aria-label={`Music track: ${displayName}`}>{displayName}{mode === "ai_matched" && index === 0 ? " · Recommended" : ""}</p><p className="truncate text-xs text-[var(--muted-foreground)]">{track.mood} · {track.energy}</p></div><div className="flex min-w-0 shrink-0 items-center gap-2"><audio controls preload="none" className="h-8 w-[min(8rem,28vw)]" src={`${API_ORIGIN}${track.preview_url}`} aria-label={`Preview track: ${displayName}`} /><Button type="button" size="sm" variant="outline" disabled={loading} onClick={() => void select(track.id)}>Select</Button></div></div>; })}</div>{tracks.length === 0 && !loading && <p className="mt-3 text-xs text-[var(--muted-foreground)]">No usable licensed tracks are available.</p>}<button type="button" className="mt-3 text-xs text-[#d94c20]" disabled={loading} onClick={() => void select(null)}>Use no music</button></div>}
     {feedback && <p role="status" className="mt-2 text-xs text-[var(--muted-foreground)]">{feedback}</p>}
   </section>;
 }
@@ -140,6 +144,7 @@ export function ProjectWorkspace({
   const [chatError, setChatError] = useState<string | null>(null);
   const [mobileChatOpen, setMobileChatOpen] = useState(false);
   const [busy, setBusy] = useState<"render" | "export" | "undo" | "redo" | "audio" | "delete" | null>(null);
+  const [musicPreview, setMusicPreview] = useState(false);
   const [audioDirty, setAudioDirty] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [moreOpen, setMoreOpen] = useState(false);
@@ -329,9 +334,9 @@ export function ProjectWorkspace({
   }
 
   return (
-    <main className="theme-app min-h-screen bg-[var(--background)]">
+    <main className="theme-app app-shell min-h-screen bg-[var(--background)]">
       <div className="noise" />
-      <header className="sticky top-0 z-40 border-b border-[var(--border)] bg-[var(--surface)] backdrop-blur-xl">
+      <header className="page-header sticky top-0 z-40 border-b backdrop-blur-xl">
         <div className="relative mx-auto flex min-h-16 max-w-[1600px] items-center gap-2 px-3 py-2 sm:gap-4 sm:px-5 lg:px-7">
           <Link href="/" aria-label="Back to start" className="interactive-icon">
             <ArrowLeft className="size-4" />
@@ -411,9 +416,9 @@ export function ProjectWorkspace({
         </div>
       )}
 
-      <div className="mx-auto grid max-w-[1600px] grid-cols-1 lg:grid-cols-[minmax(560px,1fr)_390px]">
-        <section className="min-w-0 border-black/8 px-4 pb-32 pt-6 lg:border-r lg:px-8 lg:pb-10">
-          <div className="mx-auto max-w-[1040px]">
+      <div className="mx-auto grid max-w-[1600px] grid-cols-1 lg:grid-cols-[minmax(0,1fr)_360px]">
+        <section className="results-canvas min-w-0 border-black/8 px-4 pb-32 pt-6 lg:border-r lg:px-8 lg:pb-10">
+          <div className="mx-auto max-w-[1180px]">
             {error && <div role="alert" className="mb-5 rounded-[16px] border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">{error}</div>}
             {state.export?.status === "exported" && (
               <div role="status" className="mb-5 rounded-[16px] border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">
@@ -426,20 +431,9 @@ export function ProjectWorkspace({
                 </p>
               </div>
             )}
-            <div className="grid items-start gap-7 md:grid-cols-[minmax(260px,420px)_minmax(0,1fr)]">
+            <div className="results-primary grid items-start gap-6 md:grid-cols-[minmax(300px,.82fr)_minmax(0,1.18fr)]">
               <div>
-                <VideoPreview key={state.render.url ?? `${project.id}:${project.current_revision}`} project={project} onRender={() => void render()} rendering={busy === "render"} />
-                {state.render.url && <AudioControls key={`${project.id}:${project.current_revision}`} project={project} disabled={!!busy || sending} onDirty={() => setAudioDirty(true)} onSave={async (audio) => {
-                  setBusy("audio");
-                  setError(null);
-                  try {
-                    onProjectChange(await updateProjectAudio(project.id, project.current_revision, audio));
-                    setAudioDirty(false);
-                  } catch (reason) {
-                    setError(reason instanceof Error ? reason.message : "Audio settings could not be saved.");
-                  } finally { setBusy(null); }
-                }} />}
-                {state.render.url && <MusicControls project={project} disabled={!!busy || sending} onChange={onProjectChange} />}
+                <VideoPreview key={state.render.url ?? `${project.id}:${project.current_revision}`} project={project} onRender={() => void render()} rendering={busy === "render"} musicPreview={musicPreview} />
               </div>
               <div className="min-w-0">
                 <div className="mb-5 flex flex-wrap items-center gap-2">
@@ -453,17 +447,29 @@ export function ProjectWorkspace({
                   <Stat label="Scenes" value={String(state.scenes.length)} hint={state.timeline.aspect_ratio} />
                   <Stat label="Revision" value={`v${project.current_revision}`} hint={`${project.revisions.length} saved`} />
                 </div>
-                <Pipeline stages={state.pipeline} />
+                {state.render.url && <div className="mt-6 space-y-4">
+                  <AudioControls key={`${project.id}:${project.current_revision}`} project={project} disabled={!!busy || sending} onDirty={() => setAudioDirty(true)} onMusicVolumeChange={(volume) => onProjectChange({ ...project, revision: { ...project.revision, state: { ...project.revision.state, music: { ...project.revision.state.music, volume } } } })} onSave={async (audio) => {
+                    setBusy("audio");
+                    setError(null);
+                    try {
+                      onProjectChange(await updateProjectAudio(project.id, project.current_revision, audio));
+                      setAudioDirty(false);
+                    } catch (reason) {
+                      setError(reason instanceof Error ? reason.message : "Audio settings could not be saved.");
+                    } finally { setBusy(null); }
+                  }} />
+                  <MusicControls project={project} disabled={!!busy || sending} onChange={onProjectChange} onPreview={() => setMusicPreview(true)} />
+                </div>}
               </div>
             </div>
 
-            <SocialMetadata key={`${project.id}:${project.current_revision}`} project={project} busy={socialBusy} onChange={onProjectChange} setBusy={setSocialBusy} />
-            <ThumbnailControls key={`${project.id}:${project.current_revision}`} project={project} disabled={!!busy || sending} onChange={onProjectChange} />
+            <SocialMetadata key={`social:${project.id}:${project.current_revision}`} project={project} busy={socialBusy} onChange={onProjectChange} setBusy={setSocialBusy} />
+            <ThumbnailControls key={`thumbnail:${project.id}:${project.current_revision}`} project={project} disabled={!!busy || sending} onChange={onProjectChange} />
 
             <div className="mt-8 border-b border-black/10">
-              <nav className="flex gap-1 overflow-x-auto" aria-label="Project detail tabs">
+              <nav className="flex gap-1 overflow-x-auto" aria-label="Project detail tabs" role="tablist">
                 {(["overview", "script", "scenes", "sources"] as Tab[]).map((item) => (
-                  <button key={item} onClick={() => setTab(item)} className={cn(
+                  <button type="button" role="tab" aria-selected={tab === item} key={item} onClick={() => setTab(item)} className={cn(
                     "relative px-4 py-3 text-sm font-semibold capitalize text-[#818177] transition-colors duration-150 ease-[cubic-bezier(.23,1,.32,1)] hover:text-black",
                     tab === item && "text-black after:absolute after:inset-x-4 after:bottom-[-1px] after:h-0.5 after:rounded-full after:bg-[#ff6838]",
                   )}>{item}</button>
@@ -522,15 +528,50 @@ export function ProjectWorkspace({
   );
 }
 
-function VideoPreview({ project, onRender, rendering }: { project: Project; onRender: () => void; rendering: boolean }) {
+function VideoPreview({ project, onRender, rendering, musicPreview }: { project: Project; onRender: () => void; rendering: boolean; musicPreview: boolean }) {
   const state = project.revision.state;
   const hook = state.script.blocks[0]?.text ?? project.original_prompt;
   const source = mediaUrl(state.render.url);
   const vertical = state.timeline.height > state.timeline.width;
   const [videoUnavailable, setVideoUnavailable] = useState(false);
+  const [activeScene, setActiveScene] = useState<number | null>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const audioRef = useRef<HTMLAudioElement>(null);
+  const navigableScenes = (state.scenes ?? []).filter((scene) => Number.isFinite(scene.start) && Number.isFinite(scene.end) && scene.end > scene.start);
+  const musicSource = state.music.enabled && state.music.track?.id
+    ? `${API_ORIGIN}/api/music/tracks/${encodeURIComponent(state.music.track.id)}/preview`
+    : null;
+  const musicVolume = state.music.volume ?? 0.14;
+  const musicDucking = state.music.ducking ?? true;
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (audio) audio.volume = musicVolumeGain(musicVolume, musicDucking);
+  }, [musicVolume, musicDucking, musicSource, musicPreview]);
+  useEffect(() => {
+    if (!musicPreview) audioRef.current?.pause();
+  }, [musicPreview]);
+  useEffect(() => {
+    const video = videoRef.current;
+    const audio = audioRef.current;
+    if (video && audio && musicPreview && !video.paused) {
+      audio.currentTime = video.currentTime;
+      void audio.play();
+    }
+  }, [musicSource, musicPreview]);
+  function seekToScene(start: number) {
+    const video = videoRef.current;
+    if (!video) return;
+    const wasPlaying = !video.paused;
+    video.currentTime = start;
+    if (wasPlaying) void video.play();
+  }
+  function updateActiveScene(currentTime: number) {
+    const scene = navigableScenes.find((item) => currentTime >= item.start && currentTime < item.end) ?? navigableScenes.at(-1);
+    setActiveScene(scene ? navigableScenes.indexOf(scene) : null);
+  }
   const label = source ? (state.render.stale ? "Previous revision preview" : "Rendered preview") : "Storyboard preview";
   return (
-    <div className="mx-auto w-full" style={{ maxWidth: vertical ? 292 : 520 }}>
+    <div className="preview-stage mx-auto w-full p-1.5" style={{ maxWidth: vertical ? 292 : 520 }}>
       <div
         className={cn(
           "relative overflow-hidden border-[6px] border-[#1c1c19] bg-[#12120f] shadow-[0_25px_60px_rgba(30,27,17,.26)]",
@@ -539,7 +580,12 @@ function VideoPreview({ project, onRender, rendering }: { project: Project; onRe
         style={{ aspectRatio: `${state.timeline.width} / ${state.timeline.height}` }}
       >
         {source && !videoUnavailable ? (
-          <video key={source} src={source} controls playsInline preload="metadata" className="size-full bg-black object-contain" aria-label="ClipForge video preview" onError={() => setVideoUnavailable(true)} />
+          <video ref={videoRef} key={source} src={source} controls playsInline preload="metadata" className="size-full bg-black object-contain" aria-label="ClipForge video preview" onError={() => setVideoUnavailable(true)}
+            onPlay={() => { if (musicPreview && musicSource) void audioRef.current?.play(); }}
+            onPause={() => audioRef.current?.pause()}
+            onEnded={() => audioRef.current?.pause()}
+            onLoadedMetadata={(event) => { const audio = audioRef.current; if (audio) audio.currentTime = event.currentTarget.currentTime; }}
+            onTimeUpdate={(event) => { const audio = audioRef.current; if (audio && Math.abs(audio.currentTime - event.currentTarget.currentTime) > 0.35) audio.currentTime = event.currentTarget.currentTime; updateActiveScene(event.currentTarget.currentTime); }} />
         ) : (
           <>
             <div className="absolute inset-0 bg-[radial-gradient(circle_at_66%_22%,#ffb178_0,transparent_22%),radial-gradient(circle_at_30%_70%,#253449_0,transparent_30%),linear-gradient(155deg,#7d2a16_0%,#191914_45%,#080809_100%)]" />
@@ -560,7 +606,18 @@ function VideoPreview({ project, onRender, rendering }: { project: Project; onRe
           </>
         )}
       </div>
+      {musicPreview && musicSource && <audio ref={audioRef} src={musicSource} preload="auto" aria-hidden="true" />}
       <p className="mt-3 text-center text-[10px] font-semibold uppercase tracking-[.12em] text-[#88887f]">{label} · {state.timeline.aspect_ratio}</p>
+      {navigableScenes.length > 0 && <div className="mt-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-2 text-left" aria-label="Scene navigation">
+        <p className="px-2 pb-1 text-[10px] font-bold uppercase tracking-[.12em] text-[var(--muted-foreground)]">Scenes</p>
+        <div className="grid max-h-40 gap-0.5 overflow-y-auto">
+          {navigableScenes.map((scene, index) => {
+            const sceneKey = scene.id || String(index);
+            const isActive = activeScene === index;
+            return <button key={sceneKey} type="button" className={cn("flex min-w-0 items-center justify-between rounded-lg px-2 py-1.5 text-xs transition-colors", isActive ? "bg-[var(--accent-soft)] font-semibold text-[var(--foreground)]" : "text-[var(--muted-foreground)] hover:bg-[var(--surface-hover)] hover:text-[var(--foreground)]")} aria-current={isActive ? "true" : undefined} onClick={() => seekToScene(scene.start)}><span className="flex min-w-0 items-center gap-2"><span className={cn("size-1.5 shrink-0 rounded-full", isActive ? "bg-[var(--accent)]" : "bg-[var(--border)]")} /><span>Scene {index + 1}</span></span><span className="mono shrink-0 text-[10px]">{formatTime(scene.start)}–{formatTime(scene.end)}</span></button>;
+          })}
+        </div>
+      </div>}
     </div>
   );
 }
@@ -628,10 +685,10 @@ function SocialMetadata({ project, busy, onChange, setBusy }: {
     try { await navigator.clipboard.writeText(value); setFeedback("Kopiert"); }
     catch { setFeedback("Kopieren nicht verfügbar."); }
   }
-  return <section className="mt-8 rounded-[20px] border p-5" aria-label="Social Metadata">
+  return <section className="workspace-card mt-8 p-5" aria-label="Social Metadata">
     <div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="font-semibold">Social Metadata</h2><p className="mt-1 text-xs text-[var(--muted-foreground)]">Titel, Beschreibung und Hashtags für jede Plattform.</p></div><Button size="sm" variant="outline" disabled={busy} onClick={() => void regenerate()}>{busy ? <LoaderCircle className="size-3.5 animate-spin" /> : <RefreshCw className="size-3.5" />}{metadata ? "Neu generieren" : "Metadaten generieren"}</Button></div>
     {metadata?.status === "unavailable" && <p className="mt-3 text-sm text-[var(--muted-foreground)]">Hashtags derzeit nicht verfügbar. Du kannst es erneut versuchen.</p>}
-    <div className="mt-4 grid gap-3 md:grid-cols-3">{(["tiktok", "instagram", "youtube"] as const).map((platform) => <div key={platform} className="rounded-xl border p-3"><div className="flex items-center justify-between"><strong className="text-sm">{{ tiktok: "TikTok", instagram: "Instagram", youtube: "YouTube" }[platform]}</strong><button className="interactive-text text-xs" onClick={() => void copy(`${drafts[platform].title}\n\n${drafts[platform].description}\n\n${drafts[platform].hashtags}`)}>Copy all</button></div><label className="mt-3 block text-[11px] font-semibold">Title <button className="float-right interactive-text font-normal" onClick={() => void copy(drafts[platform].title)}>Copy</button><input aria-label={`${platform} title`} value={drafts[platform].title} onChange={(event) => setDrafts((current) => ({ ...current, [platform]: { ...current[platform], title: event.target.value } }))} className="mt-1 w-full rounded-lg border bg-transparent p-2 text-xs outline-none" /></label><label className="mt-2 block text-[11px] font-semibold">Description <button className="float-right interactive-text font-normal" onClick={() => void copy(drafts[platform].description)}>Copy</button><textarea aria-label={`${platform} description`} value={drafts[platform].description} onChange={(event) => setDrafts((current) => ({ ...current, [platform]: { ...current[platform], description: event.target.value } }))} className="mt-1 min-h-16 w-full resize-y rounded-lg border bg-transparent p-2 text-xs outline-none" /></label><label className="mt-2 block text-[11px] font-semibold">Hashtags <button className="float-right interactive-text font-normal" onClick={() => void copy(drafts[platform].hashtags)}>Copy</button><textarea aria-label={`${platform} hashtags`} value={drafts[platform].hashtags} onChange={(event) => setDrafts((current) => ({ ...current, [platform]: { ...current[platform], hashtags: event.target.value } }))} className="mt-1 min-h-16 w-full resize-y rounded-lg border bg-transparent p-2 text-xs outline-none" placeholder="#Hashtags" /></label><button className="mt-2 text-xs text-[#d94c20]" disabled={busy} onClick={() => void regenerate(platform)}>Neu generieren</button></div>)}</div>
+    <div className="mt-4 grid gap-3 md:grid-cols-3">{(["tiktok", "instagram", "youtube"] as const).map((platform) => <div key={platform} className="cf-subtle min-w-0 rounded-[.85rem] border p-3"><div className="flex items-center justify-between gap-2"><strong className="text-sm">{{ tiktok: "TikTok", instagram: "Instagram", youtube: "YouTube" }[platform]}</strong><button className="interactive-text text-xs" onClick={() => void copy(`${drafts[platform].title}\n\n${drafts[platform].description}\n\n${drafts[platform].hashtags}`)}>Copy all</button></div><div className="mt-3 space-y-2 rounded-[.7rem] border border-[var(--border)] bg-[var(--input)] p-3"><label className="block text-[11px] font-semibold">Title<input aria-label={`${platform} title`} value={drafts[platform].title} onChange={(event) => setDrafts((current) => ({ ...current, [platform]: { ...current[platform], title: event.target.value } }))} className="cf-input mt-1 text-xs" /></label><label className="block text-[11px] font-semibold">Description<textarea aria-label={`${platform} description`} value={drafts[platform].description} onChange={(event) => setDrafts((current) => ({ ...current, [platform]: { ...current[platform], description: event.target.value } }))} className="cf-input mt-1 min-h-16 resize-y text-xs" /></label><label className="block text-[11px] font-semibold">Hashtags<textarea aria-label={`${platform} hashtags`} value={drafts[platform].hashtags} onChange={(event) => setDrafts((current) => ({ ...current, [platform]: { ...current[platform], hashtags: event.target.value } }))} className="cf-input mt-1 min-h-16 resize-y text-xs" placeholder="#Hashtags" /></label></div><button className="mt-2 text-xs text-[#d94c20]" disabled={busy} onClick={() => void regenerate(platform)}>Neu generieren</button></div>)}</div>
     <div className="mt-4 flex items-center gap-3"><Button size="sm" disabled={busy} onClick={() => void save()}>Metadaten speichern</Button>{feedback && <span role="status" className="text-xs text-[var(--muted-foreground)]">{feedback}</span>}</div>
   </section>;
 }
@@ -652,10 +709,10 @@ function ThumbnailControls({ project, disabled, onChange }: { project: Project; 
     catch (reason) { setFeedback(reason instanceof Error ? reason.message : "Cover konnte nicht ausgewählt werden."); }
     finally { setBusy(false); }
   }
-  return <section className="mt-8 rounded-[20px] border p-5" aria-label="Cover thumbnails">
+  return <section className="workspace-card mt-8 p-5" aria-label="Cover thumbnails">
     <div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="font-semibold">Cover</h2><p className="mt-1 text-xs text-[var(--muted-foreground)]">Projektbezogene Varianten für Shorts, TikTok und Reels.</p></div><Button size="sm" variant="outline" disabled={disabled || busy} onClick={() => void generate()}>{busy ? <LoaderCircle className="size-3.5 animate-spin" /> : <RefreshCw className="size-3.5" />}{thumbnails?.status === "available" ? "Neu erstellen" : "Cover erstellen"}</Button></div>
     {thumbnails?.status === "unavailable" && <p className="mt-3 text-sm text-[var(--muted-foreground)]">{thumbnails.error ?? "Keine geeigneten Projektbilder verfügbar."}</p>}
-    {thumbnails?.variants?.length ? <div className="mt-4 grid grid-cols-3 gap-3">{thumbnails.variants.map((variant) => <button key={variant.id} type="button" disabled={disabled || busy} onClick={() => void select(variant.id)} className={cn("overflow-hidden rounded-xl border-2 text-left transition", thumbnails.selected_variant_id === variant.id ? "border-[#ff6838] ring-2 ring-[#ff6838]/20" : "border-transparent hover:border-black/20")} aria-label={`Select ${variant.platform} cover`}>
+    {thumbnails?.variants?.length ? <div className="mt-4 grid grid-cols-3 gap-3">{thumbnails.variants.map((variant) => <button key={variant.id} type="button" disabled={disabled || busy} onClick={() => void select(variant.id)} className={cn("overflow-hidden rounded-xl border-2 text-left transition", thumbnails.selected_variant_id === variant.id ? "border-[#ff6838] ring-2 ring-[#ff6838]/20" : "border-transparent hover:border-black/20")} aria-label={`Select ${variant.platform} cover`} aria-pressed={thumbnails.selected_variant_id === variant.id}>
       {/* Runtime API media is intentionally not routed through next/image's remote loader. */}
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img src={mediaUrl(variant.url) ?? ""} alt={variant.text ?? "Project cover"} className="aspect-[9/16] w-full object-cover" /><span className="block px-2 py-2 text-[10px] font-bold uppercase tracking-[.08em]">{variant.platform}{thumbnails.selected_variant_id === variant.id ? " · selected" : ""}</span></button>)}</div> : null}
@@ -681,6 +738,7 @@ function Overview({ project, readiness }: { project: Project; readiness: Readine
     : Object.entries(state.integrations).map(([name, status]) => [name, { ready: !status.includes("unavailable"), status, key: null, url: setupLinks[name]?.url ?? "#" }] as const);
   return (
     <div className="grid gap-4 md:grid-cols-2">
+      <Pipeline stages={state.pipeline} />
       <AIReviewPanel review={state.ai_review} />
       <Panel icon={<WandSparkles className="size-4" />} title="Creative direction">
         <div className="space-y-3 text-sm">
@@ -992,7 +1050,7 @@ function Composer({ value, setValue, submit, busy, compact = false }: { value: s
   return (
     <div className={cn("border-t border-black/8 p-4", compact && "border-0 p-0")}>
       <div className="cf-surface flex items-end gap-2 rounded-[20px] border p-2 shadow-sm transition-[border-color,box-shadow] duration-150 focus-within:border-[#ff6838]/35 focus-within:ring-4 focus-within:ring-[#ff6838]/5">
-        <textarea rows={compact ? 1 : 3} value={value} onChange={(event) => setValue(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void submit(); } }} placeholder="Ask about this project or request a change…" className="min-h-10 flex-1 resize-none bg-transparent px-2 py-2 text-sm leading-5 outline-none placeholder:text-[#9d9d94]" />
+      <textarea aria-label="Project assistant message" rows={compact ? 1 : 3} value={value} onChange={(event) => setValue(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void submit(); } }} placeholder="Ask about this project or request a change…" className="min-h-10 flex-1 resize-none bg-transparent px-2 py-2 text-sm leading-5 outline-none placeholder:text-[#9d9d94]" />
         <Button variant="accent" size="icon" onClick={() => void submit()} disabled={value.trim().length < 1 || busy} aria-label="Send message">
           {busy ? <LoaderCircle className="size-4 animate-spin" /> : <Send className="size-4" />}
         </Button>

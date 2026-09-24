@@ -202,9 +202,9 @@ export default function Home() {
   const detectedQuestions = multipleQuestions ? splitQuestions(prompt) : [];
 
   return (
-    <main className="theme-app relative min-h-screen overflow-hidden">
+    <main className="theme-app app-shell relative min-h-screen overflow-hidden">
       <div className="noise" />
-      <nav className="mx-auto flex h-20 max-w-[1440px] items-center justify-between px-5 lg:px-10">
+      <nav className="mx-auto flex h-[4.5rem] max-w-[1440px] items-center justify-between border-b border-black/5 px-5 lg:px-10">
         <Brand />
         <div className="flex items-center gap-2">
           <span className="hidden text-sm text-[#77776d] sm:block">Your idea. Fully directed.</span>
@@ -216,12 +216,12 @@ export default function Home() {
         </div>
       </nav>
 
-      <section className="mx-auto flex min-h-[calc(100vh-8rem)] max-w-[1020px] flex-col items-center px-5 pb-24 pt-[clamp(3rem,9vh,7rem)] text-center">
+      <section className="mx-auto flex min-h-[calc(100vh-4.5rem)] max-w-[1120px] flex-col items-center px-5 pb-24 pt-[clamp(3.5rem,8vh,6rem)] text-center">
         <div className="cf-surface mb-7 inline-flex items-center gap-2 rounded-full border px-3.5 py-2 text-[11px] font-bold uppercase tracking-[0.14em] text-[var(--muted-foreground)] shadow-sm backdrop-blur">
           <span className="size-1.5 rounded-full bg-[#ff6838] shadow-[0_0_0_4px_rgba(255,104,56,.12)]" />
           Autonomous shortform studio
         </div>
-        <h1 className="balance max-w-[850px] text-[clamp(3rem,7vw,6.7rem)] font-semibold leading-[.91] tracking-[-0.075em]">
+        <h1 className="balance max-w-[780px] text-[clamp(3rem,6.5vw,5.8rem)] font-semibold leading-[.94] tracking-[-0.065em]">
           Say what you want <span className="font-normal italic text-[#ff6838]">to know.</span>
         </h1>
         <p className="balance mt-7 max-w-[610px] text-base leading-7 text-[var(--muted-foreground)] md:text-lg">
@@ -229,7 +229,7 @@ export default function Home() {
         </p>
 
         <div className="mt-11 w-full max-w-[780px]">
-          <div className="cf-surface rounded-[30px] border p-2.5 shadow-[0_26px_80px_rgba(42,38,24,.13),0_2px_8px_rgba(42,38,24,.06)] backdrop-blur-xl transition-[border-color,box-shadow] duration-200 ease-[cubic-bezier(.23,1,.32,1)] focus-within:border-[#ff6838]/30 focus-within:shadow-[0_30px_90px_rgba(42,38,24,.16),0_0_0_4px_rgba(255,104,56,.06)]">
+          <div className="creation-composer cf-surface border p-2.5 transition-[border-color,box-shadow] duration-200 ease-[cubic-bezier(.23,1,.32,1)] focus-within:border-[#ff6838]/30 focus-within:shadow-[0_22px_70px_rgba(42,38,24,.12),0_0_0_4px_rgba(255,104,56,.06)]">
             <textarea
               ref={promptRef}
               autoFocus
@@ -239,6 +239,7 @@ export default function Home() {
                 if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) void generate();
               }}
               rows={4}
+              aria-label="Describe the video to create"
               placeholder="What should ClipForge create?"
               className="block w-full resize-none bg-transparent px-5 pb-3 pt-4 text-lg leading-7 text-[var(--foreground)] outline-none placeholder:text-[var(--muted-foreground)] md:text-xl"
             />
@@ -294,7 +295,7 @@ export default function Home() {
             <p className="mt-2 text-sm leading-6 text-[var(--muted-foreground)]">Alle projektlokalen Videos, Audio-Dateien, Medienableitungen und Projektdaten werden dauerhaft gelöscht. Wiederverwendbare Caches bleiben erhalten.</p>
             <p className="mt-4 rounded-xl bg-black/[.04] px-3 py-2 text-sm font-semibold">{bulkDeletePlan.project_count} Projekte · ca. {formatBytes(bulkDeletePlan.total_bytes)}</p>
             <label className="mt-5 block text-sm font-medium">Zum Bestätigen <span className="font-bold">LÖSCHEN</span> eingeben
-              <input value={bulkDeletePhrase} onChange={(event) => setBulkDeletePhrase(event.target.value)} className="mt-2 w-full rounded-xl border bg-transparent px-3 py-2 outline-none focus:border-[#ff6838]" autoComplete="off" />
+              <input aria-label="Type LÖSCHEN to confirm deletion" value={bulkDeletePhrase} onChange={(event) => setBulkDeletePhrase(event.target.value)} className="mt-2 w-full rounded-xl border bg-transparent px-3 py-2 outline-none focus:border-[#ff6838]" autoComplete="off" />
             </label>
             <div className="mt-6 flex justify-end gap-2">
               <Button variant="ghost" disabled={bulkDeleting} onClick={() => setBulkDeleteOpen(false)}>Abbrechen</Button>
@@ -320,7 +321,7 @@ function GenerationQueue({ jobs, onRemove, onClear, busy }: { jobs: GenerationJo
   const waiting = jobs.filter((job) => job.status === "queued");
   const [clearConfirmationOpen, setClearConfirmationOpen] = useState(false);
   return (
-    <section id="video-queue-panel" className="cf-surface mt-5 w-full max-w-[780px] rounded-[22px] border p-4 text-left shadow-sm" aria-label="Video Queue" aria-live="polite">
+    <section id="video-queue-panel" className="queue-card cf-surface mt-5 w-full max-w-[780px] border p-4 text-left" aria-label="Video Queue" aria-live="polite">
       {jobs.length === 0 && <p className="text-sm text-[var(--muted-foreground)]">Keine Videos in der Warteschlange.</p>}
       {running.map((item) => <Link key={item.project_id} href={`/projects/${item.project_id}`} className="block rounded-xl border border-[#ff6838]/30 bg-[#ff6838]/5 p-4 hover:bg-[#ff6838]/10">
         <p className="flex items-center justify-between text-xs font-bold text-[#d94c20]"><span>● Wird erstellt</span><span>{Math.round(item.progress * 100)}%</span></p>

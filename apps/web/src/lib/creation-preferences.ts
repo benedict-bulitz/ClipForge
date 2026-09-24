@@ -69,7 +69,7 @@ export function sanitizeCreatePreferences(value: unknown): CreateOptions {
   if (typeof clean.voice_speed !== "number" || clean.voice_speed < 0.7 || clean.voice_speed > 1.4) clean.voice_speed = 1;
   if (typeof clean.caption_font_size !== "number" || clean.caption_font_size < 32 || clean.caption_font_size > 112) clean.caption_font_size = 72;
   if (typeof clean.caption_words_per_group !== "number" || clean.caption_words_per_group < 2 || clean.caption_words_per_group > 8) clean.caption_words_per_group = 4;
-  if (typeof clean.music_volume !== "number" || clean.music_volume < 0 || clean.music_volume > 0.5) clean.music_volume = 0.14;
+  if (typeof clean.music_volume !== "number" || clean.music_volume < 0 || clean.music_volume > 1) clean.music_volume = 0.14;
   for (const key of ["captions_enabled", "music_enabled", "music_ducking", "music_fades"]) {
     if (typeof clean[key] !== "boolean") clean[key] = DEFAULT_CREATE_OPTIONS[key];
   }

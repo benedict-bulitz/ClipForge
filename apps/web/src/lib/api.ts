@@ -19,6 +19,21 @@ import type {
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api";
 export const API_ORIGIN = API_URL.replace(/\/api\/?$/, "");
 
+const MUSIC_MIN_DB = -30;
+const MUSIC_DUCK_DB = -4;
+
+/** Shared perceptual music gain mapping used by browser preview and export. */
+export function musicVolumeGain(volume: number, ducking = false): number {
+  const value = Math.max(0, Math.min(1, Number(volume) || 0));
+  if (value === 0) return 0;
+  const db = MUSIC_MIN_DB + (0 - MUSIC_MIN_DB) * Math.sqrt(value) + (ducking ? MUSIC_DUCK_DB : 0);
+  return 10 ** (db / 20);
+}
+
+export function musicDisplayName(title: string): string {
+  return String(title || "").replace(/^File:\s*/i, "").replace(/\.(ogg|mp3|wav|m4a|aac|flac)$/i, "").trim();
+}
+
 type ApiErrorDetail = {
   status?: string;
   message?: string;
