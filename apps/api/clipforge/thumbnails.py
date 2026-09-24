@@ -362,6 +362,12 @@ def _scene_payoff_safe(scene: dict[str, Any], brief: dict[str, Any]) -> bool:
     protected = str(brief.get("protected_information") or "")
     if not protected:
         return True
+    media = scene.get("media") if isinstance(scene.get("media"), dict) else {}
+    generation = media.get("generation") if isinstance(media.get("generation"), dict) else None
+    if media.get("reveal_safe") is False or (generation is not None and not generation.get("reveal_safe")):
+        # Structural record from the Visual Director: chosen where the Story
+        # Arc allowed the answer to be shown.
+        return False
     context = _scene_context(scene)
     if not _reveals_protected(context, {"hook_must_not_reveal": protected}):
         return True
@@ -558,6 +564,10 @@ def _source_images(state: dict[str, Any], project_dir: Path, brief: dict[str, An
         media = scene.get("media") if isinstance(scene.get("media"), dict) else None
         if not media or media.get("kind") != "photo":
             continue
+        if media.get("source") == "simple_graphic":
+            # Text graphics are not cover imagery; generated photos still compete
+            # through the normal ranking and quality gate.
+            continue
         cache_path = str(media.get("cache_path") or "")
         if not cache_path:
             continue
@@ -584,6 +594,10 @@ def _source_images(state: dict[str, Any], project_dir: Path, brief: dict[str, An
     if asset_root.is_dir():
         for candidate in sorted(asset_root.rglob("*")):
             if candidate in seen or candidate.suffix.lower() not in {".jpg", ".jpeg", ".png", ".webp"} or not candidate.is_file():
+                continue
+            if "generated_openai" in candidate.relative_to(asset_root).parts:
+                # Generated stills compete only as scene media, where their
+                # prompt provenance feeds the payoff-safety check.
                 continue
             try:
                 with Image.open(candidate) as image:

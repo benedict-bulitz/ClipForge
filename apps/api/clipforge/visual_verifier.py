@@ -65,6 +65,9 @@ class UnavailableVisualVerifier:
     def verify_candidate(self, _candidate: Any, _texts: list[str]) -> VisualVerification:
         return VisualVerification(None, self.status)
 
+    def verify_local_image(self, _path: Path, _texts: list[str], *, asset_identity: str | None = None) -> VisualVerification:
+        return VisualVerification(None, self.status)
+
 
 def representative_timestamps(duration: float, count: int = 3) -> list[float]:
     if duration <= 0 or count <= 0:
@@ -335,6 +338,31 @@ class OpenClipVisualVerifier:
             )
         except (OSError, ValueError, RuntimeError, TypeError):
             return VisualVerification(None, "unavailable_image", "local_thumbnail")
+
+    def verify_local_image(self, path: Path, texts: list[str], *, asset_identity: str | None = None) -> VisualVerification:
+        """Score a local still (for example a generated image) like a provider preview."""
+        try:
+            image = Image.open(path).convert("RGB")
+            identity = asset_identity or str(path)
+            subject_score, scene_score, combined = self._score_prompt_groups(image, texts, asset_identity=identity)
+            presentation_score, photographic_score, diagram_score, presentation_risk = (
+                self._presentation_scores(image, asset_identity=identity)
+            )
+        except (OSError, ValueError, RuntimeError, ImportError, TypeError):
+            return VisualVerification(None, "unavailable_image", "local_image")
+        return VisualVerification(
+            combined,
+            "verified",
+            "local_image",
+            (),
+            1,
+            subject_score,
+            scene_score,
+            presentation_score,
+            photographic_score,
+            diagram_score,
+            presentation_risk,
+        )
 
     def verify_candidate(self, candidate: Any, texts: list[str]) -> VisualVerification:
         if str(getattr(candidate, "kind", "photo")) == "video" and getattr(candidate, "verification_url", ""):

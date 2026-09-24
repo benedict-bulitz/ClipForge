@@ -65,3 +65,30 @@ def db():
         yield session
     finally:
         session.close()
+
+
+@pytest.fixture(autouse=True)
+def forbid_real_image_generation(monkeypatch):
+    """No test may reach the paid OpenAI Images API; generators must be mocked."""
+    from clipforge import image_generation
+
+    calls: list[tuple] = []
+
+    def forbidden(*args, **_kwargs):
+        calls.append(args)
+        raise AssertionError("Real OpenAI image generation is forbidden in the test suite.")
+
+    monkeypatch.setattr(image_generation, "OPENAI_CLIENT_FACTORY", forbidden)
+    return calls
+
+
+@pytest.fixture(autouse=True)
+def forbid_real_visual_translation(monkeypatch):
+    """The fact -> visual translator must be mocked; no real worker-model calls."""
+    from clipforge import visual_translation
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("Real OpenAI visual translation is forbidden in the test suite.")
+
+    visual_translation.clear_translation_cache()
+    monkeypatch.setattr(visual_translation, "TRANSLATOR_CLIENT_FACTORY", forbidden)

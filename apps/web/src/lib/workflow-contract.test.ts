@@ -30,6 +30,38 @@ test("scene media chooser discovers candidates and applies through a revision", 
   assert.match(workspace, /candidate.provider/);
 });
 
+test("change media never dead-ends: retry, keep, and a paid AI image option", () => {
+  assert.match(workspace, /Retry real media search/);
+  assert.match(workspace, /Keep current media/);
+  assert.match(workspace, /Generate AI image/);
+  assert.match(workspace, /option\.model_label/);
+  assert.match(workspace, /option\.quality_label/);
+  assert.match(workspace, /uses paid OpenAI API credits/);
+  assert.match(workspace, /generateSceneImage/);
+  assert.match(api, /\/generate-image/);
+  assert.doesNotMatch(workspace, /Try again later; the current scene is unchanged/);
+  assert.doesNotMatch(workspace, /openai_api_key|OPENAI_API_KEY|sk-[A-Za-z0-9]/);
+});
+
+test("generate AI image shows the new asset in place with a visible status", () => {
+  const generate = workspace.slice(workspace.indexOf("async function generateSelectedSceneImage"), workspace.indexOf("async function applySelectedMedia"));
+  // The panel stays open: the result is added to the alternatives and pre-selected.
+  assert.doesNotMatch(generate, /setCandidateScene\(null\)/);
+  assert.match(generate, /setCandidateSelection\(candidate\.token\)/);
+  assert.match(generate, /\[candidate, \.\.\.current\.candidates/);
+  assert.match(generate, /onProjectChange\(result\.project\)/);
+  assert.match(generate, /status: "generating"/);
+  assert.match(generate, /status: "failed"/);
+  // Every outcome is visible inside the Change Media panel, with a retry.
+  assert.match(workspace, /function GenerationStatus/);
+  assert.match(workspace, /Generating… this can take up to a minute\./);
+  assert.match(workspace, /role="alert"[^]*Retry/);
+  assert.match(workspace, /New · AI image/);
+  assert.match(workspace, /Your prompt/);
+  assert.match(workspace, /candidatePreview\(candidate\.preview_url\)/);
+  assert.match(workspace, /overlay<\/p>/);
+});
+
 test("voice previews debounce, cancel stale requests, and keep autoplay rejection usable", () => {
   assert.match(voiceControls, /new AbortController\(\)/);
   assert.match(voiceControls, /requestRef\.current !== requestId/);

@@ -245,12 +245,51 @@ class SceneMediaCandidateRead(BaseModel):
     height: int
     duration: float | None = None
     selected: bool = False
+    # Generated alternatives (Visual Director manual generation).
+    generated: bool = False
+    new: bool = False
+    prompt: str = ""
+    prompt_source: str | None = None
+    model_label: str | None = None
+    quality_label: str | None = None
+
+
+class SceneImageGenerationOptionRead(BaseModel):
+    available: bool
+    unavailable_reason: str | None = None
+    model: str
+    model_label: str
+    quality: str
+    quality_label: str
+    uses_paid_credits: bool = True
+    prompt: str = ""
+    prompt_summary: str = ""
+    generated_images: int = 0
 
 
 class SceneMediaCandidatesRead(BaseModel):
     scene_number: int
     preferred_kind: Literal["video", "photo"]
     candidates: list[SceneMediaCandidateRead]
+    generation: SceneImageGenerationOptionRead | None = None
+
+
+class SceneImageGenerate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    base_revision: int = Field(ge=1)
+    # Sent verbatim to the image model when present (edited in Change Media).
+    prompt: str | None = Field(default=None, max_length=1200)
+
+
+class SceneImageGenerationResultRead(BaseModel):
+    status: Literal["generated", "failed", "rejected", "unchanged"]
+    message: str
+    error_code: str | None = None
+    candidate: SceneMediaCandidateRead | None = None
+    prompt_used: str | None = None
+    prompt_source: str | None = None
+    project: dict
 
 
 class SceneMediaCandidateApply(BaseModel):
