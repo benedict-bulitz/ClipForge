@@ -121,11 +121,20 @@ def analyze_scene_quality(state: dict[str, Any]) -> dict[str, Any]:
     short_chain = 0
     previous_words: set[str] = set()
     format_plan = state.get("format_plan") if isinstance(state.get("format_plan"), dict) else {}
+    arc = state.get("story_arc") if isinstance(state.get("story_arc"), dict) else {}
+    required_ids = {
+        str(unit.get("id")) for unit in arc.get("units") or []
+        if isinstance(unit, dict) and not unit.get("may_be_omitted")
+    }
 
     for index, scene in enumerate(scenes):
         narration = str(scene.get("narration") or "")
         words = _words(narration)
         role = blocks.get(str(scene.get("block_id") or ""), "")
+        # The story arc's final payoff marks delivery even when the writer did
+        # not label that block "payoff".
+        if scene.get("is_final_payoff"):
+            role = "payoff"
         if role == "payoff":
             payoff_seen = True
         gain = len(words - seen_words) / max(1, len(words))
@@ -154,13 +163,20 @@ def analyze_scene_quality(state: dict[str, Any]) -> dict[str, Any]:
             transition_weak=transition_weak,
             generic_outro=generic_outro,
         )
+        story_required = bool(set(scene.get("story_unit_ids") or []) & required_ids)
+        if story_required and recommendation in {"TRIM", "SHORTEN_POST_PAYOFF"}:
+            # Information the arc requires is shortened in wording, never removed.
+            recommendation, severity = "KEEP", "info"
+            reasons = ["Carries information the story arc requires; tighten wording rather than removing it."]
         dead_air_risk = bool(duration_ratio > 1.9 and gain < 0.2 and visual_value < 0.2)
         if dead_air_risk and "The segment adds neither" not in " ".join(reasons):
             reasons.append("Long screen time is not matched by new narration or a visual change.")
         analyzed.append(
             {
                 "scene_id": str(scene.get("id") or f"scene_{index + 1}"),
-                "purpose": _purpose(role, gain, scene, payoff_seen),
+                "purpose": "primary_answer" if scene.get("is_primary_answer") and role != "payoff" else _purpose(role, gain, scene, payoff_seen),
+                "story_role": scene.get("story_role"),
+                "story_required": story_required,
                 "information_gain": round(gain, 3),
                 "visual_value": round(visual_value, 3),
                 "pacing_quality": "compressed" if chaotic or caption_overload else ("lingering" if dead_air_risk else "earned"),

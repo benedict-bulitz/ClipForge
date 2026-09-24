@@ -29,6 +29,8 @@ from .narration import (
 from .novelty import safe_novelty_plan
 from .pacing import analyze_pacing
 from .payoff import (
+    _is_protected_question,
+    _protected_answer,
     build_payoff_plan,
     fallback_triple_hook,
     hidden_payoff_words,
@@ -54,6 +56,15 @@ from .script_writer import (
     ScriptWriterRequest,
     ScriptWriterResult,
     generate_script_v2,
+)
+from .story_arc import (
+    annotate_story_roles,
+    arc_units,
+    essential_fact_ids,
+    hook_safe_facts,
+    omittable_fact_ids,
+    safe_story_arc,
+    story_brief,
 )
 from .voice import apply_voice_preferences, initial_voice
 
@@ -141,8 +152,63 @@ def _fiction_plan(prompt: str, intent: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _factual_blocks(intent: dict[str, Any], facts: list[dict[str, Any]]) -> list[dict[str, str]]:
+def _arc_forbidden_terms(story_arc: dict[str, Any] | None, intent: dict[str, Any]) -> set[str]:
+    """Words of a withheld primary answer that an opening hook must not use."""
+    if not isinstance(story_arc, dict) or not (story_arc.get("curiosity_gap") or {}).get("withhold_answer"):
+        return set()
+    claim = str(arc_units(story_arc).get(str(story_arc.get("primary_answer_id") or ""), {}).get("claim") or "")
+    if not claim:
+        return set()
+    return hidden_payoff_words({"hook_must_not_reveal": _protected_answer(claim, str(intent.get("question") or ""))})
+
+
+def _story_blocks(
+    intent: dict[str, Any], facts: list[dict[str, Any]], story_arc: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """Deterministic body in the arc's information order, carrying fact IDs.
+
+    The shortest complete version: every required unit, plus optional units
+    only when novelty says they add real value.
+    """
+    units = arc_units(story_arc)
+    by_id = {str(fact.get("id") or ""): fact for fact in facts}
+    required = essential_fact_ids(story_arc)
+    primary, final = story_arc.get("primary_answer_id"), story_arc.get("final_payoff_id")
+    blocks: list[dict[str, Any]] = []
+    for fact_id in story_arc.get("order") or []:
+        unit, fact = units.get(fact_id), by_id.get(fact_id)
+        if unit is None or fact is None:
+            continue
+        valuable = unit.get("novelty") in {"distinctive", "explanatory", "comparison", "core"}
+        if fact_id not in required and not valuable:
+            continue
+        claim = clean_research_claim(fact.get("claim"))
+        if not claim:
+            continue
+        if fact_id == final and final != primary:
+            role = "payoff"
+        elif fact_id == primary:
+            role = "payoff" if story_arc.get("structure") in {"reveal", "ranked_progression"} and fact_id == final else "answer"
+        else:
+            role = {"explanation": "explanation"}.get(str(unit.get("role")), "support")
+        blocks.append({"role": role, "text": claim, "fact_ids": [fact_id]})
+    return blocks
+
+
+def _factual_blocks(
+    intent: dict[str, Any], facts: list[dict[str, Any]], story_arc: dict[str, Any] | None = None
+) -> list[dict[str, str]]:
     de = intent["language"] == "de"
+    if facts and isinstance(story_arc, dict) and story_arc.get("units") and story_arc.get("status") != "fallback":
+        body = _story_blocks(intent, facts, story_arc)
+        if body:
+            hook = select_hook(
+                intent,
+                hook_safe_facts(facts, story_arc),
+                body=body[0]["text"],
+                forbidden_terms=_arc_forbidden_terms(story_arc, intent),
+            )
+            return ([{"role": "hook", "text": hook}] if hook else []) + body
     if not facts:
         message = (
             "Ohne verlässliche Recherche kann ich diese Frage noch nicht gut beantworten."
@@ -174,10 +240,34 @@ def _factual_blocks(intent: dict[str, Any], facts: list[dict[str, Any]]) -> list
     return ([{"role": "hook", "text": hook}] if hook else []) + blocks
 
 
+def _attach_story_fact_ids(blocks: list[dict[str, Any]], facts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Best-effort fact identity for planner blocks that carry none.
+
+    Writer V2 and the story fallback already attach fact IDs; only legacy
+    planner blocks are matched to the fact whose claim they clearly restate.
+    """
+    claims = [
+        (str(fact.get("id") or ""), {word.casefold() for word in re.findall(r"[\wäöüß]{4,}", str(fact.get("claim") or ""))})
+        for fact in facts
+        if fact.get("id")
+    ]
+    for block in blocks:
+        if block.get("fact_ids") or str(block.get("role") or "").casefold() in {"hook", "status"}:
+            continue
+        words = {word.casefold() for word in re.findall(r"[\wäöüß]{4,}", str(block.get("text") or ""))}
+        if not words:
+            continue
+        best = max(claims, key=lambda item: len(words & item[1]) / max(1, len(item[1])), default=None)
+        if best and len(words & best[1]) / max(1, len(best[1])) >= 0.5:
+            block["fact_ids"] = [best[0]]
+    return blocks
+
+
 def _safe_payoff_plan(
     intent: dict[str, Any], blocks: list[dict[str, Any]], supplied: dict[str, Any] | None = None,
     format_plan: dict[str, Any] | None = None,
     novelty_plan: dict[str, Any] | None = None,
+    story_arc: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Planning enrichment must never make an otherwise valid generation fail."""
     try:
@@ -187,6 +277,7 @@ def _safe_payoff_plan(
             supplied=supplied,
             format_plan=format_plan,
             novelty_plan=novelty_plan,
+            story_arc=story_arc,
         )
     except Exception:  # noqa: BLE001 - keep the established hook/body fallback usable
         body = [block for block in blocks if not _is_hook_block(block)]
@@ -269,6 +360,7 @@ def _generate_body_with_v2_or_fallback(
     *,
     provider: ScriptWriterProvider | None = None,
     review_provider: ScriptReviewProvider | None = None,
+    story_arc: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     diagnostics: dict[str, Any] = {
         "attempted": False,
@@ -313,6 +405,7 @@ def _generate_body_with_v2_or_fallback(
             payoff_plan=payoff_plan,
             format_plan=format_plan,
             novelty_plan=novelty_plan,
+            story_arc=story_brief(story_arc) or None,
         )
     except ValidationError as exc:
         diagnostics["reason"] = "request_validation_failed"
@@ -445,6 +538,7 @@ def _authoritative_hook_blocks(
     facts: list[dict[str, Any]] | None = None,
     model_candidates: list[dict[str, Any]] | None = None,
     payoff_plan: dict[str, Any] | None = None,
+    story_arc: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]], Any | None]:
     """Select one hook independently of whether the model supplied a hook block.
 
@@ -466,11 +560,11 @@ def _authoritative_hook_blocks(
     )
     candidate = select_hook_candidate(
         intent,
-        facts or [],
+        hook_safe_facts(facts or [], story_arc),
         body=body,
         existing=existing,
         model_candidates=model_candidates or [],
-        forbidden_terms=hidden_payoff_words(payoff_plan or {}),
+        forbidden_terms=hidden_payoff_words(payoff_plan or {}) | _arc_forbidden_terms(story_arc, intent),
     )
     if not candidate:
         return blocks, None
@@ -478,7 +572,17 @@ def _authoritative_hook_blocks(
         block for block in blocks
         if str(block.get("role") or "").casefold() != "hook"
     ]
-    return ([{"role": "hook", "text": candidate.text}, *remaining], candidate)
+    hook_block: dict[str, Any] = {"role": "hook", "text": candidate.text}
+    if story_arc and remaining:
+        # When the hook states the arc's opening fact verbatim, it delivers that
+        # fact: drop the duplicate body block instead of saying it twice.
+        def _norm(value: object) -> str:
+            return " ".join(str(value or "").casefold().split()).rstrip(".!?")
+
+        if _norm(candidate.text) == _norm(remaining[0].get("text")):
+            hook_block["fact_ids"] = list(remaining[0].get("fact_ids") or [])
+            remaining = remaining[1:]
+    return ([hook_block, *remaining], candidate)
 
 
 def _generate_authoritative_hook_blocks(
@@ -491,6 +595,7 @@ def _generate_authoritative_hook_blocks(
     reaction_arc: dict[str, Any] | None = None,
     format_plan: dict[str, Any] | None = None,
     novelty_plan: dict[str, Any] | None = None,
+    story_arc: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]], Any | None, Any]:
     """Use the one post-body hook path shared by production and validation."""
     body_blocks = [
@@ -500,17 +605,25 @@ def _generate_authoritative_hook_blocks(
     final_body = " ".join(
         str(block.get("text") or "").strip() for block in body_blocks
     )
+    planning = {
+        "payoff_plan": payoff_plan, "reaction_arc": reaction_arc,
+        "format_plan": format_plan, "novelty_plan": novelty_plan,
+    }
     try:
         hook_generation = generate_hook_candidates_with_openai(
-            prompt, intent, facts, final_body, settings, payoff_plan=payoff_plan,
-            reaction_arc=reaction_arc, format_plan=format_plan, novelty_plan=novelty_plan,
+            prompt, intent, facts, final_body, settings, **planning, story_arc=story_brief(story_arc) or None,
         )
-    except TypeError:  # Compatibility with isolated legacy hook-provider test doubles.
-        hook_generation = generate_hook_candidates_with_openai(
-            prompt, intent, facts, final_body, settings
-        )
+    except TypeError:  # Compatibility with hook-provider test doubles of older signatures.
+        try:
+            hook_generation = generate_hook_candidates_with_openai(
+                prompt, intent, facts, final_body, settings, **planning
+            )
+        except TypeError:
+            hook_generation = generate_hook_candidates_with_openai(
+                prompt, intent, facts, final_body, settings
+            )
     hooked_blocks, candidate = _authoritative_hook_blocks(
-        body_blocks, intent, facts, hook_generation.candidates, payoff_plan
+        body_blocks, intent, facts, hook_generation.candidates, payoff_plan, story_arc
     )
     return hooked_blocks, candidate, hook_generation
 
@@ -559,28 +672,44 @@ def _apply_selected_hook(
     hook_text = clean_narration_text(selected_hook or "").strip()
     if not hook_text:
         return blocks
+    existing = next((block for block in blocks if _is_hook_block(block)), None)
     remaining = [block for block in blocks if not _is_hook_block(block)]
-    return [{"role": "hook", "text": hook_text}, *remaining]
+    hook: dict[str, Any] = {"role": "hook", "text": hook_text}
+    if existing is not None and existing.get("fact_ids"):
+        hook["fact_ids"] = list(existing["fact_ids"])  # keep the hook's story identity
+    return [hook, *remaining]
 
 
 def _fit_blocks(
-    blocks: list[dict[str, str]], max_duration: int, wpm: int = SPEAKING_RATE_WPM
+    blocks: list[dict[str, str]], max_duration: int, wpm: int = SPEAKING_RATE_WPM,
+    story_arc: dict[str, Any] | None = None,
 ) -> list[dict[str, str]]:
     max_words = max(12, int(max_duration * wpm / 60))
     fitted = copy.deepcopy(blocks)
+    omittable = omittable_fact_ids(story_arc)
+    required = essential_fact_ids(story_arc)
+
+    def drop_priority(index: int) -> tuple[int, int]:
+        # Drop optional information first, required information last; within
+        # a tier the latest block goes first (previous behaviour).
+        fact_ids = set(fitted[index].get("fact_ids") or [])
+        if fact_ids and fact_ids <= omittable:
+            tier = 0
+        elif fact_ids & required:
+            tier = 2
+        else:
+            tier = 1
+        return (tier, -index)
 
     def total_words(items: list[dict[str, str]]) -> int:
         return sum(len(_words(item["text"])) for item in items)
 
     while len(fitted) > 1 and total_words(fitted) > max_words:
         # Never drop the authoritative hook; trim trailing body blocks first.
-        drop_index = next(
-            (
-                index
-                for index in range(len(fitted) - 1, -1, -1)
-                if not _is_hook_block(fitted[index])
-            ),
-            None,
+        drop_index = min(
+            (index for index in range(len(fitted)) if not _is_hook_block(fitted[index])),
+            key=drop_priority,
+            default=None,
         )
         if drop_index is None:
             break
@@ -714,6 +843,7 @@ def _normalise_blocks(
     blocks: list[dict[str, Any]],
     max_duration: int,
     wpm: int = SPEAKING_RATE_WPM,
+    story_arc: dict[str, Any] | None = None,
 ) -> list[dict[str, str]]:
     clean = clean_script_blocks(blocks)
     sentence_blocks: list[dict[str, str]] = []
@@ -742,7 +872,7 @@ def _normalise_blocks(
                     "fact_ids": list(block.get("fact_ids") or []),
                 }
             )
-    fitted = _fit_blocks(sentence_blocks, max_duration, wpm)
+    fitted = _fit_blocks(sentence_blocks, max_duration, wpm, story_arc)
     for index, block in enumerate(fitted, 1):
         block["id"] = f"voice_block_{index:02d}"
     return fitted
@@ -754,7 +884,8 @@ def _refresh_script_derivatives(
     max_duration = int(state["duration"]["max_seconds"])
     voice_speed = max(0.7, min(1.4, float(state.get("voice", {}).get("speed") or 1.0)))
     wpm = max(1, round(SPEAKING_RATE_WPM * voice_speed))
-    blocks = _normalise_blocks(state["script"]["blocks"], max_duration, wpm)
+    story_arc = state.get("story_arc") if isinstance(state.get("story_arc"), dict) else None
+    blocks = _normalise_blocks(state["script"]["blocks"], max_duration, wpm, story_arc)
     state["script"]["blocks"] = blocks
     script_text = " ".join(block["text"] for block in blocks)
     word_count = len(_words(script_text))
@@ -788,6 +919,7 @@ def _refresh_script_derivatives(
     state["timeline"]["timing"] = "estimated"
     state["timeline"]["scene_ids"] = [scene["id"] for scene in state["scenes"]]
     replan_attention(state)
+    annotate_story_roles(state)
     analyze_pacing(state)
     plan_viewer_reactions(state)
 
@@ -893,12 +1025,29 @@ def build_initial_state(
     minimum_duration = options.min_duration
     legacy_body_blocks = plan.get("script_blocks") or _factual_blocks(intent, facts)
     format_plan = plan_format(intent, facts, legacy_body_blocks, novelty_plan)
+    # Story arc: what the viewer learns, in which role and order.  It is the
+    # shared semantic input of payoff, writer, hook, fitting and scene systems.
+    supplied_payoff = plan.get("payoff_plan") if isinstance(plan.get("payoff_plan"), dict) else {}
+    story_arc = safe_story_arc(
+        intent,
+        facts,
+        format_plan,
+        novelty_plan,
+        protected=bool(supplied_payoff.get("hook_must_not_reveal")) or _is_protected_question(intent)
+        or format_plan.get("selected_format") == "quiz",
+        supplied=plan.get("story_arc") if isinstance(plan.get("story_arc"), dict) else None,
+    )
+    if plan.get("script_blocks"):
+        legacy_body_blocks = _attach_story_fact_ids(copy.deepcopy(plan["script_blocks"]), facts)
+    else:
+        legacy_body_blocks = _factual_blocks(intent, facts, story_arc)
     initial_payoff_plan = _safe_payoff_plan(
         intent,
         legacy_body_blocks,
         supplied=plan.get("payoff_plan"),
         format_plan=format_plan,
         novelty_plan=novelty_plan,
+        story_arc=story_arc,
     )
     raw_blocks, script_writer_diagnostics = _generate_body_with_v2_or_fallback(
         prompt,
@@ -912,6 +1061,7 @@ def build_initial_state(
         novelty_plan,
         provider=script_writer_provider,
         review_provider=script_review_provider,
+        story_arc=story_arc,
     )
     raw_blocks, trimmed_post_payoff_fluff = trim_post_payoff_fluff(raw_blocks)
     payoff_plan = _safe_payoff_plan(
@@ -920,6 +1070,7 @@ def build_initial_state(
         supplied=initial_payoff_plan,
         format_plan=format_plan,
         novelty_plan=novelty_plan,
+        story_arc=story_arc,
     )
     planned_reaction_arc = reaction_arc(intent, payoff_plan, format_plan)
     raw_blocks, selected_hook_candidate, hook_generation = _generate_authoritative_hook_blocks(
@@ -932,10 +1083,11 @@ def build_initial_state(
         planned_reaction_arc,
         format_plan,
         novelty_plan,
+        story_arc,
     )
     hook_candidates = hook_generation.candidates
     wpm = max(1, round(SPEAKING_RATE_WPM * float(options.voice_speed or 1.0)))
-    blocks = _normalise_blocks(raw_blocks, max_duration, wpm)
+    blocks = _normalise_blocks(raw_blocks, max_duration, wpm, story_arc)
     # Normalization must preserve the authoritative hook intact. Re-apply the
     # pre-normalization selection so duration fitting cannot rewrite the opening.
     if selected_hook_candidate:
@@ -961,6 +1113,15 @@ def build_initial_state(
         triple_hook_fallback,
         payoff_plan,
     )
+    # All three hook channels share the same story brief.
+    triple_hook["story_brief"] = {
+        "primary_question": story_arc.get("primary_question"),
+        "curiosity_gap": story_arc.get("curiosity_gap"),
+        "withhold_answer": bool((story_arc.get("curiosity_gap") or {}).get("withhold_answer")),
+        "protected_fact_ids": list((story_arc.get("hook") or {}).get("protected_ids") or []),
+        "key_surprise_id": story_arc.get("key_surprise_id"),
+        "format": story_arc.get("format"),
+    }
     script_text = " ".join(block["text"] for block in blocks)
     word_count = len(_words(script_text))
     natural_duration = round(max(4, word_count / wpm * 60), 2)
@@ -1005,7 +1166,9 @@ def build_initial_state(
         "information_plan": {
             "must_know": [fact["id"] for fact in facts if fact["priority"] == "MUST_KNOW"],
             "answer_skeleton": [block["role"].upper() for block in blocks],
+            "story_order": list(story_arc.get("order") or []),
         },
+        "story_arc": story_arc,
         "payoff_plan": {
             **payoff_plan,
             "post_payoff_fluff_trimmed": trimmed_post_payoff_fluff,
@@ -1157,6 +1320,7 @@ def build_initial_state(
         "edit_history": [],
     }
     replan_attention(state)
+    annotate_story_roles(state)
     analyze_pacing(state)
     plan_viewer_reactions(state, planned_reaction_arc)
     return attach_hashes(state)
@@ -1290,7 +1454,7 @@ def apply_edit(
         state["duration"]["max_seconds"] = max(
             10, min(int(state["duration"]["max_seconds"]), round(previous["duration"]["estimated_seconds"] * 0.8))
         )
-        blocks[:] = _normalise_blocks(blocks, state["duration"]["max_seconds"])
+        blocks[:] = _normalise_blocks(blocks, state["duration"]["max_seconds"], story_arc=state.get("story_arc"))
         script_changed = True
         applied.append("shorter script")
 
@@ -1324,7 +1488,7 @@ def apply_edit(
             key=lambda index: len(target_words & set(_words(blocks[index]["text"].casefold()))),
         )
         blocks.pop(remove_index)
-        blocks[:] = _normalise_blocks(blocks, state["duration"]["max_seconds"])
+        blocks[:] = _normalise_blocks(blocks, state["duration"]["max_seconds"], story_arc=state.get("story_arc"))
         script_changed = True
         applied.append("removed sentence")
 
@@ -1361,7 +1525,7 @@ def apply_edit(
         )
         state["research"]["status"] = result.status
         blocks.insert(-1, {"id": "", "role": "detail", "text": next_fact["claim"]})
-        blocks[:] = _normalise_blocks(blocks, state["duration"]["max_seconds"])
+        blocks[:] = _normalise_blocks(blocks, state["duration"]["max_seconds"], story_arc=state.get("story_arc"))
         script_changed = True
         applied.append("researched fact")
 
@@ -1419,7 +1583,7 @@ def apply_edit(
         maximum = max(10, min(180, int(duration_match.group(1))))
         state["duration"]["max_seconds"] = maximum
         state.setdefault("options", {})["max_duration"] = maximum
-        blocks[:] = _normalise_blocks(blocks, maximum)
+        blocks[:] = _normalise_blocks(blocks, maximum, story_arc=state.get("story_arc"))
         script_changed = True
         _refresh_script_derivatives(state, old_scenes=old_scenes)
         for item in state["scenes"]:

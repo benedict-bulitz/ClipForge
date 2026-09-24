@@ -94,8 +94,14 @@ def build_payoff_plan(
     supplied: dict[str, Any] | None = None,
     format_plan: dict[str, Any] | None = None,
     novelty_plan: dict[str, Any] | None = None,
+    story_arc: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Build a safe, persisted plan without changing the narration body."""
+    """Build a safe, persisted plan without changing the narration body.
+
+    With a story arc, the protected reveal is its primary answer (by fact
+    identity), never merely the last block: a comparison may end on a
+    secondary insight that is not the answer.
+    """
     supplied = supplied if isinstance(supplied, dict) else {}
     body = [block for block in blocks if str(block.get("role") or "").casefold() != "hook"]
     explicit = next(
@@ -111,8 +117,12 @@ def build_payoff_plan(
         if str(block.get("role") or "").casefold() != "payoff" and _clean(block.get("text"))
     ][:4]
     dependencies = [item for item in support if item != payoff][:3]
+    arc = story_arc if isinstance(story_arc, dict) else {}
+    arc_units = {str(unit.get("id")): unit for unit in arc.get("units") or [] if isinstance(unit, dict)}
+    primary_answer = _clean(arc_units.get(str(arc.get("primary_answer_id") or ""), {}).get("claim"))
+    final_payoff = _clean(arc_units.get(str(arc.get("final_payoff_id") or ""), {}).get("claim"))
     hidden = _clean(supplied.get("hook_must_not_reveal")) or (
-        _protected_answer(payoff, question) if protected else ""
+        _protected_answer(primary_answer or payoff, question) if protected else ""
     )
     format_name = str((format_plan or {}).get("selected_format") or "").casefold()
     novelty = novelty_plan if isinstance(novelty_plan, dict) else {}
@@ -132,6 +142,10 @@ def build_payoff_plan(
         "payoff_dependencies": dependencies,
         "reveal_policy": "after_supporting_information" if protected else "immediate_context_allowed",
         "hook_must_not_reveal": hidden,
+        "primary_answer_id": arc.get("primary_answer_id") or supplied.get("primary_answer_id"),
+        "final_payoff_id": arc.get("final_payoff_id") or supplied.get("final_payoff_id"),
+        "primary_answer": primary_answer or _clean(supplied.get("primary_answer")) or None,
+        "final_payoff": final_payoff or _clean(supplied.get("final_payoff")) or None,
         "desired_viewer_reaction": _clean(supplied.get("desired_viewer_reaction"), 80) or _reaction(intent, protected),
         "supporting_information": support,
         "format": format_name or None,
