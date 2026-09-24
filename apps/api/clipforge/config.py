@@ -34,7 +34,7 @@ class Settings(BaseSettings):
     pixabay_api_key: str | None = None
     # Visual Director V2: paid generated-image fallback after free media fails.
     generated_image_fallback_enabled: bool = True
-    generated_image_model: str = "gpt-image-2.5-flare"
+    generated_image_model: str = "gpt-image-2"
     generated_image_quality: str = "low"
     generated_image_size: str = "1024x1536"
     generated_image_timeout_seconds: float = 90.0

@@ -123,7 +123,7 @@ def png_bytes(color=(90, 120, 150)) -> bytes:
 class FakeGenerator:
     """Stands in for the OpenAI Images API (no network, no credits)."""
 
-    model = "gpt-image-2.5-flare"
+    model = "gpt-image-2"
 
     def __init__(self, *, error: str | None = None):
         self.error = error
@@ -275,7 +275,7 @@ def test_generated_image_fallback_is_selected_when_no_real_candidate_survives(tm
     assert scene["visual_director"]["resolved_type"] == visual_director.GENERATED_IMAGE
     assert (tmp_path / media["cache_path"]).is_file()
     generation = media["generation"]
-    assert generation["model"] == "gpt-image-2.5-flare" and generation["quality"] == "low"
+    assert generation["model"] == "gpt-image-2" and generation["quality"] == "low"
     assert generation["scene_id"] == "scene_03" and generation["fact_ids"] == ["fact_3"]
     assert generation["reason"].startswith("no_accepted_real_media")
     assert generation["usage"] == {"total_tokens": 321}
@@ -289,7 +289,7 @@ def test_generated_image_fallback_is_selected_when_no_real_candidate_survives(tm
     assert "9:16" in prompt and "captions" in prompt
     summary = state["visual_director"]["summary"]
     assert summary["auto_generated_images"] == 3
-    assert state["visual_director"]["policy"]["generated_image_model"] == "gpt-image-2.5-flare"
+    assert state["visual_director"]["policy"]["generated_image_model"] == "gpt-image-2"
 
 
 def test_real_media_is_searched_before_any_generation(tmp_path):
@@ -310,7 +310,7 @@ def test_generator_is_only_created_with_key_and_enabled_setting(tmp_path):
     generator = get_image_generator(settings_for(tmp_path, openai_api_key="sk-test"))
     assert isinstance(generator, OpenAIImageGenerator)
     assert "sk-test" not in repr(generator)
-    assert generator.model == "gpt-image-2.5-flare"
+    assert generator.model == "gpt-image-2"
 
 
 def test_openai_generator_requests_low_quality_portrait_png(tmp_path):
@@ -326,7 +326,7 @@ def test_openai_generator_requests_low_quality_portrait_png(tmp_path):
     generator = OpenAIImageGenerator(settings_for(tmp_path, openai_api_key="sk-test"), client=SimpleNamespace(images=Images()))
     image = generator.generate("A photo of wet fingertips", quality="low", size="1024x1536")
 
-    assert captured["model"] == "gpt-image-2.5-flare"
+    assert captured["model"] == "gpt-image-2"
     assert captured["quality"] == "low" and captured["size"] == "1024x1536" and captured["n"] == 1
     assert image.data.startswith(b"\x89PNG") and image.usage == {}
 
@@ -347,9 +347,11 @@ def test_project_budget_stops_automatic_paid_generation(tmp_path):
     assert statuses.count("accepted") == 3
     assert statuses.count("project_budget_exhausted") == 3
     for scene in state["scenes"][3:]:
-        # Clearly marked, safe non-generated fallback (reuse of accepted media).
+        # Clearly marked, safe non-generated fallback: reuse of accepted media,
+        # or a free process graphic for the closing idea.
         assert scene["visual_director"]["decision"] == visual_director.DEGRADED
-        assert scene["visual_director"]["resolved_type"] == visual_director.REUSE_PREVIOUS_VISUAL
+        expected = visual_director.SIMPLE_GRAPHIC if scene["visual_director"]["story_role"] == "final_payoff" else visual_director.REUSE_PREVIOUS_VISUAL
+        assert scene["visual_director"]["resolved_type"] == expected
 
 
 def test_exhausted_budget_from_earlier_revisions_is_respected(tmp_path):
@@ -380,7 +382,10 @@ def test_generation_failure_is_nonfatal_and_not_retried_per_scene(tmp_path):
     first, *rest = state["scenes"]
     assert first["visual_director"]["generation"]["status"] == "failed"
     assert all(scene["visual_director"]["generation"]["status"] == "provider_timeout" for scene in rest)
-    assert all(scene["asset_status"] == "real_media_unavailable" for scene in state["scenes"])
+    *unillustrated, closing = state["scenes"]
+    assert all(scene["asset_status"] == "real_media_unavailable" for scene in unillustrated)
+    # The closing idea still gets a free, deterministic graphic (nonfatal).
+    assert closing["asset_status"] == "graphic_ready"
     assert state["visual_director"]["generations"][0]["billed"] is False
 
 
@@ -643,7 +648,7 @@ def test_change_media_offers_generation_instead_of_dead_end(tmp_path):
 
     assert candidates == []
     assert option["available"] is True
-    assert option["model_label"] == "GPT Image 2.5 Flare" and option["quality_label"] == "Low"
+    assert option["model_label"] == "GPT Image 2" and option["quality_label"] == "Low"
     assert option["uses_paid_credits"] is True
     assert "wrinkled fingers gripping" in option["prompt"]
     assert "sk-test" not in str(option)
@@ -800,7 +805,7 @@ def test_provider_errors_are_categorised_without_leaking_secrets(tmp_path):
 
     class Images:
         def generate(self, **_kwargs):
-            raise NotFoundError("model gpt-image-2.5-flare not found for key sk-secret-123")
+            raise NotFoundError("model gpt-image-2 not found for key sk-secret-123")
 
     generator = OpenAIImageGenerator(settings_for(tmp_path, openai_api_key="sk-secret-123"), client=SimpleNamespace(images=Images()))
     with pytest.raises(ImageGenerationError) as caught:
@@ -812,3 +817,258 @@ def test_provider_errors_are_categorised_without_leaking_secrets(tmp_path):
     failing = FakeGenerator(error="model_unavailable")
     run(state, tmp_path, generator=failing)
     assert len(failing.prompts) == 1  # unavailable model trips the per-run breaker
+
+
+# ---------------------------------------------------------------------------
+# Story Intelligence V2 integration
+#
+# States below carry the scene annotations written by
+# ``story_arc.annotate_story_roles`` (story_role, story_stage, story_unit_ids,
+# is_primary_answer, is_final_payoff) and a ``story_arc`` with its curiosity
+# gap.  The Visual Director must read them directly.
+# ---------------------------------------------------------------------------
+
+def annotate(state, rows, *, withhold, primary, final):
+    """Apply Story Arc annotations: rows = (story_role, story_stage) per scene."""
+    for scene, (role, stage) in zip(state["scenes"], rows, strict=True):
+        units = [f"fact_{scene['id'][-1]}"]
+        scene.update(
+            story_role=role, story_stage=stage, story_unit_ids=units,
+            is_primary_answer=units[0] == primary, is_final_payoff=units[0] == final,
+        )
+        scene["visual_intent"].update(story_role=role, story_stage=stage)
+    state["story_arc"] = {
+        "version": 1,
+        "primary_answer_id": primary,
+        "final_payoff_id": final,
+        "curiosity_gap": {"withhold_answer": withhold},
+    }
+    return state
+
+
+def arc_finger_project():
+    scenes = [*FINGER_SCENES, ("explanation", "Die Blutgefäße werden enger, die Haut legt sich in Falten.", {
+        "visual_goal": "close-up of wrinkled wet fingertip skin",
+        "objects": ["wrinkled fingertip skin"],
+        "context": ["water droplets"],
+        "media_queries": ["wrinkled fingertip skin", "wet fingertips close-up"],
+    })]
+    state = finger_project(scenes)
+    # Explanation topic: answer first, nothing withheld -> stage "open".
+    return annotate(
+        state,
+        [(None, "open"), ("primary_answer", "reveal"), ("secondary_insight", "open"), ("explanation", "open")],
+        withhold=False, primary="fact_2", final="fact_2",
+    )
+
+
+def arc_island_project():
+    state = protected_project()
+    scenes = state["scenes"]
+    scenes.append({
+        **copy.deepcopy(scenes[1]), "id": "scene_04", "block_id": "voice_block_04", "start": 12, "end": 16,
+        "narration": "Dafür sind viele Inseln Schwedens winzig.",
+    })
+    state["script"]["blocks"].append({"id": "voice_block_04", "role": "support", "text": scenes[3]["narration"], "fact_ids": ["fact_4"]})
+    return annotate(
+        state,
+        [(None, "before_reveal"), ("evidence", "before_reveal"), ("primary_answer", "reveal"), ("secondary_insight", "after_reveal")],
+        withhold=True, primary="fact_3", final="fact_4",
+    )
+
+
+def test_story_arc_fields_are_authoritative_over_legacy_inference():
+    state = arc_island_project()
+    # Legacy inference would call block 2 "evidence" and block 4 "final_payoff";
+    # swap the block roles to prove the arc, not block roles, decides.
+    state["script"]["blocks"][2]["role"] = "support"
+    plan = {"protected_entities": [], "primary_subjects": [], "secondary_subjects": []}
+    contexts = [visual_director.scene_story_context(scene, state) for scene in state["scenes"]]
+
+    assert [context["source"] for context in contexts] == ["story_arc"] * 4
+    assert [context["story_role"] for context in contexts] == ["hook", "evidence", "primary_answer", "final_payoff"]
+    assert [context["reveal_allowed"] for context in contexts] == [False, False, True, True]
+    assert contexts[2]["fact_ids"] == ["fact_3"]
+    strategy = visual_director.plan_scene_strategy(state["scenes"][3], state, plan)
+    # Final payoff and primary answer stay distinct identities.
+    assert strategy["story_role"] == "final_payoff" and strategy["arc_role"] == "secondary_insight"
+    assert strategy["is_final_payoff"] and not strategy["is_primary_answer"]
+
+
+def test_wet_fingers_story_arc_reaches_director_and_generation(tmp_path):
+    state = arc_finger_project()
+    generator = FakeGenerator()
+
+    run(state, tmp_path, photos=[BOOK, BUS, HAND], verifier=Verifier({"book": POOR, "bus": WEAK_PASS}), generator=generator)
+
+    assert state["scenes"][0]["media"]["provider_id"] == "hand"  # free real media first
+    assert len(generator.prompts) <= 3
+    roles = [scene["visual_director"]["story_role"] for scene in state["scenes"]]
+    assert roles == ["hook", "primary_answer", "secondary_insight", "explanation"]
+    assert {scene["visual_director"]["story_source"] for scene in state["scenes"]} == {"story_arc"}
+    for scene in state["scenes"]:
+        assert scene.get("media", {}).get("provider_id") not in {"book", "bus"}
+    explanation = state["scenes"][3]
+    assert explanation["visual_director"]["decision"] == visual_director.GENERATE_FALLBACK
+    assert visual_director.SIMPLE_GRAPHIC in explanation["visual_director"]["fallback_chain"]  # before filler reuse
+    prompt = explanation["media"]["generation"]["prompt"].casefold()
+    assert "wrinkled" in prompt and ("fingertip" in prompt or "finger" in prompt) and "wet" in prompt
+    assert "haut" not in prompt and "falten" not in prompt  # no raw narration
+    generation = explanation["media"]["generation"]
+    assert generation["ai_generated"] is True and explanation["media"]["ai_generated"] is True
+    assert generation["story_role"] == "explanation" and generation["story_stage"] == "open"
+    assert generation["fact_ids"] == ["fact_4"] and generation["scene_id"] == "scene_04"
+    # Nothing is withheld in an explanation: everything is reveal-safe.
+    assert all(scene["media"].get("reveal_safe", True) for scene in state["scenes"] if scene.get("media"))
+
+
+def test_sweden_indonesia_arc_hides_answer_until_reveal(tmp_path):
+    state = arc_island_project()
+    generator = FakeGenerator()
+
+    run(state, tmp_path, generator=generator)
+
+    hook, evidence, answer, payoff = state["scenes"]
+    records = {item["scene_id"]: item for item in state["visual_director"]["generations"]}
+    for scene in (hook, evidence):
+        assert scene["visual_director"]["reveal_allowed"] is False
+        record = records.get(scene["id"], {})
+        assert "indones" not in str(record.get("prompt", "")).casefold()
+        media = scene.get("media") or {}
+        # Nothing that may depict the answer appears before the reveal.
+        assert media.get("reveal_safe", True) is True
+        assert media.get("story_role") != "primary_answer"
+    # The reveal scene may show the answer; its visual is recorded as unsafe
+    # for any earlier scene (reuse, thumbnails).
+    assert answer["visual_director"]["reveal_allowed"] is True
+    assert "indones" in records[answer["id"]]["prompt"].casefold()
+    assert answer["media"]["reveal_safe"] is False
+    assert answer["media"]["generation"]["reveal_safe"] is False
+    # Primary answer and final payoff stay distinct.
+    assert answer["visual_director"]["story_role"] == "primary_answer"
+    assert payoff["visual_director"]["story_role"] == "final_payoff"
+
+
+def test_reveal_visuals_cannot_be_reused_or_used_as_thumbnails_before_reveal():
+    from clipforge.media import _reuse_safe
+    from clipforge.thumbnails import _scene_payoff_safe
+
+    state = arc_island_project()
+    answer_strategy = visual_director.plan_scene_strategy(state["scenes"][2], state, {"protection_scope": "revealed"})
+    hook_strategy = visual_director.plan_scene_strategy(state["scenes"][0], state, {})
+    # Real media picked at the reveal without active protection is unsafe earlier.
+    assert visual_director.visual_reveal_safe(state, answer_strategy, {"protection_scope": "revealed"}) is False
+    assert visual_director.visual_reveal_safe(state, hook_strategy, {"protection_scope": "before_reveal"}) is True
+    answer_media = {"source": "pexels", "provider": "pexels", "reveal_safe": False, "story_role": "primary_answer"}
+    assert not _reuse_safe(answer_media, hook_strategy)
+    assert _reuse_safe(answer_media, {**hook_strategy, "reveal_allowed": True, "story_role": "evidence"})
+    # A secondary insight stays visually distinct from the primary answer.
+    assert not _reuse_safe({**answer_media, "reveal_safe": True}, {"reveal_allowed": True, "story_role": "secondary_insight"})
+    assert _scene_payoff_safe({"media": answer_media}, {"protected_information": "x"}) is False
+
+
+def test_arc_governs_on_screen_text_without_payoff_string_matching():
+    state = arc_island_project()
+    state["payoff_plan"]["hook_must_not_reveal"] = "17.000 Inseln"
+    scene = {**state["scenes"][1], "narration": "Eine Seite hat 17.000 Inseln."}
+    plan = {"protected_entities": [], "primary_subjects": [], "secondary_subjects": []}
+
+    strategy = visual_director.plan_scene_strategy(scene, state, plan)
+
+    # The arc keeps the answer out of pre-reveal narration structurally; the
+    # graphic only repeats what the scene says, so no text matching applies.
+    assert strategy["reveal_allowed"] is False
+    assert strategy["planned_type"] == visual_director.TEXT_NUMBER_VISUAL
+    # Structural identity still applies: a protected-side term is blocked.
+    blocked = visual_director.plan_scene_strategy(scene, state, {**plan, "protected_entities": ["inseln"]})
+    assert blocked["planned_type"] != visual_director.TEXT_NUMBER_VISUAL
+
+
+def test_unseen_topic_with_story_arc_needs_no_vocabulary(tmp_path):
+    scenes = [
+        ("hook", "Warum knistert Kaminholz beim Brennen?", {
+            "visual_goal": "burning firewood crackling in a fireplace", "objects": ["burning firewood"],
+            "media_queries": ["burning firewood fireplace"],
+        }),
+        ("answer", "Wasser im Holz verdampft und sprengt kleine Poren.", {
+            "visual_goal": "steam escaping from a burning log", "objects": ["steaming log"],
+            "media_queries": ["steam burning log"],
+        }),
+    ]
+    state = annotate(finger_project(scenes), [(None, "open"), ("primary_answer", "reveal")], withhold=False, primary="fact_2", final="fact_2")
+    generator = FakeGenerator()
+    fire = cand("fire", "Burning firewood crackling in a fireplace", query="burning firewood fireplace")
+
+    run(state, tmp_path, photos=[fire, BUS], verifier=Verifier({"bus": POOR}), generator=generator)
+
+    hook, answer = state["scenes"]
+    assert hook["media"]["provider_id"] == "fire"
+    assert answer["visual_director"]["story_role"] == "primary_answer"
+    assert "steam" in generator.prompts[0].casefold()
+
+
+@pytest.mark.parametrize("combination", ["no_arc_old_media", "arc_no_director", "director_no_arc", "combined"])
+def test_story_and_director_state_combinations_load(tmp_path, combination):
+    state = arc_island_project() if combination in {"arc_no_director", "combined"} else protected_project()
+    cached = tmp_path / "project" / "assets" / "pexels" / "photo-old.jpg"
+    cached.parent.mkdir(parents=True, exist_ok=True)
+    cached.write_bytes(b"old")
+    if combination == "no_arc_old_media":
+        state["scenes"][0]["media"] = {
+            "identity": "pexels:photo:old", "provider": "pexels", "provider_id": "old", "kind": "photo",
+            "cache_path": "project/assets/pexels/photo-old.jpg", "query": "islands",
+        }
+    if combination in {"director_no_arc", "combined"}:
+        # Director state from an earlier build, including a stale model id.
+        state["visual_director"] = {"version": 2, "policy": {"generated_image_model": "an-obsolete-model"}, "generations": []}
+        for scene in state["scenes"]:
+            scene["visual_director"] = {"version": 2, "story_role": "evidence", "decision": "MISSING"}
+
+    run(state, tmp_path, generator=FakeGenerator())
+
+    source = "story_arc" if combination in {"arc_no_director", "combined"} else "legacy_inference"
+    for scene in state["scenes"]:
+        if "visual_director" not in scene:
+            assert scene["media"]["identity"] == "pexels:photo:old"  # cached old media kept as is
+            continue
+        assert scene["visual_director"]["story_source"] == source
+    assert state["visual_director"]["policy"]["generated_image_model"] == "gpt-image-2"
+    assert all(item["model"] == "gpt-image-2" for item in state["visual_director"]["generations"] if item.get("billed"))
+
+
+def test_manual_generation_uses_scene_story_arc(db, tmp_path):
+    from test_export import seed_project
+
+    from clipforge.media_candidates import generate_scene_media, scene_generation_option
+
+    settings = settings_for(tmp_path, openai_api_key="sk-test")
+    state = arc_island_project()
+    state.update(render={"status": "complete", "url": None})
+    project = seed_project(db, "44444444-4444-4444-8444-444444444444", state)
+    generator = FakeGenerator()
+
+    option = scene_generation_option(state, 2, settings)
+    generate_scene_media(db, project, 2, settings, generator=generator, visual_verifier=Verifier(), auto_render=False)
+
+    assert option["model"] == "gpt-image-2" and option["model_label"] == "GPT Image 2"
+    assert "indones" not in generator.prompts[0].casefold()
+    assert "swedish" in generator.prompts[0].casefold()
+    db.expire_all()
+    from clipforge.services import get_project, serialize_project
+
+    scene = serialize_project(get_project(db, project.id))["revision"]["state"]["scenes"][1]
+    generation = scene["media"]["generation"]
+    assert generation["trigger"] == "manual" and generation["story_source"] == "story_arc"
+    assert generation["story_stage"] == "before_reveal" and generation["reveal_safe"] is True
+    assert generation["model"] == "gpt-image-2" and scene["media"]["ai_generated"] is True
+
+
+def test_image_size_resolves_to_a_supported_portrait_size():
+    from clipforge.image_generation import resolve_image_size
+
+    assert resolve_image_size("gpt-image-2", "1024x1536") == "1024x1536"
+    assert resolve_image_size("gpt-image-2", "1088x1920") == "1088x1920"  # 9:16-ish, edges divisible by 16
+    assert resolve_image_size("gpt-image-2", "1080x1920") == "1024x1536"  # 1080 not divisible by 16
+    assert resolve_image_size("gpt-image-2", "512x4096") == "1024x1536"  # beyond 1:3 / max edge
+    assert resolve_image_size("gpt-image-1", "1088x1920") == "1024x1536"  # standard sizes only
+    assert resolve_image_size("gpt-image-2", "nonsense") == "1024x1536"

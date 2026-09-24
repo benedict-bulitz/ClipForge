@@ -17,13 +17,42 @@ from openai import OpenAI, OpenAIError
 
 from .config import Settings
 
-MODEL_LABELS = {"gpt-image-2.5-flare": "GPT Image 2.5 Flare"}
+# Display names only; the model identifier itself comes from
+# ``Settings.generated_image_model`` (single configuration source).
+MODEL_LABELS = {"gpt-image-2": "GPT Image 2", "gpt-image-1.5": "GPT Image 1.5", "gpt-image-1": "GPT Image 1"}
 QUALITY_LABELS = {"low": "Low", "medium": "Medium", "high": "High", "auto": "Auto"}
+# low/medium/high/auto are the GPT image model qualities of the Images API.
 SUPPORTED_QUALITIES = frozenset(QUALITY_LABELS)
 # Standard portrait size supported by every GPT image model; 2:3 is cropped to
 # 9:16 by the existing smart-crop step, and prompts keep the subject centered.
 DEFAULT_PORTRAIT_SIZE = "1024x1536"
+STANDARD_SIZES = ("1024x1024", "1024x1536", "1536x1024")
+# Models documented by the installed SDK as accepting arbitrary WIDTHxHEIGHT
+# (edges divisible by 16, aspect ratio between 1:3 and 3:1, max edge 3840).
+_FLEXIBLE_SIZE_MODELS = ("gpt-image-2",)
+_MAX_EDGE = 3840
 MAX_PROMPT_CHARS = 1200
+
+
+def resolve_image_size(model: str, requested: str | None) -> str:
+    """A size the model accepts; otherwise the closest valid portrait size."""
+    value = str(requested or "").strip().casefold()
+    if value in STANDARD_SIZES:
+        return value
+    try:
+        width, height = (int(part) for part in value.split("x", 1))
+    except ValueError:
+        return DEFAULT_PORTRAIT_SIZE
+    flexible = any(model == name or model.startswith(f"{name}-") for name in _FLEXIBLE_SIZE_MODELS)
+    if (
+        flexible
+        and width > 0 and height > 0
+        and width % 16 == 0 and height % 16 == 0
+        and max(width, height) <= _MAX_EDGE
+        and 1 / 3 <= width / height <= 3
+    ):
+        return f"{width}x{height}"
+    return DEFAULT_PORTRAIT_SIZE if height >= width else "1536x1024"
 
 
 class ImageGenerationError(RuntimeError):
@@ -91,6 +120,7 @@ class OpenAIImageGenerator:
         if not prompt:
             raise ImageGenerationError("invalid_prompt", "No visual prompt could be built for this scene.")
         quality = quality if quality in SUPPORTED_QUALITIES else "low"
+        size = resolve_image_size(self.model, size)
         try:
             client = self._client or OPENAI_CLIENT_FACTORY(
                 self._settings, float(self._settings.generated_image_timeout_seconds)

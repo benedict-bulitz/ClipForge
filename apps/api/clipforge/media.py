@@ -2177,6 +2177,10 @@ def prepare_project_media(
             )
             continue
 
+        metadata["story_role"] = strategy.get("story_role")
+        metadata["reveal_safe"] = bool(metadata.get("reveal_safe", True)) and director.visual_reveal_safe(
+            state, strategy, query_plan
+        )
         candidate_identity = str(metadata["identity"])
         scene["media"] = metadata
         scene["preferred_media"] = metadata["kind"] if media_source(metadata) in REAL_MEDIA_PROVIDERS else scene.get("preferred_media", preferred_kind)
@@ -2291,13 +2295,22 @@ def _asset_status(metadata: dict[str, Any]) -> str:
 
 
 def _reuse_safe(media: dict[str, Any], strategy: dict[str, Any]) -> bool:
-    """A reused visual may not reveal a protected answer before the Story Arc allows it."""
+    """Whether an accepted visual of another scene may be reused for this one.
+
+    Before the Story Arc's reveal, only visuals recorded as reveal-safe (chosen
+    under active protection) qualify; a secondary insight is kept visually
+    distinct from the primary answer.  Graphics carry scene-specific text.
+    """
     if media_source(media) == GRAPHIC_ASSET_SOURCE:
+        return False
+    if strategy.get("story_role") == "secondary_insight" and media.get("story_role") == "primary_answer":
         return False
     if strategy.get("reveal_allowed", True):
         return True
     generation = media.get("generation") if isinstance(media.get("generation"), dict) else None
-    return generation is None or bool(generation.get("reveal_safe"))
+    if generation is not None and not generation.get("reveal_safe"):
+        return False
+    return media.get("reveal_safe", True) is not False
 
 
 def _query_terms(value: str) -> set[str]:

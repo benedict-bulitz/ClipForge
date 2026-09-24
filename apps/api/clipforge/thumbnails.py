@@ -364,7 +364,9 @@ def _scene_payoff_safe(scene: dict[str, Any], brief: dict[str, Any]) -> bool:
         return True
     media = scene.get("media") if isinstance(scene.get("media"), dict) else {}
     generation = media.get("generation") if isinstance(media.get("generation"), dict) else None
-    if generation is not None and not generation.get("reveal_safe"):
+    if media.get("reveal_safe") is False or (generation is not None and not generation.get("reveal_safe")):
+        # Structural record from the Visual Director: chosen where the Story
+        # Arc allowed the answer to be shown.
         return False
     context = _scene_context(scene)
     if not _reveals_protected(context, {"hook_must_not_reveal": protected}):

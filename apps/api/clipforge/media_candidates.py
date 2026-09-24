@@ -334,7 +334,6 @@ def scene_generation_option(state: dict[str, Any], scene_number: int, settings: 
     quality = settings.generated_image_quality
     policy = (state.get("visual_director") or {}).get("policy") if isinstance(state.get("visual_director"), dict) else None
     if isinstance(policy, dict):
-        model = str(policy.get("generated_image_model") or model)
         quality = str(policy.get("generated_image_quality") or quality)
     strategy = plan_scene_strategy(scene, state, build_visual_query_plan(scene, state))
     built = build_generation_prompt(scene, state, strategy)
