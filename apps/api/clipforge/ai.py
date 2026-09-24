@@ -13,7 +13,13 @@ from .schemas import AdvancedOptions
 
 DIRECTOR_INSTRUCTIONS = (
     "You are ClipForge's short-form director. Write the shortest complete explanation that answers "
-    "the user's question well. Identify a compact payoff_plan with the central curiosity, actual payoff, "
+    "the user's question well. Identify a compact story_arc over the research evidence (1-based fact_index): "
+    "give each fact a role (primary_answer, essential_context, evidence, comparison, supporting_fact, "
+    "explanation, secondary_insight, ranked_item), what it depends_on, and whether it may_appear_in_hook; name "
+    "primary_answer_index (the fact that actually answers the question) and final_payoff_index (the last "
+    "meaningful beat, which may differ from the answer). A related but different insight is secondary_insight, "
+    "never the answer. State the concrete curiosity_gap the viewer has. "
+    "Identify a compact payoff_plan with the central curiosity, actual payoff, "
     "supporting information, desired viewer reaction, and whether the hook must withhold the payoff. "
     "Start with one very short curiosity hook or setup that makes sense to a viewer who never saw the "
     "user's prompt. Reveal the answer in the next sentence when immediate disclosure is needed for clarity; "
@@ -123,6 +129,20 @@ class AIVisualHook(BaseModel):
     media_query_targets: list[str] = Field(default_factory=list, max_length=4)
 
 
+class AIStoryUnit(BaseModel):
+    fact_index: int = Field(ge=1, le=10)
+    role: str = Field(min_length=1, max_length=40)
+    depends_on: list[int] = Field(default_factory=list, max_length=6)
+    may_appear_in_hook: bool = True
+
+
+class AIStoryArc(BaseModel):
+    units: list[AIStoryUnit] = Field(default_factory=list, max_length=10)
+    primary_answer_index: int | None = Field(default=None, ge=1, le=10)
+    final_payoff_index: int | None = Field(default=None, ge=1, le=10)
+    curiosity_gap: str = Field(default="", max_length=240)
+
+
 class AIProjectPlan(BaseModel):
     intent: AIIntent
     research_questions: list[str] = Field(min_length=0, max_length=6)
@@ -134,6 +154,7 @@ class AIProjectPlan(BaseModel):
     selected_hook_strategy: str | None = None
     visual_intents: list[AIVisualIntent] = Field(default_factory=list, max_length=8)
     payoff_plan: AIPayoffPlan | None = None
+    story_arc: AIStoryArc | None = None
 
 
 class AIHookGenerationResponse(BaseModel):
@@ -207,6 +228,8 @@ HOOK_GENERATION_INSTRUCTIONS = (
     "restatement of the body as an evidence insight, repeat or lightly paraphrase the user's "
     "question, use clickbait, or begin with unexplained specialist terminology. Keep German "
     "everyday, short, concrete, and understandable on first listen by a typical 10–14 year old. "
+    "The supplied story_arc names the primary question, the curiosity gap and which facts may appear in a hook; "
+    "never use a fact that may not appear in the hook, and when withhold_answer is false do not invent mystery. "
     "The supplied payoff_plan states whether a payoff is protected. Never reveal hook_must_not_reveal in "
     "a spoken hook, visual hook, text hook, visual query, or visual subject. Alongside the candidates, return "
     "one visual_hook and one very short on_screen_text_hook for the chosen strategy. The three channels must "
@@ -264,6 +287,7 @@ def generate_hook_candidates_with_openai(
     reaction_arc: dict[str, Any] | None = None,
     format_plan: dict[str, Any] | None = None,
     novelty_plan: dict[str, Any] | None = None,
+    story_arc: dict[str, Any] | None = None,
 ) -> AIHookGenerationResult:
     """Generate manifest-guided candidates after the body is finalized."""
     if not settings.openai_api_key:
@@ -279,6 +303,7 @@ def generate_hook_candidates_with_openai(
         "reaction_arc": reaction_arc or {},
         "format_plan": format_plan or {},
         "novelty_plan": novelty_plan or {},
+        "story_arc": story_arc or {},
         "facts": [
             {"claim": clean_research_claim(str(fact.get("claim") or ""))}
             for fact in facts

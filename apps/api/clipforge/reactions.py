@@ -113,6 +113,31 @@ def _visual_guidance(reaction: str, protected: bool) -> str:
     }.get(reaction, "Keep the visual concrete and relevant to the narration.")
 
 
+# Information role -> reaction for non-hook scenes (all members of _SAFE_REACTIONS).
+_STORY_REACTIONS = {
+    "explanation": ("insight", "This scene explains how or why, so clarity comes first."),
+    "evidence": ("understanding", "This scene supplies evidence the answer rests on."),
+    "comparison": ("understanding", "This scene supplies one side of the comparison."),
+    "ranked_item": ("anticipation", "This scene advances the ranking toward the top item."),
+}
+
+
+def _story_reaction(scene: dict[str, Any], arc: dict[str, Any]) -> tuple[str, str] | None:
+    """Reaction from the scene's information role in the story arc, if known."""
+    role = str(scene.get("story_role") or "")
+    if not role:
+        return None
+    if scene.get("is_primary_answer"):
+        return arc["payoff_reaction"], "This scene answers the primary question."
+    if scene.get("is_final_payoff"):
+        if role == "secondary_insight":
+            return "surprise", "The final payoff is a supported extra insight beyond the answer."
+        return arc.get("ending_reaction") or "understanding", "This scene delivers the final payoff."
+    if role in _STORY_REACTIONS:
+        return _STORY_REACTIONS[role]
+    return None
+
+
 def _roles(state: dict[str, Any]) -> dict[str, str]:
     return {
         str(block.get("id") or ""): str(block.get("role") or "").casefold()
@@ -135,9 +160,12 @@ def build_reaction_plan(state: dict[str, Any], arc: dict[str, Any] | None = None
     for index, scene in enumerate(scenes):
         scene_id = str(scene.get("id") or f"scene_{index + 1}")
         role = roles.get(str(scene.get("block_id") or ""), "")
-        if role == "payoff":
+        story = _story_reaction(scene, arc) if role != "hook" else None
+        if role == "payoff" or scene.get("is_final_payoff"):
             payoff_seen = True
-        if role == "hook":
+        if story is not None:
+            reaction, reason = story
+        elif role == "hook":
             reaction = arc["hook_reaction"]
             reason = "The opening establishes the honest reason to keep watching."
         elif role == "payoff":
@@ -157,6 +185,7 @@ def build_reaction_plan(state: dict[str, Any], arc: dict[str, Any] | None = None
         scene_entries.append(
             {
                 "scene_id": scene_id,
+                "story_role": scene.get("story_role"),
                 "intended_reaction": reaction,
                 "intensity": "high" if role in {"hook", "payoff"} else "medium",
                 "reason": reason,

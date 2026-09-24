@@ -495,7 +495,7 @@ class EditorToolbox:
                     raise ValueError("A stronger opening needs replacement_text.")
             else:
                 raise ValueError("A clearer rewrite needs replacement_text.")
-            blocks[:] = _normalise_blocks(blocks, int(state["duration"]["max_seconds"]))
+            blocks[:] = _normalise_blocks(blocks, int(state["duration"]["max_seconds"]), story_arc=state.get("story_arc"))
             _refresh_script_derivatives(state, old_scenes=old_scenes)
             _invalidate_scene_media(state)
             return args.action.replace("_", " ")
@@ -535,7 +535,8 @@ class EditorToolbox:
             if not remaining:
                 raise ValueError("That deletion would remove the entire narration.")
             state["script"]["blocks"] = _normalise_blocks(
-                remaining, int(state["duration"]["max_seconds"])
+                remaining, int(state["duration"]["max_seconds"]),
+                story_arc=state.get("story_arc"),
             )
             _refresh_script_derivatives(state, old_scenes=old_scenes)
             _invalidate_scene_media(state)
@@ -685,7 +686,7 @@ class EditorToolbox:
                     raise ValueError("Maximum duration cannot be shorter than the selected minimum.")
                 state["duration"]["max_seconds"] = args.max_seconds
                 state.setdefault("options", {})["max_duration"] = args.max_seconds
-                blocks = _normalise_blocks(state["script"]["blocks"], args.max_seconds)
+                blocks = _normalise_blocks(state["script"]["blocks"], args.max_seconds, story_arc=state.get("story_arc"))
                 state["script"]["blocks"] = blocks
                 _refresh_script_derivatives(state, old_scenes=old_scenes)
                 _invalidate_scene_media(state)
@@ -744,7 +745,8 @@ class EditorToolbox:
             if not remaining_blocks:
                 raise ValueError("That cut would remove the entire narration.")
             state["script"]["blocks"] = _normalise_blocks(
-                remaining_blocks, int(state["duration"]["max_seconds"])
+                remaining_blocks, int(state["duration"]["max_seconds"]),
+                story_arc=state.get("story_arc"),
             )
             _refresh_script_derivatives(state, old_scenes=[])
             _invalidate_scene_media(state)
@@ -770,7 +772,8 @@ class EditorToolbox:
             if not blocks:
                 raise ValueError("The only scene cannot be removed.")
             state["script"]["blocks"] = _normalise_blocks(
-                blocks, int(state["duration"]["max_seconds"])
+                blocks, int(state["duration"]["max_seconds"]),
+                story_arc=state.get("story_arc"),
             )
             _refresh_script_derivatives(state, old_scenes=[])
             _invalidate_scene_media(state)

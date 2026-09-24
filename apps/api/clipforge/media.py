@@ -506,6 +506,8 @@ def _query_is_concrete(raw: str, query: str) -> bool:
 # Target keys are opaque identities the planner assigns to what a query depicts
 # ("subject_a", "subject_b", "shared", ...).  They carry no topic meaning.
 _TARGET_KEY_RE = re.compile(r"[a-z0-9_]{1,32}")
+# story_arc scene stages at which the protected answer may be shown.
+_REVEALED_STORY_STAGES = {"reveal", "after_reveal", "open"}
 _NON_SIDE_TARGET_KEYS = {"shared", "context"}
 
 
@@ -678,6 +680,12 @@ def build_visual_query_plan(scene: dict[str, Any], state: dict[str, Any]) -> dic
     )
     query_targets = {query: key for query, key in _query_target_map(visual_intent).items() if query in candidates}
     protected_key = protected_visual_target(state)
+    # Story-arc scenes know whether the answer is already revealed: protection
+    # applies only before the reveal.  Scenes without a story stage (older
+    # projects) keep project-wide protection.
+    story_stage = str(scene.get("story_stage") or "")
+    if story_stage in _REVEALED_STORY_STAGES:
+        protected_key, protected_text = "", ""
     structured = bool(protected_key and query_targets)
     if structured:
         # Structured identity: the planner said which target reveals the payoff.
@@ -703,6 +711,9 @@ def build_visual_query_plan(scene: dict[str, Any], state: dict[str, Any]) -> dic
         "side_keys": side_keys,
         "query_targets": query_targets,
         "protected_targets": [protected_key] if structured else [],
+        "protection_scope": (
+            "revealed" if story_stage in _REVEALED_STORY_STAGES else "before_reveal" if story_stage else "project"
+        ),
         "supporting_context": [],
         "comparison_coverage": {label: True for label in side_labels},
         "protected_entities": sorted(protected_terms),
