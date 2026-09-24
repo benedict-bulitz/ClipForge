@@ -797,3 +797,163 @@ def test_pre_staged_search_project_state_is_compatible(tmp_path):
     assert scene["asset_status"] == "video_ready"
     assert scene["media_search"]["logical_queries_executed"] == 1
     assert restored["assets"]["status"] == "media_ready"
+
+
+# --- German projects, last-resort visual safety, scene-aware query order ---
+
+GERMAN_COMPARISON = {
+    "intent": {
+        "topic": "Welches Land hat mehr Inseln – Schweden oder Indonesien?",
+        "question": "Welches Land hat mehr Inseln – Schweden oder Indonesien?",
+    },
+    "format_plan": {"selected_format": "comparison"},
+}
+POOR = (0.12, 0.12)  # verified, but far below the scene gate
+
+
+def german_project(*narrations: str) -> dict:
+    state = project({"narration": narrations[0]}, **copy.deepcopy(GERMAN_COMPARISON))
+    for index, narration in enumerate(narrations[1:], 2):
+        state["scenes"].append(
+            {"id": f"s{index}", "start": 4 * index, "end": 4 * index + 4, "preferred_media": "video", "narration": narration}
+        )
+    return state
+
+
+def island_provider() -> Provider:
+    return Provider(videos={
+        "swedish islands": [
+            cand("city", "swedish islands", "Stockholm city street traffic"),
+            cand("se", "swedish islands", "Sweden archipelago islands aerial"),
+        ],
+        "indonesian islands": [
+            cand("road", "indonesian islands", "Tropical road with scooters in Bali Indonesia"),
+            cand("id", "indonesian islands", "Indonesia islands aerial drone shot"),
+        ],
+    })
+
+
+def test_german_comparison_matches_english_metadata_and_verifies_it(tmp_path):
+    state = german_project("Schweden hat besonders viele Inseln.", "Indonesien hat rund 17.000 Inseln.")
+    verifier = Verifier({"city": POOR, "road": POOR})
+
+    prepare_project_media(
+        state, "project", settings_for(tmp_path), client=island_provider(), fallback_client=Commons(),
+        visual_verifier=verifier,
+    )
+
+    sweden, indonesia = state["scenes"]
+    # The topic-specific assets survive metadata relevance and reach OpenCLIP.
+    assert {"se", "id"} <= set(verifier.calls)
+    assert sweden["media"]["provider_id"] == "se"
+    assert indonesia["media"]["provider_id"] == "id"
+    for scene in (sweden, indonesia):
+        assert scene["media_search"]["winning_source"] == "staged_search"
+        assert scene["media_search"]["final_coverage"] == COVERAGE_STRONG
+        assert "relaxed_fallback" not in scene["media_search"]
+    assert sweden["media"]["relevance"]["confidence"] == "high"
+
+
+def test_last_resort_does_not_pick_openclip_rejected_first_candidate(tmp_path):
+    state = breath_project()
+    # Neither title matches the scene, so only the relaxed fallback can choose.
+    pexels = Provider(videos={"visible breath winter": [
+        cand("road", "visible breath winter", "Tropical road at noon"),
+        cand("good", "visible breath winter", "Untitled clip 42"),
+    ]})
+    verifier = Verifier({"road": POOR, "good": STRONG})
+
+    scene, _ = run(state, tmp_path, pexels, verifier=verifier)
+
+    assert scene["media_search"]["relaxed_fallback"] is True
+    assert scene["media"]["provider_id"] == "good"
+    assert "quality_degraded" not in scene["media_search"]
+
+
+def test_last_resort_reuses_staged_openclip_rejection(tmp_path):
+    state = breath_project()
+    # "rejected" passes metadata, so staged search verifies (and rejects) it;
+    # the last resort must honour that result without calling OpenCLIP again.
+    pexels = Provider(videos={"visible breath winter": [
+        cand("rejected", "visible breath winter", "Visible breath in cold winter air"),
+        cand("good", "visible breath winter", "Untitled clip 42"),
+    ]})
+    verifier = Verifier({"rejected": POOR, "good": STRONG})
+
+    scene, _ = run(state, tmp_path, pexels, verifier=verifier)
+
+    assert scene["media"]["provider_id"] == "good"
+    assert verifier.calls.count("rejected") == 1
+
+
+def test_all_visually_poor_candidates_stay_nonfatal_and_flag_degraded(tmp_path):
+    state = breath_project()
+    pexels = Provider(videos={"visible breath winter": [
+        cand("worse", "visible breath winter", "Tropical road at noon"),
+        cand("less-bad", "visible breath winter", "City street at night"),
+    ]})
+    verifier = Verifier({"worse": (0.05, 0.05), "less-bad": POOR})
+
+    scene, _ = run(state, tmp_path, pexels, verifier=verifier)
+
+    assert scene["asset_status"] == "video_ready"
+    assert scene["media"]["provider_id"] == "less-bad"  # best score, not provider order
+    assert scene["media"]["relevance"]["fallback_stage"] == "visually_rejected_last_resort"
+    assert scene["media_search"]["quality_degraded"] is True
+    assert scene["media_search"]["winning_source"] == "degraded_fallback"
+    assert scene["visual_quality"] == "degraded"
+    assert state["assets"]["status"] == "media_ready"
+
+
+def test_all_poor_scene_prefers_reusing_verified_project_media(tmp_path):
+    state = german_project("Schweden hat besonders viele Inseln.", "Your warm breath meets cold air.")
+    pexels = Provider(videos={
+        "swedish islands": [cand("se", "swedish islands", "Sweden archipelago islands aerial")],
+        "visible breath winter": [cand("road", "visible breath winter", "Tropical road at noon")],
+    })
+    verifier = Verifier({"road": POOR})
+
+    prepare_project_media(
+        state, "project", settings_for(tmp_path), client=pexels, fallback_client=Commons(),
+        visual_verifier=verifier,
+    )
+
+    second = state["scenes"][1]
+    assert second["asset_status"] == "related_media_reused"
+    assert second["media"]["provider_id"] == "se"
+    assert "quality_degraded" not in second["media_search"]
+
+
+@pytest.mark.parametrize(
+    ("narration", "expected_first", "other_side"),
+    [
+        ("Indonesien hat rund 17.000 Inseln.", "indonesian islands", "swedish islands"),
+        ("Schweden hat besonders viele Inseln.", "swedish islands", "indonesian islands"),
+    ],
+)
+def test_single_side_scene_searches_its_own_side_first(tmp_path, narration, expected_first, other_side):
+    state = german_project(narration)
+    pexels = island_provider()
+
+    scene, _ = run(state, tmp_path, pexels, verifier=Verifier({"city": POOR, "road": POOR}))
+
+    search = scene["media_search"]
+    assert search["executed_queries"][0] == expected_first
+    assert pexels.calls[0] == ("video", expected_first)
+    assert search["early_stop"] is True
+    assert other_side not in pexels.queries
+    assert search["logical_queries_executed"] <= MAX_SCENE_QUERY_BUDGET
+
+
+def test_scene_query_order_keeps_protected_payoff_out():
+    state = copy.deepcopy(GERMAN_COMPARISON) | {"payoff_plan": {"hook_must_not_reveal": "Indonesien"}}
+    scene = {"narration": "Schweden hat besonders viele Inseln."}
+    plan = build_visual_query_plan(scene, state)
+
+    assert all("indonesia" not in query for query in plan["queries"])
+    result = run_staged_scene_search(
+        plan["queries"], scene, state, plan, pexels=island_provider(), wikimedia=Commons(),
+        preferred_kind="video", portrait=True, scene_duration=4, used=set(), verifier=Verifier(),
+    )
+    assert all("indonesia" not in query for query in result.provenance["executed_queries"])
+    assert result.provenance["executed_queries"][0] == "swedish islands"

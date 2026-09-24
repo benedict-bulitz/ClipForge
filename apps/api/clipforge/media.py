@@ -1182,6 +1182,27 @@ def _candidate_coverage_score(
     )
 
 
+def _scene_query_order(
+    planned: list[str], targets: dict[str, str], query_plan: dict[str, Any]
+) -> list[str]:
+    """Search the comparison side this scene talks about first, then shared, then the other side.
+
+    A stable reorder of the existing plan: no query is added or dropped.
+    """
+    scene_sides = {target for target, role in targets.items() if role.startswith("subject_")}
+    other_sides = set(query_plan.get("secondary_subjects") or []) - scene_sides
+    if not scene_sides or not other_sides:
+        return planned
+
+    def rank(query: str) -> int:
+        tokens = _coverage_tokens(query)
+        if tokens & scene_sides:
+            return 0
+        return 2 if tokens & other_sides else 1
+
+    return sorted(planned, key=rank)
+
+
 @dataclass
 class StagedSearchResult:
     ranked: list[tuple[MediaCandidate, dict[str, Any]]]
@@ -1238,6 +1259,45 @@ def _safe_verify(
         return rows, False
 
 
+def _relaxed_visual_verdict(
+    candidate: MediaCandidate,
+    known: dict[str, Any] | None,
+    visual: Any,
+    scene: dict[str, Any],
+    state: dict[str, Any],
+) -> tuple[str, float]:
+    """Visual gate for the last-resort fallback: pass, unverified, rejected or presentation_risk.
+
+    A completed verification from the staged search is reused; OpenCLIP only
+    runs for candidates it has not seen yet.
+    """
+    if known is not None:
+        visual_data = known.get("visual") or {}
+        if visual_data.get("presentation_risk") or (known.get("presentation_risk") or {}).get("source") == "vision":
+            return "presentation_risk", -1.0
+        if visual_data.get("status") != "verified":
+            return "unverified", -1.0
+        scene_score = visual_data.get("scene_score")
+        scene_score = float(visual_data.get("score") or 0 if scene_score is None else scene_score)
+        if known.get("confidence") == "rejected" or scene_score < SCENE_VISUAL_THRESHOLD:
+            return "rejected", scene_score
+        return "pass", scene_score
+    if getattr(visual, "status", "") != "available":
+        return "unverified", -1.0
+    try:
+        result = visual.verify_candidate(candidate, visual_intent_text(scene, state))
+    except Exception:  # noqa: BLE001 - verification is advisory here
+        return "unverified", -1.0
+    if result is None:
+        return "unverified", -1.0
+    if result.presentation_risk:
+        return "presentation_risk", -1.0
+    if result.status != "verified":
+        return "unverified", -1.0
+    scene_score = float(result.scene_score if result.scene_score is not None else result.score or 0)
+    return ("rejected" if scene_score < SCENE_VISUAL_THRESHOLD else "pass"), scene_score
+
+
 class _MetadataOnlyVerifier:
     status = "verification_failed"
 
@@ -1268,6 +1328,7 @@ def run_staged_scene_search(
     planned = list(dict.fromkeys(query for query in queries if query))
     coverage_targets = scene_coverage_targets(scene, state, query_plan)
     targets = coverage_targets["targets"]
+    planned = _scene_query_order(planned, targets, query_plan)
     remaining = planned[:budget]
     seen: dict[str, MediaCandidate] = {}
     seen_sources: set[str] = set()
@@ -1567,7 +1628,10 @@ def prepare_project_media(
             verifier=visual_verifier,
         )
         search_provenance = staged.provenance
+        # Later fallbacks follow the scene-aware query order, not the global plan.
+        queries = list(search_provenance["planned_queries"]) or queries
         scene["media_search"] = search_provenance
+        scene.pop("visual_quality", None)
         search_totals["scenes_searched"] += 1
         failure = staged.failure or failure
         pexels_candidates = staged.candidates if pexels is not None else []
@@ -1650,6 +1714,8 @@ def prepare_project_media(
             ]
             visual = scene_verifier or get_visual_verifier()
             verified_rows = staged.verified
+            relaxed_seen: set[str] = set()
+            degraded: tuple[float, MediaCandidate] | None = None
             for broad_query in [None, *broad_queries]:
                 batch = pools[0] if broad_query is None else []
                 if broad_query:
@@ -1665,21 +1731,20 @@ def prepare_project_media(
                         except MediaProviderError as exc:
                             failure = exc
                 for candidate in batch[:24]:
-                    if candidate.identity in used or not is_real_media_allowed(candidate):
+                    if candidate.identity in used or candidate.identity in relaxed_seen or not is_real_media_allowed(candidate):
                         continue
-                    known = verified_rows.get(candidate.identity)
-                    if known is not None:
-                        if (known.get("visual") or {}).get("presentation_risk") or (
-                            (known.get("presentation_risk") or {}).get("source") == "vision"
-                        ):
-                            continue
-                    elif getattr(visual, "status", "") == "available":
-                        try:
-                            result = visual.verify_candidate(candidate, visual_intent_text(scene, state))
-                        except Exception:  # noqa: BLE001 - verification is advisory here
-                            result = None
-                        if result is not None and result.presentation_risk:
-                            continue
+                    relaxed_seen.add(candidate.identity)
+                    verdict, scene_score = _relaxed_visual_verdict(
+                        candidate, verified_rows.get(candidate.identity), visual, scene, state
+                    )
+                    if verdict == "presentation_risk":
+                        continue
+                    if verdict == "rejected":
+                        # OpenCLIP already judged this asset off-scene; provider
+                        # order alone must never make it the winner.
+                        if degraded is None or scene_score > degraded[0]:
+                            degraded = (scene_score, candidate)
+                        continue
                     try:
                         relevance = media_relevance(candidate, scene, state)
                         relevance["fallback_stage"] = "real_media_only_relaxed_fit"
@@ -1689,6 +1754,20 @@ def prepare_project_media(
                         failure = exc
                 if metadata is not None:
                     break
+            safe_selected = [item for item in selected_media if is_real_media_allowed(item)]
+            if metadata is None and degraded is not None and not safe_selected and not existing_usable:
+                # Every candidate failed visual verification and no safer real
+                # asset can be reused: keep the project renderable with the
+                # best-scoring one, and record that quality is degraded.
+                try:
+                    relevance = media_relevance(degraded[1], scene, state)
+                    relevance["fallback_stage"] = "visually_rejected_last_resort"
+                    metadata = _cache_candidate(degraded[1], relevance, asset_root=asset_root, render_root=settings.render_root, pexels=pexels, wikimedia=wikimedia)
+                    winning_source = "degraded_fallback"
+                    search_provenance["quality_degraded"] = True
+                    scene["visual_quality"] = "degraded"
+                except MediaProviderError as exc:
+                    failure = exc
         _record_search_winner(search_provenance, metadata, winning_source)
         _accumulate_search_totals(search_totals, search_provenance)
         if metadata is None:
