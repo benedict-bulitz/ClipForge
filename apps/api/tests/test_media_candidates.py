@@ -284,6 +284,28 @@ def test_german_scene_queries_are_provider_friendly():
     assert any("foundation" in query and "construction" in query for query in queries)
 
 
+def test_german_narration_matches_english_island_metadata():
+    state_data = {
+        "intent": {"topic": "Welches Land hat mehr Inseln – Schweden oder Indonesien?"},
+        "format_plan": {"selected_format": "comparison"},
+    }
+
+    def stock(provider_id: str, query: str, title: str) -> MediaCandidate:
+        return MediaCandidate(provider_id, "video", f"https://cdn.test/{provider_id}", f"https://source.test/{provider_id}", "Creator", None, 1080, 1920, 12, query, 100, title=title)
+
+    archipelago = stock("se", "swedish islands", "Aerial view of Stockholm archipelago islands Sweden")
+    raja_ampat = stock("id", "indonesian islands", "Aerial drone shot of Raja Ampat islands Indonesia")
+    city = stock("city", "swedish islands", "Stockholm city street traffic")
+    sweden_scene = {"narration": "Schweden hat über 260.000 Inseln."}
+    indonesia_scene = {"narration": "Indonesien hat rund 17.000 Inseln."}
+
+    sweden = media_relevance(archipelago, sweden_scene, state_data)
+    assert sweden["confidence"] == "high"
+    assert {"sweden", "island"} <= set(sweden["scene_matches"])
+    assert media_relevance(raja_ampat, indonesia_scene, state_data)["confidence"] == "high"
+    assert media_relevance(city, sweden_scene, state_data)["confidence"] == "rejected"
+
+
 def test_narration_fragment_is_replaced_by_primary_subject_queries():
     state = {
         "intent": {

@@ -697,6 +697,11 @@ def _semantic_terms(value: str) -> set[str]:
         "gasförmige": "vapor", "wasser": "water", "tröpfchen": "droplet",
         "schweben": "float", "verschwinden": "dissipate", "droplets": "droplet",
         "condenses": "condensation", "condensing": "condensation", "condensed": "condensation",
+        # German narration must match English provider metadata for the
+        # subjects the visual query planner searches ("Inseln" vs "islands").
+        "insel": "island", "inseln": "island", "islands": "island",
+        "archipel": "archipelago", "archipelagos": "archipelago",
+        "schweden": "sweden", "swedish": "sweden", "indonesien": "indonesia", "indonesian": "indonesia",
     }
     return {
         aliases.get(token, token) for token in re.findall(r"[\wäöüß-]+", value.casefold(), flags=re.UNICODE)
