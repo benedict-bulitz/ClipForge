@@ -34,6 +34,8 @@ from .media_candidates import (
     CandidateError,
     apply_scene_media_candidate,
     discover_scene_media_candidates,
+    generate_scene_media,
+    scene_generation_option,
 )
 from .models import GenerationJob, Project
 from .music import available_music_tracks, resolve_track_path
@@ -53,6 +55,7 @@ from .schemas import (
     ProjectExportRead,
     ProjectRead,
     RenderCreate,
+    SceneImageGenerate,
     SceneMediaCandidateApply,
     SceneMediaCandidatesRead,
     SocialMetadataGenerate,
@@ -314,7 +317,32 @@ def scene_media_candidates_route(project_id: str, scene_number: int, db: DbSessi
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     scene = state["scenes"][scene_number - 1]
     preferred = str((scene.get("media") or {}).get("kind") or scene.get("preferred_media") or "video")
-    return {"scene_number": scene_number, "preferred_kind": preferred if preferred in {"video", "photo"} else "video", "candidates": candidates}
+    return {
+        "scene_number": scene_number,
+        "preferred_kind": preferred if preferred in {"video", "photo"} else "video",
+        "candidates": candidates,
+        "generation": scene_generation_option(state, scene_number, config),
+    }
+
+
+@app.post("/api/projects/{project_id}/scenes/{scene_number}/generate-image", response_model=ProjectRead)
+def generate_scene_image_route(
+    project_id: str, scene_number: int, payload: SceneImageGenerate, db: DbSession, config: SettingsDep
+) -> dict:
+    """Manual, user-confirmed paid generation for one scene (never automatic)."""
+    project = get_project(db, project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if payload.base_revision != project.current_revision:
+        raise HTTPException(status_code=409, detail="Project changed; reload before generating media.")
+    try:
+        generate_scene_media(db, project, scene_number, config, prompt=payload.prompt, auto_render=True)
+    except RevisionConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except CandidateError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    db.refresh(project)
+    return serialize_project(project)
 
 
 @app.post("/api/projects/{project_id}/scenes/{scene_number}/media-candidates/apply", response_model=ProjectRead)

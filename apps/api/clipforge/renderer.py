@@ -28,7 +28,7 @@ from .alignment import (
 )
 from .attention import replan_attention
 from .config import Settings
-from .media import is_real_media_allowed
+from .media import GRAPHIC_ASSET_SOURCE, _reuse_safe, is_scene_asset_allowed, media_source
 from .music import attach_discovered_track, resolve_track_path
 from .narration import clean_narration_text, contamination_issues
 from .progress import ProgressCallback, report_progress
@@ -800,13 +800,53 @@ def _scene_media_path(scene: dict, settings: Settings) -> tuple[Path | None, str
     media = scene.get("media") if isinstance(scene.get("media"), dict) else {}
     cache_path = media.get("cache_path")
     kind = str(media.get("kind") or "")
-    if not cache_path or not is_real_media_allowed(media):
+    if not cache_path or not is_scene_asset_allowed(media):
         return None, "real_media_unavailable"
     root = settings.render_root.resolve()
     candidate = (root / str(cache_path)).resolve()
     if not candidate.is_relative_to(root) or not candidate.is_file():
         return None, "real_media_unavailable"
     return candidate, kind
+
+
+_ZOOM_STEPS = {"fast_cut": 0.0012, "dynamic": 0.0010, "subtle_pan": 0.0006, "slow_push": 0.0003}
+# Horizontal drift of the zoomed window across the 9:16 work frame (it always
+# shows >= 92% of it, so the focal subject stays in view), ending on the side
+# of the focal point.
+_PAN_RANGE = (0.2, 0.8)
+
+
+def still_motion_plan(scene: dict, index: int, motion: str, center_x: float, frames: int) -> dict:
+    """Deterministic, subtle Ken Burns treatment for photos and generated stills.
+
+    Scenes alternate push-in, pan across the focal point and pull-out so a run
+    of stills does not feel identical.  A still without a motion setting stays
+    static; simple graphics only get a very gentle push so text stays inside.
+    """
+    step = _ZOOM_STEPS.get(motion, 0.0)
+    if not step:
+        return {"type": "static", "max_zoom": 1.0, "zoom": "min(zoom+0.0000,1.0)", "x": f"{center_x:.4f}"}
+    media = scene.get("media") if isinstance(scene.get("media"), dict) else {}
+    if media_source(media) == GRAPHIC_ASSET_SOURCE:
+        return {"type": "push_in", "max_zoom": 1.03, "zoom": f"min(zoom+{min(step, 0.0004):.4f},1.03)", "x": "0.5000"}
+    max_zoom = 1.08
+    pattern = ("push_in", "pan", "pull_out")[index % 3]
+    if pattern == "pull_out":
+        return {
+            "type": "pull_out",
+            "max_zoom": max_zoom,
+            "zoom": f"if(eq(on,0),{max_zoom},max(zoom-{step:.4f},1.0))",
+            "x": f"{center_x:.4f}",
+        }
+    if pattern == "pan":
+        start, end = _PAN_RANGE if center_x >= 0.5 else _PAN_RANGE[::-1]
+        return {
+            "type": "pan",
+            "max_zoom": max_zoom,
+            "zoom": f"{max_zoom - 0.02:.2f}",
+            "x": f"({start:.4f}+{end - start:.4f}*on/{max(1, frames - 1)})",
+        }
+    return {"type": "push_in", "max_zoom": max_zoom, "zoom": f"min(zoom+{step:.4f},{max_zoom})", "x": f"{center_x:.4f}"}
 
 
 def _create_visual_segment(
@@ -827,7 +867,10 @@ def _create_visual_segment(
     if source is None:
         if require_real_media:
             raise RenderUnavailable("The replacement media is unavailable. Choose another real image or video.")
+        strategy = scene.get("visual_director") if isinstance(scene.get("visual_director"), dict) else {}
         for other in state.get("scenes", []):
+            if not isinstance(other.get("media"), dict) or not _reuse_safe(other["media"], strategy):
+                continue
             source, kind = _scene_media_path(other, settings)
             if source is not None:
                 scene["media"] = dict(other["media"])
@@ -856,13 +899,9 @@ def _create_visual_segment(
     else:
         frames = max(1, round(duration * fps))
         motion = str(scene.get("motion") or "")
-        zoom_step = {
-            "fast_cut": 0.0012,
-            "dynamic": 0.0010,
-            "subtle_pan": 0.0006,
-            "slow_push": 0.0003,
-        }.get(motion, 0.0)
-        max_zoom = 1.08 if motion in {"fast_cut", "dynamic", "subtle_pan", "slow_push"} else 1.0
+        plan = still_motion_plan(scene, index, motion, center_x, frames)
+        scene["still_motion"] = {key: plan[key] for key in ("type", "max_zoom")}
+        max_zoom = plan["max_zoom"]
         # Keep motion bounded and render it at 2x before the final downscale. At
         # output resolution, integer zoompan windows turn smooth motion into a
         # visible 1px staircase even when their origins are truncated.
@@ -871,11 +910,16 @@ def _create_visual_segment(
         work_h = int(height * max_zoom * render_scale)
         output_w = width * render_scale
         output_h = height * render_scale
+        # zoompan crops iw/zoom x ih/zoom of its *input* and scales that to
+        # ``s``; cropping to the exact target aspect around the focal point
+        # first keeps non-9:16 photos and generated images undistorted.
         zoom_filter = (
             f"scale={work_w}:{work_h}:force_original_aspect_ratio=increase,"
-            f"zoompan=z='min(zoom+{zoom_step:.4f},{max_zoom})':"
-            f"x='trunc((iw-{output_w}/zoom)*{center_x:.4f})':"
-            f"y='trunc((ih-{output_h}/zoom)*{center_y:.4f})':"
+            f"crop={work_w}:{work_h}:x='trunc((in_w-{work_w})*{center_x:.4f})':"
+            f"y='trunc((in_h-{work_h})*{center_y:.4f})',"
+            f"zoompan=z='{plan['zoom']}':"
+            f"x='trunc((iw-iw/zoom)*{plan['x']})':"
+            f"y='trunc((ih-ih/zoom)*{center_y:.4f})':"
             f"d={frames}:s={output_w}x{output_h}:fps={fps},"
             f"scale={width}:{height}:flags=lanczos,format=yuv420p"
         )

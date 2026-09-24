@@ -247,10 +247,31 @@ class SceneMediaCandidateRead(BaseModel):
     selected: bool = False
 
 
+class SceneImageGenerationOptionRead(BaseModel):
+    available: bool
+    unavailable_reason: str | None = None
+    model: str
+    model_label: str
+    quality: str
+    quality_label: str
+    uses_paid_credits: bool = True
+    prompt: str = ""
+    prompt_summary: str = ""
+    generated_images: int = 0
+
+
 class SceneMediaCandidatesRead(BaseModel):
     scene_number: int
     preferred_kind: Literal["video", "photo"]
     candidates: list[SceneMediaCandidateRead]
+    generation: SceneImageGenerationOptionRead | None = None
+
+
+class SceneImageGenerate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    base_revision: int = Field(ge=1)
+    prompt: str | None = Field(default=None, max_length=1200)
 
 
 class SceneMediaCandidateApply(BaseModel):

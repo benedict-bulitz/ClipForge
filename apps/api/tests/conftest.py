@@ -65,3 +65,18 @@ def db():
         yield session
     finally:
         session.close()
+
+
+@pytest.fixture(autouse=True)
+def forbid_real_image_generation(monkeypatch):
+    """No test may reach the paid OpenAI Images API; generators must be mocked."""
+    from clipforge import image_generation
+
+    calls: list[tuple] = []
+
+    def forbidden(*args, **_kwargs):
+        calls.append(args)
+        raise AssertionError("Real OpenAI image generation is forbidden in the test suite.")
+
+    monkeypatch.setattr(image_generation, "OPENAI_CLIENT_FACTORY", forbidden)
+    return calls

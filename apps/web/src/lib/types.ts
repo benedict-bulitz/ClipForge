@@ -17,7 +17,42 @@ export type Scene = {
     creator: string;
     creator_url?: string | null;
     query: string;
+    /** Provenance: pexels, wikimedia, pixabay, generated_openai, simple_graphic. Absent on older projects. */
+    source?: string;
+    generation?: {
+      model: string;
+      model_label?: string;
+      quality: string;
+      quality_label?: string;
+      prompt_summary?: string;
+      trigger?: "auto" | "manual";
+      created_at?: string;
+    };
   };
+  /** Visual Director V2 decision; absent on projects created before it. */
+  visual_director?: SceneVisualDirector;
+};
+
+export type SceneVisualDirector = {
+  story_role?: string;
+  planned_type?: string;
+  resolved_type?: string | null;
+  decision?: "ACCEPTED_REAL" | "GENERATE_FALLBACK" | "DEGRADED" | "MISSING";
+  decision_reason?: string;
+  generation?: { status?: string };
+};
+
+export type SceneImageGenerationOption = {
+  available: boolean;
+  unavailable_reason?: string | null;
+  model: string;
+  model_label: string;
+  quality: string;
+  quality_label: string;
+  uses_paid_credits: boolean;
+  prompt: string;
+  prompt_summary: string;
+  generated_images: number;
 };
 
 export type SceneMediaCandidate = {
@@ -40,6 +75,7 @@ export type SceneMediaCandidates = {
   scene_number: number;
   preferred_kind: "video" | "photo";
   candidates: SceneMediaCandidate[];
+  generation?: SceneImageGenerationOption | null;
 };
 
 export type BulkProjectDeletePlan = {

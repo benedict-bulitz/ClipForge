@@ -151,6 +151,14 @@ export function applySceneMediaCandidate(projectId: string, sceneNumber: number,
   });
 }
 
+/** Manual, user-confirmed paid generation; the backend builds the prompt unless one is supplied. */
+export function generateSceneImage(projectId: string, sceneNumber: number, baseRevision: number, prompt?: string | null) {
+  return request<Project>(`/projects/${projectId}/scenes/${sceneNumber}/generate-image`, {
+    method: "POST",
+    body: JSON.stringify({ base_revision: baseRevision, prompt: prompt?.trim() ? prompt.trim() : null }),
+  });
+}
+
 export function getProjectChat(projectId: string) {
   return request<ChatMessage[]>(`/projects/${projectId}/chat`, { cache: "no-store" });
 }

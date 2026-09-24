@@ -30,6 +30,19 @@ test("scene media chooser discovers candidates and applies through a revision", 
   assert.match(workspace, /candidate.provider/);
 });
 
+test("change media never dead-ends: retry, keep, and a paid AI image option", () => {
+  assert.match(workspace, /Retry real media search/);
+  assert.match(workspace, /Keep current media/);
+  assert.match(workspace, /Generate AI image/);
+  assert.match(workspace, /option\.model_label/);
+  assert.match(workspace, /option\.quality_label/);
+  assert.match(workspace, /uses paid OpenAI API credits/);
+  assert.match(workspace, /generateSceneImage/);
+  assert.match(api, /\/generate-image/);
+  assert.doesNotMatch(workspace, /Try again later; the current scene is unchanged/);
+  assert.doesNotMatch(workspace, /openai_api_key|OPENAI_API_KEY|sk-[A-Za-z0-9]/);
+});
+
 test("voice previews debounce, cancel stale requests, and keep autoplay rejection usable", () => {
   assert.match(voiceControls, /new AbortController\(\)/);
   assert.match(voiceControls, /requestRef\.current !== requestId/);

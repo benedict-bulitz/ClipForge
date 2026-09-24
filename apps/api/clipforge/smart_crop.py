@@ -55,6 +55,9 @@ def analyze_scene_media(scene: dict[str, Any], state: dict[str, Any], settings: 
         return None
     if (scene.get("visual_intent") or {}).get("visual_strategy") == "diagram_or_card":
         return None
+    if media.get("source") == "simple_graphic":
+        # Rendered at the timeline size: nothing to crop.
+        return {"status": "fixed", "mode": "center", "center_x": 0.5, "center_y": 0.5, "confidence": 0.0, "model": "graphic"}
     path = (settings.render_root.resolve() / str(media.get("cache_path") or "")).resolve()
     root = settings.render_root.resolve()
     if not path.is_relative_to(root) or not path.is_file():

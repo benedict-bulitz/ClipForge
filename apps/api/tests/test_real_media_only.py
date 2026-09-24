@@ -16,7 +16,7 @@ def test_historical_cards_cannot_be_reused(marker):
     assert not is_real_media_allowed(replace(candidate("1"), provider="generated"))
 
 
-def test_unrelated_real_media_beats_relevant_flashcard(tmp_path):
+def test_neither_flashcard_nor_unrelated_real_media_wins(tmp_path):
     settings = local_settings(tmp_path, pexels="test")
     state = sample_state(settings)
     state["scenes"] = state["scenes"][:1]
@@ -27,8 +27,12 @@ def test_unrelated_real_media_beats_relevant_flashcard(tmp_path):
     scene["media"] = {**vars(card), "identity": card.identity, "cache_path": "old.jpg"}
     (tmp_path / "old.jpg").write_bytes(b"old card")
     prepare_project_media(state, "project", settings, client=FakePexels([card, real]), fallback_client=FakeWikimedia(), visual_verifier=SimpleNamespace(status="unavailable"))
-    assert scene["media"]["provider_id"] == "2"
-    assert scene["media"]["relevance"]["fallback_stage"] == "real_media_only_relaxed_fit"
+    # The unrelated dog no longer wins merely because it exists; the scene is
+    # better explained, so the deterministic process graphic is used instead.
+    assert scene["media"]["provider"] == "simple_graphic"
+    assert scene["media"]["provider_id"] not in {"1", "2"}
+    assert scene["visual_director"]["decision"] == "DEGRADED"
+    assert scene["visual_director"]["resolved_type"] == "simple_graphic"
     assert (tmp_path / "old.jpg").exists()
 
 
@@ -40,7 +44,7 @@ def test_broad_queries_find_real_stock_after_empty_specific_searches(tmp_path):
     class Stock(FakeWikimedia):
         def search_photos(self, query, **kwargs):
             self.queries.append(query)
-            return [candidate("3", kind="photo", provider="wikimedia", title="Ocean coast")] if query not in planned else []
+            return [candidate("3", kind="photo", provider="wikimedia", title="Lighthouse on the ocean coast")] if query not in planned else []
     stock = Stock()
     prepare_project_media(state, "project", settings, client=FakePexels([]), fallback_client=stock, visual_verifier=SimpleNamespace(status="unavailable"))
     search = state["scenes"][0]["media_search"]

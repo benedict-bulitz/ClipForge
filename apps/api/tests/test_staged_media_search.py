@@ -924,7 +924,7 @@ def test_last_resort_reuses_staged_openclip_rejection(tmp_path):
     assert verifier.calls.count("rejected") == 1
 
 
-def test_all_visually_poor_candidates_stay_nonfatal_and_flag_degraded(tmp_path):
+def test_all_visually_poor_candidates_stay_nonfatal_and_never_win(tmp_path):
     state = breath_project()
     pexels = Provider(videos={"visible breath winter": [
         cand("worse", "visible breath winter", "Tropical road at noon"),
@@ -934,13 +934,14 @@ def test_all_visually_poor_candidates_stay_nonfatal_and_flag_degraded(tmp_path):
 
     scene, _ = run(state, tmp_path, pexels, verifier=verifier)
 
-    assert scene["asset_status"] == "video_ready"
-    assert scene["media"]["provider_id"] == "less-bad"  # best score, not provider order
-    assert scene["media"]["relevance"]["fallback_stage"] == "visually_rejected_last_resort"
-    assert scene["media_search"]["quality_degraded"] is True
-    assert scene["media_search"]["winning_source"] == "degraded_fallback"
-    assert scene["visual_quality"] == "degraded"
-    assert state["assets"]["status"] == "media_ready"
+    # Visually rejected media never wins just because nothing else exists; with
+    # no generator configured the scene is clearly marked missing (nonfatal).
+    assert "media" not in scene
+    assert scene["asset_status"] == "real_media_unavailable"
+    assert scene["media_search"]["visually_rejected_count"] >= 1
+    assert scene["media_search"]["winning_asset"] is None
+    assert scene["visual_director"]["decision"] == "MISSING"
+    assert scene["visual_director"]["generation"]["status"] == "unavailable_no_api_key"
 
 
 def test_all_poor_scene_prefers_reusing_verified_project_media(tmp_path):

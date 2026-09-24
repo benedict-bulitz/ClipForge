@@ -689,6 +689,8 @@ def _build_scenes(
         }
         if existing.get("media"):
             scene["media"] = copy.deepcopy(existing["media"])
+            if isinstance(existing.get("visual_director"), dict):
+                scene["visual_director"] = copy.deepcopy(existing["visual_director"])
         if existing.get("edit_instruction"):
             scene["edit_instruction"] = existing["edit_instruction"]
         scenes.append(scene)
