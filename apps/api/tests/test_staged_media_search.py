@@ -184,8 +184,9 @@ def test_strong_first_query_stops_further_searches(tmp_path):
     search = scene["media_search"]
     assert pexels.calls == [("video", "visible breath winter")]
     assert not commons.calls
+    assert search["logical_queries_executed"] == 1
     assert search["executed_query_count"] == 1
-    assert search["provider_request_count"] == 1
+    assert search["provider_requests_executed"] == 1
     assert search["planned_query_count"] == 3
     assert search["early_stop"] is True
     assert search["fallback_count"] == 0
@@ -248,7 +249,7 @@ def test_maximum_three_queries_per_scene():
     assert result.provenance["executed_query_count"] == 3
     assert result.provenance["query_budget"] == 3
     assert result.provenance["stop_reason"] == "budget_exhausted"
-    assert result.provenance["provider_request_count"] == 6  # video + photo per stage
+    assert result.provenance["provider_requests_executed"] == 6  # video + photo per stage
 
 
 # 5: comparison fallback targets the missing side, skipping generic islands.
@@ -381,13 +382,16 @@ def test_all_searches_failing_is_nonfatal(tmp_path):
 
 def test_all_weak_searches_use_existing_relaxed_fallback(tmp_path):
     state = breath_project()
-    pexels = Provider()
-    commons = Commons(photos={"visible breath": [cand("w1", "visible breath", "Frosty meadow", kind="photo", provider="wikimedia")]})
+    # Real media that fails the strict relevance gate is still usable by the
+    # relaxed fallback, which works from the already searched pool.
+    pexels = Provider(photos={"visible breath winter": [cand("p1", "visible breath winter", "Frosty meadow", kind="photo")]})
 
-    scene, _ = run(state, tmp_path, pexels, commons=commons)
+    scene, _ = run(state, tmp_path, pexels)
 
-    assert scene["media_search"]["executed_query_count"] == 3
+    assert scene["media_search"]["logical_queries_executed"] == 3
     assert scene["media_search"]["relaxed_fallback"] is True
+    assert "relaxed_queries" not in scene["media_search"]
+    assert scene["media"]["provider_id"] == "p1"
     assert scene["media"]["relevance"]["fallback_stage"] == "real_media_only_relaxed_fit"
 
 
@@ -524,8 +528,8 @@ def test_query_provenance_persists_compactly(tmp_path):
     }
     assert len(json.dumps(search)) < 2500
     assert restored["assets"]["media_search_summary"] == {
-        "scenes_searched": 1, "planned_query_count": 3, "executed_query_count": 1,
-        "provider_request_count": 1, "early_stop_count": 1, "fallback_count": 0,
+        "scenes_searched": 1, "planned_query_count": 3, "logical_queries_executed": 1,
+        "provider_requests_executed": 1, "early_stop_count": 1, "fallback_count": 0,
     }
 
 
@@ -563,7 +567,7 @@ def test_no_new_ai_call_or_provider(tmp_path, monkeypatch):
     state = comparison_project()
     pexels = Provider(videos={"swedish islands": [cand("1", "swedish islands", "Swedish archipelago islands from above")]})
 
-    scene, commons = run(state, tmp_path, pexels)
+    scene, _ = run(state, tmp_path, pexels)
 
     assert "openai" not in media_module.__dict__
     assert {call[0] for call in pexels.calls} <= {"video", "photo"}
@@ -580,3 +584,216 @@ def test_preferred_kind_is_searched_first(tmp_path, preferred):
     run(state, tmp_path, pexels)
 
     assert pexels.calls[0][0] == preferred
+
+
+# ---------------------------------------------------------------------------
+# Pre-merge hardening: logical query budget across the whole acquisition.
+# ---------------------------------------------------------------------------
+
+
+def all_search_strings(*providers) -> set[str]:
+    return {query for provider in providers for _kind, query in provider.calls}
+
+
+def pyramids_project(narration: str = "Most people guess Egypt.") -> dict:
+    return project(
+        {"narration": narration, "visual_intent": {"media_queries": ["Egypt or Sudan pyramids"], "must_not_show": ["Sudan"]}},
+        intent={"topic": "Egypt or Sudan pyramids", "question": "Which has more pyramids, Egypt or Sudan?"},
+        payoff_plan={"hook_must_not_reveal": "Sudan"},
+        format_plan={"selected_format": "comparison"},
+    )
+
+
+# 1 + 3 + 7 + 8: a failing scene never sends a fourth logical query string.
+def test_full_acquisition_never_exceeds_three_logical_queries(tmp_path):
+    state = breath_project()
+    pexels = Provider()
+    commons = Commons()
+
+    scene, _ = run(state, tmp_path, pexels, commons=commons)
+
+    search = scene["media_search"]
+    strings = all_search_strings(pexels, commons)
+    assert strings == set(search["executed_queries"])
+    assert len(strings) == 3
+    assert search["logical_queries_executed"] == 3
+    assert search["stop_reason"] == "budget_exhausted"
+    assert search["relaxed_fallback"] is True
+    assert "relaxed_queries" not in search
+    assert not strings & {"nature landscape", "ocean water", "trees outdoors", "visible breath"}
+    assert scene["asset_status"] == "real_media_unavailable"
+
+
+# 2 + 4: Wikimedia may retry executed strings; provider requests counted separately.
+def test_wikimedia_fallback_reuses_executed_strings_and_counts_requests(tmp_path):
+    state = breath_project()
+    pexels = Provider()
+    commons = Commons()
+
+    scene, _ = run(state, tmp_path, pexels, commons=commons)
+
+    search = scene["media_search"]
+    assert commons.queries == search["executed_queries"]
+    assert search["provider_requests_by_source"] == {"staged_search": 6, "wikimedia_fallback": 3}
+    assert search["provider_requests_executed"] == 9
+    assert search["provider_requests_executed"] == len(pexels.calls) + len(commons.calls)
+    assert search["logical_queries_executed"] == 3
+    summary = state["assets"]["media_search_summary"]
+    assert summary["logical_queries_executed"] == 3
+    assert summary["provider_requests_executed"] == 9
+
+
+# 3: relaxed fallback may only spend budget left unused, never query #4.
+def test_relaxed_fallback_only_uses_remaining_logical_budget(tmp_path):
+    state = pyramids_project()
+    pexels = Provider()
+    commons = Commons()
+
+    scene, _ = run(state, tmp_path, pexels, commons=commons)
+
+    search = scene["media_search"]
+    strings = all_search_strings(pexels, commons)
+    assert search["planned_query_count"] == 2
+    assert len(search["relaxed_queries"]) == 1
+    assert len(strings) == 3 == search["logical_queries_executed"]
+    assert strings == set(search["executed_queries"])
+    assert search["provider_requests_by_source"]["relaxed_fallback"] == 2  # pexels + wikimedia
+
+
+def test_claim_logical_query_refuses_query_four():
+    provenance = {"executed_queries": ["a", "b", "c"], "query_budget": 3}
+
+    assert media_module._claim_logical_query(provenance, "b") is True
+    assert media_module._claim_logical_query(provenance, "d") is False
+    assert provenance["executed_queries"] == ["a", "b", "c"]
+
+
+# 5 + 6 (hardening view): logical/provider counts for early stop and fallback.
+def test_early_stop_and_fallback_report_logical_and_provider_counts(tmp_path):
+    strong = breath_project()
+    run(strong, tmp_path, Provider(videos={"visible breath winter": [cand("1", "visible breath winter", "Visible breath in cold winter air")]}))
+    weak = breath_project()
+    run(weak, tmp_path, Provider(videos={
+        "visible breath winter": [cand("1", "visible breath winter", "Cold air over a frozen lake")],
+        "cold air breath": [cand("2", "cold air breath", "Visible breath in cold winter air")],
+    }))
+
+    first, second = strong["scenes"][0]["media_search"], weak["scenes"][0]["media_search"]
+    assert (first["logical_queries_executed"], first["provider_requests_executed"]) == (1, 1)
+    assert first["early_stop"] is True
+    assert (second["logical_queries_executed"], second["provider_requests_executed"]) == (2, 3)
+    assert second["executed_queries"] == ["visible breath winter", "cold air breath"]
+
+
+# 9 + 10 + comparison subjects: the protected reveal never reaches a provider.
+def test_protected_payoff_never_leaks_through_any_query_path(tmp_path):
+    state = pyramids_project()
+    pexels = Provider(errors={"egyptian pyramids"})
+    commons = Commons()
+
+    scene, _ = run(state, tmp_path, pexels, commons=commons)
+
+    search = scene["media_search"]
+    searched = " ".join(all_search_strings(pexels, commons)).casefold()
+    assert search["fallback_reason"] == "provider_error"  # targeted fallback ran
+    assert search["wikimedia_fallback"] is True
+    assert search["relaxed_fallback"] is True
+    assert commons.calls and search["relaxed_queries"]
+    assert "sudan" not in searched
+    assert "sudan" not in json.dumps(search).casefold()
+    assert search["coverage_targets"] == {"egypt": "subject_a", "pyramid": "shared"}
+
+
+def test_protected_payoff_does_not_leak_on_any_pre_reveal_scene(tmp_path):
+    state = pyramids_project()
+    state["scenes"].append({
+        "id": "s2", "start": 4, "end": 8, "preferred_media": "video",
+        "narration": "Egypt is famous for its pyramids.", "visual_goal": "egyptian pyramids",
+    })
+    pexels = Provider()
+    commons = Commons()
+
+    prepare_project_media(
+        state, "project", settings_for(tmp_path), client=pexels, fallback_client=commons, visual_verifier=Verifier(),
+    )
+
+    assert "sudan" not in " ".join(all_search_strings(pexels, commons)).casefold()
+    for scene in state["scenes"]:
+        assert scene["media_search"]["logical_queries_executed"] <= 3
+
+
+# 11: deduplication across providers and generic provider URLs.
+def test_deduplication_across_providers_and_generic_source_urls():
+    state = breath_project()
+    scene = state["scenes"][0]
+    video = cand("7", "visible breath winter", "Visible breath in cold winter air")
+    photo_same_page = cand("8", "visible breath winter", "Visible breath", kind="photo", source_url="https://pexels.test/video/7")
+    generic_a = cand("9", "visible breath winter", "Breath one", source_url="https://www.pexels.com/videos/")
+    generic_b = cand("10", "visible breath winter", "Breath two", source_url="https://www.pexels.com/videos/")
+    pexels = Provider(
+        videos={"visible breath winter": [cand("7", "visible breath winter", "Cold air over a frozen lake", source_url="https://www.pexels.test/video/7/"), generic_a, generic_b]},
+        photos={"visible breath winter": [video, photo_same_page]},
+    )
+
+    result = run_staged_scene_search(
+        ["visible breath winter"], scene, state, build_visual_query_plan(scene, state), pexels=pexels,
+        wikimedia=Commons(), preferred_kind="video", portrait=True, scene_duration=4, used=set(),
+        verifier=Verifier(scores={"7": WEAK_PASS, "9": WEAK_PASS, "10": WEAK_PASS}),
+    )
+
+    identities = [item.identity for item in result.candidates]
+    assert len(identities) == len(set(identities))
+    assert "pexels:photo:8" not in identities  # same canonical page as video 7
+    assert {"pexels:video:9", "pexels:video:10"} <= set(identities)  # generic URL is not identity
+    assert result.provenance["duplicate_count"] == 2
+
+
+def test_wikimedia_fallback_does_not_reverify_or_duplicate_staged_assets(tmp_path):
+    state = breath_project()
+    shared = cand("w5", "visible breath winter", "Visible breath in cold winter air", kind="photo", provider="wikimedia")
+
+    class BrokenDownload(Provider):
+        def download(self, selected, destination):
+            raise MediaProviderError("network_error", "download failed")
+
+    pexels = BrokenDownload(videos={"visible breath winter": [cand("1", "visible breath winter", "Visible breath in cold winter air")]})
+    commons = Commons(photos={"visible breath winter": [shared, shared]})
+    verifier = Verifier()
+
+    scene, _ = run(state, tmp_path, pexels, commons=commons, verifier=verifier)
+
+    assert scene["media"]["identity"] == shared.identity
+    assert verifier.calls.count("w5") == 1
+    assert verifier.calls.count("1") == 1  # relaxed fallback never re-verifies
+
+
+# 12: an OpenCLIP failure is latched: nonfatal and not retried per stage.
+def test_openclip_failure_is_nonfatal_and_not_retried(tmp_path):
+    state = breath_project()
+    pexels = Provider()
+    commons = Commons(photos={"visible breath winter": [cand("w1", "visible breath winter", "Visible breath in cold winter air", kind="photo", provider="wikimedia")]})
+    verifier = Verifier(raises=True)
+    pexels.videos = {"visible breath winter": [cand("1", "visible breath winter", "Snow")], "cold air breath": [cand("2", "cold air breath", "Snow")]}
+
+    scene, _ = run(state, tmp_path, pexels, commons=commons, verifier=verifier)
+
+    assert scene["asset_status"] in {"photo_ready", "video_ready"}
+    assert scene["media_search"]["visual_verification"] == "failed_metadata_fallback"
+    assert len(verifier.calls) == 1
+
+
+# 13: a project persisted before staged search still loads and re-runs.
+def test_pre_staged_search_project_state_is_compatible(tmp_path):
+    state = breath_project()
+    scene = state["scenes"][0]
+    scene["search_queries"] = ["visible breath winter"]
+    scene["visual_query_plan"] = {"primary_subjects": ["breath"]}
+    scene["asset_status"] = "replacement_required"
+    state["assets"] = {"license_manifest": [], "status": "media_ready", "provider": "pexels"}
+    restored = json.loads(json.dumps(state))
+
+    scene, _ = run(restored, tmp_path, Provider(videos={"visible breath winter": [cand("1", "visible breath winter", "Visible breath in cold winter air")]}))
+
+    assert scene["asset_status"] == "video_ready"
+    assert scene["media_search"]["logical_queries_executed"] == 1
+    assert restored["assets"]["status"] == "media_ready"

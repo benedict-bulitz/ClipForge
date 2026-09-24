@@ -1184,6 +1184,40 @@ class StagedSearchResult:
     provenance: dict[str, Any]
     failure: MediaProviderError | None
     evaluated: set[str]
+    # Verified relevance per identity, reused by later fallbacks so the same
+    # asset is never sent through OpenCLIP twice for one scene.
+    verified: dict[str, dict[str, Any]]
+    verifier_failed: bool
+
+
+_GENERIC_SOURCE_PATHS = {"", "video", "videos", "photo", "photos", "wiki"}
+
+
+def _canonical_source(url: str) -> str | None:
+    """Stable asset URL key; generic provider landing pages identify nothing."""
+    parsed = urlparse(str(url or "").strip())
+    path = parsed.path.strip("/").casefold()
+    if not parsed.netloc or path in _GENERIC_SOURCE_PATHS:
+        return None
+    return f"{parsed.netloc.casefold().removeprefix('www.')}/{path}"
+
+
+def _claim_logical_query(provenance: dict[str, Any], query: str) -> bool:
+    """Record a logical query string; refuses a new string once the budget is spent."""
+    executed = provenance["executed_queries"]
+    if query in executed:
+        return True
+    if len(executed) >= provenance["query_budget"]:
+        return False
+    executed.append(query)
+    provenance["logical_queries_executed"] = provenance["executed_query_count"] = len(executed)
+    return True
+
+
+def _count_provider_request(provenance: dict[str, Any], source: str) -> None:
+    provenance["provider_requests_executed"] += 1
+    by_source = provenance["provider_requests_by_source"]
+    by_source[source] = by_source.get(source, 0) + 1
 
 
 def _safe_verify(
@@ -1239,6 +1273,7 @@ def run_staged_scene_search(
     requests = 0
     duplicates = 0
     verification_ok = True
+    active_verifier = verifier
     coverage = summarize_coverage([], targets, scene_duration)
     coverage_before_fallback: dict[str, Any] | None = None
     stop_reason = "no_queries"
@@ -1267,7 +1302,7 @@ def run_staged_scene_search(
             stage["requests"] += 1
             fresh: list[MediaCandidate] = []
             for candidate in results or []:
-                source = str(candidate.source_url or "").rstrip("/").casefold()
+                source = _canonical_source(candidate.source_url)
                 if candidate.identity in seen or (source and source in seen_sources):
                     stage["duplicates"] += 1
                     continue
@@ -1278,8 +1313,11 @@ def run_staged_scene_search(
                     fresh.append(candidate)
             stage["new"] += len(fresh)
             if fresh:
-                verified, ok = _safe_verify(fresh, scene, state, verifier)
-                verification_ok = verification_ok and ok
+                verified, ok = _safe_verify(fresh, scene, state, active_verifier)
+                if not ok:
+                    # One failure is enough evidence; do not retry per stage.
+                    verification_ok = False
+                    active_verifier = _METADATA_ONLY_VERIFIER
                 for candidate, relevance in verified:
                     rows.setdefault(candidate.identity, (candidate, relevance))
                 coverage = summarize_coverage(rows.values(), targets, scene_duration)
@@ -1326,8 +1364,13 @@ def run_staged_scene_search(
         "planned_queries": planned[:MAX_SCENE_QUERY_BUDGET],
         "executed_queries": executed,
         "planned_query_count": min(len(planned), budget),
+        # Logical query strings (hard-capped by the budget) and provider
+        # search requests (one logical query may hit several providers/kinds)
+        # are tracked separately.
+        "logical_queries_executed": len(executed),
         "executed_query_count": len(executed),
-        "provider_request_count": requests,
+        "provider_requests_executed": requests,
+        "provider_requests_by_source": {"staged_search": requests},
         "early_stop": stop_reason == "strong_coverage" and len(executed) < min(len(planned), budget),
         "stop_reason": stop_reason,
         "fallback_count": len(fallback_reasons),
@@ -1346,7 +1389,15 @@ def run_staged_scene_search(
         "duplicate_count": duplicates,
         "visual_verification": "ok" if verification_ok else "failed_metadata_fallback",
     }
-    return StagedSearchResult(ranked, list(seen.values()), provenance, failure, set(rows))
+    return StagedSearchResult(
+        ranked,
+        list(seen.values()),
+        provenance,
+        failure,
+        set(rows),
+        {identity: relevance for identity, (_candidate, relevance) in rows.items()},
+        not verification_ok,
+    )
 
 
 def _record_search_winner(provenance: dict[str, Any], metadata: dict[str, Any] | None, source: str) -> dict[str, Any]:
@@ -1367,15 +1418,15 @@ def _record_search_winner(provenance: dict[str, Any], metadata: dict[str, Any] |
 _SEARCH_TOTAL_KEYS = (
     "scenes_searched",
     "planned_query_count",
-    "executed_query_count",
-    "provider_request_count",
+    "logical_queries_executed",
+    "provider_requests_executed",
     "early_stop_count",
     "fallback_count",
 )
 
 
 def _accumulate_search_totals(totals: dict[str, int], provenance: dict[str, Any]) -> None:
-    for key in ("planned_query_count", "executed_query_count", "provider_request_count", "fallback_count"):
+    for key in ("planned_query_count", "logical_queries_executed", "provider_requests_executed", "fallback_count"):
         totals[key] += int(provenance.get(key) or 0)
     totals["early_stop_count"] += int(bool(provenance.get("early_stop")))
 
@@ -1531,13 +1582,16 @@ def prepare_project_media(
             except MediaProviderError as exc:
                 failure = exc
 
+        # One verifier for every fallback of this scene; a verifier that already
+        # failed in the staged search is not retried.
+        scene_verifier = _METADATA_ONLY_VERIFIER if staged.verifier_failed else visual_verifier
+
         # A failed Pexels download must not skip the remaining free source.
-        # Only already executed queries are reused, so the query budget holds.
+        # Only already executed query strings are reused: no new logical query.
         if metadata is None and pexels is not None:
             winning_source = "wikimedia_fallback"
-            wikimedia_queries = search_provenance["executed_queries"] or queries[:1]
-            for query in wikimedia_queries:
-                search_provenance["provider_request_count"] += 1
+            for query in list(search_provenance["executed_queries"]):
+                _count_provider_request(search_provenance, "wikimedia_fallback")
                 try:
                     commons_candidates.extend(
                         wikimedia.search_photos(query, portrait=portrait)
@@ -1545,14 +1599,17 @@ def prepare_project_media(
                 except MediaProviderError as exc:
                     failure = exc
             search_provenance["wikimedia_fallback"] = True
-            for candidate, relevance in _rank_verified(
-                commons_candidates,
-                scene,
-                state,
-                preferred_kind,
-                used | staged.evaluated,
-                visual_verifier,
-            ):
+            try:
+                wikimedia_ranked = _rank_verified(
+                    commons_candidates, scene, state, preferred_kind, used | staged.evaluated, scene_verifier
+                )
+            except Exception:  # noqa: BLE001 - verification must never fail media search
+                search_provenance["visual_verification"] = "failed_metadata_fallback"
+                scene_verifier = _METADATA_ONLY_VERIFIER
+                wikimedia_ranked = _rank_verified(
+                    commons_candidates, scene, state, preferred_kind, used | staged.evaluated, scene_verifier
+                )
+            for candidate, relevance in wikimedia_ranked:
                 try:
                     metadata = _cache_candidate(
                         candidate,
@@ -1572,21 +1629,32 @@ def prepare_project_media(
             search_provenance["relaxed_fallback"] = True
             pools = [pexels_candidates + commons_candidates]
             protected = set(query_plan.get("protected_entities") or [])
-            broad_queries = list(dict.fromkeys(
-                " ".join(word for word in query.split() if not _visual_query_tokens(word) & protected)
-                for query in (
-                    " ".join(queries[0].split()[:2]) if queries else "nature",
-                    global_subject_text(state), "nature landscape", "ocean water", "trees outdoors",
+            # Broad strings are payoff-safe and only spend logical budget that
+            # the staged search left unused; re-running an executed string on
+            # the same providers would only return the pool already searched.
+            broad_queries = [
+                query
+                for query in dict.fromkeys(
+                    " ".join(word for word in query.split() if not _visual_query_tokens(word) & protected)
+                    for query in (
+                        " ".join(queries[0].split()[:2]) if queries else "nature",
+                        global_subject_text(state), "nature landscape", "ocean water", "trees outdoors",
+                    )
                 )
-            ))
-            visual = visual_verifier or get_visual_verifier()
+                if query and query not in search_provenance["executed_queries"]
+            ]
+            visual = scene_verifier or get_visual_verifier()
+            verified_rows = staged.verified
             for broad_query in [None, *broad_queries]:
                 batch = pools[0] if broad_query is None else []
                 if broad_query:
+                    if not _claim_logical_query(search_provenance, broad_query):
+                        break  # logical query budget exhausted
+                    search_provenance.setdefault("relaxed_queries", []).append(broad_query)
                     for provider in (pexels, wikimedia):
                         if provider is None:
                             continue
-                        search_provenance["provider_request_count"] += 1
+                        _count_provider_request(search_provenance, "relaxed_fallback")
                         try:
                             batch.extend(provider.search_photos(broad_query, portrait=portrait))
                         except MediaProviderError as exc:
@@ -1594,7 +1662,13 @@ def prepare_project_media(
                 for candidate in batch[:24]:
                     if candidate.identity in used or not is_real_media_allowed(candidate):
                         continue
-                    if getattr(visual, "status", "") == "available":
+                    known = verified_rows.get(candidate.identity)
+                    if known is not None:
+                        if (known.get("visual") or {}).get("presentation_risk") or (
+                            (known.get("presentation_risk") or {}).get("source") == "vision"
+                        ):
+                            continue
+                    elif getattr(visual, "status", "") == "available":
                         try:
                             result = visual.verify_candidate(candidate, visual_intent_text(scene, state))
                         except Exception:  # noqa: BLE001 - verification is advisory here
