@@ -84,7 +84,8 @@ def test_visual_intent_text_adds_missing_global_subject_context():
         verifier,
     )
     prompts = verifier.calls[0][1]
-    assert prompts.subject == ["a photo of airplane window"]
+    # Generic fallback (no canonical plan in state): first content words of the topic.
+    assert prompts.subject == ["a photo of airplane window breather"]
     assert all("airplane window" not in prompt for prompt in prompts.scene)
 
 

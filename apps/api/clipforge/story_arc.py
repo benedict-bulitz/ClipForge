@@ -19,6 +19,8 @@ import re
 from itertools import pairwise
 from typing import Any
 
+from .media import _NON_SIDE_TARGET_KEYS, visual_target_key
+
 ARC_VERSION = 1
 ROLES = (
     "primary_answer",
@@ -68,6 +70,7 @@ _COMPARATIVE_FAMILIES = {
     "age": {"older", "oldest", "älter", "älteste", "ältesten", "ältester"},
     "quality": {"better", "best", "besser", "beste", "besten", "bester"},
     "length": {"longer", "longest", "länger", "längste", "längsten", "längster"},
+    "depth": {"deeper", "deepest", "tiefer", "tiefste", "tiefsten", "tiefster"},
 }
 _CAUSE = re.compile(
     r"(?i)\b(?:because|since|therefore|thus|hence|so that|due to|caused?|causes|leads? to|results? in|"
@@ -654,6 +657,7 @@ def annotate_story_roles(state: dict[str, Any]) -> dict[str, Any] | None:
                 # Clean semantic input for visual direction; no visual decisions here.
                 intent["story_role"] = role
                 intent["story_stage"] = stage
+        bind_story_visual_protection(state)
         arc["block_units"] = {block_id: unit_ids for block_id, unit_ids in block_units.items() if unit_ids}
         arc["script_issues"] = story_script_issues(state)
         covered = {fact_id for unit_ids in block_units.values() for fact_id in unit_ids}
@@ -666,6 +670,54 @@ def annotate_story_roles(state: dict[str, Any]) -> dict[str, Any] | None:
     except Exception as exc:  # noqa: BLE001 - annotation is advisory
         arc["script_issues"] = [f"story_annotation_failed:{type(exc).__name__}"]
     return arc
+
+
+def bind_story_visual_protection(state: dict[str, Any]) -> dict[str, Any] | None:
+    """Translate the arc's protected answer into the structured visual target.
+
+    The story arc decides WHAT is withheld (its primary answer); the visual
+    plan decides HOW that answer is depicted (planner-assigned target keys on
+    the answer scene's media queries).  The link is structural: fact ID ->
+    answer scene -> its comparison-side target key.  No text is compared.
+
+    The result is written to ``payoff_plan.protected_visual_target``, the one
+    field media search reads; media search scopes it to scenes whose
+    ``story_stage`` is before the reveal.
+    """
+    arc = state.get("story_arc") if isinstance(state.get("story_arc"), dict) else None
+    payoff = state.get("payoff_plan") if isinstance(state.get("payoff_plan"), dict) else None
+    if arc is None or payoff is None:
+        return None
+    previous = arc.get("visual_protection") if isinstance(arc.get("visual_protection"), dict) else {}
+    # The planner's own key is remembered once, so later rebinds never lose it.
+    planner_key = previous.get("planner_target", visual_target_key(payoff.get("protected_visual_target")))
+    withhold = bool((arc.get("curiosity_gap") or {}).get("withhold_answer"))
+    answer_scenes = [scene for scene in state.get("scenes") or [] if isinstance(scene, dict) and scene.get("is_primary_answer")]
+    answer_keys: set[str] = set()
+    for scene in answer_scenes:
+        intent = scene.get("visual_intent") if isinstance(scene.get("visual_intent"), dict) else {}
+        answer_keys |= {
+            key for key in (visual_target_key(value) for value in intent.get("media_query_targets") or [])
+            if key and key not in _NON_SIDE_TARGET_KEYS
+        }
+    if not withhold:
+        target, source = "", "story_arc_not_withheld"
+    elif len(answer_keys) == 1:
+        target, source = next(iter(answer_keys)), "story_arc"
+    elif planner_key:
+        target, source = planner_key, "planner"
+    else:
+        target, source = "", "none"  # word-level fallback, still stage-scoped
+    payoff["protected_visual_target"] = target
+    arc["visual_protection"] = {
+        "target": target,
+        "source": source,
+        "planner_target": planner_key,
+        "planner_conflict": bool(planner_key and target and planner_key != target),
+        "answer_scene_ids": [str(scene.get("id") or "") for scene in answer_scenes],
+        "scope": "before_reveal" if withhold else "none",
+    }
+    return arc["visual_protection"]
 
 
 def _reveal_reached(

@@ -263,6 +263,45 @@ def _attach_story_fact_ids(blocks: list[dict[str, Any]], facts: list[dict[str, A
     return blocks
 
 
+def _aligned_visual_intents(
+    blocks: list[dict[str, Any]],
+    visual_hook: dict[str, Any],
+    planner_blocks: list[dict[str, Any]],
+    planner_intents: list[dict[str, Any]],
+    *,
+    hook_is_fallback: bool = False,
+) -> list[dict[str, Any]]:
+    """Pair each final block with the planner visual intent for the same facts.
+
+    The planner emits one visual intent per planner block.  Final blocks may
+    be rewritten, split into sentences or merged into the hook, so position is
+    unreliable; fact identity is not.  Blocks without a matching fact keep the
+    previous positional pairing (or get the generic fallback intent).
+    """
+    positional = [visual_hook, *planner_intents]
+    by_fact: dict[str, dict[str, Any]] = {}
+    for block, intent in zip(planner_blocks, planner_intents):
+        for fact_id in block.get("fact_ids") or []:
+            by_fact.setdefault(str(fact_id), intent)
+    if not by_fact:
+        return positional
+    aligned: list[dict[str, Any]] = []
+    for index, block in enumerate(blocks):
+        if _is_hook_block(block):
+            # A fallback visual hook is generic; when the hook states a planned
+            # fact, that fact's planner visual is the better opening image.
+            planned = next((by_fact[str(fact_id)] for fact_id in block.get("fact_ids") or [] if str(fact_id) in by_fact), None)
+            if hook_is_fallback and planned is not None:
+                merged = {**copy.deepcopy(planned), "must_not_show": list(visual_hook.get("must_not_show") or [])}
+                visual_hook.clear()
+                visual_hook.update(merged)
+            aligned.append(visual_hook)
+            continue
+        matched = next((by_fact[str(fact_id)] for fact_id in block.get("fact_ids") or [] if str(fact_id) in by_fact), None)
+        aligned.append(matched if matched is not None else (positional[index] if index < len(positional) else {}))
+    return aligned
+
+
 def _safe_payoff_plan(
     intent: dict[str, Any], blocks: list[dict[str, Any]], supplied: dict[str, Any] | None = None,
     format_plan: dict[str, Any] | None = None,
@@ -643,19 +682,11 @@ def _visual_goal_valid(value: object) -> bool:
 
 
 def _fallback_visual_intent(narration: str, language: str) -> dict[str, Any]:
+    """Topic-independent emergency intent: bounded concrete words from the scene text.
+
+    Used only when the planner supplied no valid visual intent for a block.
+    """
     text = " ".join(narration.split())
-    lowered = text.casefold()
-    if any(term in lowered for term in ("lighthouse", "leuchtturm")):
-        return {"visual_goal": "lighthouse by the sea", "objects": ["lighthouse", "sea"], "actions": [], "context": ["coast"], "visual_strategy": "literal", "media_queries": ["lighthouse by the sea", "lighthouse coast", "lighthouse ocean"]}
-    if any(term in lowered for term in ("haus", "house", "fundament", "foundation", "beton", "concrete", "bauen", "building")):
-        goal = "residential house construction process"
-        objects = ["house", "construction materials"]
-        actions = ["building", "assembling"]
-        context = ["construction site"]
-        queries = ["residential house construction", "workers building house", "construction materials house"]
-        return {"visual_goal": goal, "objects": objects, "actions": actions, "context": context, "visual_strategy": "process", "media_queries": queries}
-    if any(term in lowered for term in ("materie", "matter", "erde", "earth", "masse", "mass")):
-        return {"visual_goal": "materials being moved and assembled on Earth", "objects": ["materials", "Earth"], "actions": ["moving", "assembling"], "context": ["construction"], "visual_strategy": "physical_example", "media_queries": ["construction materials", "materials being assembled", "Earth materials"]}
     words = [word.strip(".,!?;:") for word in _words(text) if len(word.strip(".,!?;:")) > 3]
     goal = " ".join(words[:6]) or ("visual explanation" if language != "de" else "visuelle Erklärung")
     return {"visual_goal": goal, "objects": words[:3], "actions": [], "context": [], "visual_strategy": "literal", "media_queries": [goal]}
@@ -688,6 +719,10 @@ def _fit_blocks(
     fitted = copy.deepcopy(blocks)
     omittable = omittable_fact_ids(story_arc)
     required = essential_fact_ids(story_arc)
+    anchors = {
+        str(story_arc.get(key)) for key in ("primary_answer_id", "final_payoff_id")
+        if isinstance(story_arc, dict) and story_arc.get(key)
+    }
 
     def drop_priority(index: int) -> tuple[int, int]:
         # Drop optional information first, required information last; within
@@ -695,6 +730,8 @@ def _fit_blocks(
         fact_ids = set(fitted[index].get("fact_ids") or [])
         if fact_ids and fact_ids <= omittable:
             tier = 0
+        elif fact_ids & anchors:
+            tier = 3  # the primary answer and final payoff go last
         elif fact_ids & required:
             tier = 2
         else:
@@ -1037,8 +1074,10 @@ def build_initial_state(
         or format_plan.get("selected_format") == "quiz",
         supplied=plan.get("story_arc") if isinstance(plan.get("story_arc"), dict) else None,
     )
+    planner_blocks: list[dict[str, Any]] = []
     if plan.get("script_blocks"):
         legacy_body_blocks = _attach_story_fact_ids(copy.deepcopy(plan["script_blocks"]), facts)
+        planner_blocks = legacy_body_blocks
     else:
         legacy_body_blocks = _factual_blocks(intent, facts, story_arc)
     initial_payoff_plan = _safe_payoff_plan(
@@ -1133,7 +1172,13 @@ def build_initial_state(
     report_progress(progress, "storyboard", "Building the storyboard", phase="start")
     scenes = _build_scenes(
         blocks, estimated_duration, cut_pace=resolved_options.pacing,
-        visual_intents=[triple_hook["visual_hook"], *(plan.get("visual_intents") or [])],
+        visual_intents=_aligned_visual_intents(
+            blocks,
+            triple_hook["visual_hook"],
+            planner_blocks if plan.get("script_blocks") else [],
+            list(plan.get("visual_intents") or []),
+            hook_is_fallback=triple_hook.get("status") == "fallback",
+        ),
         format_plan=format_plan,
     )
     report_progress(

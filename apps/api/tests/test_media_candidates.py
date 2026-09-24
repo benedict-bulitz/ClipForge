@@ -276,42 +276,92 @@ def test_global_subject_context_is_preserved_for_compound_topics():
     assert not all(query == "protective glass" for query in queries)
 
 
-def test_german_scene_queries_are_provider_friendly():
-    from clipforge.media import derive_search_queries
-
-    scene = {"narration": "Beim Hausbau wird zuerst das Fundament gegossen.", "visual_goal": "Hausbau Fundament"}
-    queries = derive_search_queries(scene, {"intent": {"topic": "Hausbau"}})
-    assert any("foundation" in query and "construction" in query for query in queries)
-
-
-def test_narration_fragment_is_replaced_by_primary_subject_queries():
-    state = {
-        "intent": {
-            "topic": "Which country has more islands, Sweden or Indonesia?",
-            "question": "Which country has more islands, Sweden or Indonesia?",
+def test_german_scene_uses_canonical_english_visual_queries():
+    scene = {
+        "narration": "Beim Hausbau wird zuerst das Fundament gegossen.",
+        "visual_goal": "Hausbau Fundament",
+        "visual_intent": {
+            "visual_goal": "concrete being poured into a house foundation",
+            "objects": ["house foundation", "concrete"],
+            "media_queries": ["house foundation construction", "workers pouring concrete"],
         },
-        "format_plan": {"selected_format": "comparison"},
     }
+    queries = derive_search_queries(scene, {"intent": {"topic": "Hausbau"}})
+
+    assert queries[:2] == ["house foundation construction", "workers pouring concrete"]
+
+
+def island_stock(provider_id: str, query: str, title: str) -> MediaCandidate:
+    return MediaCandidate(provider_id, "video", f"https://cdn.test/{provider_id}", f"https://source.test/{provider_id}", "Creator", None, 1080, 1920, 12, query, 100, title=title)
+
+
+GERMAN_ISLANDS = {
+    "intent": {"topic": "Welches Land hat mehr Inseln – Schweden oder Indonesien?"},
+    "format_plan": {"selected_format": "comparison"},
+}
+
+
+def german_island_scene(narration: str, goal: str, queries: list[str]) -> dict:
+    return {
+        "narration": narration,
+        "visual_intent": {"visual_goal": goal, "objects": ["islands"], "media_queries": queries},
+        "search_queries": queries,
+    }
+
+
+def test_german_narration_matches_english_metadata_through_canonical_intent():
+    sweden_scene = german_island_scene("Schweden hat über 260.000 Inseln.", "Swedish archipelago islands from above", ["swedish islands", "islands aerial"])
+    indonesia_scene = german_island_scene("Indonesien hat rund 17.000 Inseln.", "Indonesian islands from above", ["indonesian islands", "islands aerial"])
+    archipelago = island_stock("se", "swedish islands", "Aerial view of Stockholm archipelago islands Sweden")
+    raja_ampat = island_stock("id", "indonesian islands", "Aerial drone shot of Raja Ampat islands Indonesia")
+    city = island_stock("city", "swedish islands", "Stockholm city street traffic")
+    road = island_stock("road", "indonesian islands", "Tropical road with scooters in Bali Indonesia")
+
+    sweden = media_relevance(archipelago, sweden_scene, GERMAN_ISLANDS)
+    indonesia = media_relevance(raja_ampat, indonesia_scene, GERMAN_ISLANDS)
+    assert sweden["confidence"] == "high"
+    assert {"archipelago", "island"} <= set(sweden["scene_matches"])
+    assert sweden["query_provenance"] is True
+    assert indonesia["confidence"] == "high"
+    # Generic city / tropical-road footage from the same queries does not qualify.
+    assert media_relevance(city, sweden_scene, GERMAN_ISLANDS)["confidence"] == "rejected"
+    assert media_relevance(road, indonesia_scene, GERMAN_ISLANDS)["confidence"] == "rejected"
+
+
+def test_semantic_normalization_has_no_topic_alias_table():
+    from clipforge import media
+
+    for removed in ("_VISUAL_QUERY_ALIASES", "_PROVIDER_TERMS", "_VISUAL_ENTITY_ADJECTIVES", "_COVERAGE_SYNONYMS", "_AMBIGUOUS_LOCAL_TERMS"):
+        assert not hasattr(media, removed)
+    # Cross-language words stay distinct; only generic plural folding applies.
+    assert media._semantic_terms("Schweden Inseln") == {"schweden", "inseln"}
+    assert media._semantic_terms("islands") == {"island"}
+
+
+def test_question_style_media_query_is_dropped_for_concrete_canonical_queries():
+    state = {"intent": {"topic": "Welches Land hat mehr Inseln – Schweden oder Indonesien?"}, "format_plan": {"selected_format": "comparison"}}
     scene = {
         "narration": "Beim Inselzählen führt nicht Indonesien.",
         "visual_goal": "clear ordinal progression",
-        "visual_intent": {"media_queries": ["Welches Land hat mehr Inseln – Schweden oder Indonesien?"]},
+        "visual_intent": {"media_queries": ["Welches Land hat mehr Inseln – Schweden oder Indonesien?", "swedish islands", "indonesian islands"]},
     }
 
     queries = derive_search_queries(scene, state)
 
-    assert queries == ["swedish islands", "indonesian islands", "islands aerial"]
+    assert queries[:2] == ["swedish islands", "indonesian islands"]
     assert all("welches" not in query and "führt" not in query for query in queries)
 
 
-def test_comparison_query_plan_covers_both_subjects_and_shared_islands():
-    state = {"intent": {"topic": "Sweden vs Indonesia islands", "question": "Sweden or Indonesia: which has more islands?"}}
-    plan = build_visual_query_plan({"narration": "Compare the island counts."}, state)
+def test_comparison_query_plan_derives_sides_and_shared_concept_from_queries():
+    state = {"intent": {"topic": "Sweden vs Indonesia islands"}, "format_plan": {"selected_format": "comparison"}}
+    scene = {"narration": "Compare the island counts.", "visual_intent": {"media_queries": ["swedish islands", "indonesian islands", "islands aerial"]}}
+    plan = build_visual_query_plan(scene, state)
 
+    assert plan["queries"] == ["swedish islands", "indonesian islands", "islands aerial"]
     assert plan["primary_subjects"] == ["island"]
-    assert plan["comparison_coverage"] == {"sweden": True, "indonesia": True}
+    assert plan["secondary_subjects"] == ["swedish", "indonesian"]
+    assert plan["comparison_coverage"] == {"swedish": True, "indonesian": True}
     assert plan["shared_subject_coverage"] is True
-    assert len(plan["queries"]) <= 3
 
 
 def test_protected_comparison_subject_is_not_used_for_setup_query():
@@ -321,13 +371,22 @@ def test_protected_comparison_subject_is_not_used_for_setup_query():
     }
     scene = {
         "narration": "Most people guess Egypt.",
-        "visual_intent": {"media_queries": ["Egypt or Sudan pyramids"], "must_not_show": ["Sudan"]},
+        "visual_intent": {"media_queries": ["egyptian pyramids", "sudanese pyramids", "pyramids aerial"], "must_not_show": ["Sudan"]},
     }
 
-    queries = derive_search_queries(scene, state)
+    plan = build_visual_query_plan(scene, state)
 
-    assert all("sudan" not in query for query in queries)
-    assert any("pyramid" in query for query in queries)
+    assert all("sudan" not in query for query in plan["queries"])
+    assert "egyptian pyramids" in plan["queries"]
+    assert plan["protected_entities"]
+
+
+def test_protected_payoff_matches_cross_language_side_names():
+    state = {"payoff_plan": {"hook_must_not_reveal": "Indonesien"}, "format_plan": {"selected_format": "comparison"}}
+    scene = {"narration": "Schweden hat viele Inseln.", "visual_intent": {"media_queries": ["swedish islands", "indonesian islands"]}}
+
+    assert build_visual_query_plan(scene, state)["queries"][0] == "swedish islands"
+    assert all("indonesia" not in query for query in derive_search_queries(scene, state))
 
 
 def test_explanation_and_ranking_queries_name_depictable_subjects():
@@ -340,10 +399,15 @@ def test_explanation_and_ranking_queries_name_depictable_subjects():
         "format_plan": {"selected_format": "ranking"},
     }
     breath_scene = {"narration": "Water vapor condenses in cold air.", "visual_goal": "visible breath in winter"}
-    cheetah_scene = {"narration": "The cheetah is the fastest land animal.", "visual_goal": "cheetah running"}
+    cheetah_scene = {
+        "narration": "The cheetah is the fastest land animal.",
+        "visual_intent": {"visual_goal": "cheetah running", "media_queries": ["cheetah running", "cheetah sprinting"]},
+    }
 
-    assert derive_search_queries(breath_scene, explanation)[0] == "visible breath winter"
-    assert "cheetah running" in derive_search_queries(cheetah_scene, ranking)
+    # Without canonical intent the concrete scene text is used, never a topic template.
+    assert derive_search_queries(breath_scene, explanation)[0] == "water vapor condenses cold air"
+    assert derive_search_queries(cheetah_scene, ranking)[:2] == ["cheetah running", "cheetah sprinting"]
+    assert build_visual_query_plan(cheetah_scene, ranking)["primary_subjects"] == ["cheetah"]
 
 
 def test_exact_scene_relevance_beats_generic_topic_relevance():

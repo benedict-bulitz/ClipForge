@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 from test_editing_media import FakePexels, FakeWikimedia, candidate, local_settings, sample_state
 
-from clipforge.media import is_real_media_allowed, prepare_project_media
+from clipforge.media import derive_search_queries, is_real_media_allowed, prepare_project_media
 from clipforge.renderer import RenderUnavailable, _create_visual_segment, _draw_scene
 
 
@@ -36,13 +36,17 @@ def test_broad_queries_find_real_stock_after_empty_specific_searches(tmp_path):
     settings = local_settings(tmp_path, pexels="test")
     state = sample_state(settings)
     state["scenes"] = state["scenes"][:1]
+    planned = derive_search_queries(state["scenes"][0], state)
     class Stock(FakeWikimedia):
         def search_photos(self, query, **kwargs):
             self.queries.append(query)
-            return [candidate("3", kind="photo", provider="wikimedia", title="Ocean coast")] if query == "ocean water" else []
+            return [candidate("3", kind="photo", provider="wikimedia", title="Ocean coast")] if query not in planned else []
     stock = Stock()
     prepare_project_media(state, "project", settings, client=FakePexels([]), fallback_client=stock, visual_verifier=SimpleNamespace(status="unavailable"))
-    assert "nature landscape" in stock.queries and "ocean water" in stock.queries
+    search = state["scenes"][0]["media_search"]
+    # Broad relaxed queries only spend logical budget left by the staged search.
+    assert search["relaxed_queries"] and search["relaxed_queries"][0] in stock.queries
+    assert len(set(stock.queries)) <= 3 and search["logical_queries_executed"] <= 3
     assert state["scenes"][0]["media"]["provider_id"] == "3"
 
 

@@ -10,6 +10,7 @@ from typing import Any
 from PIL import Image, ImageDraw, ImageFont
 
 from .config import Settings
+from .media import _normalize_term, canonical_visual_subjects
 from .renderer import ffmpeg_path
 from .visual_verifier import THUMBNAIL_VISUAL_SHORTLIST, get_visual_verifier
 
@@ -29,30 +30,7 @@ _GENERIC_TERMS = {
 _STOP_TERMS = {
     "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "has", "have", "how", "in", "is", "it", "more", "of", "on", "or", "the", "this", "to", "what", "which", "who", "why",
 }
-_TERM_ALIASES = {
-    "egyptian": "egypt",
-    "egyptians": "egypt",
-    "sudanese": "sudan",
-    "nubian": "nubia",
-    "nubians": "nubia",
-    "kushite": "kush",
-    "kushites": "kush",
-}
-_VISUAL_ALIASES = {
-    "airplane": "airplane", "airplanes": "airplane", "aircraft": "airplane", "airliner": "airplane", "jet": "airplane", "jets": "airplane",
-    "flugzeug": "airplane", "flugzeuge": "airplane", "passagierflugzeug": "airplane", "linienjet": "airplane",
-    "airspace": "airspace", "luftraum": "airspace", "border": "border", "borders": "border", "grenze": "border", "landesgrenze": "border",
-    "country": "country", "countries": "country", "land": "country", "länder": "country", "laender": "country",
-    "sky": "sky", "himmel": "sky", "cloud": "sky", "clouds": "sky", "wolke": "sky", "wolken": "sky",
-    "landscape": "landscape", "landschaft": "landscape", "nature": "nature", "natur": "nature", "map": "map", "karte": "map",
-    "pyramid": "pyramid", "pyramids": "pyramid", "egypt": "egypt", "sudan": "sudan", "nubia": "nubia", "kush": "kush",
-    "star": "star", "stars": "star", "tree": "tree", "trees": "tree", "breath": "breath", "atem": "breath", "winter": "winter",
-    "animal": "animal", "animals": "animal", "tier": "animal", "tiere": "animal",
-    "island": "island", "islands": "island", "insel": "island", "inseln": "island", "archipelago": "archipelago", "archipel": "archipelago",
-    "sweden": "sweden", "schweden": "sweden", "indonesia": "indonesia", "indonesien": "indonesia",
-}
 _SUPPORTING_VISUAL_TERMS = {"sky", "landscape", "nature", "map", "country", "land", "cloud", "background", "road", "city", "person", "people", "aerial", "countryside", "panoramic", "view", "green", "above", "clouds"}
-_VISUAL_SUBJECT_VOCAB = set(_VISUAL_ALIASES.values()) | {"airplane", "airspace", "border", "pyramid", "egypt", "sudan", "nubia", "kush", "star", "tree", "breath", "winter", "animal"}
 _WEAK_COVER_PHRASES = {
     "this is why", "it changes everything", "but that's not all", "an okay is missing", "ein okay fehlt", "das ist der grund", "das aendert alles",
 }
@@ -84,39 +62,50 @@ def _semantic_words(value: object) -> set[str]:
         for word in _words(value)
         if word not in _GENERIC_TERMS and word not in _STOP_TERMS
     }
-    normalized = {word[:-1] if word.endswith("s") and len(word) > 4 else word for word in words}
-    return {_TERM_ALIASES.get(word, word) for word in normalized}
+    return {_normalize_term(word) for word in words}
 
 
 def _visual_words(value: object) -> set[str]:
-    words = _semantic_words(value)
-    return {_VISUAL_ALIASES.get(word, word) for word in words}
+    return _semantic_words(value)
 
 
 def _derive_visual_subjects(state: dict[str, Any]) -> dict[str, list[str]]:
-    """Derive compact visual subjects from planning context, not image filenames."""
+    """Derive compact visual subjects from the canonical visual plan, for any topic.
+
+    Primary subjects are the concepts the provider-facing plan repeats plus the
+    comparison sides it defines; no topic vocabulary is involved.  Projects
+    without a plan fall back to the content words of the planning text.
+    """
     intent = state.get("intent") if isinstance(state.get("intent"), dict) else {}
     format_plan = state.get("format_plan") if isinstance(state.get("format_plan"), dict) else {}
     script = state.get("script") if isinstance(state.get("script"), dict) else {}
     triple = script.get("triple_hook") if isinstance(script.get("triple_hook"), dict) else {}
     visual_hook = triple.get("visual_hook") if isinstance(triple.get("visual_hook"), dict) else {}
-    values: list[object] = [intent.get("topic"), intent.get("question"), format_plan.get("visual_structure"), visual_hook.get("subjects_to_show"), visual_hook.get("visual_priority")]
-    primary: set[str] = set()
-    supporting: set[str] = set()
-    for value in values:
-        words = _visual_words(value)
-        primary.update(word for word in words if word in _VISUAL_SUBJECT_VOCAB and word not in _SUPPORTING_VISUAL_TERMS and word not in _GENERIC_TERMS)
-        supporting.update(word for word in words if word in _SUPPORTING_VISUAL_TERMS)
-    # Scene intent is useful for filling in the subject vocabulary, but never
-    # promotes a generic background term to a primary subject by itself.
+    canonical = canonical_visual_subjects(state)
+    side_terms = [term for side in canonical["sides"][:2] for term in side.split()]
+    primary = list(dict.fromkeys([*canonical["concepts"][:3], *side_terms]))
+    texts: list[object] = [intent.get("topic"), intent.get("question"), format_plan.get("visual_structure"), visual_hook.get("subjects_to_show"), visual_hook.get("visual_priority")]
     for scene in state.get("scenes", []):
         if not isinstance(scene, dict):
             continue
         visual = scene.get("visual_intent") if isinstance(scene.get("visual_intent"), dict) else {}
-        words = _visual_words(" ".join(str(scene.get(key) or "") for key in ("visual_goal", "query", "search_queries")) + " " + " ".join(str(visual.get(key) or "") for key in ("visual_goal", "objects", "subjects_to_show", "media_queries")))
-        primary.update(word for word in words if word in _VISUAL_SUBJECT_VOCAB and word not in _SUPPORTING_VISUAL_TERMS and word not in _GENERIC_TERMS)
-        supporting.update(word for word in words if word in _SUPPORTING_VISUAL_TERMS)
-    return {"primary": sorted(primary), "supporting": sorted(supporting - primary)}
+        texts.append(" ".join(str(scene.get(key) or "") for key in ("visual_goal", "query", "search_queries")) + " " + " ".join(str(visual.get(key) or "") for key in ("visual_goal", "objects", "subjects_to_show", "media_queries")))
+    words = set().union(*(_visual_words(value) for value in texts))
+    supporting = {word for word in words if word in _SUPPORTING_VISUAL_TERMS}
+    if not primary:
+        fallback = [
+            word
+            for value in (intent.get("topic"), visual_hook.get("subjects_to_show"), format_plan.get("visual_structure"))
+            for word in sorted(_visual_words(value))
+            if word not in _SUPPORTING_VISUAL_TERMS
+        ]
+        primary = list(dict.fromkeys(fallback))[:4]
+    primary = [word for word in primary if word not in _SUPPORTING_VISUAL_TERMS and word not in _GENERIC_TERMS]
+    return {
+        "primary": sorted(primary),
+        "supporting": sorted(supporting - set(primary)),
+        "sides": canonical["sides"][:2],
+    }
 
 
 def _protected_words(plan: dict[str, Any]) -> set[str]:
@@ -215,6 +204,8 @@ def build_thumbnail_brief(state: dict[str, Any]) -> dict[str, Any]:
         "comparison_subject": first_subject,
         "primary_visual_subjects": visual_subjects["primary"],
         "supporting_visual_context": visual_subjects["supporting"],
+        # English provider-facing comparison sides from the canonical plan.
+        "comparison_visual_subjects": visual_subjects["sides"] if selected_format == "comparison" else [],
     }
 
 
@@ -293,27 +284,40 @@ def _font(size: int) -> ImageFont.ImageFont:
 
 
 def _brief_terms(brief: dict[str, Any]) -> set[str]:
-    return _semantic_words(" ".join(str(brief.get(key) or "") for key in ("primary_subject", "secondary_subject", "comparison_subject", "format", "visual_strategy", "recommended_angle")))
+    planning = _semantic_words(" ".join(str(brief.get(key) or "") for key in ("primary_subject", "secondary_subject", "comparison_subject", "format", "visual_strategy", "recommended_angle")))
+    # Canonical visual subjects share the provider-facing wording of the media,
+    # whatever language the topic was written in.
+    return planning | {str(value) for value in brief.get("primary_visual_subjects") or [] if str(value)}
 
 
 def _thumbnail_visual_prompt_groups(brief: dict[str, Any]) -> dict[str, list[str]]:
     """Build a small, positive/negative concept set for local pixel verification."""
     primary = [str(value) for value in brief.get("primary_visual_subjects") or [] if str(value)]
     supporting = [str(value) for value in brief.get("supporting_visual_context") or [] if str(value)]
-    comparison_a = _VISUAL_ALIASES.get(str(brief.get("comparison_subject") or "").strip().casefold(), str(brief.get("comparison_subject") or "").strip().casefold())
-    comparison_b = _VISUAL_ALIASES.get(str(brief.get("secondary_subject") or "").strip().casefold(), str(brief.get("secondary_subject") or "").strip().casefold())
-    core = [value for value in primary if value not in {comparison_a, comparison_b}]
+    sides = [str(value) for value in brief.get("comparison_visual_subjects") or [] if str(value)]
+    if not sides:
+        # No canonical sides: fall back to the A/B words of the question.
+        sides = [
+            str(value).strip().casefold()
+            for value in (brief.get("comparison_subject"), brief.get("secondary_subject"))
+            if str(value or "").strip()
+        ]
+    side_terms = {term for side in sides for term in side.split()}
+    core = [value for value in primary if value not in side_terms]
+
     def concepts(entity: str) -> list[str]:
-        return [f"a clear photograph of {entity}", f"{entity} {('islands or archipelago' if 'island' in core or 'archipelago' in core else 'landmark or landscape')}" , *[f"a photo showing {value}" for value in core]]
-    if comparison_a or comparison_b:
-        groups = {
-            "primary": concepts(comparison_a) if comparison_a else [f"a photo showing {value}" for value in core],
-            "secondary": concepts(comparison_b) if comparison_b else [],
-        }
+        return [
+            f"a clear photograph of {entity}",
+            *[f"{entity} {value}" for value in core[:2]],
+            *[f"a photo showing {value}" for value in core],
+        ]
+
+    if sides:
+        groups = {"primary": concepts(sides[0]), "secondary": concepts(sides[1]) if len(sides) > 1 else []}
     else:
         groups = {"primary": [f"a photo showing {value}" for value in primary], "secondary": []}
     groups["context"] = [f"a generic {value} scene" for value in supporting] + [
-        "a generic tropical road", "a generic city scene", "a generic landscape", "a generic sky"
+        "a generic road", "a generic city scene", "a generic landscape", "a generic sky"
     ]
     return {key: list(dict.fromkeys(value for value in values if value)) for key, values in groups.items()}
 

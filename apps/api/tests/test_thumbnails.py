@@ -177,6 +177,8 @@ def test_explanation_brief_has_standalone_premise_and_visual_subjects():
     }
     state["format_plan"] = {"selected_format": "explanation", "visual_structure": "airspace and borders"}
     state["script"] = {"triple_hook": {"visual_hook": {"subjects_to_show": ["Passagierflugzeug", "Landesgrenze auf einer Karte"]}}}
+    # The canonical, provider-facing plan (English) carries the visual subjects.
+    state["scenes"] = [{"id": "s1", "visual_intent": {"media_queries": ["commercial airplane flying", "airplane over border", "airspace border map"]}}]
     brief = build_thumbnail_brief(state)
     assert brief["cover_text"].startswith("Warum dürfen Flugzeuge")
     assert "airplane" in brief["primary_visual_subjects"]
@@ -212,13 +214,16 @@ def test_thumbnail_visual_prompts_include_comparison_entities_and_context():
     brief = {
         "comparison_subject": "Schweden",
         "secondary_subject": "Indonesien",
-        "primary_visual_subjects": ["sweden", "indonesia", "island", "archipelago"],
+        "comparison_visual_subjects": ["swedish", "indonesian"],
+        "primary_visual_subjects": ["indonesian", "island", "swedish"],
         "supporting_visual_context": ["sky", "landscape"],
     }
     prompts = _thumbnail_visual_prompt_groups(brief)
-    assert any("sweden" in value and "islands" in value for value in prompts["primary"])
-    assert any("indonesia" in value for value in prompts["secondary"])
-    assert any("tropical road" in value for value in prompts["context"])
+    # Canonical English sides from the plan, never the script-language question words.
+    assert "swedish island" in prompts["primary"]
+    assert "indonesian island" in prompts["secondary"]
+    assert not any("schweden" in value or "indonesien" in value for group in prompts.values() for value in group)
+    assert "a generic road" in prompts["context"]
 
 
 def test_thumbnail_visual_shortlist_is_bounded_and_downgrades_context_only(tmp_path):
@@ -403,8 +408,8 @@ def test_semantic_asset_ranking_beats_unrelated_high_resolution_asset(tmp_path):
     state["intent"] = {"topic": "Egypt and Sudan pyramids", "question": "Which country has more pyramids, Egypt or Sudan?"}
     state["format_plan"] = {"selected_format": "comparison"}
     state["scenes"] = [
-        {"id": "pyramids", "visual_goal": "Egyptian pyramids and Sudanese pyramids", "media": {"kind": "photo", "cache_path": f"{project_id}/assets/pyramids.jpg"}},
-        {"id": "portrait", "visual_goal": "person portrait", "media": {"kind": "photo", "cache_path": f"{project_id}/assets/portrait.jpg"}},
+        {"id": "pyramids", "visual_goal": "Egyptian pyramids and Sudanese pyramids", "visual_intent": {"media_queries": ["egyptian pyramids", "sudanese pyramids"]}, "media": {"kind": "photo", "cache_path": f"{project_id}/assets/pyramids.jpg"}},
+        {"id": "portrait", "visual_goal": "person portrait", "visual_intent": {"media_queries": ["person portrait"]}, "media": {"kind": "photo", "cache_path": f"{project_id}/assets/portrait.jpg"}},
     ]
     asset_dir = settings.render_root / project_id / "assets"
     asset_dir.mkdir(parents=True)
@@ -414,7 +419,7 @@ def test_semantic_asset_ranking_beats_unrelated_high_resolution_asset(tmp_path):
     result = build_project_thumbnails(state, project_id, settings)
 
     assert result["variants"][0]["source_scene_id"] == "pyramids"
-    assert {"egypt", "sudan", "pyramid"}.issubset(set(result["variants"][0]["matched_terms"]))
+    assert {"egyptian", "sudanese", "pyramid"} <= set(result["variants"][0]["matched_terms"])
     assert all(variant["source_scene_id"] == "pyramids" for variant in result["variants"])
 
 
