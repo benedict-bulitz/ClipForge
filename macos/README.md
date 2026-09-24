@@ -1,7 +1,7 @@
 # ClipForge macOS launcher
 
 `ClipForge.app` starts the existing local backend and frontend, waits for the
-health endpoints, then opens <http://127.0.0.1:3000>. `ClipForge Stop.app`
+health endpoints, then opens <http://localhost:3000>. `ClipForge Stop.app`
 stops only processes whose PID and launch time were recorded by the launcher.
 
 The app bundles intentionally reference this checkout at
