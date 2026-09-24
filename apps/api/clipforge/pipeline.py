@@ -26,6 +26,7 @@ from .narration import (
     clean_script_blocks,
     contamination_issues,
 )
+from .novelty import safe_novelty_plan
 from .pacing import analyze_pacing
 from .payoff import (
     build_payoff_plan,
@@ -176,10 +177,17 @@ def _factual_blocks(intent: dict[str, Any], facts: list[dict[str, Any]]) -> list
 def _safe_payoff_plan(
     intent: dict[str, Any], blocks: list[dict[str, Any]], supplied: dict[str, Any] | None = None,
     format_plan: dict[str, Any] | None = None,
+    novelty_plan: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Planning enrichment must never make an otherwise valid generation fail."""
     try:
-        return build_payoff_plan(intent, blocks, supplied=supplied, format_plan=format_plan)
+        return build_payoff_plan(
+            intent,
+            blocks,
+            supplied=supplied,
+            format_plan=format_plan,
+            novelty_plan=novelty_plan,
+        )
     except Exception:  # noqa: BLE001 - keep the established hook/body fallback usable
         body = [block for block in blocks if not _is_hook_block(block)]
         return {
@@ -191,6 +199,12 @@ def _safe_payoff_plan(
             "hook_must_not_reveal": "",
             "desired_viewer_reaction": "insight",
             "supporting_information": [],
+            "novelty_guidance": {
+                "recommended_angle": str((novelty_plan or {}).get("recommended_angle") or ""),
+                "distinctive_fact_ids": list((novelty_plan or {}).get("distinctive_facts") or []),
+                "explanatory_gain_ids": list((novelty_plan or {}).get("explanatory_gain") or []),
+                "comparison_gain_ids": list((novelty_plan or {}).get("comparison_gain") or []),
+            },
             "status": "fallback",
         }
 
@@ -251,6 +265,7 @@ def _generate_body_with_v2_or_fallback(
     legacy_blocks: list[dict[str, Any]],
     payoff_plan: dict[str, Any] | None = None,
     format_plan: dict[str, Any] | None = None,
+    novelty_plan: dict[str, Any] | None = None,
     *,
     provider: ScriptWriterProvider | None = None,
     review_provider: ScriptReviewProvider | None = None,
@@ -297,6 +312,7 @@ def _generate_body_with_v2_or_fallback(
             ],
             payoff_plan=payoff_plan,
             format_plan=format_plan,
+            novelty_plan=novelty_plan,
         )
     except ValidationError as exc:
         diagnostics["reason"] = "request_validation_failed"
@@ -474,6 +490,7 @@ def _generate_authoritative_hook_blocks(
     payoff_plan: dict[str, Any] | None = None,
     reaction_arc: dict[str, Any] | None = None,
     format_plan: dict[str, Any] | None = None,
+    novelty_plan: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]], Any | None, Any]:
     """Use the one post-body hook path shared by production and validation."""
     body_blocks = [
@@ -486,7 +503,7 @@ def _generate_authoritative_hook_blocks(
     try:
         hook_generation = generate_hook_candidates_with_openai(
             prompt, intent, facts, final_body, settings, payoff_plan=payoff_plan,
-            reaction_arc=reaction_arc, format_plan=format_plan,
+            reaction_arc=reaction_arc, format_plan=format_plan, novelty_plan=novelty_plan,
         )
     except TypeError:  # Compatibility with isolated legacy hook-provider test doubles.
         hook_generation = generate_hook_candidates_with_openai(
@@ -818,12 +835,14 @@ def build_initial_state(
             or ("source_attributed" if fact["sources"] else "unverified_model_synthesis")
         )
 
+    novelty_plan = safe_novelty_plan(intent, facts)
     report_progress(progress, "script", "Writing the narration", phase="start")
     ai_result = plan_with_openai(
         prompt,
         resolved_options,
         settings,
         evidence=[fact["claim"] for fact in facts if fact.get("claim")],
+        novelty_plan=novelty_plan,
     )
     plan_language_mismatch = False
     if ai_result.plan:
@@ -868,13 +887,18 @@ def build_initial_state(
     )
     plan.setdefault("answer_skeleton", ["ANSWER", "SUPPORT"])
     plan.setdefault("music_mood", "documentary")
+    novelty_plan = safe_novelty_plan(intent, facts, plan.get("information_plan"))
 
     max_duration = min(options.max_duration, settings.shortform_max_duration)
     minimum_duration = options.min_duration
     legacy_body_blocks = plan.get("script_blocks") or _factual_blocks(intent, facts)
-    format_plan = plan_format(intent, facts, legacy_body_blocks)
+    format_plan = plan_format(intent, facts, legacy_body_blocks, novelty_plan)
     initial_payoff_plan = _safe_payoff_plan(
-        intent, legacy_body_blocks, supplied=plan.get("payoff_plan"), format_plan=format_plan
+        intent,
+        legacy_body_blocks,
+        supplied=plan.get("payoff_plan"),
+        format_plan=format_plan,
+        novelty_plan=novelty_plan,
     )
     raw_blocks, script_writer_diagnostics = _generate_body_with_v2_or_fallback(
         prompt,
@@ -885,14 +909,29 @@ def build_initial_state(
         legacy_body_blocks,
         initial_payoff_plan,
         format_plan,
+        novelty_plan,
         provider=script_writer_provider,
         review_provider=script_review_provider,
     )
     raw_blocks, trimmed_post_payoff_fluff = trim_post_payoff_fluff(raw_blocks)
-    payoff_plan = _safe_payoff_plan(intent, raw_blocks, supplied=initial_payoff_plan, format_plan=format_plan)
+    payoff_plan = _safe_payoff_plan(
+        intent,
+        raw_blocks,
+        supplied=initial_payoff_plan,
+        format_plan=format_plan,
+        novelty_plan=novelty_plan,
+    )
     planned_reaction_arc = reaction_arc(intent, payoff_plan, format_plan)
     raw_blocks, selected_hook_candidate, hook_generation = _generate_authoritative_hook_blocks(
-        raw_blocks, prompt, intent, facts, settings, payoff_plan, planned_reaction_arc, format_plan
+        raw_blocks,
+        prompt,
+        intent,
+        facts,
+        settings,
+        payoff_plan,
+        planned_reaction_arc,
+        format_plan,
+        novelty_plan,
     )
     hook_candidates = hook_generation.candidates
     wpm = max(1, round(SPEAKING_RATE_WPM * float(options.voice_speed or 1.0)))
@@ -972,6 +1011,7 @@ def build_initial_state(
             "post_payoff_fluff_trimmed": trimmed_post_payoff_fluff,
         },
         "format_plan": format_plan,
+        "novelty_plan": novelty_plan,
         "script": {
             "text": script_text,
             "word_count": word_count,

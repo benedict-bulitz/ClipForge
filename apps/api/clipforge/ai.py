@@ -19,6 +19,8 @@ DIRECTOR_INSTRUCTIONS = (
     "user's prompt. Reveal the answer in the next sentence when immediate disclosure is needed for clarity; "
     "when payoff_plan requires a protected payoff, let useful supporting information earn it instead. Never "
     "use a fixed number of seconds to delay a reveal, add filler, or append a generic outro after the payoff. "
+    "The supplied novelty_plan is conservative guidance derived only from the provided research evidence. "
+    "Use it to prioritize useful explanatory or comparative value, never to invent or exaggerate novelty. "
     "The supplied hook_playbook is the canonical ClipForge hook manifest. Use its strategy definitions, "
     "when-to-use and avoid guidance, quality rules, and evidence opportunities to write three to five "
     "original topic-specific hook candidates. Return their matching manifest strategy IDs in hook_candidates "
@@ -206,6 +208,8 @@ HOOK_GENERATION_INSTRUCTIONS = (
     "The supplied reaction_arc is guidance, never permission to exaggerate: use only reactions the supported "
     "payoff can honestly deliver, and prefer clarity over emotional intensity. The supplied format_plan "
     "is lightweight guidance for contrast, challenge, progression, or explanation; follow it without adding scenes or filler. "
+    "The supplied novelty_plan is derived only from existing research and may suggest a useful angle, but never "
+    "supports claims of global uniqueness or unsupported surprise. "
     "Return three to five candidates and select the strongest strategy. Return structured output only."
 )
 
@@ -250,6 +254,7 @@ def generate_hook_candidates_with_openai(
     payoff_plan: dict[str, Any] | None = None,
     reaction_arc: dict[str, Any] | None = None,
     format_plan: dict[str, Any] | None = None,
+    novelty_plan: dict[str, Any] | None = None,
 ) -> AIHookGenerationResult:
     """Generate manifest-guided candidates after the body is finalized."""
     if not settings.openai_api_key:
@@ -264,6 +269,7 @@ def generate_hook_candidates_with_openai(
         "payoff_plan": payoff_plan or {},
         "reaction_arc": reaction_arc or {},
         "format_plan": format_plan or {},
+        "novelty_plan": novelty_plan or {},
         "facts": [
             {"claim": clean_research_claim(str(fact.get("claim") or ""))}
             for fact in facts
@@ -302,6 +308,7 @@ def plan_with_openai(
     settings: Settings,
     *,
     evidence: list[str] | None = None,
+    novelty_plan: dict[str, Any] | None = None,
 ) -> AIPlanResult:
     """Create a schema-validated semantic plan and report provider failure explicitly."""
     if settings.clipforge_ai_mode != "openai":
@@ -314,6 +321,7 @@ def plan_with_openai(
         "prompt": prompt,
         "options": options.model_dump(mode="json", exclude_none=True),
         "research_evidence": [clean_research_claim(item) for item in (evidence or []) if item],
+        "novelty_plan": novelty_plan or {},
         "hook_playbook": generation_playbook([
             {
                 "claim": clean_research_claim(item),

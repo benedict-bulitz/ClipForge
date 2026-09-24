@@ -14,6 +14,7 @@ from .format_intelligence import format_quality_issues
 from .hooks import hook_issues
 from .language import detect_text_language
 from .narration import begins_with_preamble, contamination_issues
+from .novelty import novelty_quality_issues
 from .payoff import payoff_quality_issues
 from .pipeline import _normalise_blocks, _refresh_script_derivatives
 from .reactions import reaction_quality_issues
@@ -109,6 +110,7 @@ def review_input_hash(state: dict[str, Any]) -> str:
         "payoff_plan": state.get("payoff_plan"),
         "format_plan": state.get("format_plan"),
         "reaction_plan": state.get("reaction_plan"),
+        "novelty_plan": state.get("novelty_plan"),
         "scenes": state.get("scenes"),
         "voice": {
             key: value
@@ -174,6 +176,7 @@ def review_context(state: dict[str, Any]) -> dict[str, Any]:
         "payoff_plan": state.get("payoff_plan"),
         "triple_hook": state.get("script", {}).get("triple_hook"),
         "reaction_plan": state.get("reaction_plan"),
+        "novelty_plan": state.get("novelty_plan"),
     }
 
 
@@ -283,6 +286,14 @@ def local_review_items(state: dict[str, Any]) -> list[dict[str, str]]:
                 "check": "hook" if "clickbait" in problem or "framing" in problem else "scenes",
                 "severity": severity,
                 "message": f"Reaction-plan quality issue: {problem.replace('_', ' ')}.",
+            }
+        )
+    for problem in novelty_quality_issues(state):
+        items.append(
+            {
+                "check": "research",
+                "severity": "warning",
+                "message": f"Novelty-plan quality issue: {problem.replace('_', ' ')}.",
             }
         )
     if len(first_sentence.split()) > 18:
@@ -473,6 +484,8 @@ def pre_render_quality_gate(state: dict[str, Any]) -> dict[str, Any]:
         issues.append({"code": problem, "severity": severity, "message": problem.replace("_", " ") + "."})
         if severity == "error":
             severe.append(problem)
+    for problem in novelty_quality_issues(state):
+        issues.append({"code": problem, "severity": "warning", "message": problem.replace("_", " ") + "."})
     pacing = state.get("pacing_analysis") if isinstance(state.get("pacing_analysis"), dict) else {}
     if pacing.get("status") == "fallback":
         issues.append({"code": "pacing_fallback", "severity": "warning", "message": "Pacing analysis fell back; existing scene timing is preserved."})

@@ -63,6 +63,7 @@ class ScriptWriterRequest(BaseModel):
     writing_requirements: list[str] = Field(default_factory=list, max_length=12)
     payoff_plan: dict[str, object] | None = None
     format_plan: dict[str, object] | None = None
+    novelty_plan: dict[str, object] | None = None
 
     @model_validator(mode="after")
     def require_normalized_evidence(self):
@@ -122,6 +123,8 @@ SCRIPT_WRITER_V2_INSTRUCTIONS = (
     "Otherwise begin with the actual answer, not reassurance or a restatement of the question. Never "
     "delay a reveal by a fixed time, repeat information to hold it back, or append a generic CTA/outro. "
     "Use the supplied format_plan as lightweight structure guidance without adding filler or unsupported claims. "
+    "Use the supplied novelty_plan only to prioritize supported explanatory or comparative value; never invent "
+    "novelty claims, obscure trivia, or unsupported surprise. "
     "Use only the supplied facts for "
     "substantive factual claims and attach the corresponding fact IDs to each factual block. "
     "Write natural spoken narration with logical order, short understandable sentences, and concise "
@@ -174,6 +177,7 @@ def _request_for_model(request: ScriptWriterRequest) -> dict:
         "writing_requirements": request.writing_requirements,
         "payoff_plan": request.payoff_plan,
         "format_plan": request.format_plan,
+        "novelty_plan": request.novelty_plan,
     }
 
 

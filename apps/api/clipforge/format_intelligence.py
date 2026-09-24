@@ -100,6 +100,7 @@ def select_format(
     intent: dict[str, Any],
     facts: list[dict[str, Any]] | None = None,
     blocks: list[dict[str, Any]] | None = None,
+    novelty_plan: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Select one compact format from the actual prompt and available evidence."""
     facts = facts or []
@@ -125,6 +126,7 @@ def select_format(
     else:
         selected = "explanation"
     details = _details(selected)
+    novelty_plan = novelty_plan if isinstance(novelty_plan, dict) else {}
     return {
         "status": "planned",
         "selected_format": selected,
@@ -143,6 +145,12 @@ def select_format(
         "pacing_guidance": details["pacing_guidance"],
         "visual_structure": details["visual_structure"],
         "unsuitable_formats": details["unsuitable_formats"],
+        "novelty_guidance": {
+            "recommended_angle": str(novelty_plan.get("recommended_angle") or ""),
+            "distinctive_fact_ids": list(novelty_plan.get("distinctive_facts") or []),
+            "explanatory_gain_ids": list(novelty_plan.get("explanatory_gain") or []),
+            "comparison_gain_ids": list(novelty_plan.get("comparison_gain") or []),
+        },
     }
 
 
@@ -150,9 +158,10 @@ def plan_format(
     intent: dict[str, Any],
     facts: list[dict[str, Any]] | None = None,
     blocks: list[dict[str, Any]] | None = None,
+    novelty_plan: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     try:
-        return select_format(intent, facts, blocks)
+        return select_format(intent, facts, blocks, novelty_plan)
     except Exception as exc:  # noqa: BLE001 - optional enrichment must not block generation
         return {
             "status": "fallback",
@@ -164,6 +173,7 @@ def plan_format(
             "pacing_guidance": "Allow enough comprehension time; do not add fixed timing rules.",
             "visual_structure": "relevant explanatory visuals",
             "unsuitable_formats": [],
+            "novelty_guidance": {},
             "error": f"{type(exc).__name__}: {str(exc)[:160]}",
         }
 

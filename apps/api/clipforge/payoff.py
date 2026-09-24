@@ -93,6 +93,7 @@ def build_payoff_plan(
     *,
     supplied: dict[str, Any] | None = None,
     format_plan: dict[str, Any] | None = None,
+    novelty_plan: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build a safe, persisted plan without changing the narration body."""
     supplied = supplied if isinstance(supplied, dict) else {}
@@ -114,6 +115,7 @@ def build_payoff_plan(
         _protected_answer(payoff, question) if protected else ""
     )
     format_name = str((format_plan or {}).get("selected_format") or "").casefold()
+    novelty = novelty_plan if isinstance(novelty_plan, dict) else {}
     format_payoff_type = {
         "comparison": "comparison_winner",
         "ranking": "ranking_result",
@@ -133,6 +135,12 @@ def build_payoff_plan(
         "desired_viewer_reaction": _clean(supplied.get("desired_viewer_reaction"), 80) or _reaction(intent, protected),
         "supporting_information": support,
         "format": format_name or None,
+        "novelty_guidance": {
+            "recommended_angle": str(novelty.get("recommended_angle") or ""),
+            "distinctive_fact_ids": list(novelty.get("distinctive_facts") or []),
+            "explanatory_gain_ids": list(novelty.get("explanatory_gain") or []),
+            "comparison_gain_ids": list(novelty.get("comparison_gain") or []),
+        },
         "status": "planned",
     }
 
