@@ -18,6 +18,7 @@ from .novelty import novelty_quality_issues
 from .payoff import payoff_quality_issues
 from .pipeline import _normalise_blocks, _refresh_script_derivatives
 from .reactions import reaction_quality_issues
+from .story_arc import story_quality_issues
 
 
 class ReviewFinding(BaseModel):
@@ -296,6 +297,15 @@ def local_review_items(state: dict[str, Any]) -> list[dict[str, str]]:
                 "message": f"Novelty-plan quality issue: {problem.replace('_', ' ')}.",
             }
         )
+    # Story-arc findings are advisory: they explain, never block rendering.
+    for problem in story_quality_issues(state):
+        items.append(
+            {
+                "check": "hook" if "hook" in problem else "script",
+                "severity": "warning",
+                "message": f"Story-arc issue: {problem.replace('_', ' ')}.",
+            }
+        )
     if len(first_sentence.split()) > 18:
         items.append(
             {
@@ -486,6 +496,8 @@ def pre_render_quality_gate(state: dict[str, Any]) -> dict[str, Any]:
             severe.append(problem)
     for problem in novelty_quality_issues(state):
         issues.append({"code": problem, "severity": "warning", "message": problem.replace("_", " ") + "."})
+    for problem in story_quality_issues(state):
+        issues.append({"code": f"story_{problem}", "severity": "warning", "message": "Story arc: " + problem.replace("_", " ") + "."})
     pacing = state.get("pacing_analysis") if isinstance(state.get("pacing_analysis"), dict) else {}
     if pacing.get("status") == "fallback":
         issues.append({"code": "pacing_fallback", "severity": "warning", "message": "Pacing analysis fell back; existing scene timing is preserved."})
@@ -566,7 +578,8 @@ def run_ai_review(
         ):
             old_scenes = copy.deepcopy(state.get("scenes", []))
             state["script"]["blocks"] = _normalise_blocks(
-                decision.corrected_script_blocks, int(state["duration"]["max_seconds"])
+                decision.corrected_script_blocks, int(state["duration"]["max_seconds"]),
+                story_arc=state.get("story_arc"),
             )
             hook_block = next(
                 (

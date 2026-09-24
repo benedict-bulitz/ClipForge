@@ -64,6 +64,7 @@ class ScriptWriterRequest(BaseModel):
     payoff_plan: dict[str, object] | None = None
     format_plan: dict[str, object] | None = None
     novelty_plan: dict[str, object] | None = None
+    story_arc: dict[str, object] | None = None
 
     @model_validator(mode="after")
     def require_normalized_evidence(self):
@@ -125,6 +126,11 @@ SCRIPT_WRITER_V2_INSTRUCTIONS = (
     "Use the supplied format_plan as lightweight structure guidance without adding filler or unsupported claims. "
     "Use the supplied novelty_plan only to prioritize supported explanatory or comparative value; never invent "
     "novelty claims, obscure trivia, or unsupported surprise. "
+    "When a story_arc is supplied it is the information backbone: present the facts in its information_order, "
+    "make the fact with primary_answer_id the clearly understandable answer (a secondary insight never replaces it), "
+    "respect depends_on so an explanation follows what it builds on, keep withheld answers out of earlier blocks, "
+    "end with the fact of final_payoff_id, and omit only facts marked may_be_omitted. Do not repeat a fact in "
+    "another block and add nothing after the final payoff. "
     "Use only the supplied facts for "
     "substantive factual claims and attach the corresponding fact IDs to each factual block. "
     "Write natural spoken narration with logical order, short understandable sentences, and concise "
@@ -178,6 +184,7 @@ def _request_for_model(request: ScriptWriterRequest) -> dict:
         "payoff_plan": request.payoff_plan,
         "format_plan": request.format_plan,
         "novelty_plan": request.novelty_plan,
+        "story_arc": request.story_arc,
     }
 
 

@@ -17,9 +17,11 @@ from .media import (
     WikimediaMediaClient,
     _optional_real_clients,
     build_visual_query_plan,
+    candidate_reveals_protected,
     derive_search_queries,
     is_real_media_allowed,
     media_relevance,
+    protected_candidate_terms,
     real_media_quality_gate,
     verify_media_shortlist,
 )
@@ -125,6 +127,8 @@ def discover_scene_media_candidates(
     scene_duration = float(scene["end"] - scene["start"])
     eligible: dict[str, MediaCandidate] = {}
     checked: set[str] = set()
+    # Same Story Arc reveal protection as automatic selection.
+    protected_terms = protected_candidate_terms(state, build_visual_query_plan(scene, state))
     def accept_new() -> None:
         ordered = _ordered(found, preferred, used | checked, scene, state)
         for offset in range(0, min(len(ordered), 24), 6):
@@ -132,7 +136,11 @@ def discover_scene_media_candidates(
             checked.update(item.identity for item in batch)
             for candidate, relevance in verify_media_shortlist(batch, scene, state, visual_verifier):
                 # The same final quality gate as automatic selection.
-                if relevance.get("confidence") in {"high", "acceptable"} and real_media_quality_gate(candidate, relevance)[0]:
+                if (
+                    relevance.get("confidence") in {"high", "acceptable"}
+                    and real_media_quality_gate(candidate, relevance)[0]
+                    and not candidate_reveals_protected(candidate, protected_terms)
+                ):
                     eligible.setdefault(candidate.identity, candidate)
             if len(eligible) >= limit:
                 break

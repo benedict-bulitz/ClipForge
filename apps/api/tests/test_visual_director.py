@@ -886,12 +886,13 @@ def test_story_arc_fields_are_authoritative_over_legacy_inference():
     contexts = [visual_director.scene_story_context(scene, state) for scene in state["scenes"]]
 
     assert [context["source"] for context in contexts] == ["story_arc"] * 4
-    assert [context["story_role"] for context in contexts] == ["hook", "evidence", "primary_answer", "final_payoff"]
+    assert [context["story_role"] for context in contexts] == [None, "evidence", "primary_answer", "secondary_insight"]
+    assert [context["visual_role"] for context in contexts] == ["hook", "evidence", "primary_answer", "final_payoff"]
     assert [context["reveal_allowed"] for context in contexts] == [False, False, True, True]
     assert contexts[2]["fact_ids"] == ["fact_3"]
     strategy = visual_director.plan_scene_strategy(state["scenes"][3], state, plan)
     # Final payoff and primary answer stay distinct identities.
-    assert strategy["story_role"] == "final_payoff" and strategy["arc_role"] == "secondary_insight"
+    assert strategy["story_role"] == "secondary_insight" and strategy["visual_role"] == "final_payoff"
     assert strategy["is_final_payoff"] and not strategy["is_primary_answer"]
 
 
@@ -904,7 +905,8 @@ def test_wet_fingers_story_arc_reaches_director_and_generation(tmp_path):
     assert state["scenes"][0]["media"]["provider_id"] == "hand"  # free real media first
     assert len(generator.prompts) <= 3
     roles = [scene["visual_director"]["story_role"] for scene in state["scenes"]]
-    assert roles == ["hook", "primary_answer", "secondary_insight", "explanation"]
+    assert roles == [None, "primary_answer", "secondary_insight", "explanation"]  # the arc's own roles
+    assert state["scenes"][0]["visual_director"]["visual_role"] == "hook"
     assert {scene["visual_director"]["story_source"] for scene in state["scenes"]} == {"story_arc"}
     for scene in state["scenes"]:
         assert scene.get("media", {}).get("provider_id") not in {"book", "bus"}
@@ -946,7 +948,8 @@ def test_sweden_indonesia_arc_hides_answer_until_reveal(tmp_path):
     assert answer["media"]["generation"]["reveal_safe"] is False
     # Primary answer and final payoff stay distinct.
     assert answer["visual_director"]["story_role"] == "primary_answer"
-    assert payoff["visual_director"]["story_role"] == "final_payoff"
+    assert payoff["visual_director"]["story_role"] == "secondary_insight"
+    assert payoff["visual_director"]["visual_role"] == "final_payoff" and payoff["visual_director"]["is_final_payoff"]
 
 
 def test_reveal_visuals_cannot_be_reused_or_used_as_thumbnails_before_reveal():

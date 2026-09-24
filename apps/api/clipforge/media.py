@@ -510,6 +510,8 @@ def _query_is_concrete(raw: str, query: str) -> bool:
 # Target keys are opaque identities the planner assigns to what a query depicts
 # ("subject_a", "subject_b", "shared", ...).  They carry no topic meaning.
 _TARGET_KEY_RE = re.compile(r"[a-z0-9_]{1,32}")
+# story_arc scene stages at which the protected answer may be shown.
+_REVEALED_STORY_STAGES = {"reveal", "after_reveal", "open"}
 _NON_SIDE_TARGET_KEYS = {"shared", "context"}
 
 
@@ -682,6 +684,12 @@ def build_visual_query_plan(scene: dict[str, Any], state: dict[str, Any]) -> dic
     )
     query_targets = {query: key for query, key in _query_target_map(visual_intent).items() if query in candidates}
     protected_key = protected_visual_target(state)
+    # Story-arc scenes know whether the answer is already revealed: protection
+    # applies only before the reveal.  Scenes without a story stage (older
+    # projects) keep project-wide protection.
+    story_stage = str(scene.get("story_stage") or "")
+    if story_stage in _REVEALED_STORY_STAGES:
+        protected_key, protected_text = "", ""
     structured = bool(protected_key and query_targets)
     if structured:
         # Structured identity: the planner said which target reveals the payoff.
@@ -707,6 +715,9 @@ def build_visual_query_plan(scene: dict[str, Any], state: dict[str, Any]) -> dic
         "side_keys": side_keys,
         "query_targets": query_targets,
         "protected_targets": [protected_key] if structured else [],
+        "protection_scope": (
+            "revealed" if story_stage in _REVEALED_STORY_STAGES else "before_reveal" if story_stage else "project"
+        ),
         "supporting_context": [],
         "comparison_coverage": {label: True for label in side_labels},
         "protected_entities": sorted(protected_terms),
@@ -715,16 +726,8 @@ def build_visual_query_plan(scene: dict[str, Any], state: dict[str, Any]) -> dic
     }
 
 
-def canonical_visual_subjects(state: dict[str, Any]) -> dict[str, list[str]]:
-    """Project-level visual subjects from the canonical plan, for any topic.
-
-    Reads the provider-facing queries of the visual hook and every scene
-    intent.  ``concepts`` are subject terms repeated across queries (most
-    frequent first); ``sides`` are comparison sides, keyed by the planner's
-    target keys when present (subject_a before subject_b), otherwise derived
-    from the query structure.  Sides are identity only; keeping a protected
-    side out of searches is the query planner's job.
-    """
+def _canonical_query_targets(state: dict[str, Any]) -> tuple[list[str], dict[str, str]]:
+    """All provider-facing queries of the visual hook and scene intents, with target keys."""
     script = state.get("script") if isinstance(state.get("script"), dict) else {}
     triple = script.get("triple_hook") if isinstance(script.get("triple_hook"), dict) else {}
     intents = [triple.get("visual_hook")] + [
@@ -740,7 +743,48 @@ def canonical_visual_subjects(state: dict[str, Any]) -> dict[str, list[str]]:
             query = _semantic_query(str(raw or ""), _VISUAL_QUERY_STOP, limit=6)
             if query and _query_is_concrete(str(raw), query):
                 queries.append(query)
-    queries = list(dict.fromkeys(queries))
+    return list(dict.fromkeys(queries)), targets
+
+
+def protected_candidate_terms(state: dict[str, Any], query_plan: dict[str, Any]) -> set[str]:
+    """Terms naming the protected answer target, checked on candidate metadata.
+
+    Query planning keeps the protected target out of *searches*; a provider
+    can still return it for an allowed query (Swedish islands for an
+    Indonesia query).  Before the reveal, the structured identity — the side
+    label the planner keyed to ``protected_visual_target`` across the project —
+    names what a candidate must not show.  At/after the Story Arc reveal the
+    set is empty.  Legacy plans fall back to the plan's own protected terms.
+    """
+    if query_plan.get("protection_scope") == "revealed":
+        return set()
+    terms = set(query_plan.get("protected_entities") or [])
+    key = protected_visual_target(state)
+    if key:
+        queries, targets = _canonical_query_targets(state)
+        sides = _keyed_structure(queries, targets)[1]
+        terms |= {token for label, side_key in sides.items() if side_key == key for token in label.split()}
+    return terms
+
+
+def candidate_reveals_protected(candidate: MediaCandidate, protected_terms: set[str]) -> bool:
+    if not protected_terms:
+        return False
+    metadata = _coverage_tokens(" ".join((candidate.title, candidate.description, *candidate.tags)))
+    return _mentions(metadata, protected_terms)
+
+
+def canonical_visual_subjects(state: dict[str, Any]) -> dict[str, list[str]]:
+    """Project-level visual subjects from the canonical plan, for any topic.
+
+    Reads the provider-facing queries of the visual hook and every scene
+    intent.  ``concepts`` are subject terms repeated across queries (most
+    frequent first); ``sides`` are comparison sides, keyed by the planner's
+    target keys when present (subject_a before subject_b), otherwise derived
+    from the query structure.  Sides are identity only; keeping a protected
+    side out of searches is the query planner's job.
+    """
+    queries, targets = _canonical_query_targets(state)
     if any(key not in _NON_SIDE_TARGET_KEYS for key in targets.values()):
         concepts, keyed_sides = _keyed_structure(queries, targets)
         return {"concepts": concepts, "sides": list(keyed_sides)}
@@ -1802,10 +1846,17 @@ def _cache_candidate(
 class _SceneQualityGate:
     """Per-scene application of ``real_media_quality_gate`` with rejection counts."""
 
-    def __init__(self, targets: dict[str, str], scene_duration: float, strong_required: bool):
+    def __init__(
+        self,
+        targets: dict[str, str],
+        scene_duration: float,
+        strong_required: bool,
+        protected_terms: set[str] | None = None,
+    ):
         self.targets = targets
         self.scene_duration = scene_duration
         self.strong_required = strong_required
+        self.protected_terms = protected_terms or set()
         self.rejections: dict[str, int] = {}
 
     def __call__(
@@ -1816,6 +1867,8 @@ class _SceneQualityGate:
         visual_score: float | None = None,
     ) -> bool:
         accepted, reason = real_media_quality_gate(candidate, relevance, verdict, visual_score)
+        if accepted and candidate_reveals_protected(candidate, self.protected_terms):
+            accepted, reason = False, "protected_reveal_before_story_reveal"
         if accepted and not _meets_strategy(candidate, relevance, self.targets, self.scene_duration, self.strong_required):
             accepted, reason = False, "not_strong_for_graphic_scene"
         if not accepted:
@@ -1951,7 +2004,9 @@ def prepare_project_media(
         if preferred_kind not in {"video", "photo"}:
             preferred_kind = "video"
         metadata: dict[str, Any] | None = None
-        accept = _SceneQualityGate(coverage_targets, duration, strong_required)
+        accept = _SceneQualityGate(
+            coverage_targets, duration, strong_required, protected_candidate_terms(state, query_plan)
+        )
         gate_rejections = accept.rejections
 
         commons_candidates: list[MediaCandidate] = []
@@ -2178,8 +2233,12 @@ def prepare_project_media(
             continue
 
         metadata["story_role"] = strategy.get("story_role")
+        metadata["is_primary_answer"] = bool(strategy.get("is_primary_answer"))
         metadata["reveal_safe"] = bool(metadata.get("reveal_safe", True)) and director.visual_reveal_safe(
-            state, strategy, query_plan
+            state,
+            strategy,
+            query_plan,
+            query=metadata.get("query") if media_source(metadata) in REAL_MEDIA_PROVIDERS else None,
         )
         candidate_identity = str(metadata["identity"])
         scene["media"] = metadata
@@ -2303,7 +2362,9 @@ def _reuse_safe(media: dict[str, Any], strategy: dict[str, Any]) -> bool:
     """
     if media_source(media) == GRAPHIC_ASSET_SOURCE:
         return False
-    if strategy.get("story_role") == "secondary_insight" and media.get("story_role") == "primary_answer":
+    if strategy.get("story_role") == "secondary_insight" and (
+        media.get("is_primary_answer") or media.get("story_role") == "primary_answer"
+    ):
         return False
     if strategy.get("reveal_allowed", True):
         return True

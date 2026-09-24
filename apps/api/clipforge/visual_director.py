@@ -175,6 +175,13 @@ def _block_role(scene: dict[str, Any], state: dict[str, Any]) -> str:
     return str(block.get("role") or "").strip().casefold()
 
 
+def _block_text(scene: dict[str, Any], state: dict[str, Any]) -> str:
+    script = state.get("script") if isinstance(state.get("script"), dict) else {}
+    block_id = str(scene.get("block_id") or "")
+    block = next((item for item in script.get("blocks") or [] if isinstance(item, dict) and str(item.get("id") or "") == block_id), {})
+    return " ".join(str(block.get("text") or "").split())
+
+
 def arc_scene_context(scene: dict[str, Any], state: dict[str, Any]) -> dict[str, Any] | None:
     """Story context from the Story Arc's own scene annotations, when present.
 
@@ -199,8 +206,10 @@ def arc_scene_context(scene: dict[str, Any], state: dict[str, Any]) -> dict[str,
         block = next((item for item in script.get("blocks") or [] if isinstance(item, dict) and item.get("id") == scene.get("block_id")), {})
         unit_ids = [str(value) for value in block.get("fact_ids") or []]
     return {
-        "story_role": role,
-        "arc_role": arc_role,
+        # The Story Arc's own role, unchanged (None for scenes carrying no fact).
+        "story_role": arc_role,
+        # Presentation role the director reasons with: reveal identity first.
+        "visual_role": role,
         "story_stage": stage,
         "reveal_allowed": stage in _ARC_REVEALED_STAGES,
         "is_primary_answer": bool(scene.get("is_primary_answer")),
@@ -227,8 +236,8 @@ def scene_story_context(scene: dict[str, Any], state: dict[str, Any], arc: dict[
         # while the payoff plan protects an answer.
         payoff = state.get("payoff_plan") if isinstance(state.get("payoff_plan"), dict) else {}
         protected = payoff.get("reveal_policy") == "after_supporting_information"
-        return {"story_role": "evidence", "story_stage": "setup", "reveal_allowed": not protected, "block_index": None, "fact_ids": [], "source": "legacy_inference"}
-    return {**context, "source": "legacy_inference"}
+        return {"story_role": "evidence", "visual_role": "evidence", "story_stage": "setup", "reveal_allowed": not protected, "block_index": None, "fact_ids": [], "source": "legacy_inference"}
+    return {**context, "visual_role": context["story_role"], "source": "legacy_inference"}
 
 
 def answer_withheld(state: dict[str, Any]) -> bool:
@@ -246,7 +255,14 @@ def structured_protection(state: dict[str, Any]) -> bool:
     return isinstance(state.get("story_arc"), dict) or bool(visual_target_key(payoff.get("protected_visual_target")))
 
 
-def visual_reveal_safe(state: dict[str, Any], strategy: dict[str, Any], query_plan: dict[str, Any] | None, text: str = "") -> bool:
+def visual_reveal_safe(
+    state: dict[str, Any],
+    strategy: dict[str, Any],
+    query_plan: dict[str, Any] | None,
+    text: str = "",
+    *,
+    query: str | None = None,
+) -> bool:
     """Whether a visual chosen for this scene may appear before the reveal.
 
     Structural: a visual picked while protection was active is safe; one picked
@@ -261,7 +277,15 @@ def visual_reveal_safe(state: dict[str, Any], strategy: dict[str, Any], query_pl
     if not answer_withheld(state):
         return True
     if strategy.get("reveal_allowed") and (plan.get("protection_scope") == "revealed" or strategy.get("is_primary_answer")):
-        return False
+        if strategy.get("is_primary_answer"):
+            return False
+        # A real asset found by a query the planner keyed to a different
+        # target (the other comparison side, shared context) cannot depict the
+        # protected answer; anything else from a revealed scene might.
+        payoff = state.get("payoff_plan") if isinstance(state.get("payoff_plan"), dict) else {}
+        protected_key = visual_target_key(payoff.get("protected_visual_target"))
+        query_key = visual_target_key((plan.get("query_targets") or {}).get(str(query or "")))
+        return bool(protected_key and query_key and query_key != protected_key)
     if text and not structured_protection(state):
         payoff = state.get("payoff_plan") if isinstance(state.get("payoff_plan"), dict) else {}
         return not reveals_protected_payoff(text, payoff)
@@ -384,11 +408,12 @@ def plan_scene_strategy(
         chain = ["real_media", SIMPLE_GRAPHIC, REUSE_PREVIOUS_VISUAL]
     else:
         chain = ["real_media", GENERATED_IMAGE, REUSE_PREVIOUS_VISUAL]
-        if story["story_role"] in {"explanation", "final_payoff"}:
+        if story["visual_role"] in {"explanation", "final_payoff"} or story["story_role"] == "explanation":
             # An explanation (or the closing idea) is better served by a free
             # process graphic than by reused, unrelated filler when neither
-            # real media nor a generated image is available.
-            steps = process_steps(narration)
+            # real media nor a generated image is available.  Steps come from
+            # the whole block: scenes may split a sentence mid-clause.
+            steps = process_steps(_block_text(scene, state) or narration)
             spec = normalise_graphic_spec({"kind": "process", "steps": steps})
             if spec and not _protected_text_blocked(" ".join(steps), state, reveal_allowed, protected_terms):
                 graphic = spec
@@ -396,7 +421,7 @@ def plan_scene_strategy(
     return {
         "version": VERSION,
         "story_role": story["story_role"],
-        "arc_role": story.get("arc_role"),
+        "visual_role": story["visual_role"],
         "story_stage": story["story_stage"],
         "story_source": story.get("source", "legacy_inference"),
         "reveal_allowed": reveal_allowed,
@@ -542,7 +567,7 @@ def build_generation_prompt(
     details = "; ".join(phrases[1:])
     fiction = str((state.get("intent") or {}).get("content_type") or "").casefold() in {"fiction", "story", "fictional_story"}
     style = "Cinematic, realistic still image" if fiction else "Photorealistic photograph"
-    direction = _ROLE_DIRECTION.get(str(strategy.get("story_role") or ""), "a clear photo of the subject")
+    direction = _ROLE_DIRECTION.get(str(strategy.get("visual_role") or strategy.get("story_role") or ""), "a clear photo of the subject")
     prompt = (
         f"{style}: {subject}."
         + (f" Details: {details}." if details else "")
@@ -629,11 +654,13 @@ def _generated_metadata(
         "ai_generated": True,
         "reveal_safe": bool(record.get("reveal_safe")),
         "story_role": record.get("story_role"),
+        "is_primary_answer": bool(record.get("is_primary_answer")),
         "generation": {
             key: record.get(key)
             for key in (
                 "model", "model_label", "quality", "quality_label", "size", "prompt", "prompt_summary", "created_at",
-                "trigger", "reason", "scene_id", "block_id", "fact_ids", "story_role", "story_stage", "story_source",
+                "trigger", "reason", "scene_id", "block_id", "fact_ids", "story_role", "visual_role", "story_stage", "story_source",
+                "is_primary_answer", "is_final_payoff",
                 "ai_generated", "reveal_safe", "verification",
                 "usage", "cost_usd", "cost_source",
             )
@@ -669,6 +696,9 @@ def generate_scene_image(
         "block_id": str(scene.get("block_id") or ""),
         "fact_ids": list(strategy.get("fact_ids") or []),
         "story_role": strategy.get("story_role"),
+        "visual_role": strategy.get("visual_role"),
+        "is_primary_answer": bool(strategy.get("is_primary_answer")),
+        "is_final_payoff": bool(strategy.get("is_final_payoff")),
         "story_stage": strategy.get("story_stage"),
         "story_source": strategy.get("story_source"),
         "ai_generated": True,
