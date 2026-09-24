@@ -39,6 +39,7 @@ from clipforge.renderer import (
     music_filter_graph,
     music_input_args,
     music_render_config,
+    music_volume_gain,
 )
 from clipforge.schemas import AdvancedOptions
 
@@ -50,6 +51,15 @@ def settings(tmp_path: Path) -> Settings:
         brave_search_api_key=None,
         render_root=tmp_path,
     )
+
+
+def test_music_volume_gain_is_perceptual_monotonic_and_ducking_is_relative():
+    gains = [music_volume_gain(value)[0] for value in (0, 0.1, 0.2, 0.5, 1)]
+    assert gains[0] == 0
+    assert gains[-1] == pytest.approx(1)
+    assert gains == sorted(gains)
+    assert gains[2] > gains[1] > 0
+    assert music_volume_gain(0.5, ducking=True)[0] == pytest.approx(gains[3] * 10 ** (-4 / 20))
 
 
 def real_track(track_id: str = "field-notes") -> MusicTrack:
@@ -381,7 +391,9 @@ def test_real_track_path_is_looped_trimmed_and_mixed_under_narration(tmp_path):
 
     assert music_input_args(track, 8) == ["-stream_loop", "-1", "-t", "8.000", "-i", str(track)]
     graph = music_filter_graph(config, 8)
-    assert "volume=0.077" in graph
+    assert "volume=0.073" in graph
+    assert "[1:a]" in graph and "[0:a]" in graph
+    assert "[2:a]" not in graph
     assert "afade=t=out:st=7.000" in graph
     assert "amix=inputs=2" in graph
 

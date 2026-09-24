@@ -246,12 +246,22 @@ def generate_hook_candidates(intent: dict[str, Any], facts: list[dict[str, Any]]
     return result
 
 
-def select_hook_candidate(intent: dict[str, Any], facts: list[dict[str, Any]], *, body: str = "", existing: str | None = None, model_candidates: list[dict[str, Any]] | None = None) -> HookCandidate | None:
-    candidates = generate_hook_candidates(intent, facts, body=body)
+def _reveals_forbidden(text: str, forbidden_terms: set[str] | None) -> bool:
+    if not forbidden_terms:
+        return False
+    matched = _words(text) & forbidden_terms
+    return len(matched) >= max(1, min(2, len(forbidden_terms)))
+
+
+def select_hook_candidate(intent: dict[str, Any], facts: list[dict[str, Any]], *, body: str = "", existing: str | None = None, model_candidates: list[dict[str, Any]] | None = None, forbidden_terms: set[str] | None = None) -> HookCandidate | None:
+    candidates = [
+        candidate for candidate in generate_hook_candidates(intent, facts, body=body)
+        if not _reveals_forbidden(candidate.text, forbidden_terms)
+    ]
     seen_text: set[str] = {" ".join(candidate.text.casefold().split()) for candidate in candidates}
     for item in model_candidates or []:
         text = str(item.get("text") or "").strip()
-        if text and not hook_issues(text, facts, body=body, intent=intent):
+        if text and not _reveals_forbidden(text, forbidden_terms) and not hook_issues(text, facts, body=body, intent=intent):
             normalized = " ".join(text.casefold().split())
             if any(len(set(normalized.split()) & set(other.split())) / max(1, min(len(normalized.split()), len(other.split()))) >= 0.85 for other in seen_text):
                 continue
@@ -287,6 +297,7 @@ def select_hook_candidate(intent: dict[str, Any], facts: list[dict[str, Any]], *
         existing
         and " ".join(existing.casefold().split()) not in seen_text
         and not hook_issues(existing, facts, body=body, intent=intent)
+        and not _reveals_forbidden(existing, forbidden_terms)
         and not _plain_evidence_explanation(existing, facts, body)
         and _unlabelled_hook_has_mechanism(existing, intent)
     ):
@@ -294,6 +305,6 @@ def select_hook_candidate(intent: dict[str, Any], facts: list[dict[str, Any]], *
     return max(candidates, key=lambda item: item.score, default=None)
 
 
-def select_hook(intent: dict[str, Any], facts: list[dict[str, Any]], *, body: str = "", existing: str | None = None, model_candidates: list[dict[str, Any]] | None = None) -> str | None:
-    candidate = select_hook_candidate(intent, facts, body=body, existing=existing, model_candidates=model_candidates)
+def select_hook(intent: dict[str, Any], facts: list[dict[str, Any]], *, body: str = "", existing: str | None = None, model_candidates: list[dict[str, Any]] | None = None, forbidden_terms: set[str] | None = None) -> str | None:
+    candidate = select_hook_candidate(intent, facts, body=body, existing=existing, model_candidates=model_candidates, forbidden_terms=forbidden_terms)
     return candidate.text if candidate else None

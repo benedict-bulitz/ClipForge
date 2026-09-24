@@ -4,6 +4,7 @@ from clipforge.config import Settings
 from clipforge.music import MusicTrack
 from clipforge.schemas import AudioSettingsUpdate, MusicSelectionUpdate
 from clipforge.services import (
+    _ensure_music_recommendations,
     export_project,
     get_project,
     project_music_recommendations,
@@ -11,6 +12,23 @@ from clipforge.services import (
     update_project_audio,
     update_project_music_selection,
 )
+
+
+def test_ai_match_activates_default_music_layer_without_touching_render(tmp_path, monkeypatch):
+    settings = export_settings(tmp_path)
+    track = MusicTrack("matched", "Matched Track", "tracks/matched.mp3", "documentary", "low", ("ambient",), "catalog", "CC BY")
+    state = state_for("55555555-5555-4555-8555-555555555555", settings)
+    state["music"] = {"enabled": True, "selection": {"mode": "automatic"}, "volume": 0.22}
+    from clipforge.ai import AIMusicRecommendationResult
+    monkeypatch.setattr("clipforge.services.rank_music_with_openai", lambda *_args: AIMusicRecommendationResult(["matched"], "connected"))
+
+    tracks, changed = _ensure_music_recommendations(state, (track,), settings)
+
+    assert changed is True
+    assert [item.id for item in tracks] == ["matched"]
+    assert state["music"]["track"]["id"] == "matched"
+    assert state["music"]["selection"]["mode"] == "ai_matched"
+    assert state["music"]["volume"] == 0.22
 
 
 def test_audio_controls_persist_reopen_and_export_latest_mix(db, tmp_path, monkeypatch):

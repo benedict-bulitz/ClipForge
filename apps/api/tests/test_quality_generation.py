@@ -613,14 +613,14 @@ def test_music_is_not_created_or_mixed_during_base_render(tmp_path):
         music_fades=True,
     )
     assert _create_music_track("ffmpeg", state, 2, tmp_path) is None
-    assert music_render_config(state)["effective_volume"] == pytest.approx(0.11)
+    assert music_render_config(state)["effective_volume"] == pytest.approx(0.0935, rel=1e-4)
 
     state["music"].update(enabled=True, mood="tech", ducking=False)
     track = _create_music_track("ffmpeg", state, 2, tmp_path)
 
     assert track is None
-    assert music_render_config(state)["effective_volume"] == pytest.approx(0.2)
+    assert music_render_config(state)["effective_volume"] == pytest.approx(0.1481905)
     assert music_render_config(state)["fades"] is True
     graph = music_filter_graph(music_render_config(state), 8)
-    assert "volume=0.200" in graph
+    assert "volume=0.148" in graph
     assert "afade=t=in" in graph and "afade=t=out:st=7.000" in graph

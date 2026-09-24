@@ -440,16 +440,36 @@ def caption_style_config(style: str) -> dict[str, int | bool | str]:
     return styles.get(aliases.get(style, style), styles["karaoke"])
 
 
+MUSIC_MIN_DB = -30.0
+MUSIC_DUCK_DB = -4.0
+
+
+def music_volume_gain(volume: object, *, ducking: bool = False) -> tuple[float, float]:
+    """Map the persisted 0..1 UI value to perceptual dB and linear gain."""
+    value = max(0.0, min(1.0, float(volume)))
+    if value == 0:
+        return 0.0, float("-inf")
+    db = MUSIC_MIN_DB + (0.0 - MUSIC_MIN_DB) * value**0.5
+    if ducking:
+        db += MUSIC_DUCK_DB
+    return 10 ** (db / 20.0), db
+
+
 def music_render_config(state: dict) -> dict[str, object]:
     music = state.get("music", {})
-    volume = max(0.0, min(0.5, float(music.get("volume", 0.14))))
+    volume = max(0.0, min(1.0, float(music.get("volume", 0.14))))
     ducking = bool(music.get("ducking", True))
+    effective_volume, effective_db = music_volume_gain(volume, ducking=ducking)
+    _base_gain, volume_db = music_volume_gain(volume)
     return {
         "enabled": bool(music.get("enabled", False)),
         "mood": str(music.get("mood") or "ambient"),
         "volume": volume,
+        "volume_db": volume_db,
         "ducking": ducking,
-        "effective_volume": volume * (0.55 if ducking else 1.0),
+        "ducking_db": MUSIC_DUCK_DB if ducking else 0.0,
+        "effective_volume": effective_volume,
+        "effective_db": effective_db,
         "fades": bool(music.get("fades", True)),
         "track_id": str((music.get("track") or {}).get("id") or ""),
         "voice_volume": max(0.0, min(1.0, float(state.get("voice", {}).get("volume", 1)))),
@@ -464,8 +484,10 @@ def music_filter_graph(config: dict[str, object], duration: float) -> str:
             f"afade=t=out:st={max(0.0, duration - 1):.3f}:d=1"
         )
     return (
-        f"[2:a]volume={float(config['effective_volume']):.3f}{fades}[bed];"
-        f"[1:a]volume={float(config.get('voice_volume', 1)):.3f},apad=pad_dur={duration:.3f}[voice];"
+        # Export has exactly two inputs: the base render (0, including
+        # narration) and the looped music asset (1).
+        f"[1:a]volume={float(config['effective_volume']):.3f}{fades}[bed];"
+        f"[0:a]volume={float(config.get('voice_volume', 1)):.3f},apad=pad_dur={duration:.3f}[voice];"
         "[voice][bed]amix=inputs=2:duration=longest:normalize=0[mixed]"
     )
 

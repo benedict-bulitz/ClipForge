@@ -13,8 +13,12 @@ from .schemas import AdvancedOptions
 
 DIRECTOR_INSTRUCTIONS = (
     "You are ClipForge's short-form director. Write the shortest complete explanation that answers "
-    "the user's question well. Start with one very short curiosity hook or setup that makes sense to "
-    "a viewer who never saw the user's prompt, then reveal the answer immediately in the next sentence. "
+    "the user's question well. Identify a compact payoff_plan with the central curiosity, actual payoff, "
+    "supporting information, desired viewer reaction, and whether the hook must withhold the payoff. "
+    "Start with one very short curiosity hook or setup that makes sense to a viewer who never saw the "
+    "user's prompt. Reveal the answer in the next sentence when immediate disclosure is needed for clarity; "
+    "when payoff_plan requires a protected payoff, let useful supporting information earn it instead. Never "
+    "use a fixed number of seconds to delay a reveal, add filler, or append a generic outro after the payoff. "
     "The supplied hook_playbook is the canonical ClipForge hook manifest. Use its strategy definitions, "
     "when-to-use and avoid guidance, quality rules, and evidence opportunities to write three to five "
     "original topic-specific hook candidates. Return their matching manifest strategy IDs in hook_candidates "
@@ -89,6 +93,27 @@ class AIVisualIntent(BaseModel):
     media_queries: list[str] = Field(default_factory=list, max_length=4)
 
 
+class AIPayoffPlan(BaseModel):
+    curiosity_question: str = Field(min_length=1, max_length=320)
+    payoff: str = Field(min_length=1, max_length=320)
+    payoff_type: str = Field(default="answer", min_length=1, max_length=80)
+    payoff_dependencies: list[str] = Field(default_factory=list, max_length=4)
+    reveal_policy: Literal["after_supporting_information", "immediate_context_allowed"] = "immediate_context_allowed"
+    hook_must_not_reveal: str = Field(default="", max_length=320)
+    desired_viewer_reaction: str = Field(default="insight", max_length=80)
+    supporting_information: list[str] = Field(default_factory=list, max_length=4)
+
+
+class AIVisualHook(BaseModel):
+    visual_goal: str = Field(min_length=2, max_length=220)
+    subjects_to_show: list[str] = Field(default_factory=list, max_length=4)
+    contrast: str = Field(default="", max_length=140)
+    motion_or_change: str = Field(default="", max_length=140)
+    visual_priority: str = Field(default="", max_length=140)
+    must_not_show: list[str] = Field(default_factory=list, max_length=4)
+    media_queries: list[str] = Field(default_factory=list, max_length=4)
+
+
 class AIProjectPlan(BaseModel):
     intent: AIIntent
     research_questions: list[str] = Field(min_length=0, max_length=6)
@@ -99,11 +124,14 @@ class AIProjectPlan(BaseModel):
     hook_candidates: list[AIHookCandidate] = Field(default_factory=list, max_length=5)
     selected_hook_strategy: str | None = None
     visual_intents: list[AIVisualIntent] = Field(default_factory=list, max_length=8)
+    payoff_plan: AIPayoffPlan | None = None
 
 
 class AIHookGenerationResponse(BaseModel):
     hook_candidates: list[AIHookCandidate] = Field(min_length=1, max_length=5)
     selected_hook_strategy: str = Field(min_length=1)
+    visual_hook: AIVisualHook | None = None
+    on_screen_text_hook: str | None = Field(default=None, max_length=80)
 
 
 class AIMusicRecommendations(BaseModel):
@@ -149,6 +177,7 @@ class AIHookGenerationResult:
     selected_strategy: str | None
     status: str
     error: str | None = None
+    triple_hook: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -169,6 +198,14 @@ HOOK_GENERATION_INSTRUCTIONS = (
     "restatement of the body as an evidence insight, repeat or lightly paraphrase the user's "
     "question, use clickbait, or begin with unexplained specialist terminology. Keep German "
     "everyday, short, concrete, and understandable on first listen by a typical 10–14 year old. "
+    "The supplied payoff_plan states whether a payoff is protected. Never reveal hook_must_not_reveal in "
+    "a spoken hook, visual hook, text hook, visual query, or visual subject. Alongside the candidates, return "
+    "one visual_hook and one very short on_screen_text_hook for the chosen strategy. The three channels must "
+    "serve the same curiosity but must not repeat the same sentence. The visual hook should describe real "
+    "subjects, contrast or motion for the existing media pipeline, and explicit must_not_show constraints. "
+    "The supplied reaction_arc is guidance, never permission to exaggerate: use only reactions the supported "
+    "payoff can honestly deliver, and prefer clarity over emotional intensity. The supplied format_plan "
+    "is lightweight guidance for contrast, challenge, progression, or explanation; follow it without adding scenes or filler. "
     "Return three to five candidates and select the strongest strategy. Return structured output only."
 )
 
@@ -210,6 +247,9 @@ def generate_hook_candidates_with_openai(
     facts: list[dict[str, Any]],
     body: str,
     settings: Settings,
+    payoff_plan: dict[str, Any] | None = None,
+    reaction_arc: dict[str, Any] | None = None,
+    format_plan: dict[str, Any] | None = None,
 ) -> AIHookGenerationResult:
     """Generate manifest-guided candidates after the body is finalized."""
     if not settings.openai_api_key:
@@ -221,6 +261,9 @@ def generate_hook_candidates_with_openai(
             for key in ("topic", "question", "language", "content_type", "tone")
         },
         "final_body": body,
+        "payoff_plan": payoff_plan or {},
+        "reaction_arc": reaction_arc or {},
+        "format_plan": format_plan or {},
         "facts": [
             {"claim": clean_research_claim(str(fact.get("claim") or ""))}
             for fact in facts
@@ -244,6 +287,10 @@ def generate_hook_candidates_with_openai(
             [candidate.model_dump() for candidate in parsed.hook_candidates],
             parsed.selected_hook_strategy,
             "connected",
+            triple_hook={
+                "visual_hook": parsed.visual_hook.model_dump(mode="json") if parsed.visual_hook else None,
+                "on_screen_text_hook": parsed.on_screen_text_hook,
+            },
         )
     except (OpenAIError, ValueError, TypeError) as exc:
         return AIHookGenerationResult([], None, "provider_error", str(exc)[:240])

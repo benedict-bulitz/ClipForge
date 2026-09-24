@@ -10,10 +10,13 @@ from openai import OpenAI, OpenAIError
 from pydantic import BaseModel, ConfigDict, Field
 
 from .config import Settings
+from .format_intelligence import format_quality_issues
 from .hooks import hook_issues
 from .language import detect_text_language
 from .narration import begins_with_preamble, contamination_issues
+from .payoff import payoff_quality_issues
 from .pipeline import _normalise_blocks, _refresh_script_derivatives
+from .reactions import reaction_quality_issues
 
 
 class ReviewFinding(BaseModel):
@@ -34,6 +37,8 @@ class ReviewFinding(BaseModel):
         "timing",
         "captions",
         "output",
+        "hook",
+        "payoff",
     ]
     severity: Literal["info", "warning", "error"]
     message: str = Field(min_length=2, max_length=320)
@@ -67,13 +72,18 @@ class OpenAIReviewProvider:
                 instructions=(
                     "Review this short-video plan and return concise findings only. It should begin "
                     "with one short audience-facing curiosity hook that makes sense without seeing the "
-                    "original prompt, then answer immediately without a meta preamble or long recap. Check "
+                    "original prompt. Respect the supplied payoff_plan: when a payoff is protected, do not "
+                    "reveal it in the hook, visual hook, or text hook, and let useful context earn it; when "
+                    "immediate context is necessary, do not delay it. Never require a fixed reveal time. "
+                    "Reject hook/body repetition, visual or text-hook spoilers, weak generic post-payoff "
+                    "outros, and CTAs after a natural ending. Check "
                     "brevity, plain-language accessibility for a viewer with zero prior knowledge, "
                     "relevance, repetition, and contamination by HTML, Markdown, structural labels, "
                     "source snippets, attribution boilerplate, editorial publication directions, scraper "
                     "artifacts, or model commentary. "
                     "The maximum duration is a ceiling, never a target. Check language, prompt fidelity, "
-                    "research consistency, scenes, timing, captions, and render inputs. Never claim facts "
+                    "research consistency, selected format versus actual content, scenes, timing, captions, and render inputs. "
+                    "Flag ranking without an evidence-based ordering, quiz answers revealed immediately, and comparison alternatives that are not comparable. Never claim facts "
                     "are verified without provided sources. If safe, return rewritten clean script blocks "
                     "in the project language without adding new factual claims. Do not reveal reasoning."
                 ),
@@ -96,6 +106,9 @@ def review_input_hash(state: dict[str, Any]) -> str:
         "research": state.get("research"),
         "facts": state.get("facts"),
         "script": state.get("script"),
+        "payoff_plan": state.get("payoff_plan"),
+        "format_plan": state.get("format_plan"),
+        "reaction_plan": state.get("reaction_plan"),
         "scenes": state.get("scenes"),
         "voice": {
             key: value
@@ -157,6 +170,10 @@ def review_context(state: dict[str, Any]) -> dict[str, Any]:
             if key in {"enabled", "style", "position", "timing", "words_per_group"}
         },
         "duration": state.get("duration"),
+        "format_plan": state.get("format_plan"),
+        "payoff_plan": state.get("payoff_plan"),
+        "triple_hook": state.get("script", {}).get("triple_hook"),
+        "reaction_plan": state.get("reaction_plan"),
     }
 
 
@@ -250,6 +267,24 @@ def local_review_items(state: dict[str, Any]) -> list[dict[str, str]]:
         for problem in hook_problems:
             severity = "error" if problem in {"unsupported_statistic", "unsupported_trend", "personal_attack", "generic_clickbait", "generic_meta_filler", "meta_language", "structural_label"} else "warning"
             items.append({"check": "hook", "severity": severity, "message": f"Hook quality issue: {problem.replace('_', ' ')}."})
+    for problem in payoff_quality_issues(state):
+        severity = "error" if "revealed" in problem or "duplicates" in problem else "warning"
+        items.append(
+            {
+                "check": "payoff" if "payoff" in problem or "outro" in problem else "hook",
+                "severity": severity,
+                "message": f"Payoff/hook quality issue: {problem.replace('_', ' ')}.",
+            }
+        )
+    for problem in reaction_quality_issues(state):
+        severity = "error" if problem in {"unsupported_emotional_framing", "fake_clickbait_reaction"} else "warning"
+        items.append(
+            {
+                "check": "hook" if "clickbait" in problem or "framing" in problem else "scenes",
+                "severity": severity,
+                "message": f"Reaction-plan quality issue: {problem.replace('_', ' ')}.",
+            }
+        )
     if len(first_sentence.split()) > 18:
         items.append(
             {
@@ -388,7 +423,74 @@ def local_review_items(state: dict[str, Any]) -> list[dict[str, str]]:
         items.append(
             {"check": "output", "severity": "error", "message": "Required render inputs are missing."}
         )
+    pacing = state.get("pacing_analysis") if isinstance(state.get("pacing_analysis"), dict) else {}
+    for recommendation in pacing.get("recommendations", [])[:8]:
+        action = str(recommendation.get("action") or "")
+        reasons = recommendation.get("reasons") or []
+        if action and reasons:
+            items.append(
+                {
+                    "check": "timing" if action in {"MERGE_WITH_NEXT", "TRIM", "SHORTEN_POST_PAYOFF"} else "scenes",
+                    "severity": "warning",
+                    "message": f"Scene pacing recommends {action.lower().replace('_', ' ')}: {reasons[0]}",
+                }
+            )
     return items
+
+
+def pre_render_quality_gate(state: dict[str, Any]) -> dict[str, Any]:
+    """Perform final structural consistency checks without another model call."""
+    issues: list[dict[str, str]] = []
+    severe: list[str] = []
+    script = state.get("script", {}) if isinstance(state.get("script"), dict) else {}
+    triple = script.get("triple_hook") if isinstance(script.get("triple_hook"), dict) else {}
+    selected_hook = str(script.get("selected_hook") or "").strip()
+    verbal_hook = str(triple.get("verbal_hook") or "").strip()
+    if selected_hook and verbal_hook and selected_hook != verbal_hook:
+        issues.append({"code": "hook_channel_drift", "severity": "warning", "message": "Verbal hook metadata differs from the narration opening."})
+        triple["verbal_hook"] = selected_hook
+    scenes = list(state.get("scenes") or [])
+    empty_scene_ids = [str(scene.get("id") or "") for scene in scenes if not str(scene.get("narration") or "").strip()]
+    if empty_scene_ids:
+        issues.append({"code": "empty_scene", "severity": "error", "message": "Empty scene artifacts remain before rendering."})
+        severe.append("empty_scene")
+    visual_hook = triple.get("visual_hook") if isinstance(triple.get("visual_hook"), dict) else {}
+    first_visual = scenes[0].get("visual_intent") if scenes and isinstance(scenes[0].get("visual_intent"), dict) else {}
+    visual_goal = str(visual_hook.get("visual_goal") or "").strip()
+    first_goal = str(first_visual.get("visual_goal") or "").strip()
+    if visual_goal and first_goal and visual_goal != first_goal:
+        issues.append({"code": "first_visual_drift", "severity": "warning", "message": "The first scene visual intent differs from the planned visual hook."})
+    payoff_issues = payoff_quality_issues(state)
+    for problem in payoff_issues:
+        severity = "error" if problem in {"protected_payoff_revealed_in_hook", "visual_hook_reveals_protected_payoff"} else "warning"
+        issues.append({"code": problem, "severity": severity, "message": problem.replace("_", " ") + "."})
+        if severity == "error":
+            severe.append(problem)
+    for problem in format_quality_issues(state):
+        issues.append({"code": problem, "severity": "warning", "message": problem.replace("_", " ") + "."})
+    for problem in reaction_quality_issues(state):
+        severity = "error" if problem in {"unsupported_emotional_framing", "fake_clickbait_reaction"} else "warning"
+        issues.append({"code": problem, "severity": severity, "message": problem.replace("_", " ") + "."})
+        if severity == "error":
+            severe.append(problem)
+    pacing = state.get("pacing_analysis") if isinstance(state.get("pacing_analysis"), dict) else {}
+    if pacing.get("status") == "fallback":
+        issues.append({"code": "pacing_fallback", "severity": "warning", "message": "Pacing analysis fell back; existing scene timing is preserved."})
+    payoff = state.get("payoff_plan") if isinstance(state.get("payoff_plan"), dict) else {}
+    roles = {
+        str(block.get("id") or ""): str(block.get("role") or "").casefold()
+        for block in script.get("blocks", [])
+    }
+    has_payoff_scene = any(roles.get(str(scene.get("block_id") or "")) == "payoff" for scene in scenes)
+    if payoff.get("payoff") and not has_payoff_scene:
+        issues.append({"code": "missing_payoff_scene", "severity": "warning", "message": "The persisted payoff has no explicit payoff scene; no filler was added."})
+    state["quality_gate"] = {
+        "status": "fallback" if severe else ("passed_with_warnings" if issues else "passed"),
+        "issues": issues,
+        "severe_issues": sorted(set(severe)),
+        "ai_calls": 0,
+    }
+    return state["quality_gate"]
 
 
 def _meaningful_words(text: str) -> set[str]:

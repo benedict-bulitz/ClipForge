@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 import shutil
@@ -69,6 +70,7 @@ class FinalizedExport:
 
 
 Verifier = Callable[[Path], None]
+logger = logging.getLogger(__name__)
 
 
 def safe_export_filename(title: str, project_id: str) -> str:
@@ -272,8 +274,19 @@ def finalize_export(
         music = state.get("music") if isinstance(state.get("music"), dict) else {}
         track = resolve_track_path(music) if music.get("enabled") else None
         if track is None:
+            if music.get("enabled"):
+                selected = music.get("track") if isinstance(music.get("track"), dict) else {}
+                logger.warning(
+                    "Music export source unavailable track_id=%s file=%s",
+                    selected.get("id"), selected.get("file"),
+                )
             shutil.copy2(source, staging)
         else:
+            selected = music.get("track") if isinstance(music.get("track"), dict) else {}
+            logger.info(
+                "Mixing music track_id=%s source=%s exists=%s size=%s",
+                selected.get("id"), track, track.is_file(), track.stat().st_size if track.is_file() else 0,
+            )
             ffmpeg = ffmpeg_path()
             if not ffmpeg:
                 raise ExportUnavailable("FFmpeg is unavailable, so ClipForge cannot mix the selected music.")
@@ -290,9 +303,16 @@ def finalize_export(
             try:
                 completed = subprocess.run(command, capture_output=True, text=True, timeout=180, check=False)
             except (OSError, subprocess.SubprocessError) as exc:
+                logger.warning("Music export FFmpeg invocation failed track_id=%s error=%s", selected.get("id"), exc)
                 raise ExportUnavailable("The selected music could not be mixed into the export.") from exc
             if completed.returncode != 0 or not staging.is_file():
+                logger.warning(
+                    "Music export mix failed track_id=%s returncode=%s output_exists=%s stderr=%s",
+                    selected.get("id"), completed.returncode, staging.is_file(),
+                    " ".join((completed.stderr or "").split())[-1000:],
+                )
                 raise ExportUnavailable("The selected music could not be mixed into the export.")
+            logger.info("Music export mix complete track_id=%s output=%s size=%s", selected.get("id"), staging, staging.stat().st_size)
         verifier(staging)
         if had_previous:
             os.replace(destination, backup)

@@ -31,7 +31,7 @@ class AdvancedOptions(BaseModel):
     caption_words_per_group: int = Field(default=4, ge=2, le=8)
     music_enabled: bool = True
     music_mood: Literal["ambient", "documentary", "tech", "cinematic"] | None = None
-    music_volume: float = Field(default=0.14, ge=0, le=0.5)
+    music_volume: float = Field(default=0.14, ge=0, le=1)
     music_ducking: bool = True
     music_fades: bool = True
     aspect_ratio: Literal["9:16", "1:1", "16:9"] = "9:16"
@@ -128,7 +128,7 @@ class AudioSettingsUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     base_revision: int = Field(ge=1)
     voice_volume: float = Field(ge=0, le=1)
-    music_volume: float = Field(ge=0, le=0.5)
+    music_volume: float = Field(ge=0, le=1)
     music_enabled: bool
 
 

@@ -61,6 +61,8 @@ class ScriptWriterRequest(BaseModel):
     research_summary: str | None = Field(default=None, max_length=2_000)
     target_duration: ScriptWriterTargetDuration | None = None
     writing_requirements: list[str] = Field(default_factory=list, max_length=12)
+    payoff_plan: dict[str, object] | None = None
+    format_plan: dict[str, object] | None = None
 
     @model_validator(mode="after")
     def require_normalized_evidence(self):
@@ -115,8 +117,12 @@ class ScriptWriterProvider(Protocol):
 SCRIPT_WRITER_V2_INSTRUCTIONS = (
     "You are ClipForge's Script Writer V2. Write a complete body-only short-form explanation "
     "from the supplied user prompt and normalized verified facts. Do not write a hook, opening "
-    "teaser, or clickbait. Begin with the actual answer, not reassurance or a restatement of the "
-    "question. Use only the supplied facts for "
+    "teaser, or clickbait. Follow the supplied payoff_plan when it asks for a protected payoff: give "
+    "the useful supporting information needed to understand it, then land the payoff without filler. "
+    "Otherwise begin with the actual answer, not reassurance or a restatement of the question. Never "
+    "delay a reveal by a fixed time, repeat information to hold it back, or append a generic CTA/outro. "
+    "Use the supplied format_plan as lightweight structure guidance without adding filler or unsupported claims. "
+    "Use only the supplied facts for "
     "substantive factual claims and attach the corresponding fact IDs to each factual block. "
     "Write natural spoken narration with logical order, short understandable sentences, and concise "
     "transitions. Explain the complete causal chain needed to understand the answer, but do not "
@@ -166,6 +172,8 @@ def _request_for_model(request: ScriptWriterRequest) -> dict:
         if request.target_duration
         else None,
         "writing_requirements": request.writing_requirements,
+        "payoff_plan": request.payoff_plan,
+        "format_plan": request.format_plan,
     }
 
 

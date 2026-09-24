@@ -26,6 +26,7 @@ from .hashing import attach_hashes
 from .media import prepare_project_media
 from .models import GenerationJob, Project, ProjectChatMessage, ProjectRevision
 from .music import MusicTrack, available_music_tracks, music_track_state, ranked_music_tracks
+from .pacing import analyze_pacing
 from .pipeline import (
     _apply_selected_hook,
     _authoritative_hook_blocks,
@@ -36,8 +37,9 @@ from .pipeline import (
     build_initial_state,
 )
 from .progress import ProgressCallback, report_progress
+from .reactions import plan_viewer_reactions
 from .renderer import RenderUnavailable, VoiceGenerationError, render_video
-from .review import run_ai_review
+from .review import pre_render_quality_gate, run_ai_review
 from .schemas import (
     AudioSettingsUpdate,
     MusicSelectionUpdate,
@@ -295,11 +297,32 @@ def update_project_music_selection(
 def project_music_recommendations(db: Session, project: Project, catalog: tuple[MusicTrack, ...], settings: Settings) -> tuple[MusicTrack, ...]:
     """Generate AI-assisted recommendations once, then reuse the persisted validated result."""
     state = effective_revision_state(project)
+    tracks, changed = _ensure_music_recommendations(state, catalog, settings)
+    if changed:
+        _append_revision(db, project, base_revision=project.current_revision, instruction="Match music for this project", state=attach_hashes(state), changed=["music"], status=project.status, kind="system")
+    return tracks
+
+
+def _ensure_music_recommendations(
+    state: dict, catalog: tuple[MusicTrack, ...], settings: Settings
+) -> tuple[tuple[MusicTrack, ...], bool]:
+    """Populate one validated recommendation list and activate its first track.
+
+    This is intentionally side-effect free with respect to the database so the
+    generation render can persist the result in its normal final revision.
+    """
     music = state.setdefault("music", {})
-    persisted = music.get("recommendations")
     catalog_by_id = {track.id: track for track in catalog}
+    selection = music.get("selection") if isinstance(music.get("selection"), dict) else {}
+    persisted = music.get("recommendations")
     if isinstance(persisted, dict) and isinstance(persisted.get("track_ids"), list):
-        return tuple(catalog_by_id[track_id] for track_id in persisted["track_ids"] if track_id in catalog_by_id)
+        ordered = tuple(catalog_by_id[track_id] for track_id in persisted["track_ids"] if track_id in catalog_by_id)
+        if ordered and selection.get("mode") in (None, "automatic"):
+            music.update(enabled=True, requested_enabled=True, status="planned", track=music_track_state(ordered[0]), selection={"mode": "ai_matched", "basis": "ai_assisted", "provider_status": persisted.get("provider_status", "persisted")})
+            return ordered, True
+        return ordered, False
+    if music.get("requested_enabled") is False or music.get("status") == "disabled":
+        return (), False
     deterministic = ranked_music_tracks(state, catalog)
     shortlist = deterministic[:12] or catalog[:12]
     candidates = [{"id": track.id, "title": track.title, "mood": track.mood, "energy": track.energy, "tags": list(track.tags), "description": track.description} for track in shortlist]
@@ -311,8 +334,18 @@ def project_music_recommendations(db: Session, project: Project, catalog: tuple[
             ai_ids.append(track_id)
     ordered_ids = ai_ids + [track.id for track in deterministic if track.id not in ai_ids]
     music["recommendations"] = {"track_ids": ordered_ids, "provider_status": result.status, "candidate_ids": [track.id for track in shortlist]}
-    _append_revision(db, project, base_revision=project.current_revision, instruction="Match music for this project", state=attach_hashes(state), changed=["music"], status=project.status, kind="system")
-    return tuple(catalog_by_id[track_id] for track_id in ordered_ids if track_id in catalog_by_id)
+    ordered = tuple(catalog_by_id[track_id] for track_id in ordered_ids if track_id in catalog_by_id)
+    if ordered and selection.get("mode") in (None, "automatic"):
+        music.update(
+            enabled=True,
+            requested_enabled=True,
+            status="planned",
+            track=music_track_state(ordered[0]),
+            selection={"mode": "ai_matched", "basis": "ai_assisted", "provider_status": result.status},
+        )
+    elif not ordered:
+        music.update(enabled=False, status="unavailable", track=None)
+    return ordered, True
 
 
 def update_project_social_metadata(
@@ -812,10 +845,18 @@ def _render_state(
 ) -> dict:
     state = copy.deepcopy(previous_state)
     _refresh_script_derivatives(state, old_scenes=state.get("scenes", []))
+    # Match once against the real catalog before the final render revision is
+    # persisted.  The browser can then immediately preview the selected layer;
+    # the base render itself remains narration/video only.
+    selection = state.get("music", {}).get("selection") if isinstance(state.get("music", {}).get("selection"), dict) else {}
+    if selection.get("mode") != "all_music":
+        _ensure_music_recommendations(state, available_music_tracks(), settings)
     prepare_project_media(state, project_id, settings, progress=progress)
     script_before_review = state["script"]["text"]
     report_progress(progress, "review", "Reviewing content quality", phase="start")
     run_ai_review(state, settings)
+    analyze_pacing(state)
+    plan_viewer_reactions(state)
     # Review may rewrite the opening. Keep exactly one hook for TTS/captions:
     # sync selected_hook to a single surviving hook, or insert/collapse via the
     # authoritative selector when review left zero or many hook blocks.
@@ -837,6 +878,7 @@ def _render_state(
                 state.get("intent", {}),
                 state.get("facts", []),
                 state.get("script", {}).get("hook_candidates") or [],
+                state.get("payoff_plan"),
             )
             state["script"]["blocks"] = hooked_blocks
             if candidate:
@@ -846,6 +888,7 @@ def _render_state(
         _refresh_script_derivatives(state, old_scenes=state.get("scenes", []))
     if state["script"]["text"] != script_before_review:
         prepare_project_media(state, project_id, settings)
+    pre_render_quality_gate(state)
     report_progress(progress, "review", "Reviewing content quality", phase="complete")
     result = render_video(
         state, project_id, revision_number, settings, progress=progress
@@ -861,6 +904,9 @@ def _render_state(
         state["scenes"],
         str(state.get("timeline", {}).get("cut_pace") or "fast"),
     )
+    analyze_pacing(state)
+    plan_viewer_reactions(state)
+    pre_render_quality_gate(state)
     state["timeline"].update(
         {
             "duration": result.actual_seconds,

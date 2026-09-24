@@ -130,7 +130,7 @@ def test_export_mixes_selected_music_without_mutating_base_render(tmp_path, monk
     state.update(timeline={"duration": 12}, music={"enabled": True, "volume": 0.2, "ducking": True, "fades": True, "track": {"id": "licensed", "file": "tracks/licensed.mp3"}})
     source = settings.render_root / project_id / "renders" / "v2" / "clipforge.mp4"
     original = source.read_bytes()
-    selected = tmp_path / "licensed.mp3"
+    selected = tmp_path / "licensed music.mp3"
     selected.write_bytes(b"licensed music")
     commands = []
 

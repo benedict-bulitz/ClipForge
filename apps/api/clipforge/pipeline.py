@@ -15,6 +15,7 @@ from .alignment import phrase_fallback_items
 from .attention import replan_attention, resolve_attention_preferences
 from .config import Settings
 from .dependencies import resolve_edit_scope
+from .format_intelligence import plan_format
 from .hashing import attach_hashes
 from .hooks import STRATEGIES, select_hook, select_hook_candidate
 from .language import detect_text_language, resolve_language
@@ -25,7 +26,16 @@ from .narration import (
     clean_script_blocks,
     contamination_issues,
 )
+from .pacing import analyze_pacing
+from .payoff import (
+    build_payoff_plan,
+    fallback_triple_hook,
+    hidden_payoff_words,
+    normalise_triple_hook,
+    trim_post_payoff_fluff,
+)
 from .progress import ProgressCallback, report_progress
+from .reactions import plan_viewer_reactions, reaction_arc
 from .research import research_topic
 from .schemas import AdvancedOptions
 from .script_review import (
@@ -163,6 +173,28 @@ def _factual_blocks(intent: dict[str, Any], facts: list[dict[str, Any]]) -> list
     return ([{"role": "hook", "text": hook}] if hook else []) + blocks
 
 
+def _safe_payoff_plan(
+    intent: dict[str, Any], blocks: list[dict[str, Any]], supplied: dict[str, Any] | None = None,
+    format_plan: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Planning enrichment must never make an otherwise valid generation fail."""
+    try:
+        return build_payoff_plan(intent, blocks, supplied=supplied, format_plan=format_plan)
+    except Exception:  # noqa: BLE001 - keep the established hook/body fallback usable
+        body = [block for block in blocks if not _is_hook_block(block)]
+        return {
+            "curiosity_question": str(intent.get("question") or ""),
+            "payoff": str(body[-1].get("text") or "") if body else "",
+            "payoff_type": "answer",
+            "payoff_dependencies": [],
+            "reveal_policy": "immediate_context_allowed",
+            "hook_must_not_reveal": "",
+            "desired_viewer_reaction": "insight",
+            "supporting_information": [],
+            "status": "fallback",
+        }
+
+
 def _script_writer_fact(fact: dict[str, Any], index: int) -> ScriptWriterFact | None:
     claim = clean_research_claim(fact.get("claim"))
     if not claim or contamination_issues(claim):
@@ -217,6 +249,8 @@ def _generate_body_with_v2_or_fallback(
     settings: Settings,
     facts: list[dict[str, Any]],
     legacy_blocks: list[dict[str, Any]],
+    payoff_plan: dict[str, Any] | None = None,
+    format_plan: dict[str, Any] | None = None,
     *,
     provider: ScriptWriterProvider | None = None,
     review_provider: ScriptReviewProvider | None = None,
@@ -261,6 +295,8 @@ def _generate_body_with_v2_or_fallback(
                 "Write a body-only explanation; do not create a hook.",
                 "Stop when the explanation is complete.",
             ],
+            payoff_plan=payoff_plan,
+            format_plan=format_plan,
         )
     except ValidationError as exc:
         diagnostics["reason"] = "request_validation_failed"
@@ -309,6 +345,7 @@ def _generate_body_with_v2_or_fallback(
         writing_requirements=[
             "Preserve complete causal context needed to understand the answer.",
             "Keep the body concise without optimizing for the shortest possible version.",
+            "Respect the payoff plan; do not add a generic post-payoff outro.",
         ],
     )
     try:
@@ -391,6 +428,7 @@ def _authoritative_hook_blocks(
     intent: dict[str, Any],
     facts: list[dict[str, Any]] | None = None,
     model_candidates: list[dict[str, Any]] | None = None,
+    payoff_plan: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]], Any | None]:
     """Select one hook independently of whether the model supplied a hook block.
 
@@ -416,6 +454,7 @@ def _authoritative_hook_blocks(
         body=body,
         existing=existing,
         model_candidates=model_candidates or [],
+        forbidden_terms=hidden_payoff_words(payoff_plan or {}),
     )
     if not candidate:
         return blocks, None
@@ -432,6 +471,9 @@ def _generate_authoritative_hook_blocks(
     intent: dict[str, Any],
     facts: list[dict[str, Any]],
     settings: Settings,
+    payoff_plan: dict[str, Any] | None = None,
+    reaction_arc: dict[str, Any] | None = None,
+    format_plan: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]], Any | None, Any]:
     """Use the one post-body hook path shared by production and validation."""
     body_blocks = [
@@ -441,11 +483,17 @@ def _generate_authoritative_hook_blocks(
     final_body = " ".join(
         str(block.get("text") or "").strip() for block in body_blocks
     )
-    hook_generation = generate_hook_candidates_with_openai(
-        prompt, intent, facts, final_body, settings
-    )
+    try:
+        hook_generation = generate_hook_candidates_with_openai(
+            prompt, intent, facts, final_body, settings, payoff_plan=payoff_plan,
+            reaction_arc=reaction_arc, format_plan=format_plan,
+        )
+    except TypeError:  # Compatibility with isolated legacy hook-provider test doubles.
+        hook_generation = generate_hook_candidates_with_openai(
+            prompt, intent, facts, final_body, settings
+        )
     hooked_blocks, candidate = _authoritative_hook_blocks(
-        body_blocks, intent, facts, hook_generation.candidates
+        body_blocks, intent, facts, hook_generation.candidates, payoff_plan
     )
     return hooked_blocks, candidate, hook_generation
 
@@ -558,6 +606,7 @@ def _build_scenes(
     old_scenes: list[dict] | None = None,
     cut_pace: str = "fast",
     visual_intents: list[dict[str, Any]] | None = None,
+    format_plan: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     total_words = max(1, sum(len(_words(block["text"])) for block in blocks))
     old_by_block: dict[str, list[dict[str, Any]]] = {}
@@ -588,13 +637,28 @@ def _build_scenes(
         existing_options = old_by_block.get(block["id"], [])
         existing = existing_options[part_index] if part_index < len(existing_options) else {}
         suffix = block["id"].removeprefix("voice_block_")
-        intent = (visual_intents or [])[block_index] if block_index < len(visual_intents or []) else _fallback_visual_intent(narration, "en")
+        existing_intent = existing.get("visual_intent") if isinstance(existing.get("visual_intent"), dict) else None
+        intent = (
+            (visual_intents or [])[block_index]
+            if block_index < len(visual_intents or [])
+            else (copy.deepcopy(existing_intent) if existing_intent else _fallback_visual_intent(narration, "en"))
+        )
+        if isinstance(format_plan, dict):
+            intent = copy.deepcopy(intent)
+            intent.setdefault("format_guidance", format_plan.get("visual_structure"))
+            intent.setdefault("format", format_plan.get("selected_format"))
         visual_goal = str(intent.get("visual_goal") or "")
         if not _visual_goal_valid(visual_goal):
             intent = _fallback_visual_intent(narration, "en")
+            if isinstance(format_plan, dict):
+                intent["format_guidance"] = format_plan.get("visual_structure")
+                intent["format"] = format_plan.get("selected_format")
             visual_goal = intent["visual_goal"]
         if existing.get("visual_goal") and not _visual_goal_valid(existing.get("visual_goal")):
             intent = _fallback_visual_intent(narration, "en")
+            if isinstance(format_plan, dict):
+                intent["format_guidance"] = format_plan.get("visual_structure")
+                intent["format"] = format_plan.get("selected_format")
             visual_goal = intent["visual_goal"]
         scene = {
             "id": existing.get("id", f"scene_{suffix}_{part_index + 1:02d}"),
@@ -693,6 +757,7 @@ def _refresh_script_derivatives(
         duration,
         old_scenes,
         str(state.get("timeline", {}).get("cut_pace") or "fast"),
+        format_plan=state.get("format_plan"),
     )
     state["storyboard"] = {"status": "ready", "scene_count": len(state["scenes"])}
     state["voice"]["blocks"] = [{"id": block["id"], "status": "awaiting_tts"} for block in blocks]
@@ -706,6 +771,8 @@ def _refresh_script_derivatives(
     state["timeline"]["timing"] = "estimated"
     state["timeline"]["scene_ids"] = [scene["id"] for scene in state["scenes"]]
     replan_attention(state)
+    analyze_pacing(state)
+    plan_viewer_reactions(state)
 
 
 def build_initial_state(
@@ -805,6 +872,10 @@ def build_initial_state(
     max_duration = min(options.max_duration, settings.shortform_max_duration)
     minimum_duration = options.min_duration
     legacy_body_blocks = plan.get("script_blocks") or _factual_blocks(intent, facts)
+    format_plan = plan_format(intent, facts, legacy_body_blocks)
+    initial_payoff_plan = _safe_payoff_plan(
+        intent, legacy_body_blocks, supplied=plan.get("payoff_plan"), format_plan=format_plan
+    )
     raw_blocks, script_writer_diagnostics = _generate_body_with_v2_or_fallback(
         prompt,
         intent,
@@ -812,11 +883,16 @@ def build_initial_state(
         settings,
         facts,
         legacy_body_blocks,
+        initial_payoff_plan,
+        format_plan,
         provider=script_writer_provider,
         review_provider=script_review_provider,
     )
+    raw_blocks, trimmed_post_payoff_fluff = trim_post_payoff_fluff(raw_blocks)
+    payoff_plan = _safe_payoff_plan(intent, raw_blocks, supplied=initial_payoff_plan, format_plan=format_plan)
+    planned_reaction_arc = reaction_arc(intent, payoff_plan, format_plan)
     raw_blocks, selected_hook_candidate, hook_generation = _generate_authoritative_hook_blocks(
-        raw_blocks, prompt, intent, facts, settings
+        raw_blocks, prompt, intent, facts, settings, payoff_plan, planned_reaction_arc, format_plan
     )
     hook_candidates = hook_generation.candidates
     wpm = max(1, round(SPEAKING_RATE_WPM * float(options.voice_speed or 1.0)))
@@ -828,6 +904,24 @@ def build_initial_state(
         for index, block in enumerate(blocks, 1):
             block["id"] = f"voice_block_{index:02d}"
     hook_block = next((block for block in blocks if _is_hook_block(block)), None)
+    selected_hook = (
+        selected_hook_candidate.text
+        if selected_hook_candidate
+        else (str(hook_block.get("text")) if hook_block else None)
+    )
+    triple_hook_fallback = fallback_triple_hook(
+        intent,
+        payoff_plan,
+        selected_hook,
+        selected_hook_candidate.strategy if selected_hook_candidate else None,
+        planned_reaction_arc["hook_reaction"],
+        format_plan,
+    )
+    triple_hook = normalise_triple_hook(
+        hook_generation.triple_hook,
+        triple_hook_fallback,
+        payoff_plan,
+    )
     script_text = " ".join(block["text"] for block in blocks)
     word_count = len(_words(script_text))
     natural_duration = round(max(4, word_count / wpm * 60), 2)
@@ -839,7 +933,8 @@ def build_initial_state(
     report_progress(progress, "storyboard", "Building the storyboard", phase="start")
     scenes = _build_scenes(
         blocks, estimated_duration, cut_pace=resolved_options.pacing,
-        visual_intents=plan.get("visual_intents") or [],
+        visual_intents=[triple_hook["visual_hook"], *(plan.get("visual_intents") or [])],
+        format_plan=format_plan,
     )
     report_progress(
         progress,
@@ -872,14 +967,20 @@ def build_initial_state(
             "must_know": [fact["id"] for fact in facts if fact["priority"] == "MUST_KNOW"],
             "answer_skeleton": [block["role"].upper() for block in blocks],
         },
+        "payoff_plan": {
+            **payoff_plan,
+            "post_payoff_fluff_trimmed": trimmed_post_payoff_fluff,
+        },
+        "format_plan": format_plan,
         "script": {
             "text": script_text,
             "word_count": word_count,
             "blocks": blocks,
             "script_writer_v2": script_writer_diagnostics,
             "narration_owned_by_v2": script_writer_diagnostics.get("status") == "v2_success",
-            "selected_hook": selected_hook_candidate.text if selected_hook_candidate else (str(hook_block.get("text")) if hook_block else None),
+            "selected_hook": selected_hook,
             "selected_hook_strategy": selected_hook_candidate.strategy if selected_hook_candidate else None,
+            "triple_hook": triple_hook,
             "hook_generation": {
                 "status": hook_generation.status,
                 "selected_strategy": hook_generation.selected_strategy,
@@ -1016,6 +1117,8 @@ def build_initial_state(
         "edit_history": [],
     }
     replan_attention(state)
+    analyze_pacing(state)
+    plan_viewer_reactions(state, planned_reaction_arc)
     return attach_hashes(state)
 
 
@@ -1248,6 +1351,7 @@ def apply_edit(
                 float(state["timeline"]["duration"]),
                 state["scenes"],
                 "fast",
+                format_plan=state.get("format_plan"),
             )
             state["storyboard"] = {"status": "ready", "scene_count": len(state["scenes"])}
             state["timeline"]["scene_ids"] = [item["id"] for item in state["scenes"]]
