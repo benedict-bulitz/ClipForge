@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import html
 import re
+import unicodedata
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -382,85 +383,254 @@ def parse_photo_results(
     return sorted(candidates, key=lambda item: item.rank, reverse=True)
 
 
+def _normalize_term(token: str) -> str:
+    """Topic-independent token normalization: Unicode NFKC, casefold, plural folding."""
+    token = unicodedata.normalize("NFKC", token).casefold()
+    if len(token) > 4 and token.endswith("ies"):
+        return token[:-3] + "y"
+    if len(token) > 4 and token.endswith(("sses", "xes", "zes", "ches", "shes")):
+        return token[:-2]
+    if len(token) > 3 and token.endswith("s") and not token.endswith(("ss", "us", "is")):
+        return token[:-1]
+    return token
+
+
+def _related_terms(first: str, second: str) -> bool:
+    """Morphological relatives such as canada/canadian or norway/norwegian.
+
+    Purely orthographic (shared stem), so it holds for any topic or language
+    without a vocabulary table.  Only used where over-matching is harmless:
+    choosing which comparison side a scene needs and keeping protected
+    payoff subjects out of queries.
+    """
+    if first == second:
+        return True
+    short, long = sorted((first, second), key=len)
+    if len(short) >= 5 and long.startswith(short):
+        return True
+    prefix = len(_common_prefix(short, long))
+    return len(short) >= 6 and prefix >= len(short) - 2
+
+
+def _common_prefix(first: str, second: str) -> str:
+    size = 0
+    for left, right in zip(first, second):
+        if left != right:
+            break
+        size += 1
+    return first[:size]
+
+
+def _mentions(tokens: Iterable[str], terms: Iterable[str]) -> bool:
+    terms = list(terms)
+    return any(_related_terms(token, term) for token in tokens for term in terms)
+
+
 def _visual_query_tokens(value: object) -> set[str]:
     tokens = re.findall(r"[\wäöüß-]+", str(value or "").casefold(), flags=re.UNICODE)
-    return {_VISUAL_QUERY_ALIASES.get(token, token) for token in tokens if len(token) > 2}
+    return {_normalize_term(token) for token in tokens if len(token) > 2}
 
 
-def _visual_subjects(scene: dict[str, Any], state: dict[str, Any]) -> tuple[list[str], list[str], list[str]]:
-    visual_intent = scene.get("visual_intent") if isinstance(scene.get("visual_intent"), dict) else {}
-    intent = state.get("intent") if isinstance(state.get("intent"), dict) else {}
-    values = [
-        scene.get("visual_goal"), scene.get("narration"), visual_intent.get("visual_goal"),
-        visual_intent.get("objects"), visual_intent.get("actions"), visual_intent.get("media_queries"),
-        intent.get("topic"), intent.get("question"),
+# Camera/shot wording carries no subject; it must not become a comparison side.
+_SHOT_DESCRIPTORS = {
+    "aerial", "drone", "view", "shot", "footage", "closeup", "close", "slow", "motion", "timelapse",
+    "background", "above", "below", "top", "wide", "panorama", "scenic", "cinematic", "clip", "video",
+    "photo", "image", "stock", "4k", "overhead", "birdseye", "bird", "eye",
+}
+
+
+def _query_subject_tokens(query: str) -> list[str]:
+    stop = {_normalize_term(word) for word in (*_VISUAL_QUERY_STOP, *_SHOT_DESCRIPTORS)}
+    words = [
+        _normalize_term(word)
+        for word in re.findall(r"[\wäöüß-]+", str(query or "").casefold(), flags=re.UNICODE)
+        if len(word) > 2
     ]
-    tokens = set().union(*(_visual_query_tokens(value) for value in values))
-    core_order = ("airplane", "airspace", "island", "archipelago", "pyramid", "breath", "condensation", "droplets", "cheetah", "animals")
-    primary = [term for term in core_order if term in tokens]
-    entities = [term for term in ("sweden", "indonesia", "egypt", "sudan") if term in tokens]
-    supporting = [term for term in ("sky", "winter", "border", "country", "landscape", "city", "coast", "map") if term in tokens]
-    return primary, entities, supporting
+    return [word for word in dict.fromkeys(words) if word not in stop]
 
 
-def _query_is_concrete(raw: str, query: str, primary: list[str], entities: list[str]) -> bool:
+def _query_structure(queries: list[str]) -> tuple[str | None, dict[str, list[str]]]:
+    """Split planned queries into a shared concept and per-query distinguishing terms.
+
+    The shared concept is the subject token repeated across queries ("bean"
+    in "arabica beans" / "robusta beans"); what remains of each query
+    identifies its side.  Derived from the plan itself, never from a list of
+    known topics.
+    """
+    token_lists = [_query_subject_tokens(query) for query in queries]
+    counts: dict[str, int] = {}
+    for tokens in token_lists:
+        for token in tokens:
+            counts[token] = counts.get(token, 0) + 1
+    repeated = [token for tokens in token_lists for token in tokens if counts[token] >= 2]
+    shared = max(dict.fromkeys(repeated), key=lambda token: counts[token], default=None)
+    sides = {
+        query: [token for token in tokens if token != shared]
+        for query, tokens in zip(queries, token_lists)
+    }
+    return shared, sides
+
+
+def _side_labels(sides: dict[str, list[str]]) -> list[str]:
+    """One label per comparison side; related forms (norway/norwegian) are one side."""
+    groups: list[list[str]] = []
+    for tokens in sides.values():
+        if not tokens:
+            continue
+        group = next((group for group in groups if _mentions(tokens, group)), None)
+        if group is None:
+            groups.append(list(tokens))
+        else:
+            group.extend(token for token in tokens if _mentions([token], group) and token not in group)
+    return [" ".join(group) for group in groups]
+
+
+def _payoff_safe_word(word: str, protected_terms: set[str], payoff_words: set[str]) -> bool:
+    tokens = _visual_query_tokens(word)
+    return not (_mentions(tokens, protected_terms) or tokens & payoff_words)
+
+
+def _query_is_concrete(raw: str, query: str) -> bool:
     if not query:
         return False
     raw_tokens = set(re.findall(r"[\wäöüß-]+", raw.casefold(), flags=re.UNICODE))
-    canonical = _visual_query_tokens(query)
-    if len(raw_tokens & _VISUAL_ABSTRACT_TERMS) >= 1:
+    if raw_tokens & _VISUAL_ABSTRACT_TERMS:
         return False
     if raw_tokens & {"welches", "welche", "welcher", "which", "warum", "why", "oder", "or"}:
         return False
-    glue_count = len(raw_tokens & _VISUAL_QUERY_STOP)
-    subject_matches = canonical & set(primary + entities)
-    if glue_count >= 2 and len(subject_matches) < 2:
-        return False
-    if not subject_matches and len(query.split()) < 2:
+    if len(raw_tokens & _VISUAL_QUERY_STOP) >= 2:
         return False
     return len(query.split()) <= 6
 
 
-def _comparison_query_variants(primary: list[str], entities: list[str], supporting: list[str], excluded_entities: set[str] | None = None) -> list[str]:
-    core = "archipelago" if "archipelago" in primary else "islands" if "island" in primary else " ".join(primary[:2])
-    if not core:
-        return []
-    excluded_entities = excluded_entities or set()
-    queries: list[str] = []
-    for entity in entities[:2]:
-        if entity in excluded_entities:
+# Target keys are opaque identities the planner assigns to what a query depicts
+# ("subject_a", "subject_b", "shared", ...).  They carry no topic meaning.
+_TARGET_KEY_RE = re.compile(r"[a-z0-9_]{1,32}")
+_NON_SIDE_TARGET_KEYS = {"shared", "context"}
+
+
+def visual_target_key(value: object) -> str:
+    """Normalise a planner-assigned visual target key; anything else is no key."""
+    key = re.sub(r"[\s-]+", "_", str(value or "").strip().casefold())
+    return key if _TARGET_KEY_RE.fullmatch(key) else ""
+
+
+def _query_target_map(visual_intent: dict[str, Any]) -> dict[str, str]:
+    """Planned query -> target key, from the intent's parallel ``media_query_targets``."""
+    queries = visual_intent.get("media_queries")
+    targets = visual_intent.get("media_query_targets")
+    if not isinstance(queries, list) or not isinstance(targets, list):
+        return {}
+    mapping: dict[str, str] = {}
+    for raw, target in zip(queries, targets):
+        key = visual_target_key(target)
+        query = _semantic_query(str(raw or ""), _VISUAL_QUERY_STOP, limit=6)
+        if key and query:
+            mapping.setdefault(query, key)
+    return mapping
+
+
+def _keyed_structure(queries: list[str], targets: dict[str, str]) -> tuple[list[str], dict[str, str]]:
+    """Concepts and side labels from planner target keys (structural, any topic).
+
+    A concept is a subject term used by two or more targets or by a shared
+    target; a side is identified by the terms common to all of its own queries.
+    """
+    usage: dict[str, set[str]] = {}
+    counts: dict[str, int] = {}
+    per_key: dict[str, list[list[str]]] = {}
+    for query in queries:
+        key = targets.get(query, "")
+        tokens = _query_subject_tokens(query)
+        for token in tokens:
+            usage.setdefault(token, set()).add(key or query)
+            counts[token] = counts.get(token, 0) + 1
+        if key and key not in _NON_SIDE_TARGET_KEYS:
+            per_key.setdefault(key, []).append(tokens)
+    concepts = [
+        token for token in sorted(usage, key=lambda token: -counts[token])
+        if len(usage[token]) >= 2 or usage[token] & _NON_SIDE_TARGET_KEYS
+    ]
+    sides: dict[str, str] = {}
+    for key, token_lists in sorted(per_key.items()):
+        own = [[token for token in tokens if token not in concepts] for tokens in token_lists]
+        common = [token for token in own[0] if all(token in tokens for tokens in own[1:])]
+        label = " ".join(common or list(dict.fromkeys(token for tokens in own for token in tokens)))
+        if label:
+            sides[label] = key
+    return concepts, sides
+
+
+def protected_visual_target(state: dict[str, Any]) -> str:
+    payoff = state.get("payoff_plan") if isinstance(state.get("payoff_plan"), dict) else {}
+    return visual_target_key(payoff.get("protected_visual_target"))
+
+
+def _structured_protection(
+    candidates: list[str], query_targets: dict[str, str], protected_key: str, protected_text: str
+) -> tuple[set[str], set[str]]:
+    """Queries and terms blocked by the planner's protected target identity.
+
+    Queries tagged with the protected key are blocked by identity alone.  An
+    untagged fallback query is blocked when it reuses the protected side's own
+    plan terms or a word of the (same-language) protected payoff text.  No
+    cross-language word similarity is involved.
+    """
+    shared, sides = _query_structure([query for query in candidates if query in query_targets])
+    protected_side_terms = {
+        token
+        for query, key in query_targets.items()
+        if key == protected_key
+        for token in sides.get(query, [])
+    }
+    payoff_terms = _visual_query_tokens(protected_text) - {shared}
+    blocked: set[str] = set()
+    hit_terms: set[str] = set()
+    for query in candidates:
+        tokens = _visual_query_tokens(query)
+        if query in query_targets:
+            if query_targets[query] == protected_key:
+                blocked.add(query)
             continue
-        label = _VISUAL_ENTITY_ADJECTIVES.get(entity, entity)
-        queries.append(f"{label} {core}")
-    queries.append(f"{core} aerial")
-    return queries
+        hits = tokens & (protected_side_terms | payoff_terms)
+        if hits:
+            blocked.add(query)
+            hit_terms |= hits
+    return blocked, protected_side_terms | hit_terms
 
 
-def _generated_visual_queries(primary: list[str], entities: list[str], supporting: list[str], *, format_name: str, excluded_entities: set[str] | None = None) -> list[str]:
-    if "island" in primary or "archipelago" in primary:
-        return _comparison_query_variants(primary, entities, supporting, excluded_entities)
-    if "airplane" in primary:
-        return ["commercial airplane flying", "airplane over country", "airspace border map"]
-    if "pyramid" in primary:
-        excluded_entities = excluded_entities or set()
-        return [
-            f"{_VISUAL_ENTITY_ADJECTIVES.get(entity, entity)} pyramids"
-            for entity in entities[:2]
-            if entity not in excluded_entities
-        ] + ["pyramids aerial"]
-    if "breath" in primary or "condensation" in primary or "droplets" in primary:
-        return ["visible breath winter", "water vapor condensation", "cold air breath"]
-    if "cheetah" in primary:
-        return ["cheetah running", "cheetah sprinting", "fast animal running"]
-    if "animals" in primary and format_name == "ranking":
-        return ["fast animals", "animals running"]
-    if primary:
-        return [" ".join(primary[:3])]
-    return []
+def _protected_side_terms(
+    queries: list[str], protected_text: str
+) -> set[str]:
+    """Distinguishing query terms that name the protected payoff subject.
+
+    Protection applies to a single comparison side; a payoff text that names
+    several sides is broad context and protects none of them.
+    """
+    protected_tokens = _visual_query_tokens(protected_text)
+    if not protected_tokens:
+        return set()
+    _shared, sides = _query_structure(queries)
+    hits = {token for tokens in sides.values() for token in tokens if _mentions([token], protected_tokens)}
+    # Related forms ("norway", "norwegian") are one side; hits on unrelated terms
+    # mean the payoff text names several sides.
+    groups: list[set[str]] = []
+    for token in sorted(hits):
+        group = next((group for group in groups if _mentions([token], group)), None)
+        if group is None:
+            groups.append({token})
+        else:
+            group.add(token)
+    return groups[0] if len(groups) == 1 else set()
 
 
 def build_visual_query_plan(scene: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
-    """Build a small, concrete query plan before provider calls."""
+    """Build a small, concrete query plan before provider calls.
+
+    Provider-facing queries come from the scene's canonical visual intent
+    (the English ``media_queries`` the planner already produced); narration
+    and topic text are only a fallback.  No topic vocabulary is involved.
+    """
     stop = _VISUAL_QUERY_STOP
     visual_intent = scene.get("visual_intent") if isinstance(scene.get("visual_intent"), dict) else {}
     intent_goal = str(visual_intent.get("visual_goal") or "").strip()
@@ -475,7 +645,7 @@ def build_visual_query_plan(scene: dict[str, Any], state: dict[str, Any]) -> dic
     elif isinstance(visual_intent.get("media_queries"), list) and visual_intent.get("media_queries"):
         # Explicit visual queries are stronger acquisition intent than a
         # narration-overlap check; keep them even when the narration is an
-        # abstract setup sentence.
+        # abstract setup sentence or in another language.
         query_values = visual_intent.get("media_queries") or []
         visual_goal = intent_goal
     elif intent_coherent:
@@ -487,7 +657,17 @@ def build_visual_query_plan(scene: dict[str, Any], state: dict[str, Any]) -> dic
     else:
         query_values = []
         visual_goal = ""
-    primary, entities, supporting = _visual_subjects(scene, state)
+    supplied: list[str] = []
+    for value in query_values:
+        raw = str(value).strip()
+        query = _semantic_query(raw, stop, limit=6)
+        if _query_is_concrete(raw, query):
+            supplied.append(query)
+    scene_text = " ".join(value for value in (str(scene.get("edit_instruction") or ""), visual_goal, narration) if value)
+    primary_query = _semantic_query(scene_text, stop, limit=6)
+    broader_query = _semantic_query(str((state.get("intent") or {}).get("topic") or ""), stop, limit=5)
+    fallback = [query for query in (primary_query, broader_query) if _query_is_concrete(query, query)]
+    candidates = list(dict.fromkeys([*supplied, *fallback]))
     protected_text = " ".join(
         str(value or "")
         for value in (
@@ -496,96 +676,85 @@ def build_visual_query_plan(scene: dict[str, Any], state: dict[str, Any]) -> dic
             (state.get("payoff_plan") or {}).get("hook_must_not_reveal") if isinstance(state.get("payoff_plan"), dict) else "",
         )
     )
-    protected_entities = _visual_query_tokens(protected_text) & set(entities)
-    # A comparison payoff often names both sides while protecting only the
-    # winner/reveal.  Treat that broad context as non-specific; only an
-    # unambiguous single protected entity suppresses its visual query.
-    if len(protected_entities) > 1:
-        protected_entities = set()
-    supplied: list[str] = []
-    for value in query_values:
-        raw = str(value).strip()
-        query = _provider_query(_semantic_query(raw, stop, limit=6))
-        if _query_is_concrete(raw, query, primary, entities):
-            supplied.append(query)
-    generated = _generated_visual_queries(
-        primary,
-        entities,
-        supporting,
-        format_name=str((state.get("format_plan") or {}).get("selected_format") or ""),
-        excluded_entities=protected_entities,
-    )
-    scene_text = " ".join(value for value in (str(scene.get("edit_instruction") or ""), visual_goal, narration) if value)
-    primary_query = _provider_query(_semantic_query(scene_text, stop, limit=6))
-    broader_query = _provider_query(_semantic_query(str((state.get("intent") or {}).get("topic") or ""), stop, limit=5))
-    fallback = [query for query in (primary_query, broader_query) if _query_is_concrete(query, query, primary, entities)]
-    # Explicitly authored visual queries remain first when they are concrete;
-    # otherwise generated subject-first concepts replace narration fragments.
-    def payoff_safe_query(query: str) -> bool:
-        return not (_visual_query_tokens(query) & protected_entities)
-
-    queries = list(dict.fromkeys(query for query in [*supplied, *generated, *fallback] if payoff_safe_query(query)))[:3]
+    query_targets = {query: key for query, key in _query_target_map(visual_intent).items() if query in candidates}
+    protected_key = protected_visual_target(state)
+    structured = bool(protected_key and query_targets)
+    if structured:
+        # Structured identity: the planner said which target reveals the payoff.
+        blocked, protected_terms = _structured_protection(candidates, query_targets, protected_key, protected_text)
+        queries = [query for query in candidates if query not in blocked][:3]
+    else:
+        # Legacy plans without target keys: best-effort word-level protection.
+        protected_terms = _protected_side_terms(candidates, protected_text)
+        queries = [
+            query for query in candidates if not _mentions(_visual_query_tokens(query), protected_terms)
+        ][:3]
+    shared, sides = _query_structure(queries)
     if not queries:
-        queries = [" ".join(primary[:3]) or "nature landscape"]
-    comparison_coverage = {
-        entity: any(entity in _visual_query_tokens(query) for query in queries)
-        for entity in entities[:2]
-    }
-    shared_subject = bool(primary and any(term in _visual_query_tokens(query) for query in queries for term in primary))
+        queries = [shared or "nature landscape"]
+    query_targets = {query: key for query, key in query_targets.items() if query in queries}
+    keyed = any(key not in _NON_SIDE_TARGET_KEYS for key in query_targets.values())
+    side_keys = _keyed_structure(queries, query_targets)[1] if keyed else {}
+    side_labels = list(side_keys) if keyed else _side_labels(sides)
     return {
         "queries": queries,
-        "primary_subjects": primary,
-        "secondary_subjects": entities,
-        "supporting_context": supporting,
-        "comparison_coverage": comparison_coverage,
-        "protected_entities": sorted(protected_entities),
-        "shared_subject_coverage": shared_subject,
-        "query_quality": "subject_first" if generated and not supplied else "explicit_visual_intent",
+        "primary_subjects": [shared] if shared else [],
+        "secondary_subjects": side_labels,
+        "side_keys": side_keys,
+        "query_targets": query_targets,
+        "protected_targets": [protected_key] if structured else [],
+        "supporting_context": [],
+        "comparison_coverage": {label: True for label in side_labels},
+        "protected_entities": sorted(protected_terms),
+        "shared_subject_coverage": bool(shared),
+        "query_quality": "explicit_visual_intent" if supplied else "scene_text_fallback",
     }
+
+
+def canonical_visual_subjects(state: dict[str, Any]) -> dict[str, list[str]]:
+    """Project-level visual subjects from the canonical plan, for any topic.
+
+    Reads the provider-facing queries of the visual hook and every scene
+    intent.  ``concepts`` are subject terms repeated across queries (most
+    frequent first); ``sides`` are comparison sides, keyed by the planner's
+    target keys when present (subject_a before subject_b), otherwise derived
+    from the query structure.  Sides are identity only; keeping a protected
+    side out of searches is the query planner's job.
+    """
+    script = state.get("script") if isinstance(state.get("script"), dict) else {}
+    triple = script.get("triple_hook") if isinstance(script.get("triple_hook"), dict) else {}
+    intents = [triple.get("visual_hook")] + [
+        scene.get("visual_intent") for scene in state.get("scenes") or [] if isinstance(scene, dict)
+    ]
+    queries: list[str] = []
+    targets: dict[str, str] = {}
+    for intent in intents:
+        if not isinstance(intent, dict):
+            continue
+        targets.update({query: key for query, key in _query_target_map(intent).items() if query not in targets})
+        for raw in intent.get("media_queries") or []:
+            query = _semantic_query(str(raw or ""), _VISUAL_QUERY_STOP, limit=6)
+            if query and _query_is_concrete(str(raw), query):
+                queries.append(query)
+    queries = list(dict.fromkeys(queries))
+    if any(key not in _NON_SIDE_TARGET_KEYS for key in targets.values()):
+        concepts, keyed_sides = _keyed_structure(queries, targets)
+        return {"concepts": concepts, "sides": list(keyed_sides)}
+    counts: dict[str, int] = {}
+    for query in queries:
+        for token in _query_subject_tokens(query):
+            counts[token] = counts.get(token, 0) + 1
+    concepts = [token for token, count in sorted(counts.items(), key=lambda item: -item[1]) if count >= 2]
+    _shared, sides = _query_structure(queries)
+    side_labels = [label for label in _side_labels(sides) if not set(label.split()) & set(concepts)]
+    return {"concepts": concepts, "sides": side_labels}
 
 
 def derive_search_queries(scene: dict[str, Any], state: dict[str, Any]) -> list[str]:
     return build_visual_query_plan(scene, state)["queries"]
 
 
-_PROVIDER_TERMS = {
-    "hausbau": "house construction", "hausbaues": "house construction", "haus": "house", "häuser": "houses",
-    "fundament": "foundation", "fundaments": "foundation", "gießen": "pouring", "gegossen": "poured",
-    "bauen": "building", "bau": "construction", "wände": "walls", "wand": "wall", "dach": "roof",
-    "beton": "concrete", "arbeiter": "workers", "arbeitern": "workers", "erde": "earth", "materie": "matter",
-    "kapazität": "capacity", "sparen": "saving", "geld": "money",
-    "atem": "breath", "atemluft": "breath air", "winter": "winter", "sichtbarer": "visible",
-    "qualm": "smoke", "nebel": "mist", "nebelwölkchen": "mist cloud", "wolken": "clouds",
-    "kalt": "cold", "kalte": "cold", "außenluft": "outside air", "aussenluft": "outside air", "warme": "warm",
-    "kondensiert": "condensation", "gasförmige": "water vapor", "wasser": "water",
-    "schweben": "floating", "verschwinden": "dissipating",
-    "luft": "air", "feinen": "fine", "winzigen": "tiny",
-    "insel": "island", "inseln": "islands", "inselstaat": "island", "archipel": "archipelago",
-    "flugzeug": "airplane", "flugzeuge": "airplanes", "passagierflugzeug": "commercial airplane",
-    "luftraum": "airspace", "grenze": "border", "grenzen": "borders", "landesgrenze": "country border",
-    "pyramide": "pyramid", "pyramiden": "pyramids",
-    "kondensation": "condensation",
-    "schweden": "sweden", "indonesien": "indonesia", "ägypten": "egypt", "aegypten": "egypt",
-    "sudan": "sudan", "norden": "north", "küsten": "coast", "kuesten": "coast",
-}
-
-# Small, deterministic visual vocabulary used to turn scene intent into
-# provider-friendly concepts.  This is deliberately not a translation system;
-# it only covers the recurring concrete subjects needed by media retrieval.
-_VISUAL_QUERY_ALIASES = {
-    "insel": "island", "inseln": "island", "island": "island", "islands": "island", "inselstaat": "island", "inselstaaten": "island",
-    "archipel": "archipelago", "archipelagos": "archipelago", "archipelago": "archipelago",
-    "flugzeug": "airplane", "flugzeuge": "airplane", "passagierflugzeug": "airplane",
-    "airliner": "airplane", "aircraft": "airplane", "airplane": "airplane", "airplanes": "airplane",
-    "luftraum": "airspace", "airspace": "airspace", "grenze": "border", "grenzen": "border",
-    "landesgrenze": "border", "pyramide": "pyramid", "pyramiden": "pyramid", "pyramid": "pyramid", "pyramids": "pyramid",
-    "atem": "breath", "atemluft": "breath", "breath": "breath", "kondensation": "condensation",
-    "kondensiert": "condensation", "kondensieren": "condensation", "tröpfchen": "droplets",
-    "droplets": "droplets", "winter": "winter", "cheetah": "cheetah", "gepard": "cheetah",
-    "tiere": "animals", "tier": "animals", "animals": "animals",
-    "schweden": "sweden", "sweden": "sweden", "swedish": "sweden", "indonesien": "indonesia", "indonesia": "indonesia", "indonesian": "indonesia",
-    "ägypten": "egypt", "aegypten": "egypt", "egypt": "egypt", "egyptian": "egypt", "sudan": "sudan", "sudanese": "sudan",
-}
+# Function words and meta wording that never describe something visible.
 _VISUAL_QUERY_STOP = {
     "about", "after", "also", "and", "because", "before", "could", "from", "have", "into", "more",
     "only", "over", "that", "their", "there", "these", "this", "through", "video", "visual", "what",
@@ -605,21 +774,10 @@ _VISUAL_ABSTRACT_TERMS = {
     "because", "therefore", "permission", "reason", "difference", "concept", "fact", "context", "answer",
     "warum", "wegen", "deshalb", "daher", "grund", "unterschied", "erlaubnis", "durchgang", "führte",
     "dürfen", "ausländische", "ausländisch", "landes", "most", "people", "guess", "compare", "count", "counts",
-    "weltweit", "meisten", "zwar", "aber", "besonders", "viele", "stark", "inselzahl", "sechs", "kommt",
+    "weltweit", "meisten", "zwar", "aber", "besonders", "viele", "stark", "sechs", "kommt",
     "liegt", "damit", "trotzdem", "besteht", "überwiegend", "gesamtes",
     "genehmigung", "nötig", "noetig", "dessen", "überflug", "freigabe", "route",
 }
-_VISUAL_ENTITY_ADJECTIVES = {
-    "sweden": "swedish", "indonesia": "indonesian", "egypt": "egyptian", "sudan": "sudanese",
-}
-
-
-def _provider_query(query: str) -> str:
-    words = query.split()
-    translated = [_PROVIDER_TERMS.get(word.casefold(), word) for word in words]
-    return " ".join(translated)
-
-
 def _semantic_query(text: str, stop: set[str], *, limit: int) -> str:
     text = re.sub(
         r"(?i)^\s*(?:illustrate|show|visuali[sz]e)\s+"
@@ -670,36 +828,10 @@ _TEXT_HEAVY_METADATA_MARKERS = (
     "infographic template",
 )
 
-_AMBIGUOUS_LOCAL_TERMS = {
-    "glass",
-    "hole",
-    "pane",
-    "window",
-    "lens",
-    "element",
-    "ash",
-    "cloud",
-    "damage",
-}
-
-
 def _semantic_terms(value: str) -> set[str]:
-    aliases = {
-        "building": "build", "built": "build", "constructing": "construct", "construction": "construct",
-        "pouring": "pour", "poured": "pour", "gegossen": "giessen", "gießen": "giessen",
-        "bauen": "build", "moved": "move", "moving": "move", "assembled": "assemble",
-        "assembling": "assemble", "airplanes": "airplane", "windows": "window",
-        "smartphones": "smartphone", "cameras": "camera", "volcanoes": "volcano",
-        "houses": "house", "volcanic": "volcano", "eruption": "volcano",
-        "atem": "breath", "atemluft": "breath", "sichtbarer": "visible", "qualm": "smoke",
-        "nebel": "mist", "nebelwölkchen": "mist", "wolken": "cloud", "kühlt": "cool",
-        "kalte": "cold", "außenluft": "air", "warme": "warm", "kondensiert": "condensation",
-        "gasförmige": "vapor", "wasser": "water", "tröpfchen": "droplet",
-        "schweben": "float", "verschwinden": "dissipate", "droplets": "droplet",
-        "condenses": "condensation", "condensing": "condensation", "condensed": "condensation",
-    }
+    """Content terms with topic-independent normalization only (no alias tables)."""
     return {
-        aliases.get(token, token) for token in re.findall(r"[\wäöüß-]+", value.casefold(), flags=re.UNICODE)
+        _normalize_term(token) for token in re.findall(r"[\wäöüß-]+", value.casefold(), flags=re.UNICODE)
         if len(token) > 2 and token not in _RELEVANCE_STOP and not token.isdigit()
     }
 
@@ -772,11 +904,17 @@ def media_relevance(candidate: MediaCandidate, scene: dict[str, Any], state: dic
     intent_text = _intent_text(visual_intent)
     scene_goal = str(scene.get("visual_goal") or "")
     explicitly_refreshed = isinstance(scene.get("search_queries"), list) and not scene["search_queries"]
+    media_queries = [str(value) for value in visual_intent.get("media_queries") or [] if str(value).strip()]
+    canonical_intent = False
     if explicitly_refreshed:
         structured = scene_goal
         matching_goal = scene_goal
-    elif _scene_text_coherent(narration, intent_text):
-        structured = intent_text
+    elif media_queries or _scene_text_coherent(narration, intent_text):
+        # The canonical, provider-facing visual intent is trusted the same way
+        # the query planner trusts it; it does not need to share words (or a
+        # language) with the narration.
+        canonical_intent = True
+        structured = " ".join((intent_text, *media_queries))
         matching_goal = str(visual_intent.get("visual_goal") or "")
     elif _scene_text_coherent(narration, scene_goal):
         structured = scene_goal
@@ -787,11 +925,23 @@ def media_relevance(candidate: MediaCandidate, scene: dict[str, Any], state: dic
     scene_text = " ".join(
         value for value in (narration, structured, str(scene.get("edit_instruction") or "")) if value
     )
+    # Topic-derived subject words are low-priority context only: they can mark
+    # a match as context, never make a candidate eligible on their own.
     global_terms = _semantic_terms(global_subject_text(state))
     negated_terms = _negated_terms(narration)
-    local_terms = _semantic_terms(scene_text) - negated_terms
     metadata = _semantic_terms(" ".join((candidate.title, candidate.description, *candidate.tags)))
     query_terms = _semantic_terms(candidate.query)
+    # Provider-query provenance: a candidate returned for one of this scene's
+    # planned queries carries that query's canonical concepts as evidence.
+    scene_queries = scene.get("search_queries") if isinstance(scene.get("search_queries"), list) else []
+    planned_queries = {
+        form
+        for value in (*scene_queries, *(media_queries if canonical_intent else []))
+        for form in (str(value).strip().casefold(), _semantic_query(str(value), _VISUAL_QUERY_STOP, limit=6))
+        if form
+    }
+    query_provenance = bool(query_terms) and str(candidate.query or "").strip().casefold() in planned_queries
+    local_terms = (_semantic_terms(scene_text) | (query_terms if query_provenance else set())) - negated_terms
     goal_terms = _semantic_terms(matching_goal)
     # A concise visual direction may name a principal object plus its setting
     # ("lighthouse by the sea").  Matching its principal object is useful
@@ -801,7 +951,7 @@ def media_relevance(candidate: MediaCandidate, scene: dict[str, Any], state: dic
     local_matches = local_terms & metadata
     scene_specific_terms = local_terms - global_terms
     scene_specific_matches = scene_specific_terms & metadata
-    action_expected = _semantic_terms(str(scene.get("narration") or "")) & {"build", "construct", "pour", "move", "assemble", "fall", "rise", "increase", "decrease"}
+    action_expected = _semantic_terms(" ".join(str(value) for value in visual_intent.get("actions") or [])) if canonical_intent else set()
     action_matches = action_expected & metadata
     query_matches = local_terms & query_terms
     global_matches = global_terms & metadata
@@ -817,11 +967,6 @@ def media_relevance(candidate: MediaCandidate, scene: dict[str, Any], state: dic
         and local_matches <= global_terms
         and not goal_direct_match
     )
-    ambiguous_without_context = (
-        bool(local_matches)
-        and local_matches <= _AMBIGUOUS_LOCAL_TERMS
-        and not global_matches
-    )
     score = (
         len(local_matches) * 12
         + len(scene_specific_matches) * 18
@@ -834,9 +979,20 @@ def media_relevance(candidate: MediaCandidate, scene: dict[str, Any], state: dic
         # Retain this as a ranking signal only. Acceptance below remains
         # unknown until local visual evidence is available.
         score += 70
+    query_agrees = bool(metadata & set(_query_subject_tokens(candidate.query)))
+    # One shared word ("hole") is weak evidence on its own when the project has
+    # a topic: it needs corroboration from the topic, a second scene term, an
+    # expected action, or agreeing provenance from this scene's own plan.
+    uncorroborated_single_match = (
+        bool(global_terms)
+        and len(local_matches) == 1
+        and not global_matches
+        and not action_matches
+        and not (query_provenance and query_agrees)
+    )
     if not metadata:
         confidence = "unknown"
-    elif presentation_risk["rejected"] or ambiguous_without_context:
+    elif presentation_risk["rejected"] or uncorroborated_single_match:
         confidence = "rejected"
     elif contextual_only or global_only_match:
         # Topic overlap is only a plausibility guard. It needs a strong local
@@ -848,6 +1004,15 @@ def media_relevance(candidate: MediaCandidate, scene: dict[str, Any], state: dic
         confidence = "high" if len(scene_specific_matches) >= 2 or bool(action_matches) else "acceptable"
     if not matched and not metadata:
         score -= 60
+    selection_tier = 3 if scene_specific_matches or action_matches else (2 if local_matches and not global_only_match else 0)
+    # Provenance is evidence, not proof: metadata that shares nothing with the
+    # query that returned it (a road clip for a coral reef query) is downgraded.
+    query_disagreement = bool(query_provenance and metadata and not query_agrees)
+    if query_disagreement:
+        selection_tier = min(selection_tier, 1)
+        score -= 20
+        if confidence == "high":
+            confidence = "acceptable"
     return {
         "score": float(score),
         "matched_terms": matched,
@@ -857,8 +1022,10 @@ def media_relevance(candidate: MediaCandidate, scene: dict[str, Any], state: dic
         "scene_matches": sorted(local_matches),
         "scene_specific_matches": sorted(scene_specific_matches),
         "query_matches": sorted(query_matches),
+        "query_provenance": query_provenance,
+        "metadata_query_disagreement": query_disagreement,
         "presentation_risk": presentation_risk,
-        "selection_tier": 3 if scene_specific_matches or action_matches else (2 if local_matches and not global_only_match else 0),
+        "selection_tier": selection_tier,
     }
 
 
@@ -977,6 +1144,534 @@ def _rank_verified(
     )
 
 
+# ---------------------------------------------------------------------------
+# Adaptive (staged) scene search
+#
+# The planned query list is executed one query at a time.  After each stage
+# the accumulated, de-duplicated candidates are verified and the scene's
+# subject coverage is re-evaluated; searching stops as soon as coverage is
+# strong, and a fallback query is chosen for the subject that is still weak.
+# ---------------------------------------------------------------------------
+
+MAX_SCENE_QUERY_BUDGET = 3
+COVERAGE_STRONG = "strong"
+COVERAGE_PARTIAL = "partial"
+COVERAGE_WEAK = "weak"
+COVERAGE_NONE = "none"
+_COVERAGE_RANK = {COVERAGE_NONE: 0, COVERAGE_WEAK: 1, COVERAGE_PARTIAL: 2, COVERAGE_STRONG: 3}
+# A passing scene similarity is only "present"; strong coverage needs a margin.
+STRONG_SCENE_VISUAL_SCORE = SCENE_VISUAL_THRESHOLD + 0.02
+MIN_USABLE_SHORT_SIDE = 480
+_COMPARISON_FORMATS = {"comparison", "quiz"}
+SCENE_TARGET = "scene"
+
+
+def _coverage_tokens(value: object) -> set[str]:
+    return _visual_query_tokens(value) | _semantic_terms(str(value or ""))
+
+
+def _target_terms(target: str) -> set[str]:
+    return set(target.split())
+
+
+def _scene_target_tokens(scene: dict[str, Any]) -> set[str]:
+    """What this scene itself asks to show: its visual direction plus narration.
+
+    Planned queries are excluded on purpose; they may cover every comparison
+    side, while the scene's own direction says which side it is about.
+    """
+    visual_intent = scene.get("visual_intent") if isinstance(scene.get("visual_intent"), dict) else {}
+    return set().union(*(
+        _coverage_tokens(value)
+        for value in (
+            scene.get("narration"), scene.get("visual_goal"), scene.get("edit_instruction"),
+            visual_intent.get("visual_goal"), visual_intent.get("objects"), visual_intent.get("actions"),
+            visual_intent.get("context"),
+        )
+    ))
+
+
+def scene_coverage_targets(
+    scene: dict[str, Any], state: dict[str, Any], query_plan: dict[str, Any]
+) -> dict[str, Any]:
+    """Return the visual subjects this scene must show, keyed by target -> role.
+
+    Targets come from the query plan: its shared concept and, for comparison
+    formats, the comparison sides this scene's own visual direction names.
+    """
+    format_name = str((state.get("format_plan") or {}).get("selected_format") or "")
+    primary = list(query_plan.get("primary_subjects") or [])
+    sides = list(query_plan.get("secondary_subjects") or [])
+    protected = set(query_plan.get("protected_entities") or [])
+    local = _scene_target_tokens(scene)
+    targets: dict[str, str] = {}
+    comparison = format_name in _COMPARISON_FORMATS
+    if comparison:
+        if query_plan.get("side_keys"):
+            # Keyed plan: the scene's own planned targets are the sides it shows.
+            scene_sides = [side for side in sides if side in query_plan["side_keys"]]
+        else:
+            scene_sides = [
+                side for side in sides
+                if not _target_terms(side) & protected and _mentions(_target_terms(side), local)
+            ]
+        for role, side in zip(("subject_a", "subject_b"), scene_sides):
+            targets[side] = role
+    if primary:
+        targets[primary[0]] = "shared" if comparison else "primary"
+    if not targets:
+        targets[SCENE_TARGET] = "scene"
+    mode = "comparison" if comparison and len(targets) > 1 else "single" if SCENE_TARGET not in targets else "generic"
+    return {"mode": mode, "targets": targets, "format": format_name or None}
+
+
+def _usable_quality(candidate: MediaCandidate, scene_duration: float) -> bool:
+    if min(candidate.width, candidate.height) < MIN_USABLE_SHORT_SIDE:
+        return False
+    if candidate.kind == "video":
+        return float(candidate.duration or 0) >= max(2.0, scene_duration * 0.6)
+    return True
+
+
+def candidate_target_coverage(
+    candidate: MediaCandidate, relevance: dict[str, Any], target: str, scene_duration: float
+) -> str:
+    """Deterministic per-target coverage for one verified candidate.
+
+    Strong coverage always needs two independent signals: metadata naming the
+    subject (in any morphological form) plus either OpenCLIP or trusted query
+    provenance.  A high OpenCLIP similarity alone never produces strong
+    coverage, and neither does query provenance alone.
+    """
+    if relevance.get("confidence") not in {"high", "acceptable"}:
+        return COVERAGE_NONE
+    if (relevance.get("presentation_risk") or {}).get("rejected"):
+        return COVERAGE_NONE
+    metadata_tokens = _coverage_tokens(" ".join((candidate.title, candidate.description, *candidate.tags)))
+    tier = int(relevance.get("selection_tier") or 0)
+    if target == SCENE_TARGET:
+        subject_metadata = tier >= 2
+        subject_query = bool(relevance.get("query_matches"))
+    else:
+        terms = _target_terms(target)
+        subject_metadata = _mentions(metadata_tokens, terms)
+        subject_query = _mentions(_coverage_tokens(candidate.query), terms)
+    if not subject_metadata and not subject_query:
+        return COVERAGE_WEAK
+    visual = relevance.get("visual") or {}
+    verified = visual.get("status") == "verified"
+    scene_score = visual.get("scene_score") if visual.get("scene_score") is not None else visual.get("score")
+    visual_strong = (
+        verified
+        and scene_score is not None
+        and float(scene_score) >= STRONG_SCENE_VISUAL_SCORE
+        and float(visual.get("score") or 0) >= VISUAL_THRESHOLD
+    )
+    # Context-only: the metadata matches the topic but none of this scene's own
+    # words.  Metadata naming a scene-local target is not context.
+    context_only = not relevance.get("scene_matches") if target != SCENE_TARGET else tier <= 1
+    if not _usable_quality(candidate, scene_duration):
+        return COVERAGE_PARTIAL
+    if verified:
+        if visual_strong and subject_metadata and not context_only:
+            return COVERAGE_STRONG
+        if visual_strong and subject_query and not metadata_tokens:
+            # Untitled provider media: targeted query provenance + local vision.
+            return COVERAGE_STRONG
+        return COVERAGE_PARTIAL
+    # OpenCLIP unavailable: be conservative, require metadata + provenance.
+    if subject_metadata and subject_query and not context_only:
+        return COVERAGE_STRONG
+    return COVERAGE_PARTIAL
+
+
+def summarize_coverage(
+    rows: Iterable[tuple[MediaCandidate, dict[str, Any]]],
+    targets: dict[str, str],
+    scene_duration: float,
+) -> dict[str, Any]:
+    levels = {target: COVERAGE_NONE for target in targets}
+    for candidate, relevance in rows:
+        for target in targets:
+            level = candidate_target_coverage(candidate, relevance, target, scene_duration)
+            if _COVERAGE_RANK[level] > _COVERAGE_RANK[levels[target]]:
+                levels[target] = level
+    overall = min(levels.values(), key=_COVERAGE_RANK.__getitem__) if levels else COVERAGE_NONE
+    return {"overall": overall, "targets": levels}
+
+
+def select_fallback_query(
+    remaining: list[str], coverage: dict[str, Any], targets: dict[str, str]
+) -> str | None:
+    """Pick the remaining planned query that addresses a still-weak subject."""
+    levels = coverage["targets"]
+    weak = [target for target, level in levels.items() if level != COVERAGE_STRONG]
+    strong_sides = {
+        term
+        for target, role in targets.items()
+        if role.startswith("subject_") and levels.get(target) == COVERAGE_STRONG
+        for term in _target_terms(target)
+    }
+    best: tuple[int, str] | None = None
+    for query in remaining:
+        tokens = _coverage_tokens(query)
+        if _mentions(tokens, strong_sides):
+            continue  # never spend budget repeating an already strong side
+        addressed = sum(
+            1 for target in weak
+            if target == SCENE_TARGET or _mentions(tokens, _target_terms(target))
+        )
+        if addressed and (best is None or addressed > best[0]):
+            best = (addressed, query)
+    if best is not None:
+        return best[1]
+    if all(level == COVERAGE_NONE for level in levels.values()):
+        # Nothing usable yet: any remaining planned query beats giving up.
+        return next((query for query in remaining if not _mentions(_coverage_tokens(query), strong_sides)), None)
+    return None
+
+
+def _fallback_trigger(stage: dict[str, Any], coverage: dict[str, Any]) -> str:
+    if stage["errors"] and not stage["new"]:
+        return "provider_error"
+    if not stage["new"] and not stage["duplicates"]:
+        return "no_results"
+    if coverage["overall"] == COVERAGE_NONE:
+        return "no_verified_candidates"
+    weak = sorted(target for target, level in coverage["targets"].items() if level != COVERAGE_STRONG)
+    return f"{coverage['overall']}_coverage:{','.join(weak)}"
+
+
+def _candidate_coverage_score(
+    candidate: MediaCandidate, relevance: dict[str, Any], targets: dict[str, str], scene_duration: float
+) -> int:
+    return sum(
+        _COVERAGE_RANK[candidate_target_coverage(candidate, relevance, target, scene_duration)]
+        for target in targets
+    )
+
+
+def _scene_query_order(
+    planned: list[str], targets: dict[str, str], query_plan: dict[str, Any]
+) -> list[str]:
+    """Search the comparison side this scene talks about first, then shared, then the other side.
+
+    A stable reorder of the existing plan: no query is added or dropped.
+    """
+    scene_side_labels = {target for target, role in targets.items() if role.startswith("subject_")}
+    scene_sides = {term for label in scene_side_labels for term in _target_terms(label)}
+    other_sides = {
+        term
+        for label in query_plan.get("secondary_subjects") or []
+        if label not in scene_side_labels
+        for term in _target_terms(label)
+    } - scene_sides
+    if not scene_sides or not other_sides:
+        return planned
+
+    def rank(query: str) -> int:
+        tokens = _coverage_tokens(query)
+        if _mentions(tokens, scene_sides):
+            return 0
+        return 2 if _mentions(tokens, other_sides) else 1
+
+    return sorted(planned, key=rank)
+
+
+@dataclass
+class StagedSearchResult:
+    ranked: list[tuple[MediaCandidate, dict[str, Any]]]
+    candidates: list[MediaCandidate]
+    provenance: dict[str, Any]
+    failure: MediaProviderError | None
+    evaluated: set[str]
+    # Verified relevance per identity, reused by later fallbacks so the same
+    # asset is never sent through OpenCLIP twice for one scene.
+    verified: dict[str, dict[str, Any]]
+    verifier_failed: bool
+
+
+_GENERIC_SOURCE_PATHS = {"", "video", "videos", "photo", "photos", "wiki"}
+
+
+def _canonical_source(url: str) -> str | None:
+    """Stable asset URL key; generic provider landing pages identify nothing."""
+    parsed = urlparse(str(url or "").strip())
+    path = parsed.path.strip("/").casefold()
+    if not parsed.netloc or path in _GENERIC_SOURCE_PATHS:
+        return None
+    return f"{parsed.netloc.casefold().removeprefix('www.')}/{path}"
+
+
+def _claim_logical_query(provenance: dict[str, Any], query: str) -> bool:
+    """Record a logical query string; refuses a new string once the budget is spent."""
+    executed = provenance["executed_queries"]
+    if query in executed:
+        return True
+    if len(executed) >= provenance["query_budget"]:
+        return False
+    executed.append(query)
+    provenance["logical_queries_executed"] = provenance["executed_query_count"] = len(executed)
+    return True
+
+
+def _count_provider_request(provenance: dict[str, Any], source: str) -> None:
+    provenance["provider_requests_executed"] += 1
+    by_source = provenance["provider_requests_by_source"]
+    by_source[source] = by_source.get(source, 0) + 1
+
+
+def _safe_verify(
+    candidates: list[MediaCandidate],
+    scene: dict[str, Any],
+    state: dict[str, Any],
+    verifier: Any | None,
+) -> tuple[list[tuple[MediaCandidate, dict[str, Any]]], bool]:
+    try:
+        return verify_media_shortlist(candidates, scene, state, verifier), True
+    except Exception:  # noqa: BLE001 - verification must never fail media search
+        rows = verify_media_shortlist(candidates, scene, state, _METADATA_ONLY_VERIFIER)
+        return rows, False
+
+
+def _relaxed_visual_verdict(
+    candidate: MediaCandidate,
+    known: dict[str, Any] | None,
+    visual: Any,
+    scene: dict[str, Any],
+    state: dict[str, Any],
+) -> tuple[str, float]:
+    """Visual gate for the last-resort fallback: pass, unverified, rejected or presentation_risk.
+
+    A completed verification from the staged search is reused; OpenCLIP only
+    runs for candidates it has not seen yet.
+    """
+    if known is not None:
+        visual_data = known.get("visual") or {}
+        if visual_data.get("presentation_risk") or (known.get("presentation_risk") or {}).get("source") == "vision":
+            return "presentation_risk", -1.0
+        if visual_data.get("status") != "verified":
+            return "unverified", -1.0
+        scene_score = visual_data.get("scene_score")
+        scene_score = float(visual_data.get("score") or 0 if scene_score is None else scene_score)
+        if known.get("confidence") == "rejected" or scene_score < SCENE_VISUAL_THRESHOLD:
+            return "rejected", scene_score
+        return "pass", scene_score
+    if getattr(visual, "status", "") != "available":
+        return "unverified", -1.0
+    try:
+        result = visual.verify_candidate(candidate, visual_intent_text(scene, state))
+    except Exception:  # noqa: BLE001 - verification is advisory here
+        return "unverified", -1.0
+    if result is None:
+        return "unverified", -1.0
+    if result.presentation_risk:
+        return "presentation_risk", -1.0
+    if result.status != "verified":
+        return "unverified", -1.0
+    scene_score = float(result.scene_score if result.scene_score is not None else result.score or 0)
+    return ("rejected" if scene_score < SCENE_VISUAL_THRESHOLD else "pass"), scene_score
+
+
+class _MetadataOnlyVerifier:
+    status = "verification_failed"
+
+    def verify_candidate(self, _candidate: Any, _texts: list[str]) -> None:
+        return None
+
+
+_METADATA_ONLY_VERIFIER = _MetadataOnlyVerifier()
+
+
+def run_staged_scene_search(
+    queries: list[str],
+    scene: dict[str, Any],
+    state: dict[str, Any],
+    query_plan: dict[str, Any],
+    *,
+    pexels: Any | None,
+    wikimedia: Any,
+    preferred_kind: str,
+    portrait: bool,
+    scene_duration: float,
+    used: set[str],
+    verifier: Any | None,
+    budget: int = MAX_SCENE_QUERY_BUDGET,
+) -> StagedSearchResult:
+    """Execute planned queries one stage at a time within a hard query budget."""
+    budget = max(1, min(int(budget), MAX_SCENE_QUERY_BUDGET))
+    planned = list(dict.fromkeys(query for query in queries if query))
+    coverage_targets = scene_coverage_targets(scene, state, query_plan)
+    targets = coverage_targets["targets"]
+    planned = _scene_query_order(planned, targets, query_plan)
+    remaining = planned[:budget]
+    seen: dict[str, MediaCandidate] = {}
+    seen_sources: set[str] = set()
+    rows: dict[str, tuple[MediaCandidate, dict[str, Any]]] = {}
+    failure: MediaProviderError | None = None
+    stages: list[dict[str, Any]] = []
+    fallback_reasons: list[str] = []
+    requests = 0
+    duplicates = 0
+    verification_ok = True
+    active_verifier = verifier
+    coverage = summarize_coverage([], targets, scene_duration)
+    coverage_before_fallback: dict[str, Any] | None = None
+    stop_reason = "no_queries"
+    alternate = "photo" if preferred_kind == "video" else "video"
+    search_plan = (
+        [("pexels", preferred_kind), ("pexels", alternate)] if pexels is not None else [("wikimedia", "photo")]
+    )
+    query = remaining.pop(0) if remaining else None
+    while query is not None:
+        stage = {"query": query, "requests": 0, "new": 0, "duplicates": 0, "errors": []}
+        for position, (provider_name, kind) in enumerate(search_plan):
+            if position and coverage["overall"] == COVERAGE_STRONG:
+                break  # the preferred kind already covers the scene
+            try:
+                if provider_name == "wikimedia":
+                    results = wikimedia.search_photos(query, portrait=portrait)
+                elif kind == "video":
+                    results = pexels.search_videos(query, portrait=portrait, scene_duration=scene_duration)
+                else:
+                    results = pexels.search_photos(query, portrait=portrait)
+            except MediaProviderError as exc:
+                failure = exc
+                stage["errors"].append(exc.category)
+                results = []
+            requests += 1
+            stage["requests"] += 1
+            fresh: list[MediaCandidate] = []
+            for candidate in results or []:
+                source = _canonical_source(candidate.source_url)
+                if candidate.identity in seen or (source and source in seen_sources):
+                    stage["duplicates"] += 1
+                    continue
+                seen[candidate.identity] = candidate
+                if source:
+                    seen_sources.add(source)
+                if candidate.identity not in used:
+                    fresh.append(candidate)
+            stage["new"] += len(fresh)
+            if fresh:
+                verified, ok = _safe_verify(fresh, scene, state, active_verifier)
+                if not ok:
+                    # One failure is enough evidence; do not retry per stage.
+                    verification_ok = False
+                    active_verifier = _METADATA_ONLY_VERIFIER
+                for candidate, relevance in verified:
+                    rows.setdefault(candidate.identity, (candidate, relevance))
+                coverage = summarize_coverage(rows.values(), targets, scene_duration)
+        duplicates += stage["duplicates"]
+        stage["coverage"] = coverage["overall"]
+        stages.append(stage)
+        if coverage["overall"] == COVERAGE_STRONG:
+            stop_reason = "strong_coverage"
+            break
+        if not remaining:
+            stop_reason = "budget_exhausted" if len(stages) >= budget else "plan_exhausted"
+            break
+        next_query = select_fallback_query(remaining, coverage, targets)
+        if next_query is None:
+            stop_reason = "no_targeted_query"
+            break
+        if coverage_before_fallback is None:
+            coverage_before_fallback = coverage
+        fallback_reasons.append(_fallback_trigger(stage, coverage))
+        remaining.remove(next_query)
+        query = next_query
+
+    eligible = [
+        row for row in rows.values()
+        if row[1]["confidence"] in {"high", "acceptable"}
+        and not (row[1].get("presentation_risk") or {}).get("rejected")
+    ]
+    ranked = sorted(
+        eligible,
+        key=lambda row: (
+            int(row[1].get("selection_tier") or 0),
+            _candidate_coverage_score(row[0], row[1], targets, scene_duration),
+            float(row[1].get("visual", {}).get("scene_score") or -1),
+            float(row[1]["score"]),
+            int(row[0].kind == preferred_kind),
+            row[0].rank,
+        ),
+        reverse=True,
+    )
+    executed = [stage["query"] for stage in stages]
+    provenance = {
+        "version": 1,
+        "query_budget": budget,
+        "planned_queries": planned[:MAX_SCENE_QUERY_BUDGET],
+        "executed_queries": executed,
+        "planned_query_count": min(len(planned), budget),
+        # Logical query strings (hard-capped by the budget) and provider
+        # search requests (one logical query may hit several providers/kinds)
+        # are tracked separately.
+        "logical_queries_executed": len(executed),
+        "executed_query_count": len(executed),
+        "provider_requests_executed": requests,
+        "provider_requests_by_source": {"staged_search": requests},
+        "early_stop": stop_reason == "strong_coverage" and len(executed) < min(len(planned), budget),
+        "stop_reason": stop_reason,
+        "fallback_count": len(fallback_reasons),
+        "fallback_reason": fallback_reasons[0] if fallback_reasons else None,
+        "fallback_reasons": fallback_reasons,
+        "coverage_mode": coverage_targets["mode"],
+        "coverage_targets": targets,
+        "coverage_before_fallback": coverage_before_fallback,
+        "coverage_after_fallback": coverage if fallback_reasons else None,
+        "final_coverage": coverage["overall"],
+        "stages": [
+            {key: stage[key] for key in ("query", "requests", "new", "duplicates", "coverage")}
+            | ({"errors": stage["errors"]} if stage["errors"] else {})
+            for stage in stages
+        ],
+        "duplicate_count": duplicates,
+        "visual_verification": "ok" if verification_ok else "failed_metadata_fallback",
+    }
+    return StagedSearchResult(
+        ranked,
+        list(seen.values()),
+        provenance,
+        failure,
+        set(rows),
+        {identity: relevance for identity, (_candidate, relevance) in rows.items()},
+        not verification_ok,
+    )
+
+
+def _record_search_winner(provenance: dict[str, Any], metadata: dict[str, Any] | None, source: str) -> dict[str, Any]:
+    if metadata is None:
+        provenance.update(winning_query=None, winning_asset=None, winning_source=source)
+        return provenance
+    provenance.update(
+        winning_query=metadata.get("query"),
+        winning_source=source,
+        winning_asset={
+            key: metadata.get(key)
+            for key in ("identity", "provider", "provider_id", "kind", "source_url")
+        },
+    )
+    return provenance
+
+
+_SEARCH_TOTAL_KEYS = (
+    "scenes_searched",
+    "planned_query_count",
+    "logical_queries_executed",
+    "provider_requests_executed",
+    "early_stop_count",
+    "fallback_count",
+)
+
+
+def _accumulate_search_totals(totals: dict[str, int], provenance: dict[str, Any]) -> None:
+    for key in ("planned_query_count", "logical_queries_executed", "provider_requests_executed", "fallback_count"):
+        totals[key] += int(provenance.get(key) or 0)
+    totals["early_stop_count"] += int(bool(provenance.get("early_stop")))
+
+
 def _cache_candidate(
     candidate: MediaCandidate,
     relevance: dict[str, Any],
@@ -1040,6 +1735,7 @@ def prepare_project_media(
     replacement_failed_count = 0
     failure: MediaProviderError | None = None
     selected_media: list[dict[str, Any]] = []
+    search_totals = {key: 0 for key in _SEARCH_TOTAL_KEYS}
     scenes = state.get("scenes", [])
     total_scenes = len(scenes)
     report_progress(
@@ -1090,70 +1786,74 @@ def prepare_project_media(
         if preferred_kind not in {"video", "photo"}:
             preferred_kind = "video"
         metadata: dict[str, Any] | None = None
-        pexels_candidates: list[MediaCandidate] = []
         commons_candidates: list[MediaCandidate] = []
-        if pexels is not None:
-            for query in queries:
-                search_kinds = (
-                    ("photo", "video")
-                    if preferred_kind == "photo"
-                    else ("video", "photo")
+        # Staged search: query 1, verify, stop when coverage is strong,
+        # otherwise spend the bounded budget on the still-weak subject.
+        staged = run_staged_scene_search(
+            queries,
+            scene,
+            state,
+            query_plan,
+            pexels=pexels,
+            wikimedia=wikimedia,
+            preferred_kind=preferred_kind,
+            portrait=portrait,
+            scene_duration=duration,
+            used=used,
+            verifier=visual_verifier,
+        )
+        search_provenance = staged.provenance
+        # Later fallbacks follow the scene-aware query order, not the global plan.
+        queries = list(search_provenance["planned_queries"]) or queries
+        scene["media_search"] = search_provenance
+        scene.pop("visual_quality", None)
+        search_totals["scenes_searched"] += 1
+        failure = staged.failure or failure
+        pexels_candidates = staged.candidates if pexels is not None else []
+        commons_candidates = [] if pexels is not None else list(staged.candidates)
+        winning_source = "staged_search"
+        for candidate, relevance in staged.ranked:
+            try:
+                metadata = _cache_candidate(
+                    candidate,
+                    relevance,
+                    asset_root=asset_root,
+                    render_root=settings.render_root,
+                    pexels=pexels,
+                    wikimedia=wikimedia,
                 )
-                for search_kind in search_kinds:
-                    try:
-                        if search_kind == "video":
-                            pexels_candidates.extend(
-                                pexels.search_videos(
-                                    query,
-                                    portrait=portrait,
-                                    scene_duration=duration,
-                                )
-                            )
-                        else:
-                            pexels_candidates.extend(
-                                pexels.search_photos(query, portrait=portrait)
-                            )
-                    except MediaProviderError as exc:
-                        failure = exc
-            for candidate, relevance in _rank_verified(
-                pexels_candidates,
-                scene,
-                state,
-                preferred_kind,
-                used,
-                visual_verifier,
-            ):
-                try:
-                    metadata = _cache_candidate(
-                        candidate,
-                        relevance,
-                        asset_root=asset_root,
-                        render_root=settings.render_root,
-                        pexels=pexels,
-                        wikimedia=wikimedia,
-                    )
-                    break
-                except MediaProviderError as exc:
-                    failure = exc
+                break
+            except MediaProviderError as exc:
+                failure = exc
+
+        # One verifier for every fallback of this scene; a verifier that already
+        # failed in the staged search is not retried.
+        scene_verifier = _METADATA_ONLY_VERIFIER if staged.verifier_failed else visual_verifier
 
         # A failed Pexels download must not skip the remaining free source.
-        if metadata is None:
-            commons_candidates: list[MediaCandidate] = []
-            for query in queries:
+        # Only already executed query strings are reused: no new logical query.
+        if metadata is None and pexels is not None:
+            winning_source = "wikimedia_fallback"
+            for query in list(search_provenance["executed_queries"]):
+                _count_provider_request(search_provenance, "wikimedia_fallback")
                 try:
                     commons_candidates.extend(
                         wikimedia.search_photos(query, portrait=portrait)
                     )
                 except MediaProviderError as exc:
                     failure = exc
-            for candidate, relevance in _rank_verified(
-                commons_candidates,
-                scene,
-                state,
-                preferred_kind,
-                used,
-                visual_verifier,
-            ):
+            search_provenance["wikimedia_fallback"] = True
+            try:
+                wikimedia_ranked = _rank_verified(
+                    commons_candidates, scene, state, preferred_kind, used | staged.evaluated, scene_verifier
+                )
+            except Exception:  # noqa: BLE001 - verification must never fail media search
+                search_provenance["visual_verification"] = "failed_metadata_fallback"
+                scene_verifier = _METADATA_ONLY_VERIFIER
+                wikimedia_ranked = _rank_verified(
+                    commons_candidates, scene, state, preferred_kind, used | staged.evaluated, scene_verifier
+                )
+            for candidate, relevance in wikimedia_ranked:
                 try:
                     metadata = _cache_candidate(
                         candidate,
@@ -1169,29 +1869,64 @@ def prepare_project_media(
 
         if metadata is None:
             # Relevance is relaxed only here; the presentation/source gate never is.
+            winning_source = "relaxed_fallback"
+            search_provenance["relaxed_fallback"] = True
             pools = [pexels_candidates + commons_candidates]
-            broad_queries = list(dict.fromkeys([
-                " ".join(queries[0].split()[:2]) if queries else "nature",
-                global_subject_text(state), "nature landscape", "ocean water", "trees outdoors",
-            ]))
-            visual = visual_verifier or get_visual_verifier()
+            protected = set(query_plan.get("protected_entities") or [])
+            payoff_words = (
+                _visual_query_tokens((state.get("payoff_plan") or {}).get("hook_must_not_reveal"))
+                if isinstance(state.get("payoff_plan"), dict) and (protected or query_plan.get("protected_targets"))
+                else set()
+            )
+
+            # Broad strings are payoff-safe and only spend logical budget that
+            # the staged search left unused; re-running an executed string on
+            # the same providers would only return the pool already searched.
+            broad_queries = [
+                query
+                for query in dict.fromkeys(
+                    " ".join(word for word in query.split() if _payoff_safe_word(word, protected, payoff_words))
+                    for query in (
+                        " ".join(queries[0].split()[:2]) if queries else "nature",
+                        *(query_plan.get("primary_subjects") or [])[:1],
+                        global_subject_text(state), "nature landscape", "ocean water", "trees outdoors",
+                    )
+                )
+                if query and query not in search_provenance["executed_queries"]
+            ]
+            visual = scene_verifier or get_visual_verifier()
+            verified_rows = staged.verified
+            relaxed_seen: set[str] = set()
+            degraded: tuple[float, MediaCandidate] | None = None
             for broad_query in [None, *broad_queries]:
                 batch = pools[0] if broad_query is None else []
                 if broad_query:
+                    if not _claim_logical_query(search_provenance, broad_query):
+                        break  # logical query budget exhausted
+                    search_provenance.setdefault("relaxed_queries", []).append(broad_query)
                     for provider in (pexels, wikimedia):
                         if provider is None:
                             continue
+                        _count_provider_request(search_provenance, "relaxed_fallback")
                         try:
                             batch.extend(provider.search_photos(broad_query, portrait=portrait))
                         except MediaProviderError as exc:
                             failure = exc
                 for candidate in batch[:24]:
-                    if candidate.identity in used or not is_real_media_allowed(candidate):
+                    if candidate.identity in used or candidate.identity in relaxed_seen or not is_real_media_allowed(candidate):
                         continue
-                    if getattr(visual, "status", "") == "available":
-                        result = visual.verify_candidate(candidate, visual_intent_text(scene, state))
-                        if result is not None and result.presentation_risk:
-                            continue
+                    relaxed_seen.add(candidate.identity)
+                    verdict, scene_score = _relaxed_visual_verdict(
+                        candidate, verified_rows.get(candidate.identity), visual, scene, state
+                    )
+                    if verdict == "presentation_risk":
+                        continue
+                    if verdict == "rejected":
+                        # OpenCLIP already judged this asset off-scene; provider
+                        # order alone must never make it the winner.
+                        if degraded is None or scene_score > degraded[0]:
+                            degraded = (scene_score, candidate)
+                        continue
                     try:
                         relevance = media_relevance(candidate, scene, state)
                         relevance["fallback_stage"] = "real_media_only_relaxed_fit"
@@ -1201,6 +1936,22 @@ def prepare_project_media(
                         failure = exc
                 if metadata is not None:
                     break
+            safe_selected = [item for item in selected_media if is_real_media_allowed(item)]
+            if metadata is None and degraded is not None and not safe_selected and not existing_usable:
+                # Every candidate failed visual verification and no safer real
+                # asset can be reused: keep the project renderable with the
+                # best-scoring one, and record that quality is degraded.
+                try:
+                    relevance = media_relevance(degraded[1], scene, state)
+                    relevance["fallback_stage"] = "visually_rejected_last_resort"
+                    metadata = _cache_candidate(degraded[1], relevance, asset_root=asset_root, render_root=settings.render_root, pexels=pexels, wikimedia=wikimedia)
+                    winning_source = "degraded_fallback"
+                    search_provenance["quality_degraded"] = True
+                    scene["visual_quality"] = "degraded"
+                except MediaProviderError as exc:
+                    failure = exc
+        _record_search_winner(search_provenance, metadata, winning_source)
+        _accumulate_search_totals(search_totals, search_provenance)
         if metadata is None:
             safe_selected = [item for item in selected_media if is_real_media_allowed(item)]
             related = _related_media(queries, safe_selected) or next(iter(safe_selected), None)
@@ -1281,6 +2032,9 @@ def prepare_project_media(
     assets["selected_count"] = selected_count
     assets.pop("generated_card_count", None)
     assets["missing_media_count"] = missing_media_count
+    if search_totals["scenes_searched"]:
+        # Compact internal QA accounting only; not surfaced in the UI.
+        assets["media_search_summary"] = search_totals
     if replacement_failed_count:
         diagnostic = (
             f"Could not replace {replacement_failed_count} scene(s); previous media was kept."

@@ -530,19 +530,11 @@ def _visual_goal_valid(value: object) -> bool:
 
 
 def _fallback_visual_intent(narration: str, language: str) -> dict[str, Any]:
+    """Topic-independent emergency intent: bounded concrete words from the scene text.
+
+    Used only when the planner supplied no valid visual intent for a block.
+    """
     text = " ".join(narration.split())
-    lowered = text.casefold()
-    if any(term in lowered for term in ("lighthouse", "leuchtturm")):
-        return {"visual_goal": "lighthouse by the sea", "objects": ["lighthouse", "sea"], "actions": [], "context": ["coast"], "visual_strategy": "literal", "media_queries": ["lighthouse by the sea", "lighthouse coast", "lighthouse ocean"]}
-    if any(term in lowered for term in ("haus", "house", "fundament", "foundation", "beton", "concrete", "bauen", "building")):
-        goal = "residential house construction process"
-        objects = ["house", "construction materials"]
-        actions = ["building", "assembling"]
-        context = ["construction site"]
-        queries = ["residential house construction", "workers building house", "construction materials house"]
-        return {"visual_goal": goal, "objects": objects, "actions": actions, "context": context, "visual_strategy": "process", "media_queries": queries}
-    if any(term in lowered for term in ("materie", "matter", "erde", "earth", "masse", "mass")):
-        return {"visual_goal": "materials being moved and assembled on Earth", "objects": ["materials", "Earth"], "actions": ["moving", "assembling"], "context": ["construction"], "visual_strategy": "physical_example", "media_queries": ["construction materials", "materials being assembled", "Earth materials"]}
     words = [word.strip(".,!?;:") for word in _words(text) if len(word.strip(".,!?;:")) > 3]
     goal = " ".join(words[:6]) or ("visual explanation" if language != "de" else "visuelle Erklärung")
     return {"visual_goal": goal, "objects": words[:3], "actions": [], "context": [], "visual_strategy": "literal", "media_queries": [goal]}
