@@ -977,6 +977,409 @@ def _rank_verified(
     )
 
 
+# ---------------------------------------------------------------------------
+# Adaptive (staged) scene search
+#
+# The planned query list is executed one query at a time.  After each stage
+# the accumulated, de-duplicated candidates are verified and the scene's
+# subject coverage is re-evaluated; searching stops as soon as coverage is
+# strong, and a fallback query is chosen for the subject that is still weak.
+# ---------------------------------------------------------------------------
+
+MAX_SCENE_QUERY_BUDGET = 3
+COVERAGE_STRONG = "strong"
+COVERAGE_PARTIAL = "partial"
+COVERAGE_WEAK = "weak"
+COVERAGE_NONE = "none"
+_COVERAGE_RANK = {COVERAGE_NONE: 0, COVERAGE_WEAK: 1, COVERAGE_PARTIAL: 2, COVERAGE_STRONG: 3}
+# A passing scene similarity is only "present"; strong coverage needs a margin.
+STRONG_SCENE_VISUAL_SCORE = SCENE_VISUAL_THRESHOLD + 0.02
+MIN_USABLE_SHORT_SIDE = 480
+_COVERAGE_SYNONYMS = {
+    "island": {"island", "archipelago"},
+    "archipelago": {"archipelago", "island"},
+    "airplane": {"airplane", "plane", "jet"},
+    "condensation": {"condensation", "droplet", "droplets", "vapor"},
+    "droplets": {"droplets", "droplet", "condensation"},
+    "breath": {"breath"},
+}
+_COMPARISON_FORMATS = {"comparison", "quiz"}
+SCENE_TARGET = "scene"
+
+
+def _coverage_tokens(value: object) -> set[str]:
+    text = str(value or "")
+    semantic = {_VISUAL_QUERY_ALIASES.get(token, token) for token in _semantic_terms(text)}
+    return _visual_query_tokens(text) | semantic
+
+
+def _target_terms(target: str) -> set[str]:
+    return _COVERAGE_SYNONYMS.get(target, {target})
+
+
+def scene_coverage_targets(
+    scene: dict[str, Any], state: dict[str, Any], query_plan: dict[str, Any]
+) -> dict[str, Any]:
+    """Return the visual subjects this scene must show, keyed by target -> role."""
+    visual_intent = scene.get("visual_intent") if isinstance(scene.get("visual_intent"), dict) else {}
+    local = set().union(*(
+        _coverage_tokens(value)
+        for value in (
+            scene.get("narration"), scene.get("visual_goal"), scene.get("edit_instruction"),
+            visual_intent.get("visual_goal"), visual_intent.get("objects"), visual_intent.get("actions"),
+            visual_intent.get("media_queries"),
+        )
+    ))
+    format_name = str((state.get("format_plan") or {}).get("selected_format") or "")
+    primary = list(query_plan.get("primary_subjects") or [])
+    entities = list(query_plan.get("secondary_subjects") or [])
+    protected = set(query_plan.get("protected_entities") or [])
+    local_primary = [term for term in primary if term in local]
+    if format_name == "ranking" and len(local_primary) > 1 and "animals" in local_primary:
+        # The ranked item itself (for example "cheetah") is the subject; the
+        # category is context.
+        local_primary.remove("animals")
+    targets: dict[str, str] = {}
+    comparison = format_name in _COMPARISON_FORMATS or len(entities) >= 2
+    if comparison:
+        sides = [entity for entity in entities[:2] if entity in local and entity not in protected]
+        for role, entity in zip(("subject_a", "subject_b"), sides):
+            targets[entity] = role
+    shared = (local_primary or primary)[:1]
+    if shared:
+        targets[shared[0]] = "shared" if comparison else "primary"
+    if not targets:
+        targets[SCENE_TARGET] = "scene"
+    mode = "comparison" if comparison and len(targets) > 1 else "single" if SCENE_TARGET not in targets else "generic"
+    return {"mode": mode, "targets": targets, "format": format_name or None}
+
+
+def _usable_quality(candidate: MediaCandidate, scene_duration: float) -> bool:
+    if min(candidate.width, candidate.height) < MIN_USABLE_SHORT_SIDE:
+        return False
+    if candidate.kind == "video":
+        return float(candidate.duration or 0) >= max(2.0, scene_duration * 0.6)
+    return True
+
+
+def candidate_target_coverage(
+    candidate: MediaCandidate, relevance: dict[str, Any], target: str, scene_duration: float
+) -> str:
+    """Deterministic per-target coverage for one verified candidate.
+
+    Strong coverage always needs two independent signals: metadata naming the
+    subject plus either OpenCLIP or trusted query provenance.  A high OpenCLIP
+    similarity alone never produces strong coverage.
+    """
+    if relevance.get("confidence") not in {"high", "acceptable"}:
+        return COVERAGE_NONE
+    if (relevance.get("presentation_risk") or {}).get("rejected"):
+        return COVERAGE_NONE
+    metadata_tokens = _coverage_tokens(" ".join((candidate.title, candidate.description, *candidate.tags)))
+    tier = int(relevance.get("selection_tier") or 0)
+    if target == SCENE_TARGET:
+        subject_metadata = tier >= 2
+        subject_query = bool(relevance.get("query_matches"))
+    else:
+        terms = _target_terms(target)
+        subject_metadata = bool(metadata_tokens & terms)
+        subject_query = bool(_coverage_tokens(candidate.query) & terms)
+    if not subject_metadata and not subject_query:
+        return COVERAGE_WEAK
+    visual = relevance.get("visual") or {}
+    verified = visual.get("status") == "verified"
+    scene_score = visual.get("scene_score") if visual.get("scene_score") is not None else visual.get("score")
+    visual_strong = (
+        verified
+        and scene_score is not None
+        and float(scene_score) >= STRONG_SCENE_VISUAL_SCORE
+        and float(visual.get("score") or 0) >= VISUAL_THRESHOLD
+    )
+    # Context-only: the metadata matches the topic but none of this scene's own
+    # words.  Metadata naming a scene-local target is not context.
+    context_only = not relevance.get("scene_matches") if target != SCENE_TARGET else tier <= 1
+    if not _usable_quality(candidate, scene_duration):
+        return COVERAGE_PARTIAL
+    if verified:
+        if visual_strong and subject_metadata and not context_only:
+            return COVERAGE_STRONG
+        if visual_strong and subject_query and not metadata_tokens:
+            # Untitled provider media: targeted query provenance + local vision.
+            return COVERAGE_STRONG
+        return COVERAGE_PARTIAL
+    # OpenCLIP unavailable: be conservative, require metadata + provenance.
+    if subject_metadata and subject_query and not context_only:
+        return COVERAGE_STRONG
+    return COVERAGE_PARTIAL
+
+
+def summarize_coverage(
+    rows: Iterable[tuple[MediaCandidate, dict[str, Any]]],
+    targets: dict[str, str],
+    scene_duration: float,
+) -> dict[str, Any]:
+    levels = {target: COVERAGE_NONE for target in targets}
+    for candidate, relevance in rows:
+        for target in targets:
+            level = candidate_target_coverage(candidate, relevance, target, scene_duration)
+            if _COVERAGE_RANK[level] > _COVERAGE_RANK[levels[target]]:
+                levels[target] = level
+    overall = min(levels.values(), key=_COVERAGE_RANK.__getitem__) if levels else COVERAGE_NONE
+    return {"overall": overall, "targets": levels}
+
+
+def select_fallback_query(
+    remaining: list[str], coverage: dict[str, Any], targets: dict[str, str]
+) -> str | None:
+    """Pick the remaining planned query that addresses a still-weak subject."""
+    levels = coverage["targets"]
+    weak = [target for target, level in levels.items() if level != COVERAGE_STRONG]
+    strong_sides = {
+        target for target, role in targets.items()
+        if role.startswith("subject_") and levels.get(target) == COVERAGE_STRONG
+    }
+    best: tuple[int, str] | None = None
+    for query in remaining:
+        tokens = _coverage_tokens(query)
+        if tokens & strong_sides:
+            continue  # never spend budget repeating an already strong side
+        addressed = sum(
+            1 for target in weak
+            if target == SCENE_TARGET or tokens & _target_terms(target)
+        )
+        if addressed and (best is None or addressed > best[0]):
+            best = (addressed, query)
+    if best is not None:
+        return best[1]
+    if all(level == COVERAGE_NONE for level in levels.values()):
+        # Nothing usable yet: any remaining planned query beats giving up.
+        return next((query for query in remaining if not _coverage_tokens(query) & strong_sides), None)
+    return None
+
+
+def _fallback_trigger(stage: dict[str, Any], coverage: dict[str, Any]) -> str:
+    if stage["errors"] and not stage["new"]:
+        return "provider_error"
+    if not stage["new"] and not stage["duplicates"]:
+        return "no_results"
+    if coverage["overall"] == COVERAGE_NONE:
+        return "no_verified_candidates"
+    weak = sorted(target for target, level in coverage["targets"].items() if level != COVERAGE_STRONG)
+    return f"{coverage['overall']}_coverage:{','.join(weak)}"
+
+
+def _candidate_coverage_score(
+    candidate: MediaCandidate, relevance: dict[str, Any], targets: dict[str, str], scene_duration: float
+) -> int:
+    return sum(
+        _COVERAGE_RANK[candidate_target_coverage(candidate, relevance, target, scene_duration)]
+        for target in targets
+    )
+
+
+@dataclass
+class StagedSearchResult:
+    ranked: list[tuple[MediaCandidate, dict[str, Any]]]
+    candidates: list[MediaCandidate]
+    provenance: dict[str, Any]
+    failure: MediaProviderError | None
+    evaluated: set[str]
+
+
+def _safe_verify(
+    candidates: list[MediaCandidate],
+    scene: dict[str, Any],
+    state: dict[str, Any],
+    verifier: Any | None,
+) -> tuple[list[tuple[MediaCandidate, dict[str, Any]]], bool]:
+    try:
+        return verify_media_shortlist(candidates, scene, state, verifier), True
+    except Exception:  # noqa: BLE001 - verification must never fail media search
+        rows = verify_media_shortlist(candidates, scene, state, _METADATA_ONLY_VERIFIER)
+        return rows, False
+
+
+class _MetadataOnlyVerifier:
+    status = "verification_failed"
+
+    def verify_candidate(self, _candidate: Any, _texts: list[str]) -> None:
+        return None
+
+
+_METADATA_ONLY_VERIFIER = _MetadataOnlyVerifier()
+
+
+def run_staged_scene_search(
+    queries: list[str],
+    scene: dict[str, Any],
+    state: dict[str, Any],
+    query_plan: dict[str, Any],
+    *,
+    pexels: Any | None,
+    wikimedia: Any,
+    preferred_kind: str,
+    portrait: bool,
+    scene_duration: float,
+    used: set[str],
+    verifier: Any | None,
+    budget: int = MAX_SCENE_QUERY_BUDGET,
+) -> StagedSearchResult:
+    """Execute planned queries one stage at a time within a hard query budget."""
+    budget = max(1, min(int(budget), MAX_SCENE_QUERY_BUDGET))
+    planned = list(dict.fromkeys(query for query in queries if query))
+    coverage_targets = scene_coverage_targets(scene, state, query_plan)
+    targets = coverage_targets["targets"]
+    remaining = planned[:budget]
+    seen: dict[str, MediaCandidate] = {}
+    seen_sources: set[str] = set()
+    rows: dict[str, tuple[MediaCandidate, dict[str, Any]]] = {}
+    failure: MediaProviderError | None = None
+    stages: list[dict[str, Any]] = []
+    fallback_reasons: list[str] = []
+    requests = 0
+    duplicates = 0
+    verification_ok = True
+    coverage = summarize_coverage([], targets, scene_duration)
+    coverage_before_fallback: dict[str, Any] | None = None
+    stop_reason = "no_queries"
+    alternate = "photo" if preferred_kind == "video" else "video"
+    search_plan = (
+        [("pexels", preferred_kind), ("pexels", alternate)] if pexels is not None else [("wikimedia", "photo")]
+    )
+    query = remaining.pop(0) if remaining else None
+    while query is not None:
+        stage = {"query": query, "requests": 0, "new": 0, "duplicates": 0, "errors": []}
+        for position, (provider_name, kind) in enumerate(search_plan):
+            if position and coverage["overall"] == COVERAGE_STRONG:
+                break  # the preferred kind already covers the scene
+            try:
+                if provider_name == "wikimedia":
+                    results = wikimedia.search_photos(query, portrait=portrait)
+                elif kind == "video":
+                    results = pexels.search_videos(query, portrait=portrait, scene_duration=scene_duration)
+                else:
+                    results = pexels.search_photos(query, portrait=portrait)
+            except MediaProviderError as exc:
+                failure = exc
+                stage["errors"].append(exc.category)
+                results = []
+            requests += 1
+            stage["requests"] += 1
+            fresh: list[MediaCandidate] = []
+            for candidate in results or []:
+                source = str(candidate.source_url or "").rstrip("/").casefold()
+                if candidate.identity in seen or (source and source in seen_sources):
+                    stage["duplicates"] += 1
+                    continue
+                seen[candidate.identity] = candidate
+                if source:
+                    seen_sources.add(source)
+                if candidate.identity not in used:
+                    fresh.append(candidate)
+            stage["new"] += len(fresh)
+            if fresh:
+                verified, ok = _safe_verify(fresh, scene, state, verifier)
+                verification_ok = verification_ok and ok
+                for candidate, relevance in verified:
+                    rows.setdefault(candidate.identity, (candidate, relevance))
+                coverage = summarize_coverage(rows.values(), targets, scene_duration)
+        duplicates += stage["duplicates"]
+        stage["coverage"] = coverage["overall"]
+        stages.append(stage)
+        if coverage["overall"] == COVERAGE_STRONG:
+            stop_reason = "strong_coverage"
+            break
+        if not remaining:
+            stop_reason = "budget_exhausted" if len(stages) >= budget else "plan_exhausted"
+            break
+        next_query = select_fallback_query(remaining, coverage, targets)
+        if next_query is None:
+            stop_reason = "no_targeted_query"
+            break
+        if coverage_before_fallback is None:
+            coverage_before_fallback = coverage
+        fallback_reasons.append(_fallback_trigger(stage, coverage))
+        remaining.remove(next_query)
+        query = next_query
+
+    eligible = [
+        row for row in rows.values()
+        if row[1]["confidence"] in {"high", "acceptable"}
+        and not (row[1].get("presentation_risk") or {}).get("rejected")
+    ]
+    ranked = sorted(
+        eligible,
+        key=lambda row: (
+            int(row[1].get("selection_tier") or 0),
+            _candidate_coverage_score(row[0], row[1], targets, scene_duration),
+            float(row[1].get("visual", {}).get("scene_score") or -1),
+            float(row[1]["score"]),
+            int(row[0].kind == preferred_kind),
+            row[0].rank,
+        ),
+        reverse=True,
+    )
+    executed = [stage["query"] for stage in stages]
+    provenance = {
+        "version": 1,
+        "query_budget": budget,
+        "planned_queries": planned[:MAX_SCENE_QUERY_BUDGET],
+        "executed_queries": executed,
+        "planned_query_count": min(len(planned), budget),
+        "executed_query_count": len(executed),
+        "provider_request_count": requests,
+        "early_stop": stop_reason == "strong_coverage" and len(executed) < min(len(planned), budget),
+        "stop_reason": stop_reason,
+        "fallback_count": len(fallback_reasons),
+        "fallback_reason": fallback_reasons[0] if fallback_reasons else None,
+        "fallback_reasons": fallback_reasons,
+        "coverage_mode": coverage_targets["mode"],
+        "coverage_targets": targets,
+        "coverage_before_fallback": coverage_before_fallback,
+        "coverage_after_fallback": coverage if fallback_reasons else None,
+        "final_coverage": coverage["overall"],
+        "stages": [
+            {key: stage[key] for key in ("query", "requests", "new", "duplicates", "coverage")}
+            | ({"errors": stage["errors"]} if stage["errors"] else {})
+            for stage in stages
+        ],
+        "duplicate_count": duplicates,
+        "visual_verification": "ok" if verification_ok else "failed_metadata_fallback",
+    }
+    return StagedSearchResult(ranked, list(seen.values()), provenance, failure, set(rows))
+
+
+def _record_search_winner(provenance: dict[str, Any], metadata: dict[str, Any] | None, source: str) -> dict[str, Any]:
+    if metadata is None:
+        provenance.update(winning_query=None, winning_asset=None, winning_source=source)
+        return provenance
+    provenance.update(
+        winning_query=metadata.get("query"),
+        winning_source=source,
+        winning_asset={
+            key: metadata.get(key)
+            for key in ("identity", "provider", "provider_id", "kind", "source_url")
+        },
+    )
+    return provenance
+
+
+_SEARCH_TOTAL_KEYS = (
+    "scenes_searched",
+    "planned_query_count",
+    "executed_query_count",
+    "provider_request_count",
+    "early_stop_count",
+    "fallback_count",
+)
+
+
+def _accumulate_search_totals(totals: dict[str, int], provenance: dict[str, Any]) -> None:
+    for key in ("planned_query_count", "executed_query_count", "provider_request_count", "fallback_count"):
+        totals[key] += int(provenance.get(key) or 0)
+    totals["early_stop_count"] += int(bool(provenance.get("early_stop")))
+
+
 def _cache_candidate(
     candidate: MediaCandidate,
     relevance: dict[str, Any],
@@ -1040,6 +1443,7 @@ def prepare_project_media(
     replacement_failed_count = 0
     failure: MediaProviderError | None = None
     selected_media: list[dict[str, Any]] = []
+    search_totals = {key: 0 for key in _SEARCH_TOTAL_KEYS}
     scenes = state.get("scenes", [])
     total_scenes = len(scenes)
     report_progress(
@@ -1090,68 +1494,63 @@ def prepare_project_media(
         if preferred_kind not in {"video", "photo"}:
             preferred_kind = "video"
         metadata: dict[str, Any] | None = None
-        pexels_candidates: list[MediaCandidate] = []
         commons_candidates: list[MediaCandidate] = []
-        if pexels is not None:
-            for query in queries:
-                search_kinds = (
-                    ("photo", "video")
-                    if preferred_kind == "photo"
-                    else ("video", "photo")
+        # Staged search: query 1, verify, stop when coverage is strong,
+        # otherwise spend the bounded budget on the still-weak subject.
+        staged = run_staged_scene_search(
+            queries,
+            scene,
+            state,
+            query_plan,
+            pexels=pexels,
+            wikimedia=wikimedia,
+            preferred_kind=preferred_kind,
+            portrait=portrait,
+            scene_duration=duration,
+            used=used,
+            verifier=visual_verifier,
+        )
+        search_provenance = staged.provenance
+        scene["media_search"] = search_provenance
+        search_totals["scenes_searched"] += 1
+        failure = staged.failure or failure
+        pexels_candidates = staged.candidates if pexels is not None else []
+        commons_candidates = [] if pexels is not None else list(staged.candidates)
+        winning_source = "staged_search"
+        for candidate, relevance in staged.ranked:
+            try:
+                metadata = _cache_candidate(
+                    candidate,
+                    relevance,
+                    asset_root=asset_root,
+                    render_root=settings.render_root,
+                    pexels=pexels,
+                    wikimedia=wikimedia,
                 )
-                for search_kind in search_kinds:
-                    try:
-                        if search_kind == "video":
-                            pexels_candidates.extend(
-                                pexels.search_videos(
-                                    query,
-                                    portrait=portrait,
-                                    scene_duration=duration,
-                                )
-                            )
-                        else:
-                            pexels_candidates.extend(
-                                pexels.search_photos(query, portrait=portrait)
-                            )
-                    except MediaProviderError as exc:
-                        failure = exc
-            for candidate, relevance in _rank_verified(
-                pexels_candidates,
-                scene,
-                state,
-                preferred_kind,
-                used,
-                visual_verifier,
-            ):
-                try:
-                    metadata = _cache_candidate(
-                        candidate,
-                        relevance,
-                        asset_root=asset_root,
-                        render_root=settings.render_root,
-                        pexels=pexels,
-                        wikimedia=wikimedia,
-                    )
-                    break
-                except MediaProviderError as exc:
-                    failure = exc
+                break
+            except MediaProviderError as exc:
+                failure = exc
 
         # A failed Pexels download must not skip the remaining free source.
-        if metadata is None:
-            commons_candidates: list[MediaCandidate] = []
-            for query in queries:
+        # Only already executed queries are reused, so the query budget holds.
+        if metadata is None and pexels is not None:
+            winning_source = "wikimedia_fallback"
+            wikimedia_queries = search_provenance["executed_queries"] or queries[:1]
+            for query in wikimedia_queries:
+                search_provenance["provider_request_count"] += 1
                 try:
                     commons_candidates.extend(
                         wikimedia.search_photos(query, portrait=portrait)
                     )
                 except MediaProviderError as exc:
                     failure = exc
+            search_provenance["wikimedia_fallback"] = True
             for candidate, relevance in _rank_verified(
                 commons_candidates,
                 scene,
                 state,
                 preferred_kind,
-                used,
+                used | staged.evaluated,
                 visual_verifier,
             ):
                 try:
@@ -1169,11 +1568,17 @@ def prepare_project_media(
 
         if metadata is None:
             # Relevance is relaxed only here; the presentation/source gate never is.
+            winning_source = "relaxed_fallback"
+            search_provenance["relaxed_fallback"] = True
             pools = [pexels_candidates + commons_candidates]
-            broad_queries = list(dict.fromkeys([
-                " ".join(queries[0].split()[:2]) if queries else "nature",
-                global_subject_text(state), "nature landscape", "ocean water", "trees outdoors",
-            ]))
+            protected = set(query_plan.get("protected_entities") or [])
+            broad_queries = list(dict.fromkeys(
+                " ".join(word for word in query.split() if not _visual_query_tokens(word) & protected)
+                for query in (
+                    " ".join(queries[0].split()[:2]) if queries else "nature",
+                    global_subject_text(state), "nature landscape", "ocean water", "trees outdoors",
+                )
+            ))
             visual = visual_verifier or get_visual_verifier()
             for broad_query in [None, *broad_queries]:
                 batch = pools[0] if broad_query is None else []
@@ -1181,6 +1586,7 @@ def prepare_project_media(
                     for provider in (pexels, wikimedia):
                         if provider is None:
                             continue
+                        search_provenance["provider_request_count"] += 1
                         try:
                             batch.extend(provider.search_photos(broad_query, portrait=portrait))
                         except MediaProviderError as exc:
@@ -1189,7 +1595,10 @@ def prepare_project_media(
                     if candidate.identity in used or not is_real_media_allowed(candidate):
                         continue
                     if getattr(visual, "status", "") == "available":
-                        result = visual.verify_candidate(candidate, visual_intent_text(scene, state))
+                        try:
+                            result = visual.verify_candidate(candidate, visual_intent_text(scene, state))
+                        except Exception:  # noqa: BLE001 - verification is advisory here
+                            result = None
                         if result is not None and result.presentation_risk:
                             continue
                     try:
@@ -1201,6 +1610,8 @@ def prepare_project_media(
                         failure = exc
                 if metadata is not None:
                     break
+        _record_search_winner(search_provenance, metadata, winning_source)
+        _accumulate_search_totals(search_totals, search_provenance)
         if metadata is None:
             safe_selected = [item for item in selected_media if is_real_media_allowed(item)]
             related = _related_media(queries, safe_selected) or next(iter(safe_selected), None)
@@ -1281,6 +1692,9 @@ def prepare_project_media(
     assets["selected_count"] = selected_count
     assets.pop("generated_card_count", None)
     assets["missing_media_count"] = missing_media_count
+    if search_totals["scenes_searched"]:
+        # Compact internal QA accounting only; not surfaced in the UI.
+        assets["media_search_summary"] = search_totals
     if replacement_failed_count:
         diagnostic = (
             f"Could not replace {replacement_failed_count} scene(s); previous media was kept."
