@@ -485,6 +485,11 @@ def _side_labels(sides: dict[str, list[str]]) -> list[str]:
     return [" ".join(group) for group in groups]
 
 
+def _payoff_safe_word(word: str, protected_terms: set[str], payoff_words: set[str]) -> bool:
+    tokens = _visual_query_tokens(word)
+    return not (_mentions(tokens, protected_terms) or tokens & payoff_words)
+
+
 def _query_is_concrete(raw: str, query: str) -> bool:
     if not query:
         return False
@@ -496,6 +501,102 @@ def _query_is_concrete(raw: str, query: str) -> bool:
     if len(raw_tokens & _VISUAL_QUERY_STOP) >= 2:
         return False
     return len(query.split()) <= 6
+
+
+# Target keys are opaque identities the planner assigns to what a query depicts
+# ("subject_a", "subject_b", "shared", ...).  They carry no topic meaning.
+_TARGET_KEY_RE = re.compile(r"[a-z0-9_]{1,32}")
+_NON_SIDE_TARGET_KEYS = {"shared", "context"}
+
+
+def visual_target_key(value: object) -> str:
+    """Normalise a planner-assigned visual target key; anything else is no key."""
+    key = re.sub(r"[\s-]+", "_", str(value or "").strip().casefold())
+    return key if _TARGET_KEY_RE.fullmatch(key) else ""
+
+
+def _query_target_map(visual_intent: dict[str, Any]) -> dict[str, str]:
+    """Planned query -> target key, from the intent's parallel ``media_query_targets``."""
+    queries = visual_intent.get("media_queries")
+    targets = visual_intent.get("media_query_targets")
+    if not isinstance(queries, list) or not isinstance(targets, list):
+        return {}
+    mapping: dict[str, str] = {}
+    for raw, target in zip(queries, targets):
+        key = visual_target_key(target)
+        query = _semantic_query(str(raw or ""), _VISUAL_QUERY_STOP, limit=6)
+        if key and query:
+            mapping.setdefault(query, key)
+    return mapping
+
+
+def _keyed_structure(queries: list[str], targets: dict[str, str]) -> tuple[list[str], dict[str, str]]:
+    """Concepts and side labels from planner target keys (structural, any topic).
+
+    A concept is a subject term used by two or more targets or by a shared
+    target; a side is identified by the terms common to all of its own queries.
+    """
+    usage: dict[str, set[str]] = {}
+    counts: dict[str, int] = {}
+    per_key: dict[str, list[list[str]]] = {}
+    for query in queries:
+        key = targets.get(query, "")
+        tokens = _query_subject_tokens(query)
+        for token in tokens:
+            usage.setdefault(token, set()).add(key or query)
+            counts[token] = counts.get(token, 0) + 1
+        if key and key not in _NON_SIDE_TARGET_KEYS:
+            per_key.setdefault(key, []).append(tokens)
+    concepts = [
+        token for token in sorted(usage, key=lambda token: -counts[token])
+        if len(usage[token]) >= 2 or usage[token] & _NON_SIDE_TARGET_KEYS
+    ]
+    sides: dict[str, str] = {}
+    for key, token_lists in sorted(per_key.items()):
+        own = [[token for token in tokens if token not in concepts] for tokens in token_lists]
+        common = [token for token in own[0] if all(token in tokens for tokens in own[1:])]
+        label = " ".join(common or list(dict.fromkeys(token for tokens in own for token in tokens)))
+        if label:
+            sides[label] = key
+    return concepts, sides
+
+
+def protected_visual_target(state: dict[str, Any]) -> str:
+    payoff = state.get("payoff_plan") if isinstance(state.get("payoff_plan"), dict) else {}
+    return visual_target_key(payoff.get("protected_visual_target"))
+
+
+def _structured_protection(
+    candidates: list[str], query_targets: dict[str, str], protected_key: str, protected_text: str
+) -> tuple[set[str], set[str]]:
+    """Queries and terms blocked by the planner's protected target identity.
+
+    Queries tagged with the protected key are blocked by identity alone.  An
+    untagged fallback query is blocked when it reuses the protected side's own
+    plan terms or a word of the (same-language) protected payoff text.  No
+    cross-language word similarity is involved.
+    """
+    shared, sides = _query_structure([query for query in candidates if query in query_targets])
+    protected_side_terms = {
+        token
+        for query, key in query_targets.items()
+        if key == protected_key
+        for token in sides.get(query, [])
+    }
+    payoff_terms = _visual_query_tokens(protected_text) - {shared}
+    blocked: set[str] = set()
+    hit_terms: set[str] = set()
+    for query in candidates:
+        tokens = _visual_query_tokens(query)
+        if query in query_targets:
+            if query_targets[query] == protected_key:
+                blocked.add(query)
+            continue
+        hits = tokens & (protected_side_terms | payoff_terms)
+        if hits:
+            blocked.add(query)
+            hit_terms |= hits
+    return blocked, protected_side_terms | hit_terms
 
 
 def _protected_side_terms(
@@ -575,26 +676,78 @@ def build_visual_query_plan(scene: dict[str, Any], state: dict[str, Any]) -> dic
             (state.get("payoff_plan") or {}).get("hook_must_not_reveal") if isinstance(state.get("payoff_plan"), dict) else "",
         )
     )
-    protected_terms = _protected_side_terms(candidates, protected_text)
-
-    def payoff_safe_query(query: str) -> bool:
-        return not _mentions(_visual_query_tokens(query), protected_terms)
-
-    queries = [query for query in candidates if payoff_safe_query(query)][:3]
+    query_targets = {query: key for query, key in _query_target_map(visual_intent).items() if query in candidates}
+    protected_key = protected_visual_target(state)
+    structured = bool(protected_key and query_targets)
+    if structured:
+        # Structured identity: the planner said which target reveals the payoff.
+        blocked, protected_terms = _structured_protection(candidates, query_targets, protected_key, protected_text)
+        queries = [query for query in candidates if query not in blocked][:3]
+    else:
+        # Legacy plans without target keys: best-effort word-level protection.
+        protected_terms = _protected_side_terms(candidates, protected_text)
+        queries = [
+            query for query in candidates if not _mentions(_visual_query_tokens(query), protected_terms)
+        ][:3]
     shared, sides = _query_structure(queries)
     if not queries:
         queries = [shared or "nature landscape"]
-    side_labels = _side_labels(sides)
+    query_targets = {query: key for query, key in query_targets.items() if query in queries}
+    keyed = any(key not in _NON_SIDE_TARGET_KEYS for key in query_targets.values())
+    side_keys = _keyed_structure(queries, query_targets)[1] if keyed else {}
+    side_labels = list(side_keys) if keyed else _side_labels(sides)
     return {
         "queries": queries,
         "primary_subjects": [shared] if shared else [],
         "secondary_subjects": side_labels,
+        "side_keys": side_keys,
+        "query_targets": query_targets,
+        "protected_targets": [protected_key] if structured else [],
         "supporting_context": [],
         "comparison_coverage": {label: True for label in side_labels},
         "protected_entities": sorted(protected_terms),
         "shared_subject_coverage": bool(shared),
         "query_quality": "explicit_visual_intent" if supplied else "scene_text_fallback",
     }
+
+
+def canonical_visual_subjects(state: dict[str, Any]) -> dict[str, list[str]]:
+    """Project-level visual subjects from the canonical plan, for any topic.
+
+    Reads the provider-facing queries of the visual hook and every scene
+    intent.  ``concepts`` are subject terms repeated across queries (most
+    frequent first); ``sides`` are comparison sides, keyed by the planner's
+    target keys when present (subject_a before subject_b), otherwise derived
+    from the query structure.  Sides are identity only; keeping a protected
+    side out of searches is the query planner's job.
+    """
+    script = state.get("script") if isinstance(state.get("script"), dict) else {}
+    triple = script.get("triple_hook") if isinstance(script.get("triple_hook"), dict) else {}
+    intents = [triple.get("visual_hook")] + [
+        scene.get("visual_intent") for scene in state.get("scenes") or [] if isinstance(scene, dict)
+    ]
+    queries: list[str] = []
+    targets: dict[str, str] = {}
+    for intent in intents:
+        if not isinstance(intent, dict):
+            continue
+        targets.update({query: key for query, key in _query_target_map(intent).items() if query not in targets})
+        for raw in intent.get("media_queries") or []:
+            query = _semantic_query(str(raw or ""), _VISUAL_QUERY_STOP, limit=6)
+            if query and _query_is_concrete(str(raw), query):
+                queries.append(query)
+    queries = list(dict.fromkeys(queries))
+    if any(key not in _NON_SIDE_TARGET_KEYS for key in targets.values()):
+        concepts, keyed_sides = _keyed_structure(queries, targets)
+        return {"concepts": concepts, "sides": list(keyed_sides)}
+    counts: dict[str, int] = {}
+    for query in queries:
+        for token in _query_subject_tokens(query):
+            counts[token] = counts.get(token, 0) + 1
+    concepts = [token for token, count in sorted(counts.items(), key=lambda item: -item[1]) if count >= 2]
+    _shared, sides = _query_structure(queries)
+    side_labels = [label for label in _side_labels(sides) if not set(label.split()) & set(concepts)]
+    return {"concepts": concepts, "sides": side_labels}
 
 
 def derive_search_queries(scene: dict[str, Any], state: dict[str, Any]) -> list[str]:
@@ -1054,10 +1207,14 @@ def scene_coverage_targets(
     targets: dict[str, str] = {}
     comparison = format_name in _COMPARISON_FORMATS
     if comparison:
-        scene_sides = [
-            side for side in sides
-            if not _target_terms(side) & protected and _mentions(_target_terms(side), local)
-        ]
+        if query_plan.get("side_keys"):
+            # Keyed plan: the scene's own planned targets are the sides it shows.
+            scene_sides = [side for side in sides if side in query_plan["side_keys"]]
+        else:
+            scene_sides = [
+                side for side in sides
+                if not _target_terms(side) & protected and _mentions(_target_terms(side), local)
+            ]
         for role, side in zip(("subject_a", "subject_b"), scene_sides):
             targets[side] = role
     if primary:
@@ -1716,13 +1873,19 @@ def prepare_project_media(
             search_provenance["relaxed_fallback"] = True
             pools = [pexels_candidates + commons_candidates]
             protected = set(query_plan.get("protected_entities") or [])
+            payoff_words = (
+                _visual_query_tokens((state.get("payoff_plan") or {}).get("hook_must_not_reveal"))
+                if isinstance(state.get("payoff_plan"), dict) and (protected or query_plan.get("protected_targets"))
+                else set()
+            )
+
             # Broad strings are payoff-safe and only spend logical budget that
             # the staged search left unused; re-running an executed string on
             # the same providers would only return the pool already searched.
             broad_queries = [
                 query
                 for query in dict.fromkeys(
-                    " ".join(word for word in query.split() if not _mentions(_visual_query_tokens(word), protected))
+                    " ".join(word for word in query.split() if _payoff_safe_word(word, protected, payoff_words))
                     for query in (
                         " ".join(queries[0].split()[:2]) if queries else "nature",
                         *(query_plan.get("primary_subjects") or [])[:1],

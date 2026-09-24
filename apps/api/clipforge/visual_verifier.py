@@ -416,31 +416,37 @@ def visual_runtime_status() -> dict[str, Any]:
 
 
 def _subject_tokens(value: str) -> list[str]:
+    """Generic fallback: the first content words of a topic string (function words removed)."""
     stop = {
         "why", "how", "what", "when", "where", "which", "does", "do", "did", "are", "is",
         "the", "a", "an", "der", "die", "das", "ein", "eine", "haben", "hat", "warum",
         "wieso", "wie", "sind", "werden", "wird", "kann", "können", "sich", "zu", "von", "im",
         "man", "sieht", "sehen", "seine", "seinen", "seinem", "seiner",
-        "for", "with", "about", "and", "or", "to", "in", "on", "write",
-        "fictional", "story", "tell", "explain", "question", "keeper",
-    }
-    detail = {
-        "small", "middle", "outer", "inner", "multiple", "element", "elements", "lens",
-        "hole", "holes", "pane", "panes", "breather", "rounded", "round", "corner", "corners",
-        "ash", "cloud", "clouds", "damage", "damaged", "protective", "protection", "glass",
-        "purr", "purring",
+        "welche", "welcher", "welches", "mehr", "oder", "und", "als", "was", "wer",
+        "for", "with", "about", "and", "or", "to", "in", "on", "more", "than",
+        "write", "fictional", "story", "tell", "explain", "question",
     }
     tokens = [
         token
         for token in re.findall(r"[\wäöüß-]+", value.casefold(), flags=re.UNICODE)
         if len(token) > 2 and token not in stop
     ]
-    while len(tokens) > 2 and tokens[-1] in detail:
-        tokens.pop()
     return tokens[:3]
 
 
 def global_subject_text(state: dict[str, Any] | None = None) -> str:
+    """Project subject for context and OpenCLIP subject prompts.
+
+    Prefers the concepts the canonical visual plan repeats across its
+    provider-facing queries (language-independent); the topic string is only
+    a fallback for projects without a plan.
+    """
+    if state and state.get("scenes"):
+        from .media import canonical_visual_subjects  # local import: media imports this module
+
+        concepts = canonical_visual_subjects(state)["concepts"]
+        if concepts:
+            return " ".join(concepts[:3])
     topic = str((state or {}).get("intent", {}).get("topic") or "").strip()
     return " ".join(_subject_tokens(topic))
 

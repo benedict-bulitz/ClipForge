@@ -30,6 +30,10 @@ DIRECTOR_INSTRUCTIONS = (
     "repeat or lightly paraphrase the user's question: a question hook must add genuine tension, challenge, "
     "contrast, implication, or insight. For each script block, return a concise visual_intents entry describing "
     "physical objects, actions, context, visual_strategy, and up to four English provider-facing media_queries. "
+    "For each media query also return, in media_query_targets at the same position, a stable target key for what "
+    "it depicts: subject_a or subject_b for the two sides of a comparison (the same key for the same side in every "
+    "block), shared for the concept both sides share, or context. In payoff_plan, protected_visual_target is the "
+    "target key whose imagery would reveal hook_must_not_reveal, or empty when nothing is protected. "
     "A visual goal must describe what should appear on screen, never conversational uncertainty, research prose, or meta commentary. "
     "The hook must be honest, usually no more than fourteen words, and must not delay the useful answer. "
     "For every hook candidate and the selected opening, ask: would a typical 10–14 year old "
@@ -93,6 +97,7 @@ class AIVisualIntent(BaseModel):
     context: list[str] = Field(default_factory=list, max_length=6)
     visual_strategy: Literal["literal", "process", "physical_example", "diagram_or_card"] = "literal"
     media_queries: list[str] = Field(default_factory=list, max_length=4)
+    media_query_targets: list[str] = Field(default_factory=list, max_length=4)
 
 
 class AIPayoffPlan(BaseModel):
@@ -102,6 +107,7 @@ class AIPayoffPlan(BaseModel):
     payoff_dependencies: list[str] = Field(default_factory=list, max_length=4)
     reveal_policy: Literal["after_supporting_information", "immediate_context_allowed"] = "immediate_context_allowed"
     hook_must_not_reveal: str = Field(default="", max_length=320)
+    protected_visual_target: str = Field(default="", max_length=32)
     desired_viewer_reaction: str = Field(default="insight", max_length=80)
     supporting_information: list[str] = Field(default_factory=list, max_length=4)
 
@@ -114,6 +120,7 @@ class AIVisualHook(BaseModel):
     visual_priority: str = Field(default="", max_length=140)
     must_not_show: list[str] = Field(default_factory=list, max_length=4)
     media_queries: list[str] = Field(default_factory=list, max_length=4)
+    media_query_targets: list[str] = Field(default_factory=list, max_length=4)
 
 
 class AIProjectPlan(BaseModel):
@@ -205,6 +212,8 @@ HOOK_GENERATION_INSTRUCTIONS = (
     "one visual_hook and one very short on_screen_text_hook for the chosen strategy. The three channels must "
     "serve the same curiosity but must not repeat the same sentence. The visual hook should describe real "
     "subjects, contrast or motion for the existing media pipeline, and explicit must_not_show constraints. "
+    "Give each visual_hook media query a media_query_targets key at the same position, using the target keys "
+    "of the supplied plan (subject_a, subject_b, shared, context); never search the protected_visual_target. "
     "The supplied reaction_arc is guidance, never permission to exaggerate: use only reactions the supported "
     "payoff can honestly deliver, and prefer clarity over emotional intensity. The supplied format_plan "
     "is lightweight guidance for contrast, challenge, progression, or explanation; follow it without adding scenes or filler. "

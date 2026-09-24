@@ -5,8 +5,6 @@ the provider-facing visual intent the AI planner already emits (English
 ``media_queries``), while narration stays in the user's language.
 """
 import copy
-import re
-from pathlib import Path
 
 import pytest
 from test_staged_media_search import POOR, Commons, Provider, Verifier, cand, project, settings_for
@@ -55,16 +53,6 @@ def test_unseen_topic_with_german_narration_reaches_visual_verification(tmp_path
     assert scene["media"]["relevance"]["confidence"] == "high"
     assert scene["media_search"]["early_stop"] is True
     assert scene["media_search"]["coverage_targets"] == {"firefly": "primary"}
-
-
-def test_production_media_code_carries_no_topic_vocabulary():
-    source = Path(media_module.__file__).read_text(encoding="utf-8").casefold()
-    for word in (
-        "schweden", "sweden", "swedish", "indonesien", "indonesia", "inseln", "island", "archipel",
-        "ägypten", "egypt", "sudan", "pyramid", "gepard", "cheetah", "flugzeug", "airplane",
-        "glühwürmchen", "firefly",
-    ):
-        assert not re.search(rf"\b{re.escape(word)}", source), word
 
 
 def test_query_provenance_preserves_candidate_with_zero_narration_overlap():

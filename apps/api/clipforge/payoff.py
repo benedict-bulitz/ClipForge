@@ -10,6 +10,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from .media import visual_target_key
 from .narration import clean_narration_text
 
 _STOP = {
@@ -132,6 +133,8 @@ def build_payoff_plan(
         "payoff_dependencies": dependencies,
         "reveal_policy": "after_supporting_information" if protected else "immediate_context_allowed",
         "hook_must_not_reveal": hidden,
+        # Structured identity of the reveal: the planner's visual target key.
+        "protected_visual_target": visual_target_key(supplied.get("protected_visual_target")) if protected else "",
         "desired_viewer_reaction": _clean(supplied.get("desired_viewer_reaction"), 80) or _reaction(intent, protected),
         "supporting_information": support,
         "format": format_name or None,
@@ -184,6 +187,7 @@ def fallback_triple_hook(
             "visual_priority": "make the subject recognizable immediately",
             "must_not_show": [hidden] if hidden else [],
             "media_queries": [topic],
+            "media_query_targets": [],
         },
         "on_screen_text_hook": _hook_text(intent, plan),
         "selected_strategy": strategy or "existing_hook_library",
@@ -210,6 +214,13 @@ def normalise_triple_hook(
         or (_words(text) and _words(text) == _words(verbal))
     ):
         text = fallback["on_screen_text_hook"]
+    raw_targets = visual.get("media_query_targets") if isinstance(visual.get("media_query_targets"), list) else []
+    # Keep each query's target key aligned while dropping empty queries.
+    query_pairs = [
+        (_clean(item, 120), visual_target_key(raw_targets[index]) if index < len(raw_targets) else "")
+        for index, item in enumerate(visual.get("media_queries", []))
+        if _clean(item, 120)
+    ][:4]
     proposed_visual = {
         "visual_goal": _clean(visual.get("visual_goal"), 220),
         "subjects_to_show": [_clean(item, 100) for item in visual.get("subjects_to_show", []) if _clean(item, 100)][:4],
@@ -217,7 +228,8 @@ def normalise_triple_hook(
         "motion_or_change": _clean(visual.get("motion_or_change"), 140),
         "visual_priority": _clean(visual.get("visual_priority"), 140),
         "must_not_show": [_clean(item, 100) for item in visual.get("must_not_show", []) if _clean(item, 100)][:4],
-        "media_queries": [_clean(item, 120) for item in visual.get("media_queries", []) if _clean(item, 120)][:4],
+        "media_queries": [query for query, _target in query_pairs],
+        "media_query_targets": [target for _query, target in query_pairs] if any(target for _query, target in query_pairs) else [],
     }
     visual_text = " ".join(
         [proposed_visual["visual_goal"], *proposed_visual["subjects_to_show"], *proposed_visual["media_queries"]]
