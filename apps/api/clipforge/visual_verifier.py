@@ -457,7 +457,11 @@ def visual_intent_text(scene: dict[str, Any], state: dict[str, Any] | None = Non
         for value in (scene.get("search_queries") or intent.get("media_queries") or [])
         if str(value).strip()
     ]
-    subject_topic = global_subject_text(state)
+    # The plan's shared visual concept is canonical and provider-facing; the
+    # topic-string heuristic is only a fallback for scenes without a plan.
+    plan = scene.get("visual_query_plan") if isinstance(scene.get("visual_query_plan"), dict) else {}
+    planned_subject = next((str(value) for value in plan.get("primary_subjects") or [] if str(value).strip()), "")
+    subject_topic = planned_subject or global_subject_text(state)
     prompts = [narration] if narration else []
     prompts.extend(provider_queries[:1])
     if objects or actions or context:

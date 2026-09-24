@@ -144,12 +144,21 @@ def project(scene: dict, **extra) -> dict:
 
 def breath_project() -> dict:
     return project(
-        {"narration": "Your warm breath meets cold air and becomes visible.", "visual_goal": "visible breath in winter"},
+        {
+            "narration": "Your warm breath meets cold air and becomes visible.",
+            "visual_goal": "visible breath in winter",
+            "visual_intent": {
+                "visual_goal": "visible breath in winter",
+                "objects": ["breath"],
+                "media_queries": ["visible breath winter", "water vapor condensation", "cold air breath"],
+            },
+        },
         intent={"topic": "Why does breath turn white in winter?"},
         format_plan={"selected_format": "explanation"},
     )
 
 
+EGYPT_SUDAN_QUERIES = ["egyptian pyramids", "sudanese pyramids", "pyramids aerial"]
 COMPARISON = {
     "intent": {"topic": "Sweden vs Indonesia islands", "question": "Sweden or Indonesia: which has more islands?"},
     "format_plan": {"selected_format": "comparison"},
@@ -160,6 +169,10 @@ def comparison_project(**scene_extra) -> dict:
     scene = {
         "narration": "Sweden has thousands of islands, and Indonesia has thousands too.",
         "visual_goal": "islands of Sweden and Indonesia",
+        "visual_intent": {
+            "visual_goal": "islands of Sweden and Indonesia",
+            "media_queries": ["swedish islands", "indonesian islands", "islands aerial"],
+        },
         **scene_extra,
     }
     return project(scene, **copy.deepcopy(COMPARISON))
@@ -265,9 +278,9 @@ def test_comparison_fallback_targets_missing_side(tmp_path):
     search = scene["media_search"]
     assert search["coverage_mode"] == "comparison"
     assert search["coverage_before_fallback"]["targets"] == {
-        "sweden": COVERAGE_STRONG, "indonesia": COVERAGE_WEAK, "island": COVERAGE_STRONG,
+        "swedish": COVERAGE_STRONG, "indonesian": COVERAGE_WEAK, "island": COVERAGE_STRONG,
     }
-    assert search["fallback_reason"] == "weak_coverage:indonesia"
+    assert search["fallback_reason"] == "weak_coverage:indonesian"
     assert pexels.queries == ["swedish islands", "indonesian islands"]
     assert "islands aerial" not in pexels.queries
     assert search["coverage_after_fallback"]["overall"] == COVERAGE_STRONG
@@ -292,12 +305,16 @@ def test_strong_comparison_side_is_not_searched_repeatedly(tmp_path):
 
 
 def test_single_side_scene_does_not_require_other_side():
-    state = comparison_project(narration="Sweden alone has more than two hundred thousand islands.", visual_goal="swedish islands")
+    state = comparison_project(
+        narration="Sweden alone has more than two hundred thousand islands.",
+        visual_goal="swedish islands",
+        visual_intent={"visual_goal": "swedish islands", "media_queries": ["swedish islands", "indonesian islands", "islands aerial"]},
+    )
     scene = state["scenes"][0]
 
     targets = scene_coverage_targets(scene, state, build_visual_query_plan(scene, state))["targets"]
 
-    assert targets == {"sweden": "subject_a", "island": "shared"}
+    assert targets == {"swedish": "subject_a", "island": "shared"}
 
 
 # 7: a generic topic-context match is never strong primary coverage.
@@ -431,7 +448,7 @@ def test_verification_exception_falls_back_to_metadata(tmp_path):
 # 14: protected payoff subjects are never searched or required.
 def test_protected_payoff_subject_is_never_searched(tmp_path):
     state = project(
-        {"narration": "Most people guess Egypt.", "visual_intent": {"media_queries": ["Egypt or Sudan pyramids"], "must_not_show": ["Sudan"]}},
+        {"narration": "Most people guess Egypt.", "visual_intent": {"media_queries": EGYPT_SUDAN_QUERIES, "must_not_show": ["Sudan"]}},
         intent={"topic": "Egypt or Sudan pyramids", "question": "Which has more pyramids, Egypt or Sudan?"},
         payoff_plan={"hook_must_not_reveal": "Sudan"},
         format_plan={"selected_format": "comparison"},
@@ -449,7 +466,14 @@ def test_protected_payoff_subject_is_never_searched(tmp_path):
 # 15: ranking scenes search the ranked item, not the generic category.
 def test_ranking_fallback_targets_the_ranked_item(tmp_path):
     state = project(
-        {"narration": "The cheetah is the fastest land animal.", "visual_goal": "cheetah running"},
+        {
+            "narration": "The cheetah is the fastest land animal.",
+            "visual_goal": "cheetah running",
+            "visual_intent": {
+                "visual_goal": "cheetah running",
+                "media_queries": ["cheetah running", "cheetah sprinting", "fast animal running"],
+            },
+        },
         intent={"topic": "Fastest animals", "question": "Top fastest animals"},
         format_plan={"selected_format": "ranking"},
     )
@@ -597,7 +621,7 @@ def all_search_strings(*providers) -> set[str]:
 
 def pyramids_project(narration: str = "Most people guess Egypt.") -> dict:
     return project(
-        {"narration": narration, "visual_intent": {"media_queries": ["Egypt or Sudan pyramids"], "must_not_show": ["Sudan"]}},
+        {"narration": narration, "visual_intent": {"media_queries": EGYPT_SUDAN_QUERIES, "must_not_show": ["Sudan"]}},
         intent={"topic": "Egypt or Sudan pyramids", "question": "Which has more pyramids, Egypt or Sudan?"},
         payoff_plan={"hook_must_not_reveal": "Sudan"},
         format_plan={"selected_format": "comparison"},
@@ -701,7 +725,7 @@ def test_protected_payoff_never_leaks_through_any_query_path(tmp_path):
     assert commons.calls and search["relaxed_queries"]
     assert "sudan" not in searched
     assert "sudan" not in json.dumps(search).casefold()
-    assert search["coverage_targets"] == {"egypt": "subject_a", "pyramid": "shared"}
+    assert search["coverage_targets"] == {"egyptian": "subject_a", "pyramid": "shared"}
 
 
 def test_protected_payoff_does_not_leak_on_any_pre_reveal_scene(tmp_path):
@@ -811,11 +835,25 @@ GERMAN_COMPARISON = {
 POOR = (0.12, 0.12)  # verified, but far below the scene gate
 
 
+ISLAND_QUERIES = ["swedish islands", "indonesian islands", "islands aerial"]
+# The canonical, provider-facing visual intent the AI planner emits per scene
+# (English, independent of the German narration).
+SCENE_INTENTS = {
+    "Schweden hat besonders viele Inseln.": {"visual_goal": "Swedish archipelago islands from above", "objects": ["islands"], "media_queries": ISLAND_QUERIES},
+    "Indonesien hat rund 17.000 Inseln.": {"visual_goal": "Indonesian islands from above", "objects": ["islands"], "media_queries": ISLAND_QUERIES},
+    "Your warm breath meets cold air.": {"visual_goal": "visible breath in winter", "objects": ["breath"], "media_queries": ["visible breath winter"]},
+}
+
+
+def german_scene(narration: str) -> dict:
+    return {"narration": narration, "visual_intent": copy.deepcopy(SCENE_INTENTS[narration])}
+
+
 def german_project(*narrations: str) -> dict:
-    state = project({"narration": narrations[0]}, **copy.deepcopy(GERMAN_COMPARISON))
+    state = project(german_scene(narrations[0]), **copy.deepcopy(GERMAN_COMPARISON))
     for index, narration in enumerate(narrations[1:], 2):
         state["scenes"].append(
-            {"id": f"s{index}", "start": 4 * index, "end": 4 * index + 4, "preferred_media": "video", "narration": narration}
+            {"id": f"s{index}", "start": 4 * index, "end": 4 * index + 4, "preferred_media": "video", **german_scene(narration)}
         )
     return state
 
@@ -947,7 +985,7 @@ def test_single_side_scene_searches_its_own_side_first(tmp_path, narration, expe
 
 def test_scene_query_order_keeps_protected_payoff_out():
     state = copy.deepcopy(GERMAN_COMPARISON) | {"payoff_plan": {"hook_must_not_reveal": "Indonesien"}}
-    scene = {"narration": "Schweden hat besonders viele Inseln."}
+    scene = german_scene("Schweden hat besonders viele Inseln.")
     plan = build_visual_query_plan(scene, state)
 
     assert all("indonesia" not in query for query in plan["queries"])
