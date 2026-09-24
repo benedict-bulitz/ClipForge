@@ -306,13 +306,13 @@ def test_manual_change_media_generation_uses_real_story_arc(db, monkeypatch, tmp
     generator = FakeGenerator()
 
     option = scene_generation_option(state, number, settings)
-    generate_scene_media(db, project, number, settings, generator=generator, visual_verifier=Verifier(), auto_render=False)
+    generate_scene_media(db, project, number, settings, generator=generator, visual_verifier=Verifier())
 
     assert option["model_label"] == "GPT Image 2" and option["quality_label"] == "Low"
     assert not mentions_sweden(option["prompt"]) and not mentions_sweden(generator.prompts[0])
     db.expire_all()
     scene = serialize_project(get_project(db, project.id))["revision"]["state"]["scenes"][number - 1]
-    generation = scene["media"]["generation"]
+    generation = scene["media_alternatives"][0]["generation"]
     assert generation["story_source"] == "story_arc" and generation["story_stage"] == "before_reveal"
     assert generation["trigger"] == "manual" and generation["ai_generated"] is True and generation["reveal_safe"] is True
 

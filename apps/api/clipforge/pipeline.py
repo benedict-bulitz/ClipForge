@@ -689,7 +689,9 @@ def _fallback_visual_intent(narration: str, language: str) -> dict[str, Any]:
     text = " ".join(narration.split())
     words = [word.strip(".,!?;:") for word in _words(text) if len(word.strip(".,!?;:")) > 3]
     goal = " ".join(words[:6]) or ("visual explanation" if language != "de" else "visuelle Erklärung")
-    return {"visual_goal": goal, "objects": words[:3], "actions": [], "context": [], "visual_strategy": "literal", "media_queries": [goal]}
+    # Marked so visual direction never mistakes narration words for a planned
+    # visual subject (they are only a search fallback).
+    return {"visual_goal": goal, "objects": words[:3], "actions": [], "context": [], "visual_strategy": "literal", "media_queries": [goal], "source": "narration_fallback"}
 
 
 def _is_hook_block(block: dict[str, Any]) -> bool:

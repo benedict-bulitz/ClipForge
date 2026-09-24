@@ -11,6 +11,7 @@ import type {
   VoicePreview,
   VoicePreviewRequest,
   SceneMediaCandidates,
+  SceneImageGenerationResult,
   BulkProjectDeletePlan,
   BulkProjectDeleteResult,
   MusicTrack,
@@ -151,9 +152,13 @@ export function applySceneMediaCandidate(projectId: string, sceneNumber: number,
   });
 }
 
-/** Manual, user-confirmed paid generation; the backend builds the prompt unless one is supplied. */
+/**
+ * Manual, user-confirmed paid generation of a new scene alternative. A supplied
+ * prompt is sent verbatim; otherwise the backend builds it. Always resolves
+ * with a status (generated | failed | rejected | unchanged) and the project.
+ */
 export function generateSceneImage(projectId: string, sceneNumber: number, baseRevision: number, prompt?: string | null) {
-  return request<Project>(`/projects/${projectId}/scenes/${sceneNumber}/generate-image`, {
+  return request<SceneImageGenerationResult>(`/projects/${projectId}/scenes/${sceneNumber}/generate-image`, {
     method: "POST",
     body: JSON.stringify({ base_revision: baseRevision, prompt: prompt?.trim() ? prompt.trim() : null }),
   });

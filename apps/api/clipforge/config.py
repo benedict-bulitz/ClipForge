@@ -40,6 +40,9 @@ class Settings(BaseSettings):
     generated_image_timeout_seconds: float = 90.0
     max_auto_generated_images_per_project: int = 3
     max_generation_attempts_per_scene: int = 1
+    # Turn a Story Arc fact into a concrete visual (worker model) before
+    # generating an image; deterministic fallback when disabled or offline.
+    visual_prompt_translation_enabled: bool = True
     shortform_max_duration: int = 180
     render_root: Path = Path("./projects")
     downloads_root: Path | None = None

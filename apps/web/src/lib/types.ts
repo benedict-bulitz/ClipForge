@@ -31,6 +31,8 @@ export type Scene = {
   };
   /** Visual Director V2 decision; absent on projects created before it. */
   visual_director?: SceneVisualDirector;
+  /** Information graphics drawn over the base visual (Visual Director V2). */
+  overlays?: Array<{ kind: "process" | "comparison" | "label"; spec: Record<string, unknown> }>;
 };
 
 export type SceneVisualDirector = {
@@ -39,6 +41,7 @@ export type SceneVisualDirector = {
   resolved_type?: string | null;
   decision?: "ACCEPTED_REAL" | "GENERATE_FALLBACK" | "DEGRADED" | "MISSING";
   decision_reason?: string;
+  composition?: "base_with_overlay" | "base_only" | "fullscreen_graphic";
   generation?: { status?: string };
 };
 
@@ -69,6 +72,24 @@ export type SceneMediaCandidate = {
   height: number;
   duration?: number | null;
   selected?: boolean;
+  /** AI-generated alternative persisted for this scene (Visual Director). */
+  generated?: boolean;
+  /** Just generated in this panel session. */
+  new?: boolean;
+  prompt?: string;
+  prompt_source?: "automatic" | "user_edited" | null;
+  model_label?: string | null;
+  quality_label?: string | null;
+};
+
+export type SceneImageGenerationResult = {
+  status: "generated" | "failed" | "rejected" | "unchanged";
+  message: string;
+  error_code?: string | null;
+  candidate?: SceneMediaCandidate | null;
+  prompt_used?: string | null;
+  prompt_source?: string | null;
+  project: Project;
 };
 
 export type SceneMediaCandidates = {

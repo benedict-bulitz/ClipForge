@@ -1961,6 +1961,13 @@ def prepare_project_media(
             downloader=downloader_for(candidate),
         )
 
+    # Scenes of one fact/block share a base visual where that reads better
+    # (stills, or scenes whose information is drawn as an overlay).
+    block_scenes: dict[str, list[int]] = {}
+    for index, item in enumerate(scenes):
+        block_scenes.setdefault(str(item.get("block_id") or item.get("id") or index), []).append(index)
+    block_bases: dict[str, dict[str, Any]] = {}
+
     for scene_index, scene in enumerate(scenes, 1):
         existing = scene.get("media") if isinstance(scene.get("media"), dict) else None
         if existing:
@@ -1997,6 +2004,26 @@ def prepare_project_media(
             if key != "queries"
         }
         strategy = director.plan_scene_strategy(scene, state, query_plan, arc=arc)
+        block_key = str(scene.get("block_id") or scene.get("id") or scene_index)
+        continued = block_bases.get(block_key)
+        if (
+            continued is not None
+            and scene.get("asset_status") != "replacement_required"
+            and (strategy.get("overlay_spec") or continued.get("kind") == "photo")
+            and _reuse_safe(continued, strategy)
+        ):
+            # Visual continuity only: the narration and Story Arc facts stay
+            # separate; the overlay evolves while the base visual stays.
+            scene["media"] = dict(continued)
+            scene["asset_status"] = "block_visual_continued"
+            scene["media_search"] = _continuity_provenance()
+            scene.pop("fallback_reason", None)
+            decision = director.ACCEPTED_REAL if media_source(continued) in REAL_MEDIA_PROVIDERS else director.GENERATE_FALLBACK
+            director.record_decision(scene, strategy, decision, director.REUSE_PREVIOUS_VISUAL, "block_visual_continuity")
+            manifest.append(scene["media"])
+            selected_count += 1
+            report_progress(progress, "media", "Finding visuals", completed_units=scene_index, total_units=total_scenes)
+            continue
         strong_required = director.requires_strong_real_media(strategy)
         coverage_targets = scene_coverage_targets(scene, state, query_plan)["targets"]
         duration = max(1.0, float(scene.get("end", 0)) - float(scene.get("start", 0)))
@@ -2157,12 +2184,12 @@ def prepare_project_media(
         if metadata is not None:
             _record_search_winner(search_provenance, metadata, winning_source)
         _accumulate_search_totals(search_totals, search_provenance)
+        failure_reason = f"no_accepted_real_media:{search_provenance.get('stop_reason')}:{search_provenance.get('final_coverage')}"
         if metadata is not None:
             director.record_decision(scene, strategy, director.ACCEPTED_REAL, preferred_kind_type(metadata), f"real_media_{winning_source}")
         else:
             # No real asset survived the quality gate: the Visual Director's
-            # fallback chain (graphic, one bounded generated image) comes next.
-            failure_reason = f"no_accepted_real_media:{search_provenance.get('stop_reason')}:{search_provenance.get('final_coverage')}"
+            # fallback chain (one bounded generated image) comes next.
             metadata, resolved_type = director.resolve_scene_fallback(
                 scene,
                 state,
@@ -2181,6 +2208,17 @@ def prepare_project_media(
         if metadata is None:
             safe_selected = [item for item in selected_media if is_scene_asset_allowed(item) and _reuse_safe(item, strategy)]
             related = _related_media(queries, safe_selected) or (safe_selected[-1] if safe_selected else None)
+            if related is None:
+                # Nothing to reuse: the remaining chain (a full-screen graphic,
+                # only when no acceptable base visual exists).
+                metadata, resolved_type = director.resolve_scene_fallback(
+                    scene, state, strategy, project_id=project_id, settings=settings, generator=generator,
+                    verifier=scene_verifier or get_visual_verifier(), failure_reason=failure_reason,
+                    run_state=run_state, phase="after_reuse",
+                )
+                if metadata is not None:
+                    _record_search_winner(search_provenance, metadata, resolved_type or "none")
+                    director.record_decision(scene, strategy, director.DEGRADED, resolved_type, failure_reason)
             if related is not None:
                 scene["media"] = dict(related)
                 scene["asset_status"] = "related_media_reused"
@@ -2249,6 +2287,7 @@ def prepare_project_media(
         manifest.append(metadata)
         if media_source(metadata) != GRAPHIC_ASSET_SOURCE:
             selected_media.append(metadata)
+            block_bases.setdefault(block_key, metadata)
         selected_count += 1
         report_progress(
             progress,
@@ -2273,6 +2312,19 @@ def prepare_project_media(
                 manifest.append(scene["media"])
                 selected_count += 1
                 missing_media_count -= 1
+    # Base visual + overlays: the information graphic is drawn over the base.
+    for indexes in block_scenes.values():
+        for position, index in enumerate(indexes):
+            item = scenes[index]
+            strategy = item.get("visual_director") if isinstance(item.get("visual_director"), dict) else None
+            overlays = director.attach_overlays(item, strategy, position=position, count=len(indexes))
+            if overlays:
+                item["overlays"] = overlays
+                strategy["composition"] = "base_with_overlay"
+            else:
+                item.pop("overlays", None)
+                if strategy is not None and strategy.get("composition") == "base_with_overlay":
+                    strategy["composition"] = "base_only"
     assets["license_manifest"] = manifest
     assets["selected_count"] = selected_count
     assets.pop("generated_card_count", None)
@@ -2338,6 +2390,18 @@ def _optional_real_clients(settings: Settings) -> list[Any]:
 
         clients.append(PixabayMediaClient(settings.pixabay_api_key))
     return clients
+
+
+def _continuity_provenance() -> dict[str, Any]:
+    """Search provenance of a scene that continues its fact's base visual (no search)."""
+    return {
+        "version": 1, "query_budget": MAX_SCENE_QUERY_BUDGET, "planned_queries": [], "executed_queries": [],
+        "planned_query_count": 0, "logical_queries_executed": 0, "executed_query_count": 0,
+        "provider_requests_executed": 0, "provider_requests_by_source": {}, "early_stop": False,
+        "stop_reason": "block_visual_continuity", "fallback_count": 0, "fallback_reason": None,
+        "fallback_reasons": [], "final_coverage": None, "stages": [], "duplicate_count": 0,
+        "winning_source": "block_visual_continuity",
+    }
 
 
 def preferred_kind_type(metadata: dict[str, Any]) -> str:

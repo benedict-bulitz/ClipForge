@@ -22,6 +22,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -31,7 +32,9 @@ from PIL import Image, UnidentifiedImageError
 from .config import Settings
 from .image_generation import (
     DEFAULT_PORTRAIT_SIZE,
+    PROVIDER_BLOCKING_ERRORS,
     ImageGenerationError,
+    generation_message,
     model_label,
     quality_label,
     resolve_image_size,
@@ -44,11 +47,17 @@ from .media import (
     _mentions,
     _semantic_query,
     _visual_query_tokens,
+    media_source,
     scene_coverage_targets,
     visual_target_key,
 )
 from .payoff import reveals_protected_payoff
-from .simple_graphics import GraphicSpecError, normalise_graphic_spec, render_simple_graphic
+from .simple_graphics import (
+    GraphicSpecError,
+    normalise_graphic_spec,
+    normalise_overlay_spec,
+    render_simple_graphic,
+)
 from .visual_verifier import SCENE_VISUAL_THRESHOLD, visual_intent_text
 
 VERSION = 2
@@ -388,7 +397,8 @@ def plan_scene_strategy(
     ):
         planned, graphic, reason = TEXT_NUMBER_VISUAL, number, "scene_states_a_statistic"
     if planned in {STOCK_VIDEO, STOCK_PHOTO} and intent_strategy in _GRAPHIC_INTENT_STRATEGIES:
-        steps = process_steps(narration)
+        # Steps come from the whole fact: scenes may split a sentence mid-clause.
+        steps = process_steps(_block_text(scene, state) or narration)
         spec = {"kind": "process", "steps": steps}
         if len(steps) >= 2 and not _protected_text_blocked(" ".join(steps), state, reveal_allowed, protected_terms):
             planned, graphic, reason = SIMPLE_GRAPHIC, spec, f"intent_{intent_strategy}_better_explained"
@@ -397,27 +407,33 @@ def plan_scene_strategy(
         planned = STOCK_PHOTO if str(scene.get("preferred_media") or "video") == "photo" else STOCK_VIDEO
         reason = "concrete_subject_real_media"
 
+    # Composition: a base visual (real, generated or reused media) with the
+    # information graphic as a light overlay.  A full-screen graphic is the
+    # last resort, used only when no acceptable base visual exists.
+    overlay_spec: dict[str, Any] | None = None
     if planned == SIMPLE_GRAPHIC:
-        # Better explained than illustrated: only strongly covering real media
-        # beats the graphic, and no paid generation is needed.
-        chain = ["real_media_strong", SIMPLE_GRAPHIC, REUSE_PREVIOUS_VISUAL]
-    elif planned in {TEXT_NUMBER_VISUAL, COMPARISON_VISUAL}:
-        # A relevant real visual (numbers get the existing statistic callout
-        # overlay); otherwise a number or split graphic instead of unrelated
-        # footage.  Generated images could invent maps, flags or figures.
-        chain = ["real_media", SIMPLE_GRAPHIC, REUSE_PREVIOUS_VISUAL]
+        overlay_spec = {"kind": "process", "steps": list(graphic["steps"])}
+        chain = ["real_media", GENERATED_IMAGE, REUSE_PREVIOUS_VISUAL, SIMPLE_GRAPHIC]
+    elif planned == COMPARISON_VISUAL:
+        # Relevant real footage with "A vs B" labels; a pure split graphic
+        # when nothing real fits.  Generated images could invent maps or flags.
+        overlay_spec = {"kind": "comparison", "left": graphic["left"], "right": graphic["right"]}
+        chain = ["real_media", REUSE_PREVIOUS_VISUAL, SIMPLE_GRAPHIC]
+    elif planned == TEXT_NUMBER_VISUAL:
+        # The number is shown by the existing statistic callout over the base
+        # visual; a full-screen number only when no base visual exists.
+        chain = ["real_media", REUSE_PREVIOUS_VISUAL, SIMPLE_GRAPHIC]
     else:
         chain = ["real_media", GENERATED_IMAGE, REUSE_PREVIOUS_VISUAL]
         if story["visual_role"] in {"explanation", "final_payoff"} or story["story_role"] == "explanation":
-            # An explanation (or the closing idea) is better served by a free
-            # process graphic than by reused, unrelated filler when neither
-            # real media nor a generated image is available.  Steps come from
-            # the whole block: scenes may split a sentence mid-clause.
+            # Explanations get their causal steps as an overlay over the base
+            # visual; the full-screen process graphic stays a last resort.
             steps = process_steps(_block_text(scene, state) or narration)
             spec = normalise_graphic_spec({"kind": "process", "steps": steps})
             if spec and not _protected_text_blocked(" ".join(steps), state, reveal_allowed, protected_terms):
                 graphic = spec
-                chain = ["real_media", GENERATED_IMAGE, SIMPLE_GRAPHIC, REUSE_PREVIOUS_VISUAL]
+                overlay_spec = {"kind": "process", "steps": list(spec["steps"])}
+                chain = ["real_media", GENERATED_IMAGE, REUSE_PREVIOUS_VISUAL, SIMPLE_GRAPHIC]
     return {
         "version": VERSION,
         "story_role": story["story_role"],
@@ -432,6 +448,8 @@ def plan_scene_strategy(
         "reason": reason,
         "graphic": graphic,
         "overlay": "statistic_callout" if planned == TEXT_NUMBER_VISUAL else None,
+        "overlay_spec": overlay_spec,
+        "composition": "base_with_overlay" if overlay_spec else "base_only",
         "fallback_chain": chain,
     }
 
@@ -516,78 +534,225 @@ def auto_generation_block_reason(
 
 _ROLE_DIRECTION = {
     "hook": "an intriguing, eye-catching close-up that makes the viewer curious",
-    "evidence": "a clear documentary-style photo showing the observation",
-    "primary_answer": "a clear, instructive photo that shows the key idea",
-    "explanation": "a clear, instructive photo that makes the mechanism easy to see",
-    "secondary_insight": "a clear photo of this specific detail, visually distinct from the main answer",
+    "evidence": "a clear documentary-style view of the observation",
+    "primary_answer": "a clear, instructive view of the key idea",
+    "explanation": "a clear view in which the physical mechanism is easy to see",
+    "secondary_insight": "a clear view of this specific detail, visually distinct from the main answer",
     "final_payoff": "a strong, memorable closing image that resolves the idea",
+}
+# Reporting, hedging and function words: they say *how* something is claimed,
+# never what can be seen.  Language vocabulary only, no topic words.
+_NON_VISUAL_WORDS = {
+    "forscher", "forschende", "forscherin", "forscherinnen", "wissenschaftler", "wissenschaftlerin",
+    "wissenschaftlerinnen", "experten", "expertin", "studie", "studien", "vermuten", "vermutet", "vermutung",
+    "glauben", "glaubt", "annehmen", "annahme", "vielleicht", "möglicherweise", "wahrscheinlich", "vermutlich",
+    "könnte", "könnten", "können", "kann", "dass", "warum", "weshalb", "wieso", "deshalb", "daher", "damit",
+    "dadurch", "weil", "sodass", "offenbar", "eigentlich", "genau", "wirklich", "tatsächlich", "zeigen",
+    "zeigt", "erklären", "erklärt", "grund", "gründe", "weniger", "mehr", "sehr", "einfach", "sorgen",
+    "sorgt", "dafür", "helfen", "hilft", "bringt", "lassen", "lässt", "werden", "wird", "wurde", "haben",
+    "researchers", "researcher", "scientists", "scientist", "experts", "study", "studies", "suspect",
+    "suspects", "believe", "believes", "assume", "maybe", "perhaps", "possibly", "probably", "could",
+    "might", "that", "why", "because", "therefore", "reason", "reasons", "actually", "really", "shows",
+    "show", "explain", "explains", "less", "more", "very", "helps", "help", "makes", "make",
 }
 
 
-def _prompt_phrases(scene: dict[str, Any], reveal_allowed: bool, protected_terms: set[str]) -> list[str]:
-    intent = scene.get("visual_intent") if isinstance(scene.get("visual_intent"), dict) else {}
-    # The planner's protected-filtered provider queries, but only those that
-    # came from the explicit visual intent: narration/topic fallback queries
-    # would pass raw narration words to the image model.
-    explicit = {
-        _semantic_query(str(value), _VISUAL_QUERY_STOP, limit=6) for value in intent.get("media_queries") or []
-    }
-    phrases = [str(value) for value in scene.get("search_queries") or [] if str(value).strip() and str(value) in explicit][:2]
-    phrases += [str(value) for key in ("actions", "objects", "context") for value in intent.get(key) or [] if str(value).strip()]
-    goal = str(intent.get("visual_goal") or scene.get("visual_goal") or "").strip()
-    if goal:
-        phrases.insert(0, goal)
-    must_not = {str(value).casefold() for value in intent.get("must_not_show") or [] if str(value).strip()}
+def is_narration_fallback_intent(intent: dict[str, Any]) -> bool:
+    """An intent derived from narration words, not planned by the director.
+
+    New intents carry ``source="narration_fallback"``; older ones are recognised
+    by their shape (goal = first words, objects = its first three words).
+    """
+    if not isinstance(intent, dict) or not intent:
+        return True
+    if intent.get("source") == "narration_fallback":
+        return True
+    goal = str(intent.get("visual_goal") or "")
+    objects = [str(value) for value in intent.get("objects") or []]
+    return (
+        not intent.get("actions")
+        and not intent.get("context")
+        and [str(value) for value in intent.get("media_queries") or []] == [goal]
+        and bool(objects)
+        and objects == goal.split()[: len(objects)]
+    )
+
+
+def _planned_intent(scene: dict[str, Any], state: dict[str, Any]) -> dict[str, Any] | None:
+    """This scene's planned intent, else a planned intent of the same fact/block."""
+    own = scene.get("visual_intent") if isinstance(scene.get("visual_intent"), dict) else {}
+    if own and not is_narration_fallback_intent(own):
+        return own
+    block_id = scene.get("block_id")
+    for other in state.get("scenes") or []:
+        intent = other.get("visual_intent") if isinstance(other, dict) and isinstance(other.get("visual_intent"), dict) else {}
+        if other is not scene and block_id and other.get("block_id") == block_id and intent and not is_narration_fallback_intent(intent):
+            return intent
+    return None
+
+
+def full_statement(scene: dict[str, Any], state: dict[str, Any]) -> str:
+    """The complete fact behind a scene: its whole script block, else Story Arc claims.
+
+    Scenes can be sentence fragments; prompts are never built from them.
+    """
+    text = _block_text(scene, state)
+    if text:
+        return text
+    arc = state.get("story_arc") if isinstance(state.get("story_arc"), dict) else {}
+    claims = {str(unit.get("id")): str(unit.get("claim") or "") for unit in arc.get("units") or [] if isinstance(unit, dict)}
+    joined = " ".join(claims.get(str(unit_id), "") for unit_id in scene.get("story_unit_ids") or []).strip()
+    return joined or " ".join(str(scene.get("narration") or "").split())
+
+
+def _concrete_words(text: str) -> list[str]:
+    return [
+        word for word in _content_words(text)
+        if word.casefold() not in _NON_VISUAL_WORDS and not word.casefold().endswith(("lich", "ly"))
+    ]
+
+
+def _keep_visible(phrases: list[str], blocked: set[str], protected_terms: set[str]) -> list[str]:
     kept: list[str] = []
     for phrase in phrases:
-        phrase = " ".join(phrase.split())[:120]
-        if not phrase or phrase.casefold() in must_not:
+        phrase = " ".join(str(phrase or "").split())[:140]
+        if not phrase or phrase.casefold() in blocked:
             continue
-        if not reveal_allowed and _mentions(_visual_query_tokens(phrase), protected_terms):
+        if protected_terms and _mentions(_visual_query_tokens(phrase), protected_terms):
             continue
         if phrase.casefold() not in {item.casefold() for item in kept}:
             kept.append(phrase)
-    return kept[:6]
+    return kept
+
+
+def resolve_visual_description(
+    scene: dict[str, Any],
+    state: dict[str, Any],
+    strategy: dict[str, Any],
+    plan: dict[str, Any] | None = None,
+    *,
+    settings: Settings | None = None,
+) -> dict[str, Any] | None:
+    """What the viewer can SEE for this scene, from structured semantics.
+
+    Order: the planner's visual intent (scene, then same fact/block); the full
+    Story Arc fact translated into a concrete visual (cached per block); a
+    deterministic fallback from canonical subjects and concrete fact words.
+    Protected answer terms are removed before the reveal.  ``None`` when
+    nothing reveal-safe and visible remains.
+    """
+    from .media import canonical_visual_subjects, protected_candidate_terms
+    from .visual_translation import translate_statement
+
+    plan = plan or (scene.get("visual_query_plan") if isinstance(scene.get("visual_query_plan"), dict) else {})
+    reveal_allowed = bool(strategy.get("reveal_allowed", True))
+    protected_terms = set() if reveal_allowed else protected_candidate_terms(state, plan)
+    intent = _planned_intent(scene, state)
+    blocked = {
+        str(value).casefold()
+        for source in (intent or {}, scene.get("visual_intent") or {})
+        for value in (source.get("must_not_show") or [])
+        if str(value).strip()
+    }
+    if intent is not None:
+        explicit = {_semantic_query(str(value), _VISUAL_QUERY_STOP, limit=6) for value in intent.get("media_queries") or []}
+        queries = [str(value) for value in scene.get("search_queries") or [] if str(value) in explicit][:2]
+        phrases = _keep_visible(
+            [
+                str(intent.get("visual_goal") or ""),
+                *(str(value) for key in ("actions", "objects", "context") for value in intent.get(key) or []),
+                *queries,
+            ],
+            blocked,
+            protected_terms,
+        )
+        if phrases:
+            return {"subject": phrases[0], "details": phrases[1:6], "source": "visual_intent"}
+        # The planned subject is entirely the protected answer: nothing
+        # reveal-safe to show, and no generic filler is paid for.
+        return None
+    statement = full_statement(scene, state)
+    subjects = canonical_visual_subjects(state).get("concepts", [])[:4] if state.get("scenes") else []
+    director = state.setdefault("visual_director", {})
+    cache = director.setdefault("visual_translations", {})
+    key = hashlib.sha256(statement.encode("utf-8")).hexdigest()[:16]
+    translation = cache.get(key) if isinstance(cache.get(key), dict) else None
+    if translation is None and settings is not None:
+        translation = translate_statement(
+            statement,
+            settings=settings,
+            topic=str((state.get("intent") or {}).get("topic") or ""),
+            subjects=subjects,
+            story_role=strategy.get("visual_role") or strategy.get("story_role"),
+            must_not_show=sorted(blocked | protected_terms),
+        )
+        if translation is not None:
+            cache[key] = translation
+    if translation:
+        main = " ".join(part for part in (translation.get("main_subject"), translation.get("visible_state_or_action")) if part)
+        phrases = _keep_visible([main, str(translation.get("setting") or ""), *translation.get("details", [])], blocked, protected_terms)
+        if phrases and phrases[0].startswith(str(translation.get("main_subject") or "")[:20]):
+            return {"subject": phrases[0], "details": phrases[1:5], "source": "fact_translation"}
+    words = _concrete_words(statement)
+    phrases = _keep_visible([" ".join(subjects[:3]), " ".join(words[:6])], blocked, protected_terms)
+    if not phrases:
+        return None
+    return {"subject": phrases[0], "details": phrases[1:3], "source": "fact_words"}
 
 
 def build_generation_prompt(
-    scene: dict[str, Any], state: dict[str, Any], strategy: dict[str, Any], query_plan: dict[str, Any] | None = None
+    scene: dict[str, Any],
+    state: dict[str, Any],
+    strategy: dict[str, Any],
+    query_plan: dict[str, Any] | None = None,
+    *,
+    settings: Settings | None = None,
 ) -> dict[str, Any] | None:
-    """Concise visual prompt from structured scene semantics (never raw narration).
+    """A background-visual prompt from structured semantics (never raw fragments).
 
     Returns ``None`` when no concrete, reveal-safe subject is available.
     """
     plan = query_plan or (scene.get("visual_query_plan") if isinstance(scene.get("visual_query_plan"), dict) else {})
-    protected_terms = set(plan.get("protected_entities") or [])
     reveal_allowed = bool(strategy.get("reveal_allowed", True))
-    phrases = _prompt_phrases(scene, reveal_allowed, protected_terms)
-    if not phrases:
+    description = resolve_visual_description(scene, state, strategy, plan, settings=settings)
+    if description is None:
         return None
-    subject = phrases[0]
-    details = "; ".join(phrases[1:])
+    phrases = [description["subject"], *description["details"]]
     fiction = str((state.get("intent") or {}).get("content_type") or "").casefold() in {"fiction", "story", "fictional_story"}
-    style = "Cinematic, realistic still image" if fiction else "Photorealistic photograph"
-    direction = _ROLE_DIRECTION.get(str(strategy.get("visual_role") or strategy.get("story_role") or ""), "a clear photo of the subject")
+    style = "Cinematic, realistic still image" if fiction else "Photorealistic, documentary-style photograph"
+    direction = _ROLE_DIRECTION.get(str(strategy.get("visual_role") or strategy.get("story_role") or ""), "a clear view of the subject")
+    details = ", ".join(description["details"])
     prompt = (
-        f"{style}: {subject}."
-        + (f" Details: {details}." if details else "")
-        + f" Purpose: {direction}."
-        " Composition: vertical 9:16 short-video frame, one clear main subject centered in the middle"
-        " of the frame with generous margins so a centered 9:16 crop keeps it fully visible;"
-        " uncluttered background; calm lower third left free for captions."
-        " Natural lighting, sharp focus, realistic colors."
-        " Do not include any text, letters, numbers, labels, captions, logos, watermarks or UI elements."
+        f"{style} of {description['subject']}"
+        + (f", {details}" if details else "")
+        + f". Purpose: {direction}."
+        " One clear main subject, scientifically plausible, natural anatomy and realistic textures,"
+        " natural lighting, shallow depth of field, uncluttered background."
+        " Vertical 9:16 short-video composition with the subject centered and generous margins so a"
+        " centered 9:16 crop keeps it fully visible; calm areas left free for captions and later overlays."
+        " This is a background visual: no text, no letters, no numbers, no labels, no captions, no diagram,"
+        " no infographic, no UI, no logos, no watermark."
     )
     reveal_safe = visual_reveal_safe(state, strategy, plan, " ".join(phrases))
     if not reveal_allowed and not reveal_safe:
         return None
-    return {"prompt": prompt, "summary": "; ".join(phrases[:3])[:200], "reveal_safe": reveal_safe}
+    return {
+        "prompt": prompt,
+        "summary": "; ".join(phrases[:3])[:200],
+        "reveal_safe": reveal_safe,
+        "visual_source": description["source"],
+        "verification_texts": [f"a photo of {phrase}" for phrase in phrases[:3]],
+    }
 
 
 def prompt_reveals_protected(prompt: str, scene: dict[str, Any], state: dict[str, Any], strategy: dict[str, Any]) -> bool:
     if strategy.get("reveal_allowed", True):
         return False
+    from .media import protected_candidate_terms
+
     plan = scene.get("visual_query_plan") if isinstance(scene.get("visual_query_plan"), dict) else {}
+    if _mentions(_visual_query_tokens(prompt), protected_candidate_terms(state, plan)):
+        return True
     return not visual_reveal_safe(state, strategy, plan, prompt)
 
 
@@ -595,12 +760,29 @@ def prompt_reveals_protected(prompt: str, scene: dict[str, Any], state: dict[str
 # Generated image verification and persistence
 # ---------------------------------------------------------------------------
 
-def _verify_generated(path: Path, scene: dict[str, Any], state: dict[str, Any], verifier: Any | None) -> dict[str, Any]:
+def _verification_texts(scene: dict[str, Any], state: dict[str, Any], extra: list[str] | None) -> list[str]:
+    """OpenCLIP prompts: the resolved visual description first, then scene intent."""
+    base = visual_intent_text(scene, state)
+    if not extra:
+        return base
+    scene_texts = list(dict.fromkeys([*extra, *getattr(base, "scene", base)]))[:4]
+    subject = list(getattr(base, "subject", []))
+    try:
+        from .visual_verifier import VisualPromptSet
+
+        return VisualPromptSet(list(dict.fromkeys([*scene_texts, *subject])), subject=subject, scene=scene_texts)
+    except ImportError:  # pragma: no cover - same package
+        return scene_texts
+
+
+def _verify_generated(
+    path: Path, scene: dict[str, Any], state: dict[str, Any], verifier: Any | None, texts: list[str] | None = None
+) -> dict[str, Any]:
     """Existing OpenCLIP thresholds decide; unavailable verification is recorded, not faked."""
     if verifier is None or getattr(verifier, "status", "") != "available" or not hasattr(verifier, "verify_local_image"):
         return {"status": getattr(verifier, "status", "unavailable_dependency") or "unavailable_dependency", "accepted": True, "verified": False}
     try:
-        result = verifier.verify_local_image(path, visual_intent_text(scene, state), asset_identity=f"generated:{path.name}")
+        result = verifier.verify_local_image(path, _verification_texts(scene, state, texts), asset_identity=f"generated:{path.name}")
     except Exception:  # noqa: BLE001 - verification is advisory when it cannot run
         return {"status": "verification_failed", "accepted": True, "verified": False}
     if result is None or getattr(result, "status", "") != "verified":
@@ -659,7 +841,8 @@ def _generated_metadata(
             key: record.get(key)
             for key in (
                 "model", "model_label", "quality", "quality_label", "size", "prompt", "prompt_summary", "created_at",
-                "trigger", "reason", "scene_id", "block_id", "fact_ids", "story_role", "visual_role", "story_stage", "story_source",
+                "trigger", "reason", "prompt_source", "visual_source", "scene_id", "block_id", "fact_ids",
+                "story_role", "visual_role", "story_stage", "story_source",
                 "is_primary_answer", "is_final_payoff",
                 "ai_generated", "reveal_safe", "verification",
                 "usage", "cost_usd", "cost_source",
@@ -681,12 +864,17 @@ def generate_scene_image(
     trigger: str,
     reason: str,
     prompt_override: str | None = None,
+    force_new: bool = False,
 ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
     """One bounded generation attempt shared by automatic and manual paths.
 
     Returns ``(media_metadata | None, record)``.  The record is appended to the
     project's generation log in every case (including failures) so attempts and
-    spend stay auditable.  Never raises for provider or verification problems.
+    spend stay auditable; ``record["message"]`` is a UI-safe status line.
+    ``prompt_override`` is sent to the model verbatim (after reveal checks);
+    ``force_new`` always produces a new, uniquely identified asset (manual
+    requests never get a cached earlier image back).  Never raises for
+    provider, verification or persistence problems.
     """
     policy = generation_policy(state, settings)
     director = state["visual_director"]
@@ -715,29 +903,49 @@ def generate_scene_image(
     }
     record["model_label"] = model_label(record["model"])
     record["quality_label"] = quality_label(record["quality"])
-    built = build_generation_prompt(scene, state, strategy)
-    if prompt_override is not None and " ".join(prompt_override.split()):
-        # A user-edited prompt is still bound by the Story Arc reveal rules.
-        text = " ".join(prompt_override.split())[:1200]
-        built = None if prompt_reveals_protected(text, scene, state, strategy) else {
-            "prompt": text,
-            "summary": text[:200],
-            "reveal_safe": visual_reveal_safe(
-                state, strategy, scene.get("visual_query_plan") if isinstance(scene.get("visual_query_plan"), dict) else {}, text
-            ),
-        }
-    if built is None:
-        record.update(status="skipped_no_safe_prompt")
+    user_prompt = " ".join(str(prompt_override or "").split())[:1200]
+
+    def finish(status: str, *, error: str | None = None, detail: str | None = None, **extra: Any) -> tuple[None, dict[str, Any]]:
+        message_key = error or {"skipped_no_safe_prompt": "no_safe_prompt", "rejected": "rejected"}.get(status, status)
+        record.update(status=status, message=generation_message(message_key, model=record["model"], detail=detail), **extra)
+        if error:
+            record["error"] = error
         director["generations"].append(record)
         return None, record
-    record.update(prompt=built["prompt"], prompt_summary=built["summary"], reveal_safe=built["reveal_safe"])
+
+    if user_prompt:
+        # A user-edited prompt is sent verbatim, but stays bound by the Story
+        # Arc reveal rules.
+        if prompt_reveals_protected(user_prompt, scene, state, strategy):
+            return finish("skipped_no_safe_prompt", error="protected_reveal", prompt_source="user_edited")
+        automatic = build_generation_prompt(scene, state, strategy)
+        built = {
+            "prompt": user_prompt,
+            "summary": user_prompt[:200],
+            "reveal_safe": visual_reveal_safe(
+                state, strategy, scene.get("visual_query_plan") if isinstance(scene.get("visual_query_plan"), dict) else {}, user_prompt
+            ),
+            "visual_source": "user_prompt",
+            "verification_texts": [user_prompt[:200], *((automatic or {}).get("verification_texts") or [])][:3],
+        }
+        record["prompt_source"] = "user_edited"
+    else:
+        built = build_generation_prompt(scene, state, strategy, settings=settings)
+        record["prompt_source"] = "automatic"
+        if built is None:
+            return finish("skipped_no_safe_prompt")
+    record.update(
+        prompt=built["prompt"], prompt_summary=built["summary"], reveal_safe=built["reveal_safe"],
+        visual_source=built.get("visual_source"),
+    )
     project_dir = settings.render_root.resolve() / project_id
+    nonce = uuid.uuid4().hex if force_new else ""
     digest = hashlib.sha256(
-        "|".join((record["model"], record["quality"], record["size"], built["prompt"])).encode("utf-8")
+        "|".join((record["model"], record["quality"], record["size"], built["prompt"], nonce)).encode("utf-8")
     ).hexdigest()[:20]
     final_path = project_dir / "assets" / GENERATED_ASSET_SOURCE / f"{digest}.png"
     sidecar = final_path.with_suffix(".json")
-    if final_path.is_file() and sidecar.is_file():
+    if not force_new and final_path.is_file() and sidecar.is_file():
         # Identical accepted prompt already paid for (e.g. after undo): reuse it.
         try:
             cached = json.loads(sidecar.read_text(encoding="utf-8"))
@@ -752,13 +960,9 @@ def generate_scene_image(
     try:
         image = generator.generate(built["prompt"], quality=record["quality"], size=record["size"])
     except ImageGenerationError as exc:
-        record.update(status="failed", error=exc.category)
-        director["generations"].append(record)
-        return None, record
-    except Exception as exc:  # noqa: BLE001 - one visual must never fail the video
-        record.update(status="failed", error=type(exc).__name__)
-        director["generations"].append(record)
-        return None, record
+        return finish("failed", error=exc.category, detail=exc.detail)
+    except Exception:  # noqa: BLE001 - one visual must never fail the video
+        return finish("failed", error="provider_error")
     record.update(
         billed=True,
         model=getattr(image, "model", record["model"]) or record["model"],
@@ -768,28 +972,32 @@ def generate_scene_image(
     )
     record["model_label"] = model_label(record["model"])
     staging = project_dir / "generation-staging" / f"{digest}.png"
-    staging.parent.mkdir(parents=True, exist_ok=True)
-    staging.write_bytes(image.data)
+    try:
+        staging.parent.mkdir(parents=True, exist_ok=True)
+        staging.write_bytes(image.data)
+    except OSError:
+        return finish("failed", error="persistence_failed")
     size = _image_size(staging)
     if size is None:
         staging.unlink(missing_ok=True)
-        record.update(status="rejected", rejection="unreadable_image")
-        director["generations"].append(record)
-        return None, record
-    verification = _verify_generated(staging, scene, state, verifier)
+        return finish("rejected", error="invalid_response", rejection="unreadable_image")
+    verification = _verify_generated(staging, scene, state, verifier, built.get("verification_texts"))
     record["verification"] = verification
     if not verification["accepted"]:
         staging.unlink(missing_ok=True)
-        record.update(status="rejected", rejection="visual_verification_failed")
-        director["generations"].append(record)
-        return None, record
-    final_path.parent.mkdir(parents=True, exist_ok=True)
-    staging.replace(final_path)
+        return finish("rejected", rejection="visual_verification_failed")
+    try:
+        final_path.parent.mkdir(parents=True, exist_ok=True)
+        staging.replace(final_path)
+        sidecar.write_text(
+            json.dumps({key: record.get(key) for key in ("model", "quality", "size", "prompt_summary", "created_at", "verification")}),
+            encoding="utf-8",
+        )
+    except OSError:
+        staging.unlink(missing_ok=True)
+        return finish("failed", error="persistence_failed")
     record["status"] = "accepted"
-    sidecar.write_text(
-        json.dumps({key: record.get(key) for key in ("model", "quality", "size", "prompt_summary", "created_at", "verification")}),
-        encoding="utf-8",
-    )
+    record["message"] = "AI image generated."
     director["generations"].append(record)
     relative = final_path.relative_to(settings.render_root.resolve()).as_posix()
     return _generated_metadata(digest=digest, relative=relative, width=size[0], height=size[1], prompt=built, record=record), record
@@ -850,6 +1058,7 @@ def resolve_scene_fallback(
     verifier: Any | None,
     failure_reason: str,
     run_state: dict[str, Any],
+    phase: str = "before_reuse",
 ) -> tuple[dict[str, Any] | None, str | None]:
     """Walk the scene's fallback chain after real media failed the quality gate.
 
@@ -859,7 +1068,12 @@ def resolve_scene_fallback(
     is not retried for every scene.
     """
     generation = strategy.setdefault("generation", {"status": "not_needed"})
-    for step in strategy.get("fallback_chain") or []:
+    chain = list(strategy.get("fallback_chain") or [])
+    split = chain.index(REUSE_PREVIOUS_VISUAL) if REUSE_PREVIOUS_VISUAL in chain else len(chain)
+    # Steps before reuse run first; media.py then tries reusing accepted
+    # project visuals; the remaining steps (the full-screen graphic) last.
+    steps = chain[:split] if phase == "before_reuse" else chain[split + 1:]
+    for step in steps:
         if step == GENERATED_IMAGE:
             blocked = run_state.get("generation_blocked") or auto_generation_block_reason(state, scene, settings, generator)
             if blocked:
@@ -877,15 +1091,45 @@ def resolve_scene_fallback(
                 reason=failure_reason,
             )
             generation.update(status=record["status"], model=record.get("model"), quality=record.get("quality"))
-            if record.get("error") in {"invalid_credentials", "model_unavailable", "network_error", "timeout", "rate_limited"}:
+            if record.get("error") in PROVIDER_BLOCKING_ERRORS:
                 run_state["generation_blocked"] = f"provider_{record['error']}"
             if metadata is not None:
                 return metadata, GENERATED_IMAGE
         elif step == SIMPLE_GRAPHIC:
             metadata = render_scene_graphic(scene, state, strategy, project_id=project_id, settings=settings)
             if metadata is not None:
+                strategy["composition"] = "fullscreen_graphic"
+                strategy["composition_reason"] = "no_acceptable_base_visual"
                 return metadata, SIMPLE_GRAPHIC
     return None, None
+
+
+def attach_overlays(
+    scene: dict[str, Any], strategy: dict[str, Any] | None, *, position: int = 0, count: int = 1
+) -> list[dict[str, Any]]:
+    """Overlays drawn over this scene's base visual (never over a full-screen graphic).
+
+    Scenes of one fact share the overlay and evolve it: with k scenes and n
+    process steps, scene j shows the first ceil((j+1)*n/k) steps, the newest
+    highlighted.  Nothing is placed over a background that is unsafe before
+    the Story Arc's reveal, and overlay text passed the same reveal check as
+    its planning.
+    """
+    media = scene.get("media") if isinstance(scene.get("media"), dict) else {}
+    spec = (strategy or {}).get("overlay_spec")
+    if not spec or not media or media_source(media) == GRAPHIC_ASSET_SOURCE:
+        return []
+    if not (strategy or {}).get("reveal_allowed", True) and media.get("reveal_safe") is False:
+        return []
+    spec = dict(spec)
+    if spec.get("kind") == "process":
+        steps = list(spec.get("steps") or [])
+        shown = max(1, -(-(position + 1) * len(steps) // max(1, count)))
+        spec["active"] = min(len(steps), shown) - 1
+    clean = normalise_overlay_spec(spec)
+    if clean is None:
+        return []
+    return [{"kind": clean["kind"], "spec": clean, "source": GRAPHIC_ASSET_SOURCE, "reveal_safe": True}]
 
 
 def record_decision(

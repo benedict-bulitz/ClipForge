@@ -347,11 +347,14 @@ def test_project_budget_stops_automatic_paid_generation(tmp_path):
     assert statuses.count("accepted") == 3
     assert statuses.count("project_budget_exhausted") == 3
     for scene in state["scenes"][3:]:
-        # Clearly marked, safe non-generated fallback: reuse of accepted media,
-        # or a free process graphic for the closing idea.
+        # Clearly marked, safe non-generated fallback: reuse of accepted media;
+        # the closing idea keeps its process steps as an overlay over it
+        # instead of becoming a full-screen card.
         assert scene["visual_director"]["decision"] == visual_director.DEGRADED
-        expected = visual_director.SIMPLE_GRAPHIC if scene["visual_director"]["story_role"] == "final_payoff" else visual_director.REUSE_PREVIOUS_VISUAL
-        assert scene["visual_director"]["resolved_type"] == expected
+        assert scene["visual_director"]["resolved_type"] == visual_director.REUSE_PREVIOUS_VISUAL
+        if scene["visual_director"]["visual_role"] == "final_payoff":
+            assert scene["overlays"][0]["kind"] == "process"
+            assert scene["visual_director"]["composition"] == "base_with_overlay"
 
 
 def test_exhausted_budget_from_earlier_revisions_is_respected(tmp_path):
@@ -565,7 +568,10 @@ def test_strategy_types_cover_number_comparison_and_process():
     process = visual_director.plan_scene_strategy(process_scene, state, plan)
     assert process["planned_type"] == visual_director.SIMPLE_GRAPHIC
     assert len(process["graphic"]["steps"]) == 3
-    assert visual_director.GENERATED_IMAGE not in process["fallback_chain"]
+    # The process is an overlay over a base visual (which may be generated);
+    # the full-screen process graphic is the very last resort.
+    assert process["overlay_spec"]["kind"] == "process" and process["composition"] == "base_with_overlay"
+    assert process["fallback_chain"][-1] == visual_director.SIMPLE_GRAPHIC
 
     comparison_state = {**state, "format_plan": {"selected_format": "comparison"}}
     comparison_scene = {**state["scenes"][0], "narration": "Sweden or Indonesia?", "visual_intent": {"visual_goal": "islands", "media_queries": ["swedish islands", "indonesian islands"], "media_query_targets": ["subject_a", "subject_b"]}}
@@ -669,14 +675,16 @@ def test_manual_generation_uses_shared_path_and_persists_provenance(db, tmp_path
     project = seed_project(db, project_id, state)
     generator = FakeGenerator()
 
-    generate_scene_media(db, project, 3, settings, prompt=None, generator=generator, visual_verifier=Verifier(), auto_render=False)
+    result = generate_scene_media(db, project, 3, settings, prompt=None, generator=generator, visual_verifier=Verifier())
 
+    assert result["status"] == "generated" and result["prompt_source"] == "automatic"
     db.expire_all()
     saved = serialize_project(get_project(db, project_id))["revision"]["state"]
     scene = saved["scenes"][2]
-    assert scene["media"]["source"] == "generated_openai"
-    assert scene["media"]["generation"]["trigger"] == "manual"
-    assert scene["visual_director"]["manually_selected"] is True
+    # Generation adds a new alternative; the current media changes only on Apply.
+    alternative = scene["media_alternatives"][0]
+    assert alternative["source"] == "generated_openai"
+    assert alternative["generation"]["trigger"] == "manual"
     assert saved["visual_director"]["generations"][0]["trigger"] == "manual"
     assert len(generator.prompts) == 1
 
@@ -692,9 +700,11 @@ def test_manual_prompt_edit_cannot_reveal_protected_answer(db, tmp_path):
     project = seed_project(db, "33333333-3333-4333-8333-333333333333", state)
     generator = FakeGenerator()
 
-    with pytest.raises(CandidateError, match="No safe visual prompt"):
-        generate_scene_media(db, project, 1, settings, prompt="Aerial photo of Indonesien islands", generator=generator, auto_render=False)
+    result = generate_scene_media(db, project, 1, settings, prompt="Aerial photo of Indonesien islands", generator=generator)
+    assert result["status"] == "failed" and result["error_code"] == "protected_reveal"
+    assert "reveal" in result["message"]
     assert generator.prompts == []
+    assert CandidateError  # still exported for route errors
 
 
 # ---------------------------------------------------------------------------
@@ -1051,7 +1061,7 @@ def test_manual_generation_uses_scene_story_arc(db, tmp_path):
     generator = FakeGenerator()
 
     option = scene_generation_option(state, 2, settings)
-    generate_scene_media(db, project, 2, settings, generator=generator, visual_verifier=Verifier(), auto_render=False)
+    generate_scene_media(db, project, 2, settings, generator=generator, visual_verifier=Verifier())
 
     assert option["model"] == "gpt-image-2" and option["model_label"] == "GPT Image 2"
     assert "indones" not in generator.prompts[0].casefold()
@@ -1060,10 +1070,10 @@ def test_manual_generation_uses_scene_story_arc(db, tmp_path):
     from clipforge.services import get_project, serialize_project
 
     scene = serialize_project(get_project(db, project.id))["revision"]["state"]["scenes"][1]
-    generation = scene["media"]["generation"]
+    generation = scene["media_alternatives"][0]["generation"]
     assert generation["trigger"] == "manual" and generation["story_source"] == "story_arc"
     assert generation["story_stage"] == "before_reveal" and generation["reveal_safe"] is True
-    assert generation["model"] == "gpt-image-2" and scene["media"]["ai_generated"] is True
+    assert generation["model"] == "gpt-image-2" and scene["media_alternatives"][0]["ai_generated"] is True
 
 
 def test_image_size_resolves_to_a_supported_portrait_size():

@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from .config import Settings
 from .hashing import attach_hashes
-from .image_generation import get_image_generator, model_label, quality_label
+from .image_generation import generation_message, get_image_generator, model_label, quality_label
 from .media import (
     MediaCandidate,
     MediaProviderError,
@@ -20,6 +20,7 @@ from .media import (
     candidate_reveals_protected,
     derive_search_queries,
     is_real_media_allowed,
+    is_scene_asset_allowed,
     media_relevance,
     protected_candidate_terms,
     real_media_quality_gate,
@@ -238,6 +239,8 @@ def apply_scene_media_candidate(
     auto_render: bool = True,
 ) -> Any:
     _prune()
+    if token.startswith(GENERATED_TOKEN_PREFIX):
+        return _apply_generated_alternative(db, project, scene_number, token, settings, auto_render=auto_render)
     set_token, _, index_text = token.partition(":")
     candidate_set = _SETS.get(set_token)
     if candidate_set is None or candidate_set.project_id != project.id or candidate_set.scene_number != scene_number:
@@ -307,16 +310,33 @@ def apply_scene_media_candidate(
 
     state = effective_revision_state(project)
     mutate(state)
+    result = _commit_scene_media(db, project, scene_number, state, settings, instruction=f"Choose media for scene {scene_number}", auto_render=auto_render)
+    _SETS.pop(set_token, None)
+    return result
+
+
+def _commit_scene_media(
+    db: Session, project: Any, scene_number: int, state: dict[str, Any], settings: Settings, *, instruction: str, auto_render: bool
+) -> Any:
+    """Persist a scene media choice; re-render just that scene when a render exists.
+
+    Without a finished render (or when the partial re-render is unavailable) the
+    choice is still saved and the render is marked for regeneration — a chosen
+    or paid-for asset is never dropped because the preview video is missing.
+    """
+    rendered = False
     if auto_render:
         try:
             replace_scene_video(state, project.id, project.title, scene_number, _next_revision_number(db, project.id), settings)
-        except RenderUnavailable as exc:
-            raise CandidateError(str(exc)) from exc
-    else:
+            rendered = True
+        except RenderUnavailable:
+            rendered = False
+    if not rendered:
         state.setdefault("render", {}).update(status="regeneration_required", stale=True)
-    result = _append_revision(db, project, instruction=f"Choose media for scene {scene_number}", state=attach_hashes(state), changed=["assets", "scenes", "render"], base_revision=project.current_revision, status="rendered" if auto_render else "ready_for_production")
-    _SETS.pop(set_token, None)
-    return result
+    return _append_revision(
+        db, project, instruction=instruction, state=attach_hashes(state), changed=["assets", "scenes", "render"],
+        base_revision=project.current_revision, status="rendered" if rendered else "ready_for_production",
+    )
 
 
 def _mark_manual(scene: dict[str, Any], reason: str, resolved_type: str) -> None:
@@ -344,7 +364,7 @@ def scene_generation_option(state: dict[str, Any], scene_number: int, settings: 
     if isinstance(policy, dict):
         quality = str(policy.get("generated_image_quality") or quality)
     strategy = plan_scene_strategy(scene, state, build_visual_query_plan(scene, state))
-    built = build_generation_prompt(scene, state, strategy)
+    built = build_generation_prompt(scene, state, strategy, settings=settings)
     available = bool(settings.openai_api_key) and built is not None
     reason = None if available else ("no_api_key" if not settings.openai_api_key else "no_reveal_safe_subject")
     return {
@@ -361,6 +381,68 @@ def scene_generation_option(state: dict[str, Any], scene_number: int, settings: 
     }
 
 
+GENERATED_TOKEN_PREFIX = "gen:"
+MAX_GENERATED_ALTERNATIVES = 6
+
+
+def serialize_generated_candidate(metadata: dict[str, Any], *, new: bool = False) -> dict[str, Any]:
+    """A generated scene alternative in the same shape as provider candidates."""
+    generation = metadata.get("generation") if isinstance(metadata.get("generation"), dict) else {}
+    return {
+        "token": f"{GENERATED_TOKEN_PREFIX}{metadata['provider_id']}",
+        "provider": metadata.get("provider") or "generated_openai",
+        "provider_id": str(metadata["provider_id"]),
+        "kind": "photo",
+        "preview_url": f"/media/{metadata['cache_path']}",
+        "verification_url": "",
+        "source_url": "",
+        "creator": str(metadata.get("creator") or "AI-generated"),
+        "creator_url": None,
+        "query": str(metadata.get("query") or ""),
+        "width": int(metadata.get("width") or 0),
+        "height": int(metadata.get("height") or 0),
+        "duration": None,
+        "selected": False,
+        "title": str(metadata.get("title") or ""),
+        "description": str(metadata.get("description") or ""),
+        "tags": [],
+        "generated": True,
+        "new": new,
+        "prompt": str(generation.get("prompt") or ""),
+        "prompt_source": generation.get("prompt_source"),
+        "model_label": generation.get("model_label"),
+        "quality_label": generation.get("quality_label"),
+    }
+
+
+def scene_generated_alternatives(state: dict[str, Any], scene_number: int, settings: Settings) -> list[dict[str, Any]]:
+    """Persisted generated alternatives of a scene whose files still exist."""
+    scenes = state.get("scenes") or []
+    if scene_number < 1 or scene_number > len(scenes):
+        return []
+    scene = scenes[scene_number - 1]
+    current = str((scene.get("media") or {}).get("identity") or "") if isinstance(scene.get("media"), dict) else ""
+    root = settings.render_root.resolve()
+    rows = []
+    for item in scene.get("media_alternatives") or []:
+        if not isinstance(item, dict) or not is_scene_asset_allowed(item) or item.get("identity") == current:
+            continue
+        if (root / str(item.get("cache_path") or "")).is_file():
+            rows.append(serialize_generated_candidate(item))
+    return rows
+
+
+def _rebase_candidate_sets(project_id: str, scene_number: int, old_revision: int, new_revision: int) -> None:
+    """A revision that only adds a generated alternative keeps fetched real alternatives valid."""
+    for key, value in list(_SETS.items()):
+        if value.project_id == project_id and value.scene_number == scene_number and value.base_revision == old_revision:
+            _SETS[key] = CandidateSet(value.project_id, value.scene_number, new_revision, value.candidates, value.created_at)
+
+
+def _generation_result(status: str, message: str, *, error_code: str | None = None, **extra: Any) -> dict[str, Any]:
+    return {"status": status, "message": message, "error_code": error_code, **extra}
+
+
 def generate_scene_media(
     db: Session,
     project: Any,
@@ -370,20 +452,28 @@ def generate_scene_media(
     prompt: str | None = None,
     generator: Any | None = None,
     visual_verifier: Any | None = None,
-    auto_render: bool = True,
-) -> Any:
-    """Manual, user-confirmed generation through the shared director path."""
-    from .visual_director import GENERATED_IMAGE, generate_scene_image, plan_scene_strategy
+) -> dict[str, Any]:
+    """Manual, user-confirmed generation of a NEW scene alternative.
+
+    Shares ``visual_director.generate_scene_image`` with the automatic path.
+    A successful image is persisted as a new alternative of the scene (unique
+    asset identity) and returned so the Change Media panel can show and apply
+    it; the scene's current media only changes on Apply.  Every outcome returns
+    a UI-safe ``status``: generated | failed | rejected | unchanged.
+    """
+    from .visual_director import generate_scene_image, plan_scene_strategy
     from .visual_verifier import get_visual_verifier
 
-    generator = generator or get_image_generator(settings, automatic=False)
-    if generator is None:
-        raise CandidateError("AI image generation needs an OpenAI API key in Settings.")
     state = effective_revision_state(project)
     scenes = state.get("scenes") or []
     if scene_number < 1 or scene_number > len(scenes):
         raise CandidateError("Scene not found.")
+    model = settings.generated_image_model
+    generator = generator or get_image_generator(settings, automatic=False)
+    if generator is None:
+        return _generation_result("failed", generation_message("missing_api_key", model=model), error_code="missing_api_key")
     scene = scenes[scene_number - 1]
+    current = scene.get("media") if isinstance(scene.get("media"), dict) else {}
     query_plan = build_visual_query_plan(scene, state)
     scene.setdefault("search_queries", query_plan["queries"])
     scene.setdefault("visual_query_plan", {key: value for key, value in query_plan.items() if key != "queries"})
@@ -399,39 +489,64 @@ def generate_scene_media(
         trigger="manual",
         reason="user_requested",
         prompt_override=prompt,
+        force_new=True,
     )
+    extra = {"prompt_used": record.get("prompt"), "prompt_source": record.get("prompt_source")}
+    if metadata is not None and metadata.get("identity") == current.get("identity"):
+        return _generation_result("unchanged", generation_message("unchanged"), error_code="unchanged", **extra)
     if metadata is None:
-        messages = {
-            "skipped_no_safe_prompt": "No safe visual prompt is available for this scene before its reveal.",
-            "rejected": "The generated image did not match the scene and was discarded.",
-            "failed": "Image generation failed; the current scene is unchanged.",
-        }
+        status = "rejected" if record.get("status") == "rejected" else "failed"
         if record.get("billed"):
             # A paid but rejected image stays auditable; the scene is unchanged.
-            _append_revision(
+            old_revision = project.current_revision
+            revision = _append_revision(
                 db, project, instruction=f"AI image attempt for scene {scene_number}", state=attach_hashes(state),
-                changed=["assets"], base_revision=project.current_revision, status=project.status, kind="system",
+                changed=["assets"], base_revision=old_revision, status=project.status, kind="system",
             )
-        raise CandidateError(messages.get(record.get("status"), "Image generation did not produce a usable image."))
-    strategy["generation"] = {"status": record["status"], "model": record.get("model"), "quality": record.get("quality")}
-    scene["visual_director"] = strategy
-    scene["media"] = metadata
+            _rebase_candidate_sets(project.id, scene_number, old_revision, revision.number)
+        return _generation_result(
+            status, str(record.get("message") or generation_message(record.get("error"), model=model)),
+            error_code=record.get("error") or record.get("status"), **extra,
+        )
+    alternatives = [item for item in scene.get("media_alternatives") or [] if isinstance(item, dict)]
+    scene["media_alternatives"] = [metadata, *alternatives][:MAX_GENERATED_ALTERNATIVES]
+    old_revision = project.current_revision
+    revision = _append_revision(
+        db, project, instruction=f"Generate AI image for scene {scene_number}", state=attach_hashes(state),
+        changed=["assets"], base_revision=old_revision, status=project.status, kind="system",
+    )
+    _rebase_candidate_sets(project.id, scene_number, old_revision, revision.number)
+    return _generation_result(
+        "generated", "AI image generated. Select it and press Apply to use it.",
+        candidate=serialize_generated_candidate(metadata, new=True), **extra,
+    )
+
+
+def _apply_generated_alternative(
+    db: Session, project: Any, scene_number: int, token: str, settings: Settings, *, auto_render: bool
+) -> Any:
+    from .visual_director import GENERATED_IMAGE
+
+    provider_id = token.removeprefix(GENERATED_TOKEN_PREFIX)
+    state = effective_revision_state(project)
+    scenes = state.get("scenes") or []
+    if scene_number < 1 or scene_number > len(scenes):
+        raise CandidateError("Scene not found.")
+    scene = scenes[scene_number - 1]
+    metadata = next(
+        (item for item in scene.get("media_alternatives") or [] if isinstance(item, dict) and str(item.get("provider_id")) == provider_id),
+        None,
+    )
+    if metadata is None or not is_scene_asset_allowed(metadata):
+        raise CandidateError("That generated image is no longer available. Generate a new one.")
+    if not (settings.render_root.resolve() / str(metadata.get("cache_path") or "")).is_file():
+        raise CandidateError("The generated image file is missing. Generate a new one.")
+    scene["media"] = dict(metadata, manually_selected=True)
     scene["asset_status"] = "generated_image_ready"
     scene.pop("fallback_reason", None)
     _mark_manual(scene, "user_generated_image", GENERATED_IMAGE)
     assets = state.setdefault("assets", {})
     manifest = [item for item in assets.get("license_manifest", []) if item.get("identity") != metadata["identity"]]
-    manifest.append(metadata)
+    manifest.append(scene["media"])
     assets["license_manifest"] = manifest
-    if auto_render:
-        try:
-            replace_scene_video(state, project.id, project.title, scene_number, _next_revision_number(db, project.id), settings)
-        except RenderUnavailable as exc:
-            raise CandidateError(str(exc)) from exc
-    else:
-        state.setdefault("render", {}).update(status="regeneration_required", stale=True)
-    return _append_revision(
-        db, project, instruction=f"Generate AI image for scene {scene_number}", state=attach_hashes(state),
-        changed=["assets", "scenes", "render"], base_revision=project.current_revision,
-        status="rendered" if auto_render else "ready_for_production",
-    )
+    return _commit_scene_media(db, project, scene_number, state, settings, instruction=f"Use AI image for scene {scene_number}", auto_render=auto_render)

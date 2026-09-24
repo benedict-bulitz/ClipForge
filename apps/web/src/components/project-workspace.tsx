@@ -155,6 +155,7 @@ export function ProjectWorkspace({
   const [candidateScene, setCandidateScene] = useState<number | null>(null);
   const [candidateSet, setCandidateSet] = useState<SceneMediaCandidates | null>(null);
   const [candidateSelection, setCandidateSelection] = useState<string | null>(null);
+  const [generationState, setGenerationState] = useState<GenerationState>({ status: "idle" });
   const [readiness, setReadiness] = useState<Readiness | null>(null);
   const [deleteConfirmationOpen, setDeleteConfirmationOpen] = useState(false);
   const [socialBusy, setSocialBusy] = useState(false);
@@ -228,6 +229,7 @@ export function ProjectWorkspace({
     setCandidateScene(sceneNumber);
     setCandidateSet(null);
     setCandidateSelection(null);
+    setGenerationState({ status: "idle" });
     try {
       setCandidateSet(await getSceneMediaCandidates(project.id, sceneNumber));
     } catch (reason) {
@@ -239,15 +241,23 @@ export function ProjectWorkspace({
 
   async function generateSelectedSceneImage(prompt: string | null) {
     if (!candidateScene || mediaBusy !== null) return;
-    setMediaBusy(candidateScene);
+    const sceneNumber = candidateScene;
+    setMediaBusy(sceneNumber);
     setMediaError(null);
+    setGenerationState({ status: "generating", prompt });
     try {
-      onProjectChange(await generateSceneImage(project.id, candidateScene, project.current_revision, prompt));
-      setCandidateScene(null);
-      setCandidateSet(null);
-      setCandidateSelection(null);
+      const result = await generateSceneImage(project.id, sceneNumber, project.current_revision, prompt);
+      // Keep the revision current (the new alternative is persisted server-side).
+      onProjectChange(result.project);
+      const candidate = result.candidate;
+      if (result.status === "generated" && candidate) {
+        // Show the new image immediately, pre-selected for Apply.
+        setCandidateSet((current) => current && { ...current, candidates: [candidate, ...current.candidates.filter((item) => item.token !== candidate.token)] });
+        setCandidateSelection(candidate.token);
+      }
+      setGenerationState({ status: result.status, message: result.message, prompt });
     } catch (reason) {
-      setMediaError(reason instanceof Error ? reason.message : "The AI image could not be generated.");
+      setGenerationState({ status: "failed", message: reason instanceof Error ? reason.message : "The AI image could not be generated.", prompt });
     } finally {
       setMediaBusy(null);
     }
@@ -497,7 +507,7 @@ export function ProjectWorkspace({
             <div className="py-6">
               {tab === "overview" && <Overview project={project} readiness={readiness} />}
               {tab === "script" && <ScriptView project={project} />}
-              {tab === "scenes" && <ScenesView scenes={state.scenes} duration={duration} assets={state.assets} mediaBusy={mediaBusy} mediaError={mediaError} candidateScene={candidateScene} candidateSet={candidateSet} candidateSelection={candidateSelection} onSelectCandidate={setCandidateSelection} onChooseSceneMedia={chooseSceneMedia} onApplyCandidate={applySelectedMedia} onGenerateImage={generateSelectedSceneImage} onCancel={() => { setCandidateScene(null); setCandidateSet(null); setCandidateSelection(null); }} />}
+              {tab === "scenes" && <ScenesView scenes={state.scenes} duration={duration} assets={state.assets} mediaBusy={mediaBusy} mediaError={mediaError} candidateScene={candidateScene} candidateSet={candidateSet} candidateSelection={candidateSelection} onSelectCandidate={setCandidateSelection} onChooseSceneMedia={chooseSceneMedia} onApplyCandidate={applySelectedMedia} onGenerateImage={generateSelectedSceneImage} generationState={generationState} onCancel={() => { setCandidateScene(null); setCandidateSet(null); setCandidateSelection(null); setGenerationState({ status: "idle" }); }} />}
               {tab === "sources" && <SourcesView project={project} />}
             </div>
           </div>
@@ -892,7 +902,39 @@ function mediaProvenance(media: NonNullable<Scene["media"]>): string {
   return `${media.kind} by ${media.creator} · ${media.provider}`;
 }
 
-function GenerateImageOption({ option, busy, onGenerate }: { option: NonNullable<SceneMediaCandidates["generation"]>; busy: boolean; onGenerate: (prompt: string | null) => void }) {
+type GenerationState = {
+  status: "idle" | "generating" | "generated" | "failed" | "rejected" | "unchanged";
+  message?: string;
+  prompt?: string | null;
+};
+
+function candidatePreview(url: string): string {
+  // Generated alternatives are served by the API's /media route.
+  return url.startsWith("/media/") ? (mediaUrl(url) ?? url) : url;
+}
+
+function GenerationStatus({ state, onRetry, busy }: { state: GenerationState; onRetry: () => void; busy: boolean }) {
+  if (state.status === "idle") return null;
+  if (state.status === "generating") {
+    return (
+      <p role="status" aria-live="polite" className="inline-flex items-center gap-1.5 text-xs text-[#2f4054]">
+        <LoaderCircle className="size-3 animate-spin" /> Generating… this can take up to a minute.
+      </p>
+    );
+  }
+  if (state.status === "generated") {
+    return <p role="status" aria-live="polite" className="text-xs font-semibold text-emerald-700">{state.message ?? "AI image generated."}</p>;
+  }
+  // failed | rejected | unchanged: visible, specific, with a retry.
+  return (
+    <div role="alert" className="flex flex-wrap items-center gap-2 rounded-xl border border-red-700/15 bg-red-50 px-3 py-2 text-xs leading-5 text-red-700">
+      <span>{state.message ?? "The AI image could not be generated."}</span>
+      <button type="button" onClick={onRetry} disabled={busy} className="font-bold uppercase tracking-[.08em] underline">Retry</button>
+    </div>
+  );
+}
+
+function GenerateImageOption({ option, busy, onGenerate, state }: { option: NonNullable<SceneMediaCandidates["generation"]>; busy: boolean; onGenerate: (prompt: string | null) => void; state: GenerationState }) {
   const [editing, setEditing] = useState(false);
   const [prompt, setPrompt] = useState(option.prompt);
   const promptId = useId();
@@ -917,19 +959,21 @@ function GenerateImageOption({ option, busy, onGenerate }: { option: NonNullable
         </div>
       )}
       <div className="flex flex-wrap items-center gap-2">
+        {/* An edited prompt is sent verbatim; otherwise the backend's automatic prompt is used. */}
         <button type="button" onClick={() => onGenerate(editing && prompt.trim() !== option.prompt.trim() ? prompt : null)} disabled={busy} className="inline-flex items-center gap-1.5 rounded-full bg-[#2f4054] px-3 py-1.5 text-[10px] font-bold uppercase tracking-[.08em] text-white disabled:opacity-50">
-          <ImagePlus className="size-3" />
-          Generate AI image
+          {state.status === "generating" ? <LoaderCircle className="size-3 animate-spin" /> : <ImagePlus className="size-3" />}
+          {state.status === "generating" ? "Generating…" : "Generate AI image"}
         </button>
         <button type="button" onClick={() => setEditing((value) => !value)} disabled={busy} className="text-[10px] font-bold uppercase tracking-[.08em] text-[#66665d] hover:text-[#d94c20]">
           {editing ? "Use automatic prompt" : "Edit prompt"}
         </button>
       </div>
+      <GenerationStatus state={state} busy={busy} onRetry={() => onGenerate(state.prompt ?? null)} />
     </div>
   );
 }
 
-function ScenesView({ scenes, duration, assets, mediaBusy, mediaError, candidateScene, candidateSet, candidateSelection, onSelectCandidate, onChooseSceneMedia, onApplyCandidate, onGenerateImage, onCancel }: { scenes: Scene[]; duration: number; assets: Project["revision"]["state"]["assets"]; mediaBusy: number | null; mediaError: string | null; candidateScene: number | null; candidateSet: SceneMediaCandidates | null; candidateSelection: string | null; onSelectCandidate: (token: string) => void; onChooseSceneMedia: (sceneNumber: number) => void; onApplyCandidate: () => void; onGenerateImage: (prompt: string | null) => void; onCancel: () => void }) {
+function ScenesView({ scenes, duration, assets, mediaBusy, mediaError, candidateScene, candidateSet, candidateSelection, onSelectCandidate, onChooseSceneMedia, onApplyCandidate, onGenerateImage, generationState, onCancel }: { scenes: Scene[]; duration: number; assets: Project["revision"]["state"]["assets"]; mediaBusy: number | null; mediaError: string | null; candidateScene: number | null; candidateSet: SceneMediaCandidates | null; candidateSelection: string | null; onSelectCandidate: (token: string) => void; onChooseSceneMedia: (sceneNumber: number) => void; onApplyCandidate: () => void; onGenerateImage: (prompt: string | null) => void; generationState: GenerationState; onCancel: () => void }) {
   return (
     <div className="space-y-3">
       {mediaError && (
@@ -994,6 +1038,7 @@ function ScenesView({ scenes, duration, assets, mediaBusy, mediaError, candidate
             <p className="mono text-[10px] font-medium">{formatTime(scene.start)}–{formatTime(scene.end)}</p>
             <p className="mt-1 text-[9px] uppercase tracking-[.08em] text-amber-700">{scene.asset_status.replaceAll("_", " ")}</p>
             {scene.visual_director?.generation?.status === "project_budget_exhausted" && <p className="mt-1 text-[9px] uppercase tracking-[.08em] text-amber-700">AI image budget reached</p>}
+            {scene.overlays && scene.overlays.length > 0 && <p className="mt-1 text-[9px] uppercase tracking-[.08em] text-[#2f4054]">+ {scene.overlays[0].kind} overlay</p>}
           </div>
           {candidateScene === index + 1 && candidateSet && (
             <div className="col-span-2 rounded-2xl border border-[#ff6838]/25 bg-[#fffaf6] p-3 sm:col-span-4">
@@ -1005,22 +1050,27 @@ function ScenesView({ scenes, duration, assets, mediaBusy, mediaError, candidate
                   {candidateSet.candidates.length > 0 && <button type="button" onClick={onApplyCandidate} disabled={!candidateSelection || mediaBusy !== null} className="rounded-full bg-[#ff6838] px-3 py-1.5 text-[10px] font-bold uppercase tracking-[.08em] text-white disabled:opacity-50">Apply</button>}
                 </div>
               </div>
-              {candidateSet.candidates.length === 0 && <p role="status" className="mb-3 text-sm">No suitable real media found for this scene. Retry the search, keep the current media, or generate an AI image below.</p>}
+              {mediaError && <p role="alert" className="mb-3 rounded-xl border border-red-700/15 bg-red-50 px-3 py-2 text-xs text-red-700">{mediaError}</p>}
+              {candidateSet.candidates.filter((item) => !item.generated).length === 0 && <p role="status" className="mb-3 text-sm">No suitable real media found for this scene. Retry the search, keep the current media, or generate an AI image below.</p>}
               <div className="grid gap-2 sm:grid-cols-3">
                 {candidateSet.candidates.map((candidate) => (
                   <button key={candidate.token} type="button" onClick={() => onSelectCandidate(candidate.token)} className={cn("overflow-hidden rounded-xl border text-left transition", candidateSelection === candidate.token ? "border-[#ff6838] ring-2 ring-[#ff6838]/20" : "border-black/10 hover:border-[#ff6838]/50")}>
-                    {candidate.kind === "video" ? <video src={candidate.preview_url} muted controls preload="metadata" className="h-24 w-full bg-black object-cover" aria-label={`${candidate.kind} candidate preview`} /> : (
+                    {candidate.kind === "video" ? <video src={candidatePreview(candidate.preview_url)} muted controls preload="metadata" className="h-24 w-full bg-black object-cover" aria-label={`${candidate.kind} candidate preview`} /> : (
                       // eslint-disable-next-line @next/next/no-img-element
-                      <img src={candidate.preview_url} alt={`${candidate.provider} candidate by ${candidate.creator}`} loading="lazy" className="h-24 w-full object-cover" />
+                      <img src={candidatePreview(candidate.preview_url)} alt={candidate.generated ? "AI-generated alternative" : `${candidate.provider} candidate by ${candidate.creator}`} loading="lazy" className="h-24 w-full object-cover" />
                     )}
-                    <span className="block px-2 py-1.5 text-[10px] leading-4"><strong className="uppercase">{candidate.kind}</strong> · {candidate.provider}<br />{candidate.creator}</span>
+                    <span className="block px-2 py-1.5 text-[10px] leading-4">
+                      {candidate.generated
+                        ? <><strong className="uppercase">{candidate.new ? "New · AI image" : "AI image"}</strong> · {candidate.model_label ?? "OpenAI"}<br />{candidate.prompt_source === "user_edited" ? "Your prompt" : "Automatic prompt"}</>
+                        : <><strong className="uppercase">{candidate.kind}</strong> · {candidate.provider}<br />{candidate.creator}</>}
+                    </span>
                   </button>
                 ))}
               </div>
               {candidateSet.generation && (
                 <div className="mt-3 rounded-xl border border-black/10 bg-white/60 p-3">
                   <p className="mb-1.5 text-[10px] font-bold uppercase tracking-[.08em] text-[#66665d]">Generate AI image</p>
-                  <GenerateImageOption key={candidateSet.generation.prompt} option={candidateSet.generation} busy={mediaBusy !== null} onGenerate={onGenerateImage} />
+                  <GenerateImageOption key={candidateSet.generation.prompt} option={candidateSet.generation} busy={mediaBusy !== null} onGenerate={onGenerateImage} state={generationState} />
                 </div>
               )}
             </div>

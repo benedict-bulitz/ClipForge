@@ -35,6 +35,7 @@ from .media_candidates import (
     apply_scene_media_candidate,
     discover_scene_media_candidates,
     generate_scene_media,
+    scene_generated_alternatives,
     scene_generation_option,
 )
 from .models import GenerationJob, Project
@@ -56,6 +57,7 @@ from .schemas import (
     ProjectRead,
     RenderCreate,
     SceneImageGenerate,
+    SceneImageGenerationResultRead,
     SceneMediaCandidateApply,
     SceneMediaCandidatesRead,
     SocialMetadataGenerate,
@@ -320,29 +322,35 @@ def scene_media_candidates_route(project_id: str, scene_number: int, db: DbSessi
     return {
         "scene_number": scene_number,
         "preferred_kind": preferred if preferred in {"video", "photo"} else "video",
-        "candidates": candidates,
+        # Persisted AI alternatives first, then the fetched real alternatives.
+        "candidates": [*scene_generated_alternatives(state, scene_number, config), *candidates],
         "generation": scene_generation_option(state, scene_number, config),
     }
 
 
-@app.post("/api/projects/{project_id}/scenes/{scene_number}/generate-image", response_model=ProjectRead)
+@app.post("/api/projects/{project_id}/scenes/{scene_number}/generate-image", response_model=SceneImageGenerationResultRead)
 def generate_scene_image_route(
     project_id: str, scene_number: int, payload: SceneImageGenerate, db: DbSession, config: SettingsDep
 ) -> dict:
-    """Manual, user-confirmed paid generation for one scene (never automatic)."""
+    """Manual, user-confirmed paid generation of a new scene alternative.
+
+    Always answers with a status (generated | failed | rejected | unchanged),
+    a UI-safe message and the current project, so the Change Media panel can
+    show the new image or the reason immediately.
+    """
     project = get_project(db, project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     if payload.base_revision != project.current_revision:
         raise HTTPException(status_code=409, detail="Project changed; reload before generating media.")
     try:
-        generate_scene_media(db, project, scene_number, config, prompt=payload.prompt, auto_render=True)
+        result = generate_scene_media(db, project, scene_number, config, prompt=payload.prompt)
     except RevisionConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except CandidateError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     db.refresh(project)
-    return serialize_project(project)
+    return {**result, "project": serialize_project(project)}
 
 
 @app.post("/api/projects/{project_id}/scenes/{scene_number}/media-candidates/apply", response_model=ProjectRead)

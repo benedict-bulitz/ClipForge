@@ -32,6 +32,7 @@ from .media import GRAPHIC_ASSET_SOURCE, _reuse_safe, is_scene_asset_allowed, me
 from .music import attach_discovered_track, resolve_track_path
 from .narration import clean_narration_text, contamination_issues
 from .progress import ProgressCallback, report_progress
+from .simple_graphics import GraphicSpecError, render_overlay
 from .smart_crop import analyze_scene_media
 from .voice import OPENAI_VOICES, tts_instructions
 
@@ -809,6 +810,33 @@ def _scene_media_path(scene: dict, settings: Settings) -> tuple[Path | None, str
     return candidate, kind
 
 
+def overlay_placement(state: dict, center_y: float) -> str:
+    """Keep overlays out of the caption band and off the focal subject."""
+    captions = state.get("captions") if isinstance(state.get("captions"), dict) else {}
+    if captions.get("enabled", True) and captions.get("position") == "upper":
+        return "lower"
+    return "lower" if center_y < 0.42 else "upper"
+
+
+def _render_scene_overlays(
+    state: dict, scene: dict, index: int, temp: Path, width: int, height: int, center_y: float
+) -> list[Path]:
+    overlays = [item for item in scene.get("overlays") or [] if isinstance(item, dict) and isinstance(item.get("spec"), dict)]
+    media = scene.get("media") if isinstance(scene.get("media"), dict) else {}
+    if not overlays or media_source(media) == GRAPHIC_ASSET_SOURCE:
+        return []
+    placement = overlay_placement(state, center_y)
+    paths: list[Path] = []
+    for position, overlay in enumerate(overlays):
+        try:
+            paths.append(render_overlay(overlay["spec"], temp / f"overlay-{index:02d}-{position}.png", width=width, height=height, placement=placement))
+        except (GraphicSpecError, OSError, ValueError):
+            continue  # an overlay is never worth failing the scene
+    if paths:
+        scene["overlay_render"] = {"placement": placement, "count": len(paths)}
+    return paths
+
+
 _ZOOM_STEPS = {"fast_cut": 0.0012, "dynamic": 0.0010, "subtle_pan": 0.0006, "slow_push": 0.0003}
 # Horizontal drift of the zoomed window across the 9:16 work frame (it always
 # shows >= 92% of it, so the focal subject stays in view), ending on the side
@@ -895,7 +923,7 @@ def _create_visual_segment(
             f"tpad=stop_mode=clone:stop_duration={duration:.3f},"
             f"trim=duration={duration:.3f},setpts=PTS-STARTPTS,format=yuv420p"
         )
-        command = [*base, "-i", str(source), "-an", "-vf", video_filter]
+        inputs, base_filter = ["-i", str(source), "-an"], video_filter
     else:
         frames = max(1, round(duration * fps))
         motion = str(scene.get("motion") or "")
@@ -923,7 +951,21 @@ def _create_visual_segment(
             f"d={frames}:s={output_w}x{output_h}:fps={fps},"
             f"scale={width}:{height}:flags=lanczos,format=yuv420p"
         )
-        command = [*base, "-loop", "1", "-i", str(source), "-vf", zoom_filter]
+        inputs, base_filter = ["-loop", "1", "-i", str(source)], zoom_filter
+    overlay_paths = _render_scene_overlays(state, scene, index, temp, width, height, center_y)
+    if overlay_paths:
+        # Base visual + transparent information overlays, composited per scene;
+        # captions are burned in later over the whole timeline.
+        graph = f"[0:v]{base_filter}[base]"
+        last = "base"
+        for position, _path in enumerate(overlay_paths, 1):
+            graph += f";[{last}][{position}:v]overlay=0:0:format=auto[ov{position}]"
+            last = f"ov{position}"
+        graph += f";[{last}]format=yuv420p[vout]"
+        overlay_inputs = [arg for path in overlay_paths for arg in ("-loop", "1", "-i", str(path))]
+        command = [*base, *inputs, *overlay_inputs, "-filter_complex", graph, "-map", "[vout]"]
+    else:
+        command = [*base, *inputs, "-vf", base_filter]
     command.extend(
         [
             "-t",

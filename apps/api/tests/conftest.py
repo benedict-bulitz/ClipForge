@@ -80,3 +80,15 @@ def forbid_real_image_generation(monkeypatch):
 
     monkeypatch.setattr(image_generation, "OPENAI_CLIENT_FACTORY", forbidden)
     return calls
+
+
+@pytest.fixture(autouse=True)
+def forbid_real_visual_translation(monkeypatch):
+    """The fact -> visual translator must be mocked; no real worker-model calls."""
+    from clipforge import visual_translation
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("Real OpenAI visual translation is forbidden in the test suite.")
+
+    visual_translation.clear_translation_cache()
+    monkeypatch.setattr(visual_translation, "TRANSLATOR_CLIENT_FACTORY", forbidden)
