@@ -52,7 +52,7 @@ import {
   musicDisplayName,
 } from "@/lib/api";
 import type { ChatMessage, FinalQualityReview, MusicTrack, Project, Readiness, Scene, Source, SceneMediaCandidates } from "@/lib/types";
-import { appliedQualityRepairs, qualityReviewSummary, remainingQualityIssues, sceneQualityState } from "@/lib/quality-review";
+import { appliedQualityRepairs, qualityReviewSummary, sceneQualityState, unresolvedQualityScenes } from "@/lib/quality-review";
 import { Brand } from "./brand";
 import { Button } from "./ui/button";
 import { ThemeToggle } from "./theme-toggle";
@@ -476,7 +476,7 @@ export function ProjectWorkspace({
                   <Stat label="Scenes" value={String(state.scenes.length)} hint={state.timeline.aspect_ratio} />
                   <Stat label="Revision" value={`v${project.current_revision}`} hint={`${project.revisions.length} saved`} />
                 </div>
-                {state.render.url && <QualityReviewPanel review={state.final_quality_review} renderRevision={state.render.revision} disabled={!!busy || mediaBusy !== null} onFixScene={(sceneNumber) => { setTab("scenes"); void chooseSceneMedia(sceneNumber); }} />}
+                {state.render.url && <QualityReviewPanel review={state.final_quality_review} renderRevision={state.render.revision} disabled={!!busy || mediaBusy !== null} onFixScene={(sceneNumber) => { setTab("scenes"); void chooseSceneMedia(sceneNumber); requestAnimationFrame(() => document.getElementById(`scene-row-${sceneNumber}`)?.scrollIntoView({ block: "center", behavior: "smooth" })); }} />}
                 {state.render.url && <div className="mt-6 space-y-4">
                   <AudioControls key={`${project.id}:${project.current_revision}`} project={project} disabled={!!busy || sending} onDirty={() => setAudioDirty(true)} onMusicVolumeChange={(volume) => onProjectChange({ ...project, revision: { ...project.revision, state: { ...project.revision.state, music: { ...project.revision.state.music, volume } } } })} onSave={async (audio) => {
                     setBusy("audio");
@@ -824,9 +824,9 @@ function QualityReviewPanel({ review, renderRevision, disabled, onFixScene }: { 
   const [expanded, setExpanded] = useState(false);
   const summary = qualityReviewSummary(review, renderRevision);
   if (!summary) return null;
-  const issues = remainingQualityIssues(review);
+  const unresolved = unresolvedQualityScenes(review);
   const repairs = appliedQualityRepairs(review);
-  const expandable = issues.length > 0 || repairs.length > 0;
+  const expandable = unresolved.length > 0 || repairs.length > 0;
   const tone = { passed: "bg-emerald-50 text-emerald-800", repaired: "bg-blue-50 text-blue-800", attention: "bg-amber-50 text-amber-800", muted: "bg-black/[.04] text-[var(--muted-foreground)]" }[summary.tone];
   return (
     <div className="cf-surface mt-3 rounded-[16px] border p-3 text-xs" aria-label="Final quality review">
@@ -839,9 +839,19 @@ function QualityReviewPanel({ review, renderRevision, disabled, onFixScene }: { 
         ) : <span className={cn("rounded-full px-2.5 py-1 text-[10px] font-bold", tone)}>{summary.label}</span>}
       </div>
       {expandable && expanded && (
-        <div id={detailsId} className="mt-2 space-y-2">
-          {repairs.length > 0 && <ul className="space-y-1">{repairs.map((repair, index) => <li key={`${repair.sceneId}-${index}`} className="text-[var(--muted-foreground)]"><strong className="text-[var(--foreground)]">Scene {repair.sceneNumber ?? "?"}</strong>: {repair.text}{repair.outcome === "unresolved" ? " (did not help)" : ""}</li>)}</ul>}
-          {issues.length > 0 && <ul className="space-y-1">{issues.map((issue) => <li key={issue.id} className="flex items-start justify-between gap-2"><span className={issue.severity === "error" ? "text-amber-900" : "text-[var(--muted-foreground)]"}><strong>Scene {issue.scene_number}</strong>: {issue.message}</span><button type="button" disabled={disabled} onClick={() => onFixScene(issue.scene_number)} className="shrink-0 text-[10px] font-bold text-[#d94c20] hover:text-[#a93210] disabled:opacity-50" aria-label={`Change media for scene ${issue.scene_number}`}>Fix</button></li>)}</ul>}
+        <div id={detailsId} className="mt-2 space-y-3">
+          {repairs.length > 0 && (
+            <section aria-label="Automatically repaired">
+              <p className="mb-1 text-[9px] font-bold uppercase tracking-[.08em] text-emerald-700">Automatically repaired</p>
+              <ul className="space-y-1">{repairs.map((repair, index) => <li key={`${repair.sceneId}-${index}`} className="text-[var(--muted-foreground)]"><strong className="text-[var(--foreground)]">Scene {repair.sceneNumber ?? "?"}</strong>: {repair.text}</li>)}</ul>
+            </section>
+          )}
+          {unresolved.length > 0 && (
+            <section aria-label="Unresolved">
+              <p className="mb-1 text-[9px] font-bold uppercase tracking-[.08em] text-amber-700">Unresolved</p>
+              <ul className="space-y-1">{unresolved.map((item) => <li key={item.sceneId} className="flex items-start justify-between gap-2"><span className="text-amber-900"><strong>Scene {item.sceneNumber}</strong>: {item.attempt ?? item.message}{item.issueCount > 1 ? ` (+${item.issueCount - 1} more)` : ""}</span><button type="button" disabled={disabled} onClick={() => onFixScene(item.sceneNumber)} className="shrink-0 text-[10px] font-bold text-[#d94c20] hover:text-[#a93210] disabled:opacity-50" aria-label={`Change media for scene ${item.sceneNumber}`}>Fix</button></li>)}</ul>
+            </section>
+          )}
         </div>
       )}
     </div>
@@ -1025,7 +1035,7 @@ function ScenesView({ scenes, qualityReview, duration, assets, mediaBusy, mediaE
         ))}
       </div>
       {scenes.map((scene, index) => (
-        <div key={scene.id} className="cf-surface grid grid-cols-[46px_minmax(0,1fr)] items-center gap-3 rounded-[18px] border p-3 shadow-sm sm:grid-cols-[54px_minmax(0,1fr)_112px_auto] sm:gap-4">
+        <div key={scene.id} id={`scene-row-${index + 1}`} className="cf-surface grid grid-cols-[46px_minmax(0,1fr)] items-center gap-3 rounded-[18px] border p-3 shadow-sm sm:grid-cols-[54px_minmax(0,1fr)_112px_auto] sm:gap-4">
           <div className={cn("grid aspect-square place-items-center rounded-xl text-sm font-extrabold text-white", ["bg-[#ff7950]", "bg-[#34475d]", "bg-[#c89941]", "bg-[#7c8f67]"][index % 4])}>{index + 1}</div>
           <div className="min-w-0">
             <p className="truncate text-sm font-semibold">{scene.visual_goal}</p>

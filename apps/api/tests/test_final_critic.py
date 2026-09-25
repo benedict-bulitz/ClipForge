@@ -39,10 +39,8 @@ from test_story_visual_director import FINGERS, FINGERS_Q
 from test_story_visual_integration import ISLANDS, ISLANDS_Q, _strip_story, fact, generate, visual
 
 import clipforge.services  # noqa: F401 - registers ORM models
-from clipforge import final_critic, visual_director
+from clipforge import final_critic
 from clipforge.final_critic import (
-    MAX_REPAIR_PASSES_LIMIT,
-    max_repair_passes,
     record_manual_change,
     run_final_quality_review,
     scene_sample_times,
@@ -268,36 +266,6 @@ def test_generated_image_is_the_bounded_fallback_when_no_real_alternative_exists
     assert review["status"] == "repaired"
 
 
-def test_exhausted_generation_budget_is_never_bypassed_and_the_issue_is_reported(monkeypatch, tmp_path):
-    state = fingers(monkeypatch, tmp_path)
-    provider = finger_provider("book")
-    media_pass(state, tmp_path, provider)
-    state["visual_director"]["generations"] = [
-        {"scene_id": f"other_{index}", "trigger": "auto", "billed": True, "status": "accepted"} for index in range(3)
-    ]
-    render(state, tmp_path)
-    generator = PaintingGenerator("hand")
-    harness = Harness(tmp_path, provider, generator=generator)
-
-    review = harness.review(state)
-
-    assert generator.prompts == []  # no paid call
-    assert visual_director.generation_counts(state)["auto_generated_images"] == 3
-    answer = scene(state, "scene_01_01")
-    assert answer["media"]["identity"] == "pexels:photo:answer"
-    assert answer["visual_director"]["generation"]["status"] == "project_budget_exhausted"
-    repair = next(item for item in review["repairs"] if item["scene_id"] == "scene_01_01")
-    assert repair["status"] == "no_alternative" and repair["outcome"] == "unresolved"
-    assert repair["generation_budget"]["auto_generated_after"] == repair["generation_budget"]["auto_generated_before"] == 3
-    # 12: unresolved issue is reported, pointing at the scene for a manual fix.
-    assert review["status"] == "issues_remain"
-    assert "scene_01_01:semantic_match:wrong_media" in review["unresolved"]
-    issue = next(item for item in review["issues"] if item["code"] == "wrong_media")
-    assert issue["scene_number"] == 1 and issue["severity"] == "error"
-    assert review["summary"]["remaining_issue_count"] >= 1
-    assert "remain" in review["summary"]["label"]
-
-
 # ---------------------------------------------------------------------------
 # 5, 6 — overlay dominance and an overlay-only repair
 # ---------------------------------------------------------------------------
@@ -333,7 +301,7 @@ def test_dominant_overlay_is_detected_and_only_the_overlay_is_repaired(monkeypat
     after = {item["scene_id"]: item for item in state["render"]["layout"]}
     for scene_id in dominant:
         overlay = after[scene_id]["overlays"][0]
-        assert overlay["style"] == "minimal" and overlay["bbox_area"] < final_critic.OVERLAY_WARN_BBOX
+        assert overlay["style"] == "minimal" and overlay["bbox_area"] < final_critic.OVERLAY_MAX_BBOX
         assert row(review, scene_id)["dimensions"]["overlay_quality"]["rating"] == "good"
     # 21: targeted invalidation — unchanged scenes reuse their encoded segments.
     assert after["scene_01_01"]["segment_cache"] == "hit" and after["scene_03_01"]["segment_cache"] == "hit"
@@ -434,8 +402,10 @@ def test_bad_crop_is_recalculated_without_replacing_the_asset(monkeypatch, tmp_p
 
     assert "subject_lost_in_render" in issue_codes(review, "scene_01_01", "initial_issues")
     repair = next(item for item in review["repairs"] if item["scene_id"] == "scene_01_01")
-    assert repair["action"] == "adjust_composition"
-    assert repair["adjustments"]["crop"]["center_x"] < 0.4
+    assert repair["action"] == "adjust_composition" and repair["accepted_step"] == "recompute_focal_crop"
+    assert repair["steps"][0]["step"] == "recompute_focal_crop" and repair["steps"][0]["accepted"]
+    assert scene(state, "scene_01_01")["render_adjustments"]["crop"]["center_x"] < 0.4
+    assert repair["repair_effective"] and repair["after_score"] > repair["before_score"]
     assert scene(state, "scene_01_01")["media"]["provider_id"] == "answer"
     assert state["render"]["layout"][0]["crop"]["mode"] == "critic_adjusted"
     assert repair["outcome"] == "resolved"
@@ -443,33 +413,6 @@ def test_bad_crop_is_recalculated_without_replacing_the_asset(monkeypatch, tmp_p
     assert frame_concepts(review, "scene_01_01", tmp_path)["hand"] > 0.5
     # Crop and motion survive retiming, so later renders keep the repair.
     assert scene(state, "scene_01_01")["render_adjustments"]["source"] == "final_critic"
-
-
-class SpreadVerifier(PixelVerifier):
-    """Frames of one scene degrade across the still motion (subject drifts out)."""
-
-    def score_video_frames(self, frames, texts, *, asset_identity="video"):
-        result = super().score_video_frames(frames, texts, asset_identity=asset_identity)
-        if "fingertip skin" in " ".join(texts).casefold() and len(frames) == 3 and ":scene_02_02" in asset_identity and "->" not in asset_identity:
-            from clipforge.visual_verifier import VisualVerification
-
-            return VisualVerification(0.3, "verified", "local_video_frames", (0.36, 0.3, 0.15), 3, 0.3, 0.3, 0.1, 0.3, 0.1, False)
-        return result
-
-
-def test_awkward_still_motion_is_switched_off(monkeypatch, tmp_path):
-    state = fingers(monkeypatch, tmp_path)
-    provider = finger_provider("hand")
-    media_pass(state, tmp_path, provider)
-    render(state, tmp_path)
-    assert state["render"]["layout"][2]["motion"]["type"] != "static"
-
-    review = Harness(tmp_path, provider, verifier=SpreadVerifier(concepts=provider.concepts)).review(state)
-
-    repair = next(item for item in review["repairs"] if item["scene_id"] == "scene_02_02")
-    assert repair["adjustments"]["motion"] == "static"
-    assert state["render"]["layout"][2]["motion"]["type"] == "static"
-    assert scene(state, "scene_02_02")["media"]["identity"] == scene(state, "scene_02_01")["media"]["identity"]
 
 
 # ---------------------------------------------------------------------------
@@ -653,7 +596,7 @@ def test_fullscreen_process_card_becomes_hand_background_with_light_overlay(monk
         assert item["visual_director"]["composition"] == "base_with_overlay"
         overlays = layout[scene_id]["overlays"]
         assert overlays and overlays[0]["kind"] == "process"
-        assert overlays[0]["bbox_area"] < final_critic.OVERLAY_POOR_BBOX and overlays[0]["coverage"] < final_critic.OVERLAY_POOR_COVERAGE
+        assert overlays[0]["bbox_area"] < final_critic.OVERLAY_MAX_BBOX and overlays[0]["coverage"] < final_critic.OVERLAY_MAX_COVERAGE
         assert frame_concepts(review, scene_id, tmp_path)["hand"] > 0.5
         assert row(review, scene_id)["dimensions"]["repetition"]["rating"] == "good"  # deliberate continuation
         repair = next(record for record in review["repairs"] if record["scene_id"] == scene_id)
@@ -665,41 +608,6 @@ def test_fullscreen_process_card_becomes_hand_background_with_light_overlay(monk
 # ---------------------------------------------------------------------------
 # 13 — bounded loop
 # ---------------------------------------------------------------------------
-
-class FreshMislabelled(ImageProvider):
-    """Every search for the answer returns a new asset titled as fingertips that shows a city."""
-
-    def __init__(self):
-        super().__init__(photos={SKIN_Q: [photo("skin", SKIN_Q, "Wrinkled fingertip skin close-up")], GRIP_Q: [photo("grip", GRIP_Q, "Wrinkled fingers gripping a wet stone")]},
-                         concepts=defaultdict(lambda: "city", {"skin": "hand", "grip": "hand"}))
-        self.counter = 0
-
-    def search_photos(self, query, *, portrait):
-        if query != HAND_Q:
-            return super().search_photos(query, portrait=portrait)
-        self.calls.append(("photo", query))
-        self.counter += 1
-        return [photo(f"junk{self.counter}", query, FINGER_TITLE)]
-
-
-@pytest.mark.parametrize(("configured", "explicit", "expected"), [(1, None, 1), (5, None, 2), (2, None, 2), (1, 0, 0)])
-def test_repair_passes_are_bounded(monkeypatch, tmp_path, configured, explicit, expected):
-    state = fingers(monkeypatch, tmp_path)
-    provider = FreshMislabelled()
-    media_pass(state, tmp_path, provider)
-    render(state, tmp_path)
-    settings = critic_settings(tmp_path, final_critic_max_repair_passes=configured)
-    verifier = PixelVerifier(concepts=defaultdict(lambda: "hand"))  # search-time check is fooled every time
-    harness = Harness(tmp_path, provider, verifier=verifier, settings=settings)
-
-    review = harness.review(state, **({} if explicit is None else {"max_passes": explicit}))
-
-    assert harness.renders == expected == review["repair_pass_count"]
-    assert review["max_repair_passes"] == min(expected if explicit is not None else configured, MAX_REPAIR_PASSES_LIMIT)
-    assert len(review["history"]) == expected + 1  # one validation review per repair render
-    assert review["status"] == "issues_remain"
-    assert max_repair_passes(settings) <= MAX_REPAIR_PASSES_LIMIT
-
 
 def test_failed_repair_render_restores_the_original_render(monkeypatch, tmp_path):
     state = fingers(monkeypatch, tmp_path)

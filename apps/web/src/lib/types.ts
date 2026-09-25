@@ -418,6 +418,15 @@ export type FinalQualityRepair = {
   message?: string;
   adjustments?: { overlay?: { mode?: string; placement?: string }; motion?: string; crop?: { center_x: number; center_y: number } };
   pass?: number;
+  /** A repair counts only when the triggering issue is gone from the new render. */
+  repair_attempted?: boolean;
+  repair_effective?: boolean;
+  before_score?: number | null;
+  after_score?: number | null;
+  remaining_issue?: string[];
+  unresolved_reason?: string;
+  /** User-facing outcome, e.g. "replaced a weak visual" or "no sufficiently relevant visual found". */
+  result_message?: string;
 };
 
 export type FinalQualityReview = {
@@ -430,6 +439,8 @@ export type FinalQualityReview = {
   repair_pass_count?: number;
   issues?: FinalQualityIssue[];
   repairs?: FinalQualityRepair[];
+  /** Issue ids still visible in the final render. */
+  unresolved?: string[];
   changed_scenes?: string[];
   repaired_scenes?: string[];
   summary?: { label: string; repaired_scene_count: number; remaining_issue_count: number; warning_count: number };

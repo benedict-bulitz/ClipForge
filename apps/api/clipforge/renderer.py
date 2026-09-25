@@ -974,29 +974,76 @@ _ZOOM_STEPS = {"fast_cut": 0.0012, "dynamic": 0.0010, "subtle_pan": 0.0006, "slo
 # shows >= 92% of it, so the focal subject stays in view), ending on the side
 # of the focal point.
 _PAN_RANGE = (0.2, 0.8)
+# The focal point stays at least this far inside the visible window.
+FOCAL_MARGIN = 0.12
+_MIN_SAFE_PAN = 0.15
+REDUCED_MAX_ZOOM = 1.03
 
 
-def still_motion_plan(scene: dict, index: int, motion: str, center_x: float, frames: int) -> dict:
+def safe_pan_range(focal_x: float, zoom: float, margin: float = FOCAL_MARGIN) -> tuple[float, float] | None:
+    """Window positions (0..1 of the zoom slack) that keep the focal point in view.
+
+    With zoom ``z`` the window starts at ``t*(1-1/z)`` of the frame, so the
+    focal point sits at ``z*p - (z-1)*t`` of the window.  ``None`` when no
+    worthwhile pan keeps it inside ``[margin, 1-margin]``.
+    """
+    if zoom <= 1.0:
+        return None
+    low = (zoom * focal_x - (1 - margin)) / (zoom - 1)
+    high = (zoom * focal_x - margin) / (zoom - 1)
+    low, high = max(_PAN_RANGE[0], low), min(_PAN_RANGE[1], high)
+    return (low, high) if high - low >= _MIN_SAFE_PAN else None
+
+
+def still_motion_plan(
+    scene: dict,
+    index: int,
+    motion: str,
+    center_x: float,
+    frames: int,
+    *,
+    focal: tuple[float, float] | None = None,
+    limit: str | None = None,
+) -> dict:
     """Deterministic, subtle Ken Burns treatment for photos and generated stills.
 
     Scenes alternate push-in, pan across the focal point and pull-out so a run
     of stills does not feel identical.  A still without a motion setting stays
     static; simple graphics only get a very gentle push so text stays inside.
+    With a known ``focal`` point (its position inside the 9:16 work frame)
+    zooms stay anchored on it and a pan only covers positions that keep it in
+    view; without a safe pan the still gets a centred push-in instead.
+    ``limit="reduced"`` (a repair) allows only a very small anchored push.
     """
     step = _ZOOM_STEPS.get(motion, 0.0)
+    anchor = focal[0] if focal is not None else center_x
     if not step:
-        return {"type": "static", "max_zoom": 1.0, "zoom": "min(zoom+0.0000,1.0)", "x": f"{center_x:.4f}"}
+        return {"type": "static", "max_zoom": 1.0, "zoom": "min(zoom+0.0000,1.0)", "x": f"{anchor:.4f}"}
     media = scene.get("media") if isinstance(scene.get("media"), dict) else {}
     if media_source(media) == GRAPHIC_ASSET_SOURCE:
         return {"type": "push_in", "max_zoom": 1.03, "zoom": f"min(zoom+{min(step, 0.0004):.4f},1.03)", "x": "0.5000"}
+    if limit == "reduced":
+        return {
+            "type": "push_in", "max_zoom": REDUCED_MAX_ZOOM, "reduced": True,
+            "zoom": f"min(zoom+{min(step, 0.0003):.4f},{REDUCED_MAX_ZOOM})", "x": f"{anchor:.4f}",
+        }
     max_zoom = 1.08
     pattern = ("push_in", "pan", "pull_out")[index % 3]
+    if pattern == "pan" and focal is not None:
+        window = safe_pan_range(focal[0], max_zoom - 0.02)
+        if window is None:
+            return {"type": "push_in", "max_zoom": max_zoom, "zoom": f"min(zoom+{step:.4f},{max_zoom})", "x": f"{anchor:.4f}", "reason": "no_safe_pan"}
+        start, end = window if focal[0] >= 0.5 else window[::-1]
+        return {
+            "type": "pan", "max_zoom": max_zoom, "zoom": f"{max_zoom - 0.02:.2f}", "safe_range": [round(window[0], 4), round(window[1], 4)],
+            "x": f"({start:.4f}+{end - start:.4f}*on/{max(1, frames - 1)})",
+        }
     if pattern == "pull_out":
         return {
             "type": "pull_out",
             "max_zoom": max_zoom,
             "zoom": f"if(eq(on,0),{max_zoom},max(zoom-{step:.4f},1.0))",
-            "x": f"{center_x:.4f}",
+            "x": f"{anchor:.4f}",
         }
     if pattern == "pan":
         start, end = _PAN_RANGE if center_x >= 0.5 else _PAN_RANGE[::-1]
@@ -1006,7 +1053,39 @@ def still_motion_plan(scene: dict, index: int, motion: str, center_x: float, fra
             "zoom": f"{max_zoom - 0.02:.2f}",
             "x": f"({start:.4f}+{end - start:.4f}*on/{max(1, frames - 1)})",
         }
-    return {"type": "push_in", "max_zoom": max_zoom, "zoom": f"min(zoom+{step:.4f},{max_zoom})", "x": f"{center_x:.4f}"}
+    return {"type": "push_in", "max_zoom": max_zoom, "zoom": f"min(zoom+{step:.4f},{max_zoom})", "x": f"{anchor:.4f}"}
+
+
+def _source_size(source: Path, media: dict) -> tuple[int, int] | None:
+    try:
+        with Image.open(source) as image:
+            return image.size
+    except (OSError, UnidentifiedImageError, ValueError):
+        width, height = media.get("width"), media.get("height")
+        if isinstance(width, (int, float)) and isinstance(height, (int, float)) and width > 0 and height > 0:
+            return int(width), int(height)
+        return None
+
+
+def focal_crop(center: tuple[float, float], source: tuple[int, int] | None, frame: tuple[int, int]) -> tuple[float, float, float, float] | None:
+    """Crop origin fractions that centre the frame on the focal point, and where it lands.
+
+    Returns ``(origin_x, origin_y, focal_x, focal_y)``: origins are fractions
+    of the scale-to-cover slack (the renderer's crop expression), focal values
+    the focal point's position inside the cropped 9:16 frame.
+    """
+    if not source or source[0] <= 0 or source[1] <= 0:
+        return None
+    scale = max(frame[0] / source[0], frame[1] / source[1])
+    result: list[float] = []
+    for axis in (0, 1):
+        size, target = source[axis] * scale, frame[axis]
+        focus = center[axis] * size
+        slack = size - target
+        origin = min(max(0.0, focus - target / 2), max(0.0, slack))
+        result.append(origin / slack if slack > 1 else 0.5)
+        result.append(min(1.0, max(0.0, (focus - origin) / target)))
+    return result[0], result[2], result[1], result[3]
 
 
 def _create_visual_segment(
@@ -1057,13 +1136,18 @@ def _create_visual_segment(
     center_x = min(1.0, max(0.0, float((smart_crop or {}).get("center_x", 0.5))))
     center_y = min(1.0, max(0.0, float((smart_crop or {}).get("center_y", 0.5))))
     base = [ffmpeg, "-y", "-v", "error"]
+    # Centre the 9:16 crop on the focal point (known source size); otherwise
+    # the focal fractions position the crop directly.
+    geometry = focal_crop((center_x, center_y), _source_size(source, scene.get("media") or {}), (width, height))
+    origin_x, origin_y = (geometry[0], geometry[1]) if geometry else (center_x, center_y)
+    focal = (geometry[2], geometry[3]) if geometry else None
     if kind == "video":
         # Integer crop origins stay fixed for the whole clip so source motion is
         # preserved without sub-pixel re-rounding wobble.
         video_filter = (
             f"scale={width}:{height}:force_original_aspect_ratio=increase,"
-            f"crop={width}:{height}:x='trunc((in_w-{width})*{center_x:.4f})':"
-            f"y='trunc((in_h-{height})*{center_y:.4f})',fps={fps},"
+            f"crop={width}:{height}:x='trunc((in_w-{width})*{origin_x:.4f})':"
+            f"y='trunc((in_h-{height})*{origin_y:.4f})',fps={fps},"
             f"tpad=stop_mode=clone:stop_duration={duration:.3f},"
             f"trim=duration={duration:.3f},setpts=PTS-STARTPTS,format=yuv420p"
         )
@@ -1071,8 +1155,12 @@ def _create_visual_segment(
     else:
         frames = max(1, round(duration * fps))
         motion = "" if adjustments.get("motion") == "static" else str(scene.get("motion") or "")
-        plan = still_motion_plan(scene, index, motion, center_x, frames)
-        scene["still_motion"] = {key: plan[key] for key in ("type", "max_zoom")}
+        limit = "reduced" if adjustments.get("motion") == "reduced" else None
+        plan = still_motion_plan(scene, index, motion, center_x, frames, focal=focal, limit=limit)
+        scene["still_motion"] = {key: plan[key] for key in ("type", "max_zoom", "reason", "safe_range", "reduced") if key in plan}
+        if focal is not None:
+            scene["still_motion"]["focal"] = [round(focal[0], 4), round(focal[1], 4)]
+        anchor_y = focal[1] if focal is not None else center_y
         max_zoom = plan["max_zoom"]
         # Keep motion bounded and render it at 2x before the final downscale. At
         # output resolution, integer zoompan windows turn smooth motion into a
@@ -1087,16 +1175,16 @@ def _create_visual_segment(
         # first keeps non-9:16 photos and generated images undistorted.
         zoom_filter = (
             f"scale={work_w}:{work_h}:force_original_aspect_ratio=increase,"
-            f"crop={work_w}:{work_h}:x='trunc((in_w-{work_w})*{center_x:.4f})':"
-            f"y='trunc((in_h-{work_h})*{center_y:.4f})',"
+            f"crop={work_w}:{work_h}:x='trunc((in_w-{work_w})*{origin_x:.4f})':"
+            f"y='trunc((in_h-{work_h})*{origin_y:.4f})',"
             f"zoompan=z='{plan['zoom']}':"
             f"x='trunc((iw-iw/zoom)*{plan['x']})':"
-            f"y='trunc((ih-ih/zoom)*{center_y:.4f})':"
+            f"y='trunc((ih-ih/zoom)*{anchor_y:.4f})':"
             f"d={frames}:s={output_w}x{output_h}:fps={fps},"
             f"scale={width}:{height}:flags=lanczos,format=yuv420p"
         )
         inputs, base_filter = ["-loop", "1", "-i", str(source)], zoom_filter
-    overlay_paths = _render_scene_overlays(state, scene, index, temp, width, height, center_y)
+    overlay_paths = _render_scene_overlays(state, scene, index, temp, width, height, focal[1] if focal is not None else center_y)
     if overlay_paths:
         # Base visual + transparent information overlays, composited per scene;
         # captions are burned in later over the whole timeline.

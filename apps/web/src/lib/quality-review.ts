@@ -14,47 +14,49 @@ export function qualityReviewSummary(review: FinalQualityReview | undefined | nu
   return { label, tone: "muted" };
 }
 
-/** Problems the viewer may still see, most severe first (errors, then warnings). */
+/** Issues still visible in the final render, errors first. */
 export function remainingQualityIssues(review: FinalQualityReview | undefined | null): FinalQualityIssue[] {
-  const issues = (review?.issues ?? []).filter((issue) => issue.severity === "error" || issue.severity === "warning");
+  const unresolved = review?.unresolved ? new Set(review.unresolved) : null;
+  const issues = (review?.issues ?? []).filter((issue) => (unresolved ? unresolved.has(issue.id) : issue.severity === "error" || issue.severity === "warning"));
   return [...issues].sort((a, b) => (a.severity === b.severity ? a.scene_number - b.scene_number : a.severity === "error" ? -1 : 1));
 }
 
-const ACTION_LABELS: Record<FinalQualityRepair["action"], string> = {
-  replace_media: "replaced the visual",
+const FALLBACK_REPAIR_TEXT: Record<FinalQualityRepair["action"], string> = {
+  replace_media: "replaced a weak visual",
   convert_graphic_to_overlay: "turned the full-screen graphic into an overlay on a real visual",
   continue_base_visual: "kept the fact's visual for continuity",
   adjust_composition: "adjusted the composition",
   report_only: "reported only",
 };
 
-function compositionLabel(repair: FinalQualityRepair): string {
-  const parts: string[] = [];
-  const overlay = repair.adjustments?.overlay;
-  if (overlay?.mode === "remove") parts.push("removed the overlay");
-  else if (overlay?.mode === "compact") parts.push("simplified the overlay");
-  if (overlay?.placement) parts.push(`moved the overlay ${overlay.placement === "upper" ? "up" : "down"}`);
-  if (repair.adjustments?.crop) parts.push("re-centred the crop");
-  if (repair.adjustments?.motion === "static") parts.push("removed the camera motion");
-  return parts.join(", ") || ACTION_LABELS.adjust_composition;
+/** Repairs that measurably worked (the triggering issue is gone from the new render). */
+export function appliedQualityRepairs(review: FinalQualityReview | undefined | null): Array<{ sceneId: string; sceneNumber: number | null; text: string }> {
+  return (review?.repairs ?? [])
+    .filter((repair) => repair.repair_effective)
+    .map((repair) => ({ sceneId: repair.scene_id, sceneNumber: repair.scene_number ?? null, text: repair.result_message ?? FALLBACK_REPAIR_TEXT[repair.action] }));
 }
 
-/** Automatic changes the user should know about ("Scene 2: simplified the overlay"). */
-export function appliedQualityRepairs(review: FinalQualityReview | undefined | null): Array<{ sceneId: string; sceneNumber: number | null; text: string; outcome?: FinalQualityRepair["outcome"] }> {
-  return (review?.repairs ?? [])
-    .filter((repair) => repair.status === "applied")
-    .map((repair) => ({
-      sceneId: repair.scene_id,
-      sceneNumber: repair.scene_number ?? null,
-      text: repair.action === "adjust_composition" ? compositionLabel(repair) : ACTION_LABELS[repair.action],
-      outcome: repair.outcome,
-    }));
+export type UnresolvedScene = { sceneId: string; sceneNumber: number; message: string; attempt: string | null; issueCount: number };
+
+/** One line per scene that still needs attention, with what the automatic repair tried. */
+export function unresolvedQualityScenes(review: FinalQualityReview | undefined | null): UnresolvedScene[] {
+  const scenes = new Map<string, UnresolvedScene>();
+  for (const issue of remainingQualityIssues(review)) {
+    const current = scenes.get(issue.scene_id);
+    if (current) {
+      current.issueCount += 1;
+      continue;
+    }
+    const failed = (review?.repairs ?? []).find((repair) => repair.scene_id === issue.scene_id && !repair.repair_effective && (repair.repair_attempted || repair.blocked_reason));
+    scenes.set(issue.scene_id, { sceneId: issue.scene_id, sceneNumber: issue.scene_number, message: issue.message, attempt: failed?.result_message ?? null, issueCount: 1 });
+  }
+  return [...scenes.values()];
 }
 
 /** Per-scene marker for the scene list. */
 export function sceneQualityState(review: FinalQualityReview | undefined | null, sceneId: string): "repaired" | "issue" | null {
   if (!review) return null;
-  if ((review.issues ?? []).some((issue) => issue.scene_id === sceneId && issue.severity === "error")) return "issue";
-  if ((review.changed_scenes ?? []).includes(sceneId)) return "repaired";
+  if (remainingQualityIssues(review).some((issue) => issue.scene_id === sceneId && issue.severity === "error")) return "issue";
+  if ((review.repairs ?? []).some((repair) => repair.scene_id === sceneId && repair.repair_effective)) return "repaired";
   return null;
 }

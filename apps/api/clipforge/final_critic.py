@@ -24,6 +24,7 @@ import copy
 import re
 import shutil
 import subprocess
+import tempfile
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -63,7 +64,7 @@ from .visual_verifier import (
     visual_intent_text,
 )
 
-VERSION = 1
+VERSION = 2
 DEFAULT_MAX_REPAIR_PASSES = 1
 MAX_REPAIR_PASSES_LIMIT = 2
 
@@ -94,17 +95,27 @@ DIMENSIONS = (
 # captions/overlays, so "poor" is the gate's hard floor, not its pass mark.
 SEMANTIC_GOOD = SCENE_VISUAL_THRESHOLD
 SEMANTIC_POOR = VISUAL_THRESHOLD
+# Story-critical scenes (primary answer, final payoff) need a clear match.
+SEMANTIC_STRONG = SCENE_VISUAL_THRESHOLD + 0.02
+CRITICAL_ROLES = {"primary_answer", "final_payoff"}
 SUBJECT_DROP = 0.05
 MOTION_SPREAD = 0.06
-# Overlay footprint (share of the 9:16 frame) from the renderer's layout.
-OVERLAY_WARN_BBOX, OVERLAY_POOR_BBOX = 0.10, 0.14
-OVERLAY_WARN_COVERAGE, OVERLAY_POOR_COVERAGE = 0.06, 0.085
+# Explicit occupancy limit of a drawn overlay in the final 9:16 frame (its
+# bounding box and its opaque pixels, measured on the rendered overlay layer).
+OVERLAY_MAX_BBOX, OVERLAY_MAX_COVERAGE = 0.10, 0.06
 NEAR_IDENTICAL_DIFF = 18.0  # mean grey-level difference of two 32x56 thumbnails
 CROP_SHIFT = 0.05
 FRAME_WIDTH = 360
 _REUSE_STATUSES = {"related_media_reused", "real_media_reused", "generated_media_reused"}
 _CONTINUED_STATUSES = {"block_visual_continued"}
 _MEDIA_ACTIONS = {"replace_media", "convert_graphic_to_overlay", "continue_base_visual"}
+# Issues that drive a repair whatever their severity (a loose match is not "done").
+REPAIRABLE_CODES = {
+    "wrong_media", "weak_media", "text_heavy", "unusable_frame", "subject_lost_in_render", "motion_loses_subject",
+    "overlay_too_dominant", "overlay_hits_captions", "fullscreen_graphic_with_base", "near_identical_graphics",
+    "accidental_repeat", "repeats_primary_answer_visual", "answer_without_own_visual", "payoff_generic_reuse",
+    "unnecessary_asset_switch",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -340,6 +351,15 @@ class _Review:
 
     # -- semantics ---------------------------------------------------------
 
+    def required_score(self, row: _Row) -> float:
+        """Rendered match a scene needs; stricter for the answer and the payoff."""
+        story = row.dimensions.get("_story") or self._story_context(row)
+        critical = story.get("visual_role") in CRITICAL_ROLES or story.get("is_primary_answer") or story.get("is_final_payoff")
+        return SEMANTIC_STRONG if critical else SEMANTIC_GOOD
+
+    def critical(self, row: _Row) -> bool:
+        return self.required_score(row) > SEMANTIC_GOOD
+
     def _texts(self, row: _Row) -> list[str]:
         return visual_intent_text(row.scene, self.state) if row.scene else ["a relevant visual scene"]
 
@@ -409,9 +429,10 @@ class _Review:
             score = result.scene_score if result.scene_score is not None else result.score
             row.semantic_score = float(score)
             row.frame_scores = [float(value) for value in result.frame_scores]
-            rating = GOOD if score >= SEMANTIC_GOOD else WARNING if score >= SEMANTIC_POOR else POOR
+            required = self.required_score(row)
+            rating = GOOD if score >= required else WARNING if score >= SEMANTIC_POOR else POOR
             row.dimensions["semantic_match"] = {
-                "rating": rating, "source": "openclip_rendered_frames", "score": round(float(score), 4),
+                "rating": rating, "source": "openclip_rendered_frames", "score": round(float(score), 4), "required": round(required, 4),
                 "subject_score": round(float(result.subject_score), 4) if result.subject_score is not None else None,
                 "frame_scores": [round(value, 4) for value in row.frame_scores],
                 "presentation_risk": bool(result.presentation_risk),
@@ -435,7 +456,7 @@ class _Review:
         dark = reasons.count("nearly_black") > len(row.images) / 2
         flat = reasons.count("low_contrast") > len(row.images) / 2
         text_heavy = bool(row.dimensions.get("semantic_match", {}).get("presentation_risk")) and not row.graphic
-        rating = POOR if dark else WARNING if flat or text_heavy else GOOD
+        rating = POOR if dark or text_heavy else WARNING if flat else GOOD
         row.dimensions["visual_quality"] = {"rating": rating, "nearly_black": dark, "low_contrast": flat, "text_heavy": text_heavy}
 
     def _subject_and_motion(self, row: _Row) -> None:
@@ -475,14 +496,10 @@ class _Review:
             return
         bbox_area = max(float(item.get("bbox_area") or 0.0) for item in overlays)
         coverage = max(float(item.get("coverage") or 0.0) for item in overlays)
-        if bbox_area >= OVERLAY_POOR_BBOX or coverage >= OVERLAY_POOR_COVERAGE:
-            rating = POOR
-        elif bbox_area >= OVERLAY_WARN_BBOX or coverage >= OVERLAY_WARN_COVERAGE:
-            rating = WARNING
-        else:
-            rating = GOOD
+        rating = POOR if bbox_area >= OVERLAY_MAX_BBOX or coverage >= OVERLAY_MAX_COVERAGE else GOOD
         row.dimensions["overlay_quality"] = {
             "rating": rating, "bbox_area": round(bbox_area, 4), "coverage": round(coverage, 4),
+            "limit": {"bbox_area": OVERLAY_MAX_BBOX, "coverage": OVERLAY_MAX_COVERAGE},
             "style": overlays[0].get("style"), "placement": overlays[0].get("placement"),
         }
         band = caption_band(self.state)
@@ -551,9 +568,16 @@ class _Review:
 
     # -- graphics, story roles, adjacency ---------------------------------
 
-    def base_candidates(self, row: _Row) -> list[tuple[float, _Row]]:
-        """Reveal-safe project visuals that fit this scene's intent (best first)."""
-        rejected = {str(value) for value in row.scene.get("rejected_media_identities") or []}
+    def base_candidates(self, row: _Row, minimum: float | None = None) -> list[tuple[float, _Row]]:
+        """Reveal-safe project visuals whose rendered frames fit this scene (best first).
+
+        Never reuse merely because a visual exists: the candidate's own rendered
+        frames must reach this scene's threshold (stricter for story-critical
+        scenes), its role must be compatible and it must not be this scene's
+        current (rejected) visual.
+        """
+        minimum = self.required_score(row) if minimum is None else minimum
+        rejected = {str(value) for value in row.scene.get("rejected_media_identities") or []} | ({row.identity} if row.identity else set())
         ranked: list[tuple[float, _Row]] = []
         seen: set[str] = set()
         story = self._story_context(row)
@@ -579,8 +603,8 @@ class _Review:
                 words = _coverage_tokens(" ".join(self._texts(row)))
                 overlap = len(words & _coverage_tokens(_media_text(media))) / max(1, min(len(words), 6))
                 fits = same_block or overlap >= 0.34
-                score = SEMANTIC_GOOD + overlap if fits else 0.0
-            if score >= SEMANTIC_GOOD:
+                score = minimum + overlap if fits else 0.0
+            if score >= minimum:
                 ranked.append((score + (0.02 if same_block else 0.0), other))
         return sorted(ranked, key=lambda item: -item[0])
 
@@ -604,8 +628,8 @@ class _Review:
         semantic = row.dimensions.get("semantic_match", {}).get("rating")
         status = str(row.media.get("asset_status") or "")
         findings: list[tuple[str, str, str]] = []
-        if role == "hook" and semantic == WARNING:
-            findings.append(("hook_not_immediate", "warning", "The hook visual is not clearly about the opening question."))
+        # A reused visual is acceptable only when it clearly fits this scene.
+        fits = semantic == GOOD
         if role in {"secondary_insight", "final_payoff"} and not story.get("is_primary_answer"):
             collapsed = [
                 other for other in answer_rows
@@ -614,10 +638,10 @@ class _Review:
             ]
             if collapsed:
                 findings.append(("repeats_primary_answer_visual", "error", "This scene reuses the primary answer's visual, so it does not read as its own point."))
-        if role == "final_payoff" and status in _REUSE_STATUSES:
-            findings.append(("payoff_generic_reuse", "warning", "The final payoff falls back to a reused project visual."))
-        if role == "primary_answer" and status in _REUSE_STATUSES:
-            findings.append(("answer_without_own_visual", "warning", "The primary answer reuses another fact's visual."))
+        if role == "final_payoff" and status in _REUSE_STATUSES and not fits:
+            findings.append(("payoff_generic_reuse", "error", "The final payoff falls back to a reused project visual that does not fit it."))
+        if role == "primary_answer" and status in _REUSE_STATUSES and not fits:
+            findings.append(("answer_without_own_visual", "error", "The primary answer reuses another fact's visual that does not fit it."))
         worst = min((_RATING_ORDER[POOR if severity == "error" else WARNING] for _code, severity, _message in findings), default=_RATING_ORDER[GOOD])
         rating = {value: key for key, value in _RATING_ORDER.items()}[worst]
         row.dimensions["story_alignment"] = {"rating": rating, "visual_role": role, "story_role": story.get("story_role"), "findings": [code for code, _s, _m in findings]}
@@ -648,6 +672,10 @@ class _Review:
                     continue
                 if intentional_continuity(earlier.scene, later.scene):
                     later.dimensions["repetition"] = {"rating": GOOD, "reason": "intentional_continuity", "with": earlier.scene_id}
+                    continue
+                if _progresses(earlier, later) and later.dimensions.get("semantic_match", {}).get("rating") == GOOD:
+                    # Same base, but an evolving overlay communicates something new.
+                    later.dimensions["repetition"] = {"rating": GOOD, "reason": "overlay_progression", "with": earlier.scene_id}
                     continue
                 # Blame the scene that borrowed the footage, never its owner or a user choice.
                 target, other = later, earlier
@@ -686,22 +714,25 @@ class _Review:
         subject = dims.get("subject_visibility", {})
         if semantic.get("rating") == POOR and subject.get("rating") != POOR:
             self._issue(row, "semantic_match", "wrong_media", "error", f"Scene {row.number} does not show what the narration is about.", score=semantic.get("score"), source=semantic.get("source"))
-        elif semantic.get("rating") == WARNING:
-            self._issue(row, "semantic_match", "weak_media", "warning", f"Scene {row.number}'s visual only loosely matches the narration.", score=semantic.get("score"), source=semantic.get("source"))
+        elif semantic.get("rating") == WARNING and subject.get("rating") != POOR:
+            self._issue(
+                row, "semantic_match", "weak_media", "error" if self.critical(row) else "warning",
+                f"Scene {row.number}'s visual only loosely matches the narration.", score=semantic.get("score"), source=semantic.get("source"),
+            )
         if subject.get("rating") == POOR:
             self._issue(row, "subject_visibility", "subject_lost_in_render", "error", f"The subject of scene {row.number} is visible in the source but lost after crop, motion or overlay.", drop=subject.get("drop"))
         quality = dims.get("visual_quality", {})
-        if quality.get("rating") == POOR:
+        if quality.get("nearly_black"):
             self._issue(row, "visual_quality", "unusable_frame", "error", f"Scene {row.number} renders nearly black.")
+        elif quality.get("text_heavy"):
+            self._issue(row, "visual_quality", "text_heavy", "error", f"Scene {row.number} is dominated by text instead of a visual.")
         elif quality.get("rating") == WARNING:
-            self._issue(row, "visual_quality", "low_contrast_or_text_heavy", "warning", f"Scene {row.number} renders flat or text-heavy.")
+            self._issue(row, "visual_quality", "low_contrast", "warning", f"Scene {row.number} renders flat.")
         if dims.get("motion", {}).get("rating") == POOR:
             self._issue(row, "motion", "motion_loses_subject", "error", f"The still motion of scene {row.number} moves the subject out of view.")
         overlay = dims.get("overlay_quality", {})
         if overlay.get("rating") == POOR:
             self._issue(row, "overlay_quality", "overlay_too_dominant", "error", f"The overlay of scene {row.number} covers too much of the base visual.", bbox_area=overlay.get("bbox_area"), coverage=overlay.get("coverage"))
-        elif overlay.get("rating") == WARNING:
-            self._issue(row, "overlay_quality", "overlay_large", "warning", f"The overlay of scene {row.number} is on the large side.", bbox_area=overlay.get("bbox_area"))
         if dims.get("caption_overlay_collision", {}).get("rating") == POOR:
             self._issue(row, "caption_overlay_collision", "overlay_hits_captions", "error", f"The overlay of scene {row.number} collides with the captions.")
         graphic = dims.get("graphic_usage", {})
@@ -750,6 +781,16 @@ class _Review:
 
     def row(self, scene_id: str) -> _Row | None:
         return next((row for row in self.rows if row.scene_id == scene_id), None)
+
+
+def _overlay_signature(row: _Row) -> list[Any]:
+    return [item.get("spec") for item in row.entry.get("overlays") or [] if isinstance(item, dict)]
+
+
+def _progresses(earlier: _Row, later: _Row) -> bool:
+    """The later scene draws its own, different information over the shared base."""
+    later_overlays = _overlay_signature(later)
+    return bool(later_overlays) and later_overlays != _overlay_signature(earlier)
 
 
 def _borrowed(row: _Row) -> bool:
@@ -874,8 +915,6 @@ def _recalculated_crop(review: _Review, row: _Row) -> dict[str, float] | None:
 
 def overlay_would_dominate(spec: dict[str, Any], state: dict[str, Any]) -> bool:
     """Measure an overlay spec as the renderer would draw it (full pill style)."""
-    import tempfile
-
     from .renderer import overlay_footprint
     from .simple_graphics import GraphicSpecError, render_overlay
 
@@ -886,7 +925,7 @@ def overlay_would_dominate(spec: dict[str, Any], state: dict[str, Any]) -> bool:
             footprint = overlay_footprint(path)
     except (GraphicSpecError, OSError, ValueError):
         return False
-    return float(footprint.get("bbox_area") or 0) >= OVERLAY_POOR_BBOX or float(footprint.get("coverage") or 0) >= OVERLAY_POOR_COVERAGE
+    return float(footprint.get("bbox_area") or 0) >= OVERLAY_MAX_BBOX or float(footprint.get("coverage") or 0) >= OVERLAY_MAX_COVERAGE
 
 
 def _overlay_graphic_spec(spec: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -901,23 +940,34 @@ def _overlay_graphic_spec(spec: dict[str, Any] | None) -> dict[str, Any] | None:
     return normalise_overlay_spec({"kind": "label", "text": " ".join(part for part in (clean.get("value"), clean.get("label")) if part)})
 
 
-def plan_repairs(review: _Review, earlier: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
-    """One targeted action per scene, chosen from that scene's own error issues.
+def _repairable(issue: dict[str, Any]) -> bool:
+    return issue["severity"] == "error" or issue["code"] in REPAIRABLE_CODES
 
-    A media action that already found no alternative (or was blocked) earlier
-    in this run is not retried.
+
+def plan_repairs(review: _Review, earlier: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+    """One targeted action per scene, chosen from that scene's own issues.
+
+    Story-critical scenes are planned first so they get the bounded paid
+    fallback before anything else.  A media action that already found no
+    alternative (or was blocked) earlier in this run is not retried.
     """
     exhausted = {
         (record.get("scene_id"), record.get("action"))
         for record in earlier or []
-        if record.get("status") in {"no_alternative", "blocked", "reverted", "failed"}
+        if record.get("status") in {"no_alternative", "blocked", "reverted", "failed", "unresolved"}
     }
     actions: list[dict[str, Any]] = []
     by_scene: dict[str, list[dict[str, Any]]] = {}
     for issue in review.issues():
-        if issue["severity"] == "error":
+        if _repairable(issue):
             by_scene.setdefault(issue["scene_id"], []).append(issue)
-    for scene_id, issues in by_scene.items():
+
+    def priority(item: tuple[str, list[dict[str, Any]]]) -> tuple[int, int, int]:
+        row = review.row(item[0])
+        errors = any(issue["severity"] == "error" for issue in item[1])
+        return (0 if row is not None and review.critical(row) else 1, 0 if errors else 1, row.number if row else 0)
+
+    for scene_id, issues in sorted(by_scene.items(), key=priority):
         row = review.row(scene_id)
         scene = _scene_by_id(review.state, scene_id)
         codes = {issue["code"]: issue for issue in issues}
@@ -926,7 +976,8 @@ def plan_repairs(review: _Review, earlier: list[dict[str, Any]] | None = None) -
             actions.append({**base, "action": "report_only", "status": "blocked", "blocked_reason": "scene_changed_after_render"})
             continue
         locked = user_locked_visual(scene)
-        media_action = _media_action(review, row, codes)
+        composition = _composition_action(review, row, codes, scene)
+        media_action = None if composition is not None and composition.get("reframe") else _media_action(review, row, codes)
         if media_action is not None and (scene_id, media_action["action"]) in exhausted:
             actions.append({**base, **media_action, "status": "blocked", "blocked_reason": "no_alternative_found_earlier"})
             media_action = None
@@ -934,13 +985,11 @@ def plan_repairs(review: _Review, earlier: list[dict[str, Any]] | None = None) -
             if locked:
                 actions.append({**base, **media_action, "status": "blocked", "blocked_reason": "user_locked_visual",
                                 "message": "Manual asset appears weak; it was not replaced automatically."})
-                media_action = None
             else:
                 actions.append({**base, **media_action, "status": "planned"})
                 continue
-        composition = _composition_action(review, row, codes, scene)
         if composition is not None:
-            actions.append({**base, **composition, "status": "planned"})
+            actions.append({**base, **composition, "status": "planned", "allow_media_escalation": not locked})
         elif not any(action["scene_id"] == scene_id for action in actions):
             actions.append({**base, "action": "report_only", "status": "blocked", "blocked_reason": "no_safe_targeted_repair"})
     return actions
@@ -960,68 +1009,73 @@ def _media_action(review: _Review, row: _Row, codes: dict[str, dict[str, Any]]) 
                 # The information stays a small layer over the base visual.
                 "overlay_adjustments": {"mode": "compact"} if overlay_would_dominate(spec, review.state) else {},
             }
-    if "accidental_repeat" in codes or "repeats_primary_answer_visual" in codes:
-        return {"action": "replace_media", "reason": "repetition" if "accidental_repeat" in codes else "story_alignment", "reject": [row.identity]}
+    for code, reason in (
+        ("accidental_repeat", "repetition"), ("repeats_primary_answer_visual", "story_alignment"),
+        ("answer_without_own_visual", "story_alignment"), ("payoff_generic_reuse", "story_alignment"),
+    ):
+        if code in codes:
+            return {"action": "replace_media", "reason": reason, "reject": [row.identity] if row.identity else []}
     if "unnecessary_asset_switch" in codes:
         partner = review.row(codes["unnecessary_asset_switch"]["evidence"].get("with_scene") or "")
         if partner is not None and partner.identity:
             return {"action": "continue_base_visual", "reason": "visual_continuity", "base_scene_id": partner.scene_id, "base_identity": partner.identity}
-    if "wrong_media" in codes or "unusable_frame" in codes:
+    base_is_text = "text_heavy" in codes and not row.entry.get("overlays")
+    if {"wrong_media", "weak_media", "unusable_frame"} & set(codes) or base_is_text:
         # A same-fact visual that already fits keeps continuity; otherwise the
-        # normal Visual Director chain searches again (then generation, reuse).
+        # scene-level escalation chain (real alternative, generated image,
+        # fitting base + overlay, planned graphic).
         same_block = [
             candidate for _score, candidate in review.base_candidates(row)
             if candidate.scene.get("block_id") and candidate.scene.get("block_id") == row.scene.get("block_id")
         ]
+        reason = "text_heavy" if base_is_text else "semantic_match"
         if same_block:
-            return {"action": "continue_base_visual", "reason": "semantic_match", "base_scene_id": same_block[0].scene_id, "base_identity": same_block[0].identity}
-        return {"action": "replace_media", "reason": "semantic_match", "reject": [row.identity] if row.identity else []}
+            return {"action": "continue_base_visual", "reason": reason, "base_scene_id": same_block[0].scene_id, "base_identity": same_block[0].identity}
+        return {"action": "replace_media", "reason": reason, "reject": [row.identity] if row.identity else []}
     return None
 
 
 def _composition_action(review: _Review, row: _Row, codes: dict[str, dict[str, Any]], scene: dict[str, Any]) -> dict[str, Any] | None:
     current = scene.get("render_adjustments") if isinstance(scene.get("render_adjustments"), dict) else {}
-    adjustments: dict[str, Any] = {}
-    reasons: list[str] = []
     overlay_now = current.get("overlay") if isinstance(current.get("overlay"), dict) else {}
     overlay: dict[str, Any] = {}
+    reasons: list[str] = []
     if any(issue["category"] == "reveal_safety" and issue["evidence"].get("component") == "overlay" for issue in codes.values()):
         overlay["mode"] = "remove"
         reasons.append("reveal_safety")
-    if "overlay_too_dominant" in codes:
+    if "overlay_too_dominant" in codes or ("text_heavy" in codes and row.entry.get("overlays")):
+        # Shorter copy, no panel, active step only: the base stays dominant.
         overlay.setdefault("mode", "compact")
-        reasons.append("overlay_quality")
+        reasons.append("overlay_quality" if "overlay_too_dominant" in codes else "text_heavy")
     if "overlay_hits_captions" in codes:
         band = caption_band(review.state) or {}
         overlay["placement"] = "upper" if band.get("position") == "lower" or float(band.get("top", 1)) > 0.5 else "lower"
         if overlay_now.get("placement") == overlay["placement"]:
             overlay.setdefault("mode", "compact")
         reasons.append("caption_overlay_collision")
-    lost = "subject_lost_in_render" in codes
-    if lost and row.dimensions.get("overlay_quality", {}).get("rating") in {POOR, WARNING}:
+    lost = "subject_lost_in_render" in codes or "motion_loses_subject" in codes
+    if lost and row.entry.get("overlays") and row.dimensions.get("overlay_quality", {}).get("coverage", 0) >= OVERLAY_MAX_COVERAGE / 2:
         overlay.setdefault("mode", "compact")
-        reasons.append("subject_visibility")
     merged_overlay = {**overlay_now, **overlay}
+    action: dict[str, Any] = {"action": "adjust_composition", "adjustments": {}}
     if overlay and merged_overlay != overlay_now:
-        adjustments["overlay"] = merged_overlay
-    if (lost or "motion_loses_subject" in codes) and row.still and current.get("motion") != "static":
-        motion = row.entry.get("motion") if isinstance(row.entry.get("motion"), dict) else {}
-        if motion.get("type") not in {None, "static"}:
-            adjustments["motion"] = "static"
-            reasons.append("motion" if "motion_loses_subject" in codes else "subject_visibility")
-    if lost or "motion_loses_subject" in codes:
-        crop = _recalculated_crop(review, row)
-        if crop is not None and crop != current.get("crop"):
-            adjustments["crop"] = crop
-            reasons.append("crop")
-    if not adjustments:
+        action["adjustments"]["overlay"] = merged_overlay
+    if lost and not row.graphic:
+        # Reframe before replacing: crop, then less motion, then a frozen still.
+        action["reframe"] = True
+        reasons.append("subject_visibility" if "subject_lost_in_render" in codes else "motion")
+    if not action["adjustments"] and not action.get("reframe"):
         return None
-    return {"action": "adjust_composition", "reason": ",".join(dict.fromkeys(reasons)), "adjustments": adjustments}
+    action["reason"] = ",".join(dict.fromkeys(reasons))
+    return action
 
 
 # ---------------------------------------------------------------------------
-# Applying repairs (existing Visual Director / media systems only)
+# Applying repairs: bounded scene-level escalation through existing systems
 # ---------------------------------------------------------------------------
+
+_SNAPSHOT_KEYS = ("media", "asset_status", "visual_director", "visual_continuity", "fallback_reason", "overlays", "render_adjustments", "media_repair")
+
 
 def _scene_snapshot(scene: dict[str, Any]) -> dict[str, Any]:
     media = scene.get("media") if isinstance(scene.get("media"), dict) else {}
@@ -1034,100 +1088,381 @@ def _scene_snapshot(scene: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _capture(scene: dict[str, Any]) -> dict[str, Any]:
+    return copy.deepcopy({key: scene.get(key) for key in _SNAPSHOT_KEYS})
+
+
+def _restore(scene: dict[str, Any], saved: dict[str, Any]) -> None:
+    for key, value in copy.deepcopy(saved).items():
+        if value is None:
+            scene.pop(key, None)
+        else:
+            scene[key] = value
+
+
+class _Repairer:
+    """Applies one scene's action: each candidate is trial-rendered and scored first."""
+
+    def __init__(self, review: _Review, *, prepare_media: Callable[[dict[str, Any]], Any], generator: Any | None, project_id: str):
+        self.review = review
+        self.state = review.state
+        self.settings = review.settings
+        self.prepare_media = prepare_media
+        self.generator = generator
+        self.project_id = project_id
+        self._trials = 0
+        # Visuals accepted in this pass per fact/block (for intentional continuity).
+        self.accepted: dict[str, tuple[str, str]] = {}
+
+    # -- trial render of one scene (the real renderer, one short segment) ----
+
+    def trial(self, scene: dict[str, Any], row: _Row) -> dict[str, Any] | None:
+        """Score what this scene would render as now; ``None`` without a local visual model."""
+        from .renderer import RenderUnavailable, _create_visual_segment
+
+        if not self.review.semantic_ready:
+            return None
+        ffmpeg = ffmpeg_path()
+        scenes = self.state.get("scenes") or []
+        index = next((position for position, item in enumerate(scenes) if item is scene), 0)
+        duration = max(0.8, min(3.0, float(scene.get("end") or 0) - float(scene.get("start") or 0)))
+        self._trials += 1
+        images: list[Image.Image] = []
+        kept = {key: copy.deepcopy(scene.get(key)) for key in ("smart_crop", "still_motion", "overlay_render")}
+        try:
+            with tempfile.TemporaryDirectory(prefix="clipforge-critic-trial-") as name:
+                temp = Path(name)
+                segment = _create_visual_segment(ffmpeg, self.state, scene, index, duration, temp, self.settings)
+                for position, timestamp in enumerate(scene_sample_times(0.0, duration)):
+                    frame = temp / f"trial-{position}.jpg"
+                    if extract_video_frame(ffmpeg, segment, timestamp, frame, width=FRAME_WIDTH):
+                        with Image.open(frame) as image:
+                            images.append(image.convert("RGB"))
+        except (RenderUnavailable, OSError, ValueError):
+            return {"score": 0.0, "min_frame": 0.0, "status": "trial_render_failed"}
+        finally:
+            scene.pop("render_segment", None)
+            for key, value in kept.items():
+                if value is None:
+                    scene.pop(key, None)
+                else:
+                    scene[key] = value
+        identity = str((scene.get("media") or {}).get("identity") or "none")
+        result = self.review._score_frames(images, self.review._texts(row), f"critic-trial:{row.scene_id}:{identity}:{self._trials}")
+        if result is None:
+            return None
+        score = float(result.scene_score if result.scene_score is not None else result.score)
+        frames = [float(value) for value in result.frame_scores] or [score]
+        return {"score": round(score, 4), "min_frame": round(min(frames), 4), "presentation_risk": bool(result.presentation_risk)}
+
+    # -- media steps -------------------------------------------------------
+
+    def _strategy(self, scene: dict[str, Any]) -> dict[str, Any]:
+        from .visual_director import plan_scene_strategy
+
+        strategy = scene.get("visual_director")
+        if not isinstance(strategy, dict) or not strategy:
+            strategy = plan_scene_strategy(scene, self.state, build_visual_query_plan(scene, self.state))
+            scene["visual_director"] = strategy
+        return strategy
+
+    def _reject(self, scene: dict[str, Any], identity: str | None) -> None:
+        if identity:
+            scene["rejected_media_identities"] = list(dict.fromkeys([*(scene.get("rejected_media_identities") or []), identity]))
+
+    def _judge(self, scene: dict[str, Any], row: _Row, step: str, steps: list[dict[str, Any]], *, required: float, text_ok: bool) -> bool:
+        """Trial-render the current candidate; ``True`` when it is good enough."""
+        media = scene.get("media") if isinstance(scene.get("media"), dict) else {}
+        entry: dict[str, Any] = {"step": step, "identity": media.get("identity"), "source": media_source(media) if media else None}
+        steps.append(entry)
+        if reveal_problems(scene, self.state):
+            entry.update(accepted=False, reason="not_reveal_safe")
+            return False
+        attach_overlays_for(self.state)
+        trial = self.trial(scene, row)
+        if trial is None:
+            entry.update(accepted=True, reason="unverified_no_local_visual_model")
+            return True
+        entry.update(trial)
+        ok = trial["score"] >= required and (text_ok or not trial.get("presentation_risk"))
+        entry["accepted"] = ok
+        if not ok:
+            entry["reason"] = "remained_text_heavy" if trial["score"] >= required else "rendered_match_below_threshold"
+        return ok
+
+    def escalate_media(self, action: dict[str, Any], scene: dict[str, Any], row: _Row) -> dict[str, Any]:
+        """Real alternative -> generated image -> fitting base (+overlay) -> planned graphic."""
+        required = self.review.required_score(row)
+        text_ok = action.get("reason") != "text_heavy"
+        original = _capture(scene)
+        steps: list[dict[str, Any]] = []
+        best: tuple[float, dict[str, Any]] = (row.semantic_score if row.semantic_score is not None else -1.0, original)
+
+        def remember() -> None:
+            nonlocal best
+            score = steps[-1].get("score")
+            if isinstance(score, (int, float)) and score > best[0] and steps[-1].get("reason") != "not_reveal_safe":
+                best = (float(score), _capture(scene))
+
+        for identity in action.get("reject") or []:
+            self._reject(scene, identity)
+        strategy = self._strategy(scene)
+        result = self._escalate(action, scene, row, strategy, required=required, text_ok=text_ok, original=original, steps=steps, remember=remember)
+        if result.get("accepted_step") and scene.get("block_id"):
+            self.accepted[str(scene["block_id"])] = (str((scene.get("media") or {}).get("identity") or ""), str(scene.get("id") or ""))
+        if result.get("accepted_step") is None:
+            _restore(scene, best[1])
+            rejected = set(scene.get("rejected_media_identities") or [])
+            kept = str((scene.get("media") or {}).get("identity") or "")
+            if kept in rejected and best[1] is not original:
+                scene["rejected_media_identities"] = [value for value in scene["rejected_media_identities"] if value != kept]
+            changed = kept != str((original.get("media") or {}).get("identity") or "")
+            reason = next((step["reason"] for step in reversed(steps) if step.get("step") == "generated_image" and step.get("reason")), None)
+            result = {
+                "status": "applied" if changed else "unresolved",
+                "accepted_step": "best_available" if changed else None,
+                "unresolved_reason": "no_sufficiently_relevant_visual" if reason in {None, "rendered_match_below_threshold"} else reason,
+                "steps": steps,
+            }
+        return result
+
+    def _escalate(
+        self, action: dict[str, Any], scene: dict[str, Any], row: _Row, strategy: dict[str, Any], *,
+        required: float, text_ok: bool, original: dict[str, Any], steps: list[dict[str, Any]], remember: Callable[[], None],
+    ) -> dict[str, Any]:
+        from .visual_director import (
+            GENERATE_FALLBACK,
+            GENERATED_IMAGE,
+            auto_generation_block_reason,
+            generate_scene_image,
+            record_decision,
+            render_scene_graphic,
+            visual_reveal_safe,
+        )
+
+        # 0. The same fact's visual, just repaired in this pass: continuity first.
+        partner = self.accepted.get(str(scene.get("block_id") or ""))
+        if partner and partner[1] != scene.get("id") and partner[0] not in set(scene.get("rejected_media_identities") or []):
+            base_action = {"base_identity": partner[0], "base_scene_id": partner[1], "reason": "visual_continuity"}
+            if self._apply_base(scene, base_action, strategy) and self._judge(scene, row, "continue_repaired_fact_visual", steps, required=required, text_ok=text_ok):
+                return {"status": "applied", "accepted_step": "continue_base_visual", "steps": steps}
+            if steps:
+                remember()
+            _restore(scene, original)
+        # 1. The Visual Director's own chain for this scene, without falling back
+        #    to another scene's visual: free real media (the rejected identities
+        #    excluded), then its bounded generated image when nothing real passes.
+        if action["action"] in {"continue_base_visual", "convert_graphic_to_overlay"}:
+            if self._apply_base(scene, action, strategy) and self._judge(scene, row, action["action"], steps, required=required, text_ok=text_ok):
+                return {"status": "applied", "accepted_step": action["action"], "steps": steps}
+            if steps:
+                remember()
+            _restore(scene, original)
+        scene["asset_status"] = "replacement_required"
+        scene["media_repair"] = {"no_reuse": True}
+        scene.pop("visual_continuity", None)
+        self.prepare_media(self.state)
+        scene.pop("media_repair", None)
+        strategy = self._strategy(scene)
+        media = scene.get("media") if isinstance(scene.get("media"), dict) else {}
+        identity = str(media.get("identity") or "")
+        fresh = identity and identity != (original.get("media") or {}).get("identity") and identity not in set(action.get("reject") or [])
+        generated_now = media_source(media) == GENERATED_ASSET_SOURCE and fresh
+        if fresh:
+            if self._judge(scene, row, "generated_image" if generated_now else "real_alternative", steps, required=required, text_ok=text_ok):
+                return {"status": "applied", "accepted_step": steps[-1]["step"], "steps": steps}
+            remember()
+            self._reject(scene, identity)
+        else:
+            steps.append({"step": "real_alternative", "accepted": False, "reason": "no_accepted_real_alternative"})
+        # 2. One bounded generated image, through the same budget checks.
+        if not generated_now:
+            blocked = auto_generation_block_reason(self.state, scene, self.settings, self.generator)
+            if blocked:
+                steps.append({"step": "generated_image", "accepted": False, "reason": blocked})
+            else:
+                metadata, record = generate_scene_image(
+                    scene, self.state, strategy, project_id=self.project_id, settings=self.settings, generator=self.generator,
+                    verifier=self.review.verifier, trigger="auto", reason="final_critic_escalation",
+                )
+                strategy.setdefault("generation", {}).update(status=record["status"], model=record.get("model"), quality=record.get("quality"))
+                if metadata is None:
+                    steps.append({"step": "generated_image", "accepted": False, "reason": record.get("error") or record["status"]})
+                else:
+                    metadata.update(story_role=strategy.get("story_role"), is_primary_answer=bool(strategy.get("is_primary_answer")))
+                    metadata["reveal_safe"] = bool(metadata.get("reveal_safe", True)) and visual_reveal_safe(
+                        self.state, strategy, scene.get("visual_query_plan") if isinstance(scene.get("visual_query_plan"), dict) else {}
+                    )
+                    scene["media"] = metadata
+                    scene["asset_status"] = "generated_image_ready"
+                    scene.pop("fallback_reason", None)
+                    record_decision(scene, strategy, GENERATE_FALLBACK, GENERATED_IMAGE, "final_critic_escalation")
+                    if self._judge(scene, row, "generated_image", steps, required=required, text_ok=text_ok):
+                        return {"status": "applied", "accepted_step": "generated_image", "steps": steps}
+                    remember()
+                    self._reject(scene, str(metadata.get("identity") or ""))
+        # 3. A project visual that clearly fits this scene (rendered-frame score),
+        #    with the scene's information drawn as an overlay.
+        for _score, candidate in self.review.base_candidates(row, minimum=required):
+            if candidate.identity in set(scene.get("rejected_media_identities") or []):
+                continue
+            base_action = {"base_identity": candidate.identity, "base_scene_id": candidate.scene_id, "reason": action.get("reason") or "semantic_match"}
+            if self._apply_base(scene, base_action, strategy) and self._judge(scene, row, "fitting_base_visual", steps, required=required, text_ok=text_ok):
+                return {"status": "applied", "accepted_step": "fitting_base_visual", "steps": steps}
+            remember()
+            _restore(scene, original)
+            break
+        # 4. The scene's planned explanatory graphic (only where one exists, and
+        #    never as the answer to a text-heavy scene).
+        if strategy.get("graphic") and text_ok:
+            metadata = render_scene_graphic(scene, self.state, strategy, project_id=self.project_id, settings=self.settings)
+            if metadata is not None and not reveal_problems(scene, self.state, media=metadata, overlays=[]):
+                scene["media"] = metadata
+                scene["asset_status"] = "graphic_ready"
+                strategy.update(composition="fullscreen_graphic", composition_reason="no_acceptable_base_visual")
+                record_decision(scene, strategy, DEGRADED, strategy.get("planned_type"), "final_critic_escalation")
+                steps.append({"step": "planned_graphic", "identity": metadata["identity"], "accepted": True})
+                return {"status": "applied", "accepted_step": "planned_graphic", "steps": steps}
+        # Nothing clearly better: the caller keeps the best-scoring option.
+        return {"status": "unresolved", "accepted_step": None, "steps": steps}
+
+    def _apply_base(self, scene: dict[str, Any], action: dict[str, Any], strategy: dict[str, Any]) -> bool:
+        base = next(
+            (dict(item["media"]) for item in self.state.get("scenes") or [] if isinstance(item.get("media"), dict) and str(item["media"].get("identity") or "") == action["base_identity"]),
+            None,
+        )
+        if base is None or reveal_problems(scene, self.state, media=base, overlays=[]) or not _reuse_safe(base, strategy or {"reveal_allowed": True}):
+            return False
+        base.pop("manually_selected", None)
+        scene["media"] = base
+        scene["asset_status"] = "block_visual_continued"
+        scene.pop("fallback_reason", None)
+        scene["visual_continuity"] = {"source_scene_id": action["base_scene_id"], "identity": action["base_identity"], "reason": f"final_critic_{action.get('reason')}"}
+        if action.get("overlay_spec"):
+            strategy["overlay_spec"] = action["overlay_spec"]
+            strategy["composition"] = "base_with_overlay"
+            strategy["composition_reason"] = "final_critic_graphic_to_overlay"
+        elif not strategy.get("overlay_spec") and strategy.get("graphic"):
+            spec = _overlay_graphic_spec(strategy["graphic"])
+            if spec is not None:
+                strategy["overlay_spec"] = spec
+        if action.get("overlay_adjustments") or (strategy.get("overlay_spec") and overlay_would_dominate(strategy["overlay_spec"], self.state)):
+            scene["render_adjustments"] = {**(scene.get("render_adjustments") or {}), "overlay": {"mode": "compact"}, "source": "final_critic"}
+        strategy.update(resolved_type=REUSE_PREVIOUS_VISUAL, decision_reason="final_critic_base_visual")
+        return True
+
+    # -- framing steps -----------------------------------------------------
+
+    def reframe(self, action: dict[str, Any], scene: dict[str, Any], row: _Row) -> dict[str, Any]:
+        """Crop, then less motion, then a frozen still; media only if framing still fails."""
+        required = max(SEMANTIC_GOOD, self.review.required_score(row))
+        steps: list[dict[str, Any]] = []
+        best: tuple[float, dict[str, Any]] | None = None
+        adjustments = dict(scene.get("render_adjustments") or {})
+        adjustments.update(action.get("adjustments") or {})
+        candidates: list[tuple[str, dict[str, Any]]] = []
+        crop = _recalculated_crop(self.review, row)
+        if crop is not None:
+            candidates.append(("recompute_focal_crop", {"crop": crop}))
+        motion = row.entry.get("motion") if isinstance(row.entry.get("motion"), dict) else {}
+        if row.still and motion.get("type") not in {None, "static"} and not motion.get("reduced"):
+            candidates.append(("reduce_motion", {"motion": "reduced"}))
+        if row.still and motion.get("type") not in {None, "static"}:
+            candidates.append(("freeze_still", {"motion": "static"}))
+        if not candidates and action.get("adjustments"):
+            candidates.append(("overlay_only", {}))
+        for step, change in candidates:
+            adjustments.update(change)
+            scene["render_adjustments"] = {**adjustments, "source": "final_critic"}
+            attach_overlays_for(self.state)
+            trial = self.trial(scene, row)
+            entry = {"step": step, **change, **(trial or {})}
+            steps.append(entry)
+            if trial is None:
+                entry["accepted"] = True
+                return {"status": "applied", "accepted_step": step, "steps": steps}
+            # The subject must stay visible in every sampled frame.
+            entry["accepted"] = trial["min_frame"] >= required
+            if best is None or trial["min_frame"] > best[0]:
+                best = (trial["min_frame"], copy.deepcopy(scene["render_adjustments"]))
+            if entry["accepted"]:
+                return {"status": "applied", "accepted_step": step, "steps": steps}
+        if best is not None:
+            scene["render_adjustments"] = best[1]
+        if action.get("allow_media_escalation") and steps:
+            result = self.escalate_media({"action": "replace_media", "reason": "semantic_match", "reject": [row.identity]}, scene, row)
+            result["steps"] = steps + result["steps"]
+            if result.get("accepted_step"):
+                return result
+            return {**result, "status": "applied" if best is not None else result["status"]}
+        return {"status": "applied" if steps else "unresolved", "accepted_step": None, "unresolved_reason": "framing_still_fails", "steps": steps}
+
+
+def attach_overlays_for(state: dict[str, Any]) -> None:
+    from .media import attach_project_overlays
+
+    attach_project_overlays([scene for scene in state.get("scenes") or [] if isinstance(scene, dict)])
+
+
 def apply_repairs(
     actions: list[dict[str, Any]],
     state: dict[str, Any],
     *,
+    review: _Review,
     prepare_media: Callable[[dict[str, Any]], Any],
+    generator: Any | None,
     settings: Settings,
+    project_id: str,
     pass_index: int,
 ) -> list[dict[str, Any]]:
-    """Apply planned actions; media changes run through ``prepare_media`` once."""
+    """Apply planned actions scene by scene (bounded escalation inside each action)."""
     records: list[dict[str, Any]] = []
-    previous: dict[str, dict[str, Any]] = {}
     counts_before = generation_counts(state)
+    repairer = _Repairer(review, prepare_media=prepare_media, generator=generator, project_id=project_id)
+    # Retiming after the render dropped the overlays; restore them first.
+    attach_overlays_for(state)
     for action in actions:
-        record = {**action, "pass": pass_index, "attempted_at": _now()}
+        record = {**action, "pass": pass_index, "attempted_at": _now(), "repair_attempted": action.get("status") == "planned"}
         records.append(record)
         if action.get("status") != "planned":
+            record["repair_effective"] = False
             continue
         scene = _scene_by_id(state, action["scene_id"])
-        if scene is None or (action["action"] in _MEDIA_ACTIONS and user_locked_visual(scene)):
-            record.update(status="blocked", blocked_reason="user_locked_visual" if scene is not None else "scene_changed_after_render")
+        row = review.row(action["scene_id"])
+        if scene is None or row is None or (action["action"] in _MEDIA_ACTIONS and user_locked_visual(scene)):
+            record.update(status="blocked", repair_effective=False, blocked_reason="user_locked_visual" if scene is not None else "scene_changed_after_render")
             continue
         record["before"] = _scene_snapshot(scene)
-        previous[action["scene_id"]] = copy.deepcopy({key: scene.get(key) for key in ("media", "asset_status", "visual_director", "visual_continuity", "fallback_reason")})
+        record["before_score"] = row.semantic_score
         kind = action["action"]
-        if kind == "replace_media":
-            rejected = list(dict.fromkeys([*(scene.get("rejected_media_identities") or []), *[value for value in action.get("reject") or [] if value]]))
-            scene["rejected_media_identities"] = rejected
-            scene["asset_status"] = "replacement_required"
-            scene.pop("visual_continuity", None)
+        if kind in _MEDIA_ACTIONS:
+            outcome = repairer.escalate_media(action, scene, row)
             record["invalidated"] = ["media", "crop", "overlay", "motion"]
-        elif kind in {"convert_graphic_to_overlay", "continue_base_visual"}:
-            base = next(
-                (dict(item["media"]) for item in state.get("scenes") or [] if isinstance(item.get("media"), dict) and str(item["media"].get("identity") or "") == action["base_identity"]),
-                None,
-            )
-            strategy = scene.get("visual_director") if isinstance(scene.get("visual_director"), dict) else {}
-            if base is None or reveal_problems(scene, state, media=base, overlays=[]) or not _reuse_safe(base, strategy or {"reveal_allowed": True}):
-                record.update(status="blocked", blocked_reason="base_visual_not_reveal_safe" if base is not None else "base_visual_unavailable")
-                continue
-            base.pop("manually_selected", None)
-            scene["media"] = base
-            scene["asset_status"] = "block_visual_continued"
-            scene.pop("fallback_reason", None)
-            scene["visual_continuity"] = {"source_scene_id": action["base_scene_id"], "identity": action["base_identity"], "reason": f"final_critic_{action['reason']}"}
-            if strategy:
-                if kind == "convert_graphic_to_overlay":
-                    strategy["overlay_spec"] = action["overlay_spec"]
-                    strategy["composition"] = "base_with_overlay"
-                    strategy["composition_reason"] = "final_critic_graphic_to_overlay"
-                    if action.get("overlay_adjustments"):
-                        scene["render_adjustments"] = {
-                            **(scene.get("render_adjustments") or {}), "overlay": dict(action["overlay_adjustments"]), "source": "final_critic",
-                        }
-                strategy.update(resolved_type=REUSE_PREVIOUS_VISUAL, decision_reason=f"final_critic_{kind}")
-            record["invalidated"] = ["media", "crop", "overlay", "motion"]
-        elif kind == "adjust_composition":
-            adjustments = dict(scene.get("render_adjustments") or {})
-            adjustments.update(action["adjustments"])
-            adjustments["source"] = "final_critic"
-            scene["render_adjustments"] = adjustments
-            record["invalidated"] = sorted(key for key in action["adjustments"] if key in {"overlay", "motion", "crop"})
-        record["status"] = "applied"
-    # One media pass for the whole repair: rejected scenes search again through
-    # the normal chain (free real media, then bounded generation, reuse, a
-    # graphic); every other scene keeps its cached media, and overlays are
-    # re-attached from the Visual Director strategies.
+        else:
+            if action.get("adjustments"):
+                scene["render_adjustments"] = {**(scene.get("render_adjustments") or {}), **action["adjustments"], "source": "final_critic"}
+            if action.get("reframe"):
+                outcome = repairer.reframe(action, scene, row)
+            else:
+                outcome = {"status": "applied", "accepted_step": "overlay_adjustment", "steps": [{"step": "overlay_adjustment", **action["adjustments"]}]}
+            record["invalidated"] = sorted({key for key in (scene.get("render_adjustments") or {}) if key in {"overlay", "motion", "crop"}})
+        record.update(outcome)
+        record["after"] = _scene_snapshot(scene)
+        record["generation"] = dict((scene.get("visual_director") or {}).get("generation") or {})
+        trial_scores = [step.get("score") for step in outcome.get("steps") or [] if isinstance(step.get("score"), (int, float))]
+        record["trial_score"] = max(trial_scores) if trial_scores else None
+    # Scenes whose media vanished with retiming get their normal media pass;
+    # every other scene is cached, and overlays follow the strategies.
     prepare_media(state)
     policy = generation_policy(state, settings)
     counts_after = generation_counts(state)
-    for record in records:
-        if record.get("status") != "applied" or record["scene_id"] not in previous:
-            continue
-        scene = _scene_by_id(state, record["scene_id"])
-        if scene is None:
-            continue
-        after = _scene_snapshot(scene)
-        record["after"] = after
-        if record["action"] == "replace_media":
-            new_identity = after["media_identity"]
-            unsafe = reveal_problems(scene, state)
-            if unsafe:
-                # A repair may never introduce an earlier answer leak.
-                scene.update(copy.deepcopy(previous[record["scene_id"]]))
-                record.update(status="reverted", blocked_reason="replacement_not_reveal_safe", after=_scene_snapshot(scene))
-            elif not new_identity or new_identity == record["before"]["media_identity"] or new_identity in (scene.get("rejected_media_identities") or []):
-                record.update(status="no_alternative")
-            record["generation"] = dict((scene.get("visual_director") or {}).get("generation") or {})
-    record_budget = {
+    budget = {
         "auto_generated_before": counts_before["auto_generated_images"],
         "auto_generated_after": counts_after["auto_generated_images"],
         "project_limit": policy["max_auto_generated_images_per_project"],
     }
     for record in records:
-        record["generation_budget"] = record_budget
+        record["generation_budget"] = budget
     return records
 
 
@@ -1149,38 +1484,101 @@ def _rating(row: _Row | None, category: str) -> str | None:
     return None if row is None else row.dimensions.get(category, {}).get("rating")
 
 
+_SCENE_QUALITY_CODES = {"wrong_media", "weak_media", "text_heavy", "subject_lost_in_render", "motion_loses_subject", "unusable_frame"}
+
+_STEP_MESSAGES = {
+    "real_alternative": "replaced a weak visual",
+    "generated_image": "replaced a weak visual with a generated image",
+    "fitting_base_visual": "reused a visual that fits this scene, with its information as an overlay",
+    "planned_graphic": "used the planned explanatory graphic",
+    "best_available": "switched to the best available visual",
+    "continue_base_visual": "kept the fact's visual for continuity",
+    "convert_graphic_to_overlay": "turned the full-screen graphic into an overlay on a real visual",
+    "recompute_focal_crop": "re-centred the crop on the subject",
+    "reduce_motion": "reduced the camera motion",
+    "freeze_still": "disabled unsafe camera motion",
+    "overlay_only": "adjusted the overlay",
+}
+_UNRESOLVED_MESSAGES = {
+    "no_sufficiently_relevant_visual": "no sufficiently relevant visual found",
+    "project_budget_exhausted": "no relevant visual found and the AI image budget is used up",
+    "scene_attempts_exhausted": "no relevant visual found; this scene already used its AI image attempt",
+    "disabled": "no relevant visual found; the AI image fallback is off",
+    "unavailable_no_api_key": "no relevant visual found; the AI image fallback is not configured",
+    "remained_text_heavy": "the replacement remained text-heavy",
+    "framing_still_fails": "the subject still leaves the frame",
+    "user_locked_visual": "your chosen visual looks weak; it was not replaced automatically",
+    "no_alternative_found_earlier": "no better visual was found",
+    "no_safe_targeted_repair": "no safe automatic repair exists",
+    "repair_render_failed": "the repair render failed; the original was kept",
+}
+
+
+def _result_message(record: dict[str, Any]) -> str:
+    if record.get("repair_effective"):
+        if record.get("action") == "adjust_composition" and record.get("accepted_step") in {None, "overlay_adjustment"}:
+            overlay = (record.get("adjustments") or {}).get("overlay") or {}
+            parts = ["removed the overlay" if overlay.get("mode") == "remove" else "simplified the overlay" if overlay.get("mode") == "compact" else ""]
+            if overlay.get("placement"):
+                parts.append("moved the overlay away from the captions")
+            return ", ".join(part for part in parts if part) or "adjusted the overlay"
+        return _STEP_MESSAGES.get(str(record.get("accepted_step") or record.get("action")), "repaired")
+    reason = record.get("unresolved_reason") or record.get("blocked_reason")
+    if reason in _UNRESOLVED_MESSAGES:
+        return _UNRESOLVED_MESSAGES[reason]
+    remaining = record.get("remaining_issue") or []
+    if "text_heavy" in remaining:
+        return "the scene is still text-heavy"
+    if {"wrong_media", "weak_media"} & set(remaining):
+        return "the visual still does not clearly match the narration"
+    if {"subject_lost_in_render", "motion_loses_subject"} & set(remaining):
+        return "the subject still leaves the frame"
+    return "the repair did not resolve the issue"
+
+
 def _evaluate(records: list[dict[str, Any]], before: _Review, after: _Review) -> None:
+    """A repair is effective only when its triggering issue is gone from the new render."""
     after_ids = {issue["id"] for issue in after.issues()}
     for record in records:
-        if record.get("status") not in {"applied", "no_alternative"}:
+        if not record.get("repair_attempted") or record.get("status") == "blocked":
             continue
         targeted = set(record.get("issue_ids") or [])
-        resolved = sorted(targeted - after_ids)
-        remaining = sorted(targeted & after_ids)
         after_row = after.row(record["scene_id"])
-        new_reveal = [
-            issue["id"] for issue in (after_row.issues if after_row else [])
-            if issue["category"] == "reveal_safety" and issue["id"] not in targeted
-        ]
         before_row = before.row(record["scene_id"])
-        record["result"] = {
-            "resolved": resolved,
-            "remaining": remaining,
-            "new_reveal_issues": new_reveal,
-            "before": {category: _rating(before_row, category) for category in record.get("categories") or []},
-            "after": {category: _rating(after_row, category) for category in record.get("categories") or []},
-            "score_before": before_row.semantic_score if before_row else None,
-            "score_after": after_row.semantic_score if after_row else None,
-        }
-        if new_reveal:
-            record["outcome"] = "regressed"
-        elif resolved and not remaining:
-            record["outcome"] = "resolved"
-        elif resolved:
-            record["outcome"] = "partially_resolved"
+        after_issues = after_row.issues if after_row else []
+        remaining = {issue["code"] for issue in after_issues if issue["id"] in targeted}
+        if record.get("action") in _MEDIA_ACTIONS or record.get("reframe"):
+            # A new visual or framing must also leave the scene clearly matching.
+            remaining |= {issue["code"] for issue in after_issues if issue["code"] in _SCENE_QUALITY_CODES}
+        new_reveal = [issue["id"] for issue in after_issues if issue["category"] == "reveal_safety" and issue["id"] not in targeted]
+        before_score = before_row.semantic_score if before_row else None
+        after_score = after_row.semantic_score if after_row else None
+        effective = record.get("status") == "applied" and not remaining and not new_reveal
+        if new_reveal or (before_score is not None and after_score is not None and after_score < before_score - 0.02):
+            outcome = "regressed"
+        elif effective:
+            outcome = "resolved"
         else:
-            record["outcome"] = "unresolved"
-        record["improved"] = record["outcome"] in {"resolved", "partially_resolved"}
+            outcome = "unresolved"
+        record.update(
+            repair_effective=effective,
+            improved=effective,
+            outcome=outcome,
+            before_score=before_score,
+            after_score=after_score,
+            remaining_issue=sorted(remaining),
+            result={
+                "resolved": sorted(targeted - after_ids),
+                "remaining": sorted(targeted & after_ids),
+                "new_reveal_issues": new_reveal,
+                "before": {category: _rating(before_row, category) for category in record.get("categories") or []},
+                "after": {category: _rating(after_row, category) for category in record.get("categories") or []},
+            },
+        )
+
+
+def _unresolved_issues(issues: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [issue for issue in issues if issue["severity"] == "error" or (issue["severity"] == "warning" and issue["code"] in REPAIRABLE_CODES)]
 
 
 def _summary(status: str, repaired: list[str], remaining: list[dict[str, Any]], warnings: list[dict[str, Any]]) -> dict[str, Any]:
@@ -1214,6 +1612,7 @@ def run_final_quality_review(
     rerender: Callable[[dict[str, Any]], Any] | None = None,
     prepare_media: Callable[[dict[str, Any]], Any] | None = None,
     verifier: Any | None = None,
+    generator: Any | None = None,
     max_passes: int | None = None,
 ) -> dict[str, Any]:
     """Review the rendered file, run at most ``max_passes`` repair renders, persist the result.
@@ -1229,6 +1628,10 @@ def run_final_quality_review(
         state["final_quality_review"] = disabled_review(revision)
         return state["final_quality_review"]
     verifier = verifier if verifier is not None else get_visual_verifier()
+    if generator is None:
+        from .image_generation import get_image_generator
+
+        generator = get_image_generator(settings)
     vision = get_vision_critic(settings)
     if vision is not None:
         reviewer["vision"] = getattr(vision, "name", "optional")
@@ -1265,11 +1668,15 @@ def run_final_quality_review(
             backup.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(video, backup)
         try:
-            records = apply_repairs(planned, state, prepare_media=prepare_media, settings=settings, pass_index=pass_count + 1)
+            records = apply_repairs(
+                planned, state, review=review, prepare_media=prepare_media, generator=generator,
+                settings=settings, project_id=project_id, pass_index=pass_count + 1,
+            )
             if not any(record.get("status") == "applied" for record in records):
                 # Nothing on screen changed, so no repair render is needed.
                 for record in records:
-                    record.update(outcome="unresolved", improved=False)
+                    record.update(outcome="unresolved", improved=False, repair_effective=False)
+                    record["result_message"] = _result_message(record)
                 repairs.extend(records)
                 break
             rerender(state)
@@ -1279,7 +1686,10 @@ def run_final_quality_review(
             if backup is not None and video is not None and backup.is_file():
                 shutil.copy2(backup, video)
             render_error = str(exc)[:300] or type(exc).__name__
-            repairs.extend({**action, "pass": pass_count + 1, "status": "failed", "blocked_reason": "repair_render_failed"} for action in planned if action["status"] == "planned")
+            repairs.extend(
+                {**action, "pass": pass_count + 1, "status": "failed", "blocked_reason": "repair_render_failed", "repair_attempted": True, "repair_effective": False}
+                for action in planned if action["status"] == "planned"
+            )
             break
         finally:
             if backup is not None:
@@ -1295,10 +1705,14 @@ def run_final_quality_review(
         history.append(_compact(after))
         review = after
     final_issues = review.issues()
-    errors = [issue for issue in final_issues if issue["severity"] == "error"]
-    warnings = [issue for issue in final_issues if issue["severity"] == "warning"]
-    repaired = sorted({record["scene_id"] for record in repairs if record.get("outcome") in {"resolved", "partially_resolved"}})
-    changed = sorted({record["scene_id"] for record in repairs if record.get("status") in {"applied", "no_alternative"} and record.get("after") and record.get("after") != record.get("before")})
+    errors = _unresolved_issues(final_issues)
+    warnings = [issue for issue in final_issues if issue["severity"] == "warning" and issue not in errors]
+    for record in repairs:
+        record.setdefault("repair_effective", False)
+        record["result_message"] = _result_message(record)
+    # Only scenes whose triggering issue is actually gone count as repaired.
+    repaired = sorted({record["scene_id"] for record in repairs if record.get("repair_effective")} - {issue["scene_id"] for issue in errors})
+    changed = sorted({record["scene_id"] for record in repairs if record.get("status") == "applied" and record.get("after") and record.get("after") != record.get("before")})
     if errors:
         status = "issues_remain"
     elif repaired:
@@ -1323,7 +1737,7 @@ def run_final_quality_review(
         "issues": final_issues,
         "initial_issues": initial.issues() if pass_count else [],
         "repairs": repairs,
-        "unresolved": [issue["id"] for issue in errors + warnings],
+        "unresolved": [issue["id"] for issue in errors],
         "repaired_scenes": repaired,
         "changed_scenes": changed,
         "history": history,

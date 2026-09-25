@@ -48,6 +48,7 @@ CONCEPTS: dict[str, tuple[tuple[int, int, int], tuple[str, ...]]] = {
     "glacier": ((170, 200, 215), ("glacier", "coastline")),
     "octopus": ((190, 60, 150), ("octopus", "tentacle", "krake")),
     "heart": ((200, 30, 40), ("heart", "blood")),
+    "graffiti": ((250, 120, 20), ("graffiti", "bridge")),
     "wall": ((128, 128, 128), ()),
 }
 
@@ -72,6 +73,17 @@ def pixel_score(image: Image.Image, texts) -> float:
     return round(0.12 + 0.24 * min(1.0, matched * 2), 4)
 
 
+TEXT_PANEL_FRACTION = 0.04
+
+
+def text_heavy(image: Image.Image) -> bool:
+    """Printed pages, and large dark translucent text panels (overlay pills), read as text."""
+    raw = image.convert("RGB").resize((72, 128)).tobytes()
+    pixels = [tuple(raw[index:index + 3]) for index in range(0, len(raw), 3)]
+    panel = sum(1 for pixel in pixels if max(pixel) - min(pixel) < 40 and sum(pixel) / 3 < 110) / len(pixels)
+    return concept_fractions(image)["book"] > 0.4 or panel >= TEXT_PANEL_FRACTION
+
+
 class PixelVerifier:
     """Stand-in for OpenCLIP that judges real pixels (frames, crops, files)."""
 
@@ -92,7 +104,8 @@ class PixelVerifier:
         if not scores:
             return VisualVerification(None, "unavailable_frames")
         middle = sorted(scores)[len(scores) // 2]
-        return VisualVerification(middle, "verified", "local_video_frames", tuple(scores), len(scores), middle, middle, 0.1, 0.3, 0.1, False)
+        risk = sum(text_heavy(frame) for frame in frames) > len(frames) / 2
+        return VisualVerification(middle, "verified", "local_video_frames", tuple(scores), len(scores), middle, middle, 0.1, 0.3, 0.1, risk)
 
     def verify_local_image(self, path, texts, *, asset_identity=None):
         with Image.open(path) as image:
@@ -254,7 +267,7 @@ class Harness:
 
         return run_final_quality_review(
             state, project_id="project", revision=self.revision, settings=self.settings,
-            rerender=self.rerender, prepare_media=self.prepare, verifier=self.verifier, **kwargs,
+            rerender=self.rerender, prepare_media=self.prepare, verifier=self.verifier, generator=self.generator, **kwargs,
         )
 
 
