@@ -165,6 +165,15 @@ def replan_attention(state: dict[str, Any]) -> list[dict[str, Any]]:
         preferences,
         language=str(state.get("intent", {}).get("language") or "en"),
     )
+    from .triple_hook import hook_overlay_spec, is_hook_scene
+
+    if hook_overlay_spec(state) is not None:
+        # The on-screen hook is the one text of the opening window.
+        scenes = list(state.get("scenes") or [])
+        reserved = {index for index, scene in enumerate(scenes) if isinstance(scene, dict) and is_hook_scene(scene, state)}
+        kept = [event for event in events if event.get("scene_index") not in reserved]
+        if len(kept) != len(events):
+            events = [dict(event, id=f"attention_{index + 1:03d}") for index, event in enumerate(kept)]
     state["attention_events"] = events
     intervals = [events[index]["start"] - events[index - 1]["start"] for index in range(1, len(events))]
     scene_cuts = max(0, len(state.get("scenes") or []) - 1)

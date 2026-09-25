@@ -1,3 +1,4 @@
+import dataclasses
 import json
 import re
 from dataclasses import dataclass
@@ -157,11 +158,85 @@ class AIProjectPlan(BaseModel):
     story_arc: AIStoryArc | None = None
 
 
+TRIPLE_HOOK_STRATEGIES = (
+    "contradiction", "unexpected_consequence", "concrete_anomaly", "challenge_question", "visual_mystery",
+    "comparison_tension", "misconception_gap", "cause_effect_mystery", "surprising_scale", "immediate_scenario",
+)
+TripleHookStrategy = Literal[
+    "contradiction", "unexpected_consequence", "concrete_anomaly", "challenge_question", "visual_mystery",
+    "comparison_tension", "misconception_gap", "cause_effect_mystery", "surprising_scale", "immediate_scenario",
+]
+
+
+class AITripleHookVisual(BaseModel):
+    """Structured visual semantics of one opening shot (never prose about the topic)."""
+
+    subject: str = Field(min_length=2, max_length=120)
+    action_state: str = Field(default="", max_length=120)
+    framing: str = Field(default="", max_length=80)
+    key_detail: str = Field(default="", max_length=120)
+    contrast: str = Field(default="", max_length=120)
+    motion: str = Field(default="", max_length=100)
+    tension: str = Field(default="", max_length=120)
+    must_not_show: list[str] = Field(default_factory=list, max_length=4)
+    media_queries: list[str] = Field(default_factory=list, max_length=4)
+    media_query_targets: list[str] = Field(default_factory=list, max_length=4)
+
+
+class AITripleHookCandidate(BaseModel):
+    """One complete opening: what is heard, seen and read, designed together."""
+
+    id: str = Field(min_length=1, max_length=8)
+    strategy: TripleHookStrategy
+    verbal_hook: str = Field(min_length=1, max_length=220)
+    visual: AITripleHookVisual
+    on_screen_hook: str = Field(default="", max_length=60)
+    curiosity_target: str = Field(default="", max_length=160)
+    promised_payoff: str = Field(default="", max_length=200)
+    payoff_fact_id: str = Field(default="", max_length=16)
+    protected_information: list[str] = Field(default_factory=list, max_length=4)
+    production_feasibility: Literal["real_media_likely", "generated_image_ok", "hard_to_source", "impossible"] = "real_media_likely"
+    rationale: str = Field(default="", max_length=180)
+
+
 class AIHookGenerationResponse(BaseModel):
-    hook_candidates: list[AIHookCandidate] = Field(min_length=1, max_length=5)
-    selected_hook_strategy: str = Field(min_length=1)
+    triple_hook_candidates: list[AITripleHookCandidate] = Field(default_factory=list, max_length=5)
+    hook_candidates: list[AIHookCandidate] = Field(default_factory=list, max_length=5)
+    selected_hook_strategy: str | None = None
     visual_hook: AIVisualHook | None = None
     on_screen_text_hook: str | None = Field(default=None, max_length=80)
+
+
+class AITripleHookJudgement(BaseModel):
+    """Rubric scores (0-10) for one complete triple hook; short reason codes only."""
+
+    candidate_id: str = Field(min_length=1, max_length=8)
+    curiosity: int = Field(ge=0, le=10)
+    specificity: int = Field(ge=0, le=10)
+    comprehension: int = Field(ge=0, le=10)
+    visual_intrigue: int = Field(ge=0, le=10)
+    visual_feasibility: int = Field(ge=0, le=10)
+    verbal_quality: int = Field(ge=0, le=10)
+    on_screen_quality: int = Field(ge=0, le=10)
+    complementarity: int = Field(ge=0, le=10)
+    story_alignment: int = Field(ge=0, le=10)
+    payoff_alignment: int = Field(ge=0, le=10)
+    reveal_safety: int = Field(ge=0, le=10)
+    format_fit: int = Field(ge=0, le=10)
+    novelty: int = Field(ge=0, le=10)
+    credibility: int = Field(ge=0, le=10)
+    clickbait_free: int = Field(ge=0, le=10)
+    production_feasibility: int = Field(ge=0, le=10)
+    veto: Literal[
+        "none", "leaks_answer", "payoff_mismatch", "impossible_visual", "redundant_channels",
+        "cheap_clickbait", "contradicts_story",
+    ] = "none"
+    reason_codes: list[str] = Field(default_factory=list, max_length=5)
+
+
+class AITripleHookJudgeResponse(BaseModel):
+    judgements: list[AITripleHookJudgement] = Field(default_factory=list, max_length=8)
+    selected_candidate_id: str = Field(default="", max_length=8)
 
 
 class AIMusicRecommendations(BaseModel):
@@ -208,6 +283,16 @@ class AIHookGenerationResult:
     status: str
     error: str | None = None
     triple_hook: dict[str, Any] | None = None
+    # Triple Hook V2: complete verbal/visual/on-screen candidates from one call.
+    triple_candidates: list[dict[str, Any]] = dataclasses.field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class AITripleHookJudgeResult:
+    judgements: list[dict[str, Any]]
+    selected_candidate_id: str | None
+    status: str
+    error: str | None = None
 
 
 @dataclass(frozen=True)
@@ -218,31 +303,58 @@ class AIMusicRecommendationResult:
 
 
 HOOK_GENERATION_INSTRUCTIONS = (
-    "You are ClipForge's hook writer. The supplied body is final and must remain unchanged. "
-    "Generate only original spoken hook candidates for the opening of that body. The supplied "
-    "hook_playbook is the canonical strategy manifest: use its strategy definitions, when-to-use, "
-    "avoid guidance, and evidence opportunities; do not invent a competing strategy catalogue or "
-    "copy fallback templates. Choose only factually supportable strategies. A hook must create a "
-    "real reason to continue—curiosity, viewer involvement, tension, contrast, a correction, a "
-    "challenge, or a genuinely surprising insight—before the explanation. Never use a plain "
-    "restatement of the body as an evidence insight, repeat or lightly paraphrase the user's "
-    "question, use clickbait, or begin with unexplained specialist terminology. Keep German "
-    "everyday, short, concrete, and understandable on first listen by a typical 10–14 year old. "
-    "The supplied story_arc names the primary question, the curiosity gap and which facts may appear in a hook; "
-    "never use a fact that may not appear in the hook, and when withhold_answer is false do not invent mystery. "
-    "The supplied payoff_plan states whether a payoff is protected. Never reveal hook_must_not_reveal in "
-    "a spoken hook, visual hook, text hook, visual query, or visual subject. Alongside the candidates, return "
-    "one visual_hook and one very short on_screen_text_hook for the chosen strategy. The three channels must "
-    "serve the same curiosity but must not repeat the same sentence. The visual hook should describe real "
-    "subjects, contrast or motion for the existing media pipeline, and explicit must_not_show constraints. "
-    "Give each visual_hook media query a media_query_targets key at the same position, using the target keys "
-    "of the supplied plan (subject_a, subject_b, shared, context); never search the protected_visual_target. "
-    "The supplied reaction_arc is guidance, never permission to exaggerate: use only reactions the supported "
-    "payoff can honestly deliver, and prefer clarity over emotional intensity. The supplied format_plan "
-    "is lightweight guidance for contrast, challenge, progression, or explanation; follow it without adding scenes or filler. "
-    "The supplied novelty_plan is derived only from existing research and may suggest a useful angle, but never "
-    "supports claims of global uniqueness or unsupported surprise. "
-    "Return three to five candidates and select the strongest strategy. Return structured output only."
+    "You are ClipForge's opening designer (Triple Hook V2). The supplied body is final and must remain "
+    "unchanged. Design exactly four COMPLETE opening candidates in triple_hook_candidates. Each candidate is one "
+    "coordinated unit of three channels designed together: verbal_hook (what the viewer hears first), visual "
+    "(what the viewer sees immediately) and on_screen_hook (a very short overlay on top of that visual). The four "
+    "candidates must use genuinely different strategies, never paraphrases of each other. Strategies: "
+    "contradiction, unexpected_consequence, concrete_anomaly, challenge_question, visual_mystery, "
+    "comparison_tension, misconception_gap, cause_effect_mystery, surprising_scale, immediate_scenario. "
+    "The supplied story_arc is authoritative: it names the primary question, the primary answer, the final payoff, "
+    "fact roles, dependencies and which facts may appear in a hook (may_appear_in_hook). Never use a fact that may "
+    "not appear in the hook and never contradict the arc. When withhold_answer is true, no channel may reveal the "
+    "protected answer (payoff_plan.hook_must_not_reveal) or imply it by elimination (for example saying the other "
+    "side loses); name the protected subject only as one open option of a question, never as the result. For a quiz, "
+    "never show the answer in any channel; for a ranking never reveal the top item; for a comparison never reveal "
+    "the winner; for a factual explanation prefer a concrete anomaly or causal mystery over trivia phrasing. When "
+    "withhold_answer is false, do not invent mystery, but the hook must still not simply state the primary answer. "
+    "Every promise must be paid off by the supplied body: promised_payoff names the arc fact that answers it and "
+    "payoff_fact_id its id. No fake clickbait, no invented numbers, trends or prevalence claims, no meta language. "
+    "Verbal hook: immediate, conversational, specific, understandable without prior context by a typical 10-14 year "
+    "old, naturally speakable, short; never open with generic filler such as 'Did you know', 'You won't believe', "
+    "'Here is an interesting fact', 'Have you ever wondered' (or 'Wusstest du', 'Das wirst du nicht glauben', "
+    "'Hast du dich jemals gefragt'); never begin with unexplained specialist terms; never repeat or lightly "
+    "paraphrase the user's question; it must lead naturally into the first body sentence without repeating it. "
+    "Visual: structured, concrete and sourceable as real stock footage or photos (or, rarely, one generated image): "
+    "a concrete subject, its action or state, framing, the key visible detail, contrast, motion opportunity and "
+    "visual tension, written in English because it drives stock search and visual verification; never prose about a "
+    "concept, never text, maps with labels, diagrams or logos. protected_information names the protected answer in the "
+    "project language and in English. "
+    "Give up to four "
+    "short English provider-facing media_queries, each with a media_query_targets key at the same position "
+    "(subject_a, subject_b, shared, context); never query the protected_visual_target, and list what must not be "
+    "shown before the reveal in must_not_show. On-screen hook: at most six words and 38 characters, a complete "
+    "phrase (no fragments, no ellipsis) in the project language that adds ONE extra dimension the voice does not "
+    "say (stakes, contrast, question, surprising detail, scale, uncertainty or tension); it must never duplicate "
+    "the verbal hook, the captions or the narration. When no such text exists return an empty on_screen_hook. "
+    "The three channels must complement each other: never let voice, image and text say the same thing. "
+    "The supplied hook_playbook, reaction_arc, format_plan and novelty_plan are guidance only and never permission "
+    "to exaggerate. Also return the four verbal hooks in hook_candidates with their closest hook_playbook strategy "
+    "ID. rationale is one short sentence, not reasoning steps. Return structured output only."
+)
+
+TRIPLE_HOOK_JUDGE_INSTRUCTIONS = (
+    "You are ClipForge's opening judge. Score each COMPLETE opening candidate (verbal hook, visual, on-screen text "
+    "together) from 0 to 10 on every rubric dimension. Judge the triple, not the best sentence. Hard rules: a "
+    "candidate that reveals or implies the protected answer (payoff.hook_must_not_reveal, or protected facts of the "
+    "story arc) must get veto leaks_answer; a promise the supplied story cannot pay off gets payoff_mismatch; a "
+    "visual that cannot realistically be sourced or generated gets impossible_visual; voice, image and text that "
+    "repeat the same statement get redundant_channels; empty sensational bait gets cheap_clickbait; anything "
+    "contradicting the story arc gets contradicts_story. complementarity rewards channels that each add a different "
+    "signal; on_screen_quality rewards short complete text that adds one dimension and treats an empty on-screen "
+    "hook as acceptable (5) rather than bad. Prefer concrete, specific, credible and immediately understandable "
+    "openings that fit the selected format. Return short snake_case reason_codes only, never explanations or "
+    "reasoning steps, and select the best non-vetoed candidate. Return structured output only."
 )
 
 MUSIC_MATCHING_INSTRUCTIONS = (
@@ -289,7 +401,7 @@ def generate_hook_candidates_with_openai(
     novelty_plan: dict[str, Any] | None = None,
     story_arc: dict[str, Any] | None = None,
 ) -> AIHookGenerationResult:
-    """Generate manifest-guided candidates after the body is finalized."""
+    """One bounded call: four complete triple-hook candidates for the finalized body."""
     if not settings.openai_api_key:
         return AIHookGenerationResult([], None, "missing_key", "OPENAI_API_KEY is not configured")
     request = {
@@ -299,13 +411,14 @@ def generate_hook_candidates_with_openai(
             for key in ("topic", "question", "language", "content_type", "tone")
         },
         "final_body": body,
+        "first_body_sentence": re.split(r"(?<=[.!?])\s+", body.strip(), maxsplit=1)[0] if body.strip() else "",
         "payoff_plan": payoff_plan or {},
         "reaction_arc": reaction_arc or {},
         "format_plan": format_plan or {},
         "novelty_plan": novelty_plan or {},
         "story_arc": story_arc or {},
         "facts": [
-            {"claim": clean_research_claim(str(fact.get("claim") or ""))}
+            {"id": str(fact.get("id") or ""), "claim": clean_research_claim(str(fact.get("claim") or ""))}
             for fact in facts
             if fact.get("claim")
         ],
@@ -317,23 +430,57 @@ def generate_hook_candidates_with_openai(
             instructions=HOOK_GENERATION_INSTRUCTIONS,
             input=json.dumps(request, ensure_ascii=False),
             text_format=AIHookGenerationResponse,
-            max_output_tokens=900,
+            max_output_tokens=2400,
             store=False,
         )
         parsed = response.output_parsed
         if not isinstance(parsed, AIHookGenerationResponse):
             return AIHookGenerationResult([], None, "provider_error", "No parsed hook result")
+        triples = [candidate.model_dump(mode="json") for candidate in parsed.triple_hook_candidates]
+        verbal = [candidate.model_dump() for candidate in parsed.hook_candidates] or [
+            {"strategy": "evidence_insight", "text": item["verbal_hook"]} for item in triples
+        ]
         return AIHookGenerationResult(
-            [candidate.model_dump() for candidate in parsed.hook_candidates],
+            verbal,
             parsed.selected_hook_strategy,
             "connected",
             triple_hook={
                 "visual_hook": parsed.visual_hook.model_dump(mode="json") if parsed.visual_hook else None,
                 "on_screen_text_hook": parsed.on_screen_text_hook,
             },
+            triple_candidates=triples,
         )
     except (OpenAIError, ValueError, TypeError) as exc:
         return AIHookGenerationResult([], None, "provider_error", str(exc)[:240])
+
+
+def judge_triple_hooks_with_openai(
+    context: dict[str, Any], candidates: list[dict[str, Any]], settings: Settings
+) -> AITripleHookJudgeResult:
+    """One bounded rubric call over the complete candidates (no chain-of-thought is stored)."""
+    if not settings.openai_api_key:
+        return AITripleHookJudgeResult([], None, "missing_key", "OPENAI_API_KEY is not configured")
+    if not candidates:
+        return AITripleHookJudgeResult([], None, "skipped", "no candidates")
+    try:
+        response = OpenAI(api_key=settings.openai_api_key).responses.parse(
+            model=settings.openai_director_model,
+            instructions=TRIPLE_HOOK_JUDGE_INSTRUCTIONS,
+            input=json.dumps({"story": context, "candidates": candidates}, ensure_ascii=False),
+            text_format=AITripleHookJudgeResponse,
+            max_output_tokens=1600,
+            store=False,
+        )
+        parsed = response.output_parsed
+        if not isinstance(parsed, AITripleHookJudgeResponse):
+            return AITripleHookJudgeResult([], None, "provider_error", "No parsed judge result")
+        return AITripleHookJudgeResult(
+            [item.model_dump(mode="json") for item in parsed.judgements],
+            parsed.selected_candidate_id or None,
+            "connected",
+        )
+    except (OpenAIError, ValueError, TypeError) as exc:
+        return AITripleHookJudgeResult([], None, "provider_error", str(exc)[:240])
 
 
 def plan_with_openai(

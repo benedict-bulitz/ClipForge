@@ -218,7 +218,11 @@ def normalise_triple_hook(
     fallback: dict[str, Any],
     plan: dict[str, Any],
 ) -> dict[str, Any]:
-    """Accept provider guidance only when it cannot spoil the protected payoff."""
+    """Accept provider guidance only when it cannot spoil the protected payoff.
+
+    Legacy V1 normaliser kept for existing callers; production selects the
+    opening with ``triple_hook.plan_triple_hook`` (Triple Hook V2).
+    """
     candidate = candidate if isinstance(candidate, dict) else {}
     visual = candidate.get("visual_hook") if isinstance(candidate.get("visual_hook"), dict) else {}
     text = _clean(candidate.get("on_screen_text_hook"), 80)

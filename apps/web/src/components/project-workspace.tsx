@@ -53,6 +53,7 @@ import {
 } from "@/lib/api";
 import type { ChatMessage, FinalQualityReview, MusicTrack, Project, Readiness, Scene, Source, SceneMediaCandidates } from "@/lib/types";
 import { appliedQualityRepairs, qualityReviewSummary, sceneQualityState, unresolvedQualityScenes } from "@/lib/quality-review";
+import { tripleHookSummary, type TripleHookSummary } from "@/lib/triple-hook";
 import { Brand } from "./brand";
 import { Button } from "./ui/button";
 import { ThemeToggle } from "./theme-toggle";
@@ -777,6 +778,7 @@ function Overview({ project, readiness }: { project: Project; readiness: Readine
           <KeyValue label="Voice" value={state.voice.profile.replaceAll("_", " ")} />
           <KeyValue label="Music" value={state.music.mood.replaceAll("_", " ")} />
           <KeyValue label="Cut pace" value={state.timeline.cut_pace} />
+          <OpeningHook hook={tripleHookSummary(state.script.triple_hook)} />
         </div>
       </Panel>
       <Panel icon={<Layers3 className="size-4" />} title="Build readiness">
@@ -1248,6 +1250,18 @@ function Badge({ children }: { children: React.ReactNode }) {
 
 function Panel({ icon, title, children, wide = false }: { icon: React.ReactNode; title: string; children: React.ReactNode; wide?: boolean }) {
   return <div className={cn("cf-surface rounded-[20px] border p-5 shadow-sm", wide && "md:col-span-2")}><div className="mb-4 flex items-center gap-2 text-sm font-bold">{icon}<span>{title}</span></div>{children}</div>;
+}
+
+function OpeningHook({ hook }: { hook: TripleHookSummary | null }) {
+  if (!hook) return null;
+  const rows: Array<[string, string]> = [["Says", hook.verbal], ["Shows", hook.visual], ["Text", hook.onScreen]];
+  return (
+    <div className="cf-subtle rounded-xl border p-3 text-xs" aria-label="Opening hook">
+      <div className="flex items-center justify-between gap-2"><span className="font-semibold">Opening hook</span><span className="rounded-full bg-black/[.04] px-2 py-0.5 text-[10px] font-bold capitalize">{hook.strategy}</span></div>
+      <dl className="mt-2 space-y-1">{rows.map(([name, value]) => <div key={name} className="flex gap-2"><dt className="w-10 shrink-0 text-[var(--muted-foreground)]">{name}</dt><dd className="min-w-0 break-words">{value}</dd></div>)}</dl>
+      {hook.meta && <p className="mt-2 text-[10px] text-[var(--muted-foreground)]">{hook.meta}</p>}
+    </div>
+  );
 }
 
 function KeyValue({ label, value }: { label: string; value: string }) {

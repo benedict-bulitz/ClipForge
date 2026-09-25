@@ -123,6 +123,22 @@ export type PipelineStage = {
   status: "complete" | "planned" | "running" | "blocked";
 };
 
+/** Triple Hook V2 plan (older projects may carry a V1 plan or none). */
+export type TripleHook = {
+  version?: number;
+  status?: string;
+  hook_id?: string | null;
+  verbal_hook?: string;
+  on_screen_text_hook?: string | null;
+  on_screen_hook_status?: "shown" | "omitted";
+  on_screen_omitted_reason?: string | null;
+  selected_strategy?: string | null;
+  score?: number | null;
+  reason_codes?: string[];
+  visual_hook?: { subject?: string; visual_goal?: string; framing?: string; action_state?: string; key_detail?: string };
+  selection?: { candidate_count?: number; eligible_count?: number; judge?: { status?: string } };
+};
+
 export type ProjectState = {
   version: number;
   intent: {
@@ -136,7 +152,7 @@ export type ProjectState = {
   options: Record<string, string | number | boolean | null>;
   research: { required: boolean; questions: string[]; status: string; provider: string; error?: string | null; sources: Source[] };
   facts: Array<{ id: string; claim: string; confidence: number; priority: string; verification: string; sources: Source[] }>;
-  script: { text: string; word_count: number; blocks: ScriptBlock[] };
+  script: { text: string; word_count: number; blocks: ScriptBlock[]; triple_hook?: TripleHook };
   duration: { mode: string; estimated_seconds: number; actual_seconds: number | null; max_seconds: number };
   voice: { provider: string; profile: string; status: string; voice_id?: string; speed?: number; tone?: string; gender_presentation?: string; volume?: number };
   assets: { status: string; provider?: string; diagnostic?: string | null; selected_count?: number };

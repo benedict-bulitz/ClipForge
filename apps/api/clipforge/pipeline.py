@@ -9,6 +9,7 @@ from .ai import (
     ai_plan_to_dict,
     generate_hook_candidates_with_openai,
     interpret_edit,
+    judge_triple_hooks_with_openai,
     plan_with_openai,
 )
 from .alignment import phrase_fallback_items
@@ -19,6 +20,7 @@ from .format_intelligence import plan_format
 from .hashing import attach_hashes
 from .hooks import STRATEGIES, select_hook, select_hook_candidate
 from .language import detect_text_language, resolve_language
+from .media import _NON_SIDE_TARGET_KEYS, visual_target_key
 from .music import automatic_music_layer
 from .narration import (
     clean_narration_text,
@@ -32,9 +34,7 @@ from .payoff import (
     _is_protected_question,
     _protected_answer,
     build_payoff_plan,
-    fallback_triple_hook,
     hidden_payoff_words,
-    normalise_triple_hook,
     trim_post_payoff_fluff,
 )
 from .progress import ProgressCallback, report_progress
@@ -66,6 +66,9 @@ from .story_arc import (
     safe_story_arc,
     story_brief,
 )
+from .triple_hook import SOURCE as TRIPLE_HOOK_SOURCE
+from .triple_hook import plan_triple_hook
+from .triple_hook import selected_hook_candidate as triple_hook_verbal
 from .voice import apply_voice_preferences, initial_voice
 
 STAGE_LABELS = [
@@ -624,6 +627,58 @@ def _authoritative_hook_blocks(
     return ([hook_block, *remaining], candidate)
 
 
+def _hooked_blocks(
+    body_blocks: list[dict[str, Any]], hook_text: str, story_arc: dict[str, Any] | None = None
+) -> list[dict[str, Any]]:
+    """The body with exactly one hook block (same duplicate rule as the selector)."""
+    remaining = [copy.deepcopy(block) for block in body_blocks if not _is_hook_block(block)]
+    hook_block: dict[str, Any] = {"role": "hook", "text": hook_text}
+
+    def _norm(value: object) -> str:
+        return " ".join(str(value or "").casefold().split()).rstrip(".!?")
+
+    if story_arc and remaining and _norm(hook_text) == _norm(remaining[0].get("text")):
+        hook_block["fact_ids"] = list(remaining[0].get("fact_ids") or [])
+        remaining = remaining[1:]
+    return [hook_block, *remaining]
+
+
+def _hook_planner_visuals(
+    planner_blocks: list[dict[str, Any]],
+    planner_intents: list[dict[str, Any]],
+    story_arc: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    """Planner visual intents a hook may open with: hook-safe facts only, hook intent first."""
+    protected = set((story_arc or {}).get("hook", {}).get("protected_ids") or []) if isinstance(story_arc, dict) else set()
+    ranked: list[tuple[int, dict[str, Any]]] = []
+    for index, intent in enumerate(planner_intents):
+        if not isinstance(intent, dict):
+            continue
+        block = planner_blocks[index] if index < len(planner_blocks) else {}
+        fact_ids = {str(value) for value in block.get("fact_ids") or []}
+        if fact_ids & protected:
+            continue
+        ranked.append((0 if _is_hook_block(block) else 1 + index, intent))
+    return [intent for _rank, intent in sorted(ranked, key=lambda item: item[0])]
+
+
+def _hook_protected_target(
+    planner_blocks: list[dict[str, Any]],
+    planner_intents: list[dict[str, Any]],
+    story_arc: dict[str, Any] | None,
+) -> str | None:
+    """The primary answer's visual side key, by fact identity (never by text)."""
+    primary = str((story_arc or {}).get("primary_answer_id") or "") if isinstance(story_arc, dict) else ""
+    keys: set[str] = set()
+    for block, intent in zip(planner_blocks, planner_intents):
+        if primary and primary in {str(value) for value in block.get("fact_ids") or []} and isinstance(intent, dict):
+            keys |= {
+                key for key in (visual_target_key(value) for value in intent.get("media_query_targets") or [])
+                if key and key not in _NON_SIDE_TARGET_KEYS
+            }
+    return next(iter(keys)) if len(keys) == 1 else None
+
+
 def _generate_authoritative_hook_blocks(
     blocks: list[dict[str, Any]],
     prompt: str,
@@ -826,6 +881,11 @@ def _build_scenes(
         existing = existing_options[part_index] if part_index < len(existing_options) else {}
         suffix = block["id"].removeprefix("voice_block_")
         existing_intent = existing.get("visual_intent") if isinstance(existing.get("visual_intent"), dict) else None
+        if existing_intent is None and _is_hook_block(block) and existing_options:
+            # Retiming can split the opening into more scenes: every part of
+            # the hook keeps the selected hook visual, never narration words.
+            first_intent = existing_options[0].get("visual_intent")
+            existing_intent = first_intent if isinstance(first_intent, dict) else None
         intent = (
             (visual_intents or [])[block_index]
             if block_index < len(visual_intents or [])
@@ -1124,6 +1184,7 @@ def build_initial_state(
         story_arc=story_arc,
     )
     planned_reaction_arc = reaction_arc(intent, payoff_plan, format_plan)
+    body_before_hook = [copy.deepcopy(block) for block in raw_blocks if not _is_hook_block(block)]
     raw_blocks, selected_hook_candidate, hook_generation = _generate_authoritative_hook_blocks(
         raw_blocks,
         prompt,
@@ -1137,6 +1198,34 @@ def build_initial_state(
         story_arc,
     )
     hook_candidates = hook_generation.candidates
+    # Triple Hook V2: the verbal, visual and on-screen hooks are selected
+    # together as one complete opening; the selected verbal hook becomes the
+    # authoritative hook block.
+    triple_hook = plan_triple_hook(
+        intent=intent,
+        facts=facts,
+        story_arc=story_arc,
+        payoff_plan=payoff_plan,
+        format_plan=format_plan,
+        novelty_plan=novelty_plan,
+        body_blocks=body_before_hook,
+        baseline=selected_hook_candidate,
+        generation=hook_generation,
+        judge=judge_triple_hooks_with_openai,
+        settings=settings,
+        reaction=planned_reaction_arc["hook_reaction"],
+        planner_visuals=_hook_planner_visuals(
+            planner_blocks, list(plan.get("visual_intents") or []), story_arc
+        ),
+        protected_target=_hook_protected_target(
+            planner_blocks, list(plan.get("visual_intents") or []), story_arc
+        ),
+    )
+    triple_verbal = triple_hook_verbal(triple_hook)
+    if triple_verbal is not None:
+        if selected_hook_candidate is None or triple_verbal.text != selected_hook_candidate.text:
+            raw_blocks = _hooked_blocks(body_before_hook, triple_verbal.text, story_arc)
+        selected_hook_candidate = triple_verbal
     wpm = max(1, round(SPEAKING_RATE_WPM * float(options.voice_speed or 1.0)))
     blocks = _normalise_blocks(raw_blocks, max_duration, wpm, story_arc)
     # Normalization must preserve the authoritative hook intact. Re-apply the
@@ -1151,19 +1240,7 @@ def build_initial_state(
         if selected_hook_candidate
         else (str(hook_block.get("text")) if hook_block else None)
     )
-    triple_hook_fallback = fallback_triple_hook(
-        intent,
-        payoff_plan,
-        selected_hook,
-        selected_hook_candidate.strategy if selected_hook_candidate else None,
-        planned_reaction_arc["hook_reaction"],
-        format_plan,
-    )
-    triple_hook = normalise_triple_hook(
-        hook_generation.triple_hook,
-        triple_hook_fallback,
-        payoff_plan,
-    )
+    triple_hook["verbal_hook"] = selected_hook or ""
     # All three hook channels share the same story brief.
     triple_hook["story_brief"] = {
         "primary_question": story_arc.get("primary_question"),
@@ -1189,7 +1266,7 @@ def build_initial_state(
             triple_hook["visual_hook"],
             planner_blocks if plan.get("script_blocks") else [],
             list(plan.get("visual_intents") or []),
-            hook_is_fallback=triple_hook.get("status") == "fallback",
+            hook_is_fallback=(triple_hook.get("visual_hook") or {}).get("source") != TRIPLE_HOOK_SOURCE,
         ),
         format_plan=format_plan,
     )

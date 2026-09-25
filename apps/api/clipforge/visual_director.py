@@ -59,6 +59,8 @@ from .simple_graphics import (
     normalise_overlay_spec,
     render_simple_graphic,
 )
+from .triple_hook import SOURCE as TRIPLE_HOOK_SOURCE
+from .triple_hook import hook_overlay_spec, hook_text_leaks, is_hook_scene, state_plan
 from .visual_verifier import SCENE_VISUAL_THRESHOLD, visual_intent_text
 
 VERSION = 2
@@ -433,7 +435,28 @@ def plan_scene_strategy(
                 graphic = spec
                 overlay_spec = dict(explanatory)
                 chain = ["real_media", GENERATED_IMAGE, REUSE_PREVIOUS_VISUAL, SIMPLE_GRAPHIC]
-    return {
+    hook: dict[str, Any] | None = None
+    plan = state_plan(state)
+    if plan is not None and is_hook_scene(scene, state):
+        # Triple Hook V2 owns the opening: its visual intent drives this
+        # scene's media search, verification, crop and generation prompt,
+        # and its on-screen hook is the one overlay of the hook window.
+        hook = {
+            "hook_id": plan.get("hook_id"),
+            "strategy": plan.get("selected_strategy"),
+            "visual_from_hook": intent.get("source") == TRIPLE_HOOK_SOURCE,
+            "on_screen_hook": None,
+        }
+        label = hook_overlay_spec(state)
+        if label is not None and (reveal_allowed or not hook_text_leaks(state, label["text"])):
+            overlay_spec = label
+            hook["on_screen_hook"] = label["text"]
+            if planned in {SIMPLE_GRAPHIC, TEXT_NUMBER_VISUAL}:
+                # The opening stays a real visual with the hook text over it.
+                planned = STOCK_PHOTO if str(scene.get("preferred_media") or "video") == "photo" else STOCK_VIDEO
+                reason = "triple_hook_opening"
+                chain = ["real_media", GENERATED_IMAGE, REUSE_PREVIOUS_VISUAL]
+    strategy = {
         "version": VERSION,
         "story_role": story["story_role"],
         "visual_role": story["visual_role"],
@@ -451,6 +474,10 @@ def plan_scene_strategy(
         "composition": "base_with_overlay" if overlay_spec else "base_only",
         "fallback_chain": chain,
     }
+    if hook is not None:
+        strategy["hook"] = hook
+        strategy["visual_source"] = intent.get("source") or "visual_intent"
+    return strategy
 
 
 def requires_strong_real_media(strategy: dict[str, Any]) -> bool:

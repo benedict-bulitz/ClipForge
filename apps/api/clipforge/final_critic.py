@@ -54,6 +54,14 @@ from .renderer import caption_band, ffmpeg_path
 from .simple_graphics import normalise_graphic_spec, normalise_overlay_spec
 from .smart_crop import crop_windows
 from .thumbnails import _asset_quality, extract_video_frame
+from .triple_hook import SOURCE as TRIPLE_HOOK_SOURCE
+from .triple_hook import (
+    hook_text_leaks,
+    is_hook_scene,
+    state_plan,
+    validate_hook_text,
+    visual_summary,
+)
 from .visual_director import (
     DEGRADED,
     MISSING,
@@ -96,6 +104,7 @@ DIMENSIONS = (
     "motion",
     "graphic_usage",
     "overlay_semantics",
+    "hook_alignment",
 )
 
 # Thresholds reuse the media gate's OpenCLIP scale; rendered frames include
@@ -122,8 +131,14 @@ REPAIRABLE_CODES = {
     "overlay_too_dominant", "overlay_hits_captions", "fullscreen_graphic_with_base", "near_identical_graphics",
     "accidental_repeat", "repeats_primary_answer_visual", "answer_without_own_visual", "payoff_generic_reuse",
     "unnecessary_asset_switch",
+    # Triple Hook V2 opening checks with a safe targeted repair.
+    "dead_opening_frame", "hook_overlay_duplicates_narration", "hook_overlay_duplicates_captions",
+    "hook_overlay_unreadable",
     *OVERLAY_SEMANTIC_CODES,
 }
+# Hook overlay problems are repaired by removing the label (never by rewriting it).
+HOOK_OVERLAY_CODES = {"hook_overlay_duplicates_narration", "hook_overlay_duplicates_captions", "hook_overlay_unreadable"}
+OPENING_DEAD_AIR_SECONDS = 1.0
 
 
 # ---------------------------------------------------------------------------
@@ -315,6 +330,7 @@ class _Review:
         self.reason: str | None = None
         self.probe: dict[str, Any] = {}
         self._cross_scores: dict[tuple[str, str], float | None] = {}
+        self.hook_summary: dict[str, Any] | None = None
 
     # -- evidence ----------------------------------------------------------
 
@@ -602,6 +618,7 @@ class _Review:
         self._adjacent()
         for row in self.rows:
             self._issues_from_dimensions(row)
+        self._hook()
         self.status = "reviewed"
 
     # -- graphics, story roles, adjacency ---------------------------------
@@ -780,6 +797,113 @@ class _Review:
             self._issue(row, "graphic_usage", "fullscreen_graphic_unjustified", "warning", f"Scene {row.number} uses a full-screen graphic without a recorded reason.")
         if user_locked_visual(row.scene) and any(issue["severity"] == "error" for issue in row.issues):
             self._issue(row, "semantic_match" if semantic.get("rating") == POOR else row.issues[0]["category"], "manual_asset_weak", "warning", f"The visual you chose for scene {row.number} appears weak; it was not replaced automatically.")
+
+    # -- Triple Hook V2: the rendered opening against the persisted plan -----
+
+    def _hook(self) -> None:
+        """Does the rendered opening deliver the selected triple hook?
+
+        Reads the same persisted ``script.triple_hook`` that drove the
+        script, the Visual Director and the overlay.  Visual match and subject
+        visibility come from the per-scene dimensions (judged against the hook's
+        own visual intent); this adds the hook-only checks: the on-screen hook
+        was drawn, readable and not a copy of narration or captions, no reveal
+        leaked in the spoken opening, and the video does not open on a dead
+        frame or silence.  Only overlay removal and media replacement are ever
+        repaired automatically; a verbal-hook failure is reported for
+        regeneration, never re-voiced here.
+        """
+        plan = state_plan(self.state)
+        for row in self.rows:
+            row.dimensions.setdefault("hook_alignment", {"rating": NOT_APPLICABLE})
+        if plan is None:
+            return
+        rows = [row for row in self.rows if row.scene and is_hook_scene(row.scene, self.state)]
+        first = self.rows[0] if self.rows else None
+        planned_text = str(plan.get("on_screen_text_hook") or "").strip()
+        blocks = (self.state.get("script") or {}).get("blocks") or []
+        spoken = next((str(block.get("text") or "") for block in blocks if isinstance(block, dict) and str(block.get("role") or "").casefold() == "hook"), "")
+        captions = [item for item in (self.state.get("captions") or {}).get("items") or [] if isinstance(item, dict)]
+        drawn_texts: list[str] = []
+        for index, row in enumerate(rows):
+            findings: list[tuple[str, str, str, dict[str, Any]]] = []
+            labels = [
+                str(item["spec"].get("text") or "") for item in row.entry.get("overlays") or []
+                if isinstance(item, dict) and isinstance(item.get("spec"), dict) and item["spec"].get("kind") == "label"
+            ]
+            drawn_texts.extend(labels)
+            adjustments = row.scene.get("render_adjustments") if isinstance(row.scene.get("render_adjustments"), dict) else {}
+            removed = (adjustments.get("overlay") or {}).get("mode") == "remove"
+            if planned_text and not labels and not removed and index == 0:
+                findings.append(("hook_overlay_missing", "warning", "The planned on-screen hook was not drawn over the opening.", {}))
+            start, end = float(row.entry.get("start") or 0), float(row.entry.get("end") or 0)
+            heard = " ".join(
+                str(item.get("text") or "") for item in captions
+                if float(item.get("start") or 0) < end and float(item.get("end") or 0) > start
+            )
+            for label in labels:
+                reason = validate_hook_text(label, spoken or str(plan.get("verbal_hook") or ""), self.state)
+                if reason == "on_screen_duplicates_verbal":
+                    findings.append(("hook_overlay_duplicates_narration", "error", "The on-screen hook repeats the spoken hook.", {"text": label}))
+                elif reason in {"on_screen_too_long", "on_screen_fragment"}:
+                    findings.append(("hook_overlay_unreadable", "error", "The on-screen hook is too long or not a complete phrase.", {"text": label}))
+                elif heard and validate_hook_text(label, heard, self.state) == "on_screen_duplicates_verbal":
+                    findings.append(("hook_overlay_duplicates_captions", "error", "The on-screen hook repeats the captions shown at the same time.", {"text": label}))
+                if not (row.dimensions.get("_story") or {}).get("reveal_allowed", True) and hook_text_leaks(self.state, label):
+                    self._issue(row, "reveal_safety", "hook_overlay_reveals_answer", "error", "The on-screen hook reveals the protected answer before the Story Arc reveal.", component="overlay")
+            if index == 0:
+                if spoken and hook_text_leaks(self.state, spoken):
+                    findings.append(("hook_verbal_reveals_answer", "error", "The spoken hook reveals the protected answer; regenerate the hook.", {}))
+                verbal = str(plan.get("verbal_hook") or "").strip()
+                if verbal and spoken and " ".join(verbal.casefold().split()) != " ".join(spoken.casefold().split()):
+                    findings.append(("hook_verbal_drift", "warning", "The spoken opening differs from the selected hook plan.", {}))
+                intent = row.scene.get("visual_intent") if isinstance(row.scene.get("visual_intent"), dict) else {}
+                if plan.get("status") != "fallback" and intent.get("source") != TRIPLE_HOOK_SOURCE:
+                    findings.append(("hook_visual_not_applied", "warning", "The opening scene is not using the selected hook visual.", {}))
+            semantic = row.dimensions.get("semantic_match", {})
+            subject = row.dimensions.get("subject_visibility", {})
+            ratings = [semantic.get("rating"), subject.get("rating"), row.dimensions.get("overlay_quality", {}).get("rating")]
+            for code, severity, message, evidence in findings:
+                self._issue(row, "hook_alignment", code, severity, f"Opening (scene {row.number}): {message}", **evidence)
+            worst = POOR if any(severity == "error" for _c, severity, _m, _e in findings) or POOR in ratings else WARNING if findings or WARNING in ratings else GOOD
+            row.dimensions["hook_alignment"] = {
+                "rating": worst,
+                "hook_id": plan.get("hook_id"),
+                "visual_match": semantic.get("rating"),
+                "visual_score": semantic.get("score"),
+                "subject_visibility": subject.get("rating"),
+                "overlay_text": labels,
+                "findings": [code for code, _s, _m, _e in findings],
+            }
+        if first is not None and first.images:
+            reasons = _asset_quality(first.images[0].width, first.images[0].height, first.images[0])[1]
+            if "nearly_black" in reasons:
+                self._issue(first, "hook_alignment", "dead_opening_frame", "error", "The video opens on a dead (nearly black) frame.")
+                first.dimensions["hook_alignment"] = {**first.dimensions.get("hook_alignment", {}), "rating": POOR, "dead_opening_frame": True}
+        timing = (self.state.get("captions") or {}).get("timing")
+        opening_word = min((float(item.get("start") or 0) for item in captions if str(item.get("text") or "").strip()), default=None)
+        if first is not None and timing == "word_aligned" and opening_word is not None and opening_word > OPENING_DEAD_AIR_SECONDS:
+            self._issue(first, "hook_alignment", "opening_dead_air", "warning", f"The narration starts only after {opening_word:.1f}s.", seconds=round(opening_word, 2))
+        hook_issues = [issue for row in rows + ([first] if first is not None and first not in rows else []) for issue in row.issues if issue["category"] == "hook_alignment" or issue["code"] == "hook_overlay_reveals_answer"]
+        ratings = [row.dimensions.get("hook_alignment", {}).get("rating") for row in rows]
+        self.hook_summary = {
+            "hook_id": plan.get("hook_id"),
+            "status": plan.get("status"),
+            "planned": {
+                "verbal_hook": plan.get("verbal_hook"),
+                "on_screen_hook": planned_text or None,
+                "visual": visual_summary(plan.get("visual_hook")),
+                "strategy": plan.get("selected_strategy"),
+            },
+            "rendered": {
+                "scene_ids": [row.scene_id for row in rows],
+                "spoken_opening": spoken,
+                "overlay_text": list(dict.fromkeys(drawn_texts)),
+                "visual_match": [row.dimensions.get("semantic_match", {}).get("rating") for row in rows],
+            },
+            "rating": POOR if POOR in ratings or any(issue["severity"] == "error" for issue in hook_issues) else WARNING if WARNING in ratings or hook_issues else GOOD if rows else UNAVAILABLE,
+            "issue_ids": [issue["id"] for issue in hook_issues],
+        }
 
     # -- persistence -------------------------------------------------------
 
@@ -1058,7 +1182,7 @@ def _media_action(review: _Review, row: _Row, codes: dict[str, dict[str, Any]]) 
         if partner is not None and partner.identity:
             return {"action": "continue_base_visual", "reason": "visual_continuity", "base_scene_id": partner.scene_id, "base_identity": partner.identity}
     base_is_text = "text_heavy" in codes and not row.entry.get("overlays")
-    if {"wrong_media", "weak_media", "unusable_frame"} & set(codes) or base_is_text:
+    if {"wrong_media", "weak_media", "unusable_frame", "dead_opening_frame"} & set(codes) or base_is_text:
         # A same-fact visual that already fits keeps continuity; otherwise the
         # scene-level escalation chain (real alternative, generated image,
         # fitting base + overlay, planned graphic).
@@ -1092,6 +1216,13 @@ def _composition_action(review: _Review, row: _Row, codes: dict[str, dict[str, A
             overlay.setdefault("mode", "compact")
         reasons.append("caption_overlay_collision")
     rewrite = bool(set(codes) & set(OVERLAY_SEMANTIC_CODES))
+    hook_label = ((scene.get("visual_director") or {}).get("overlay_spec") or {}).get("source") == TRIPLE_HOOK_SOURCE
+    if HOOK_OVERLAY_CODES & set(codes) or (rewrite and hook_label):
+        # The on-screen hook is optional: a label that repeats or cannot be
+        # read is removed, never replaced by other copy.
+        overlay["mode"] = "remove"
+        reasons.append("hook_overlay")
+        rewrite = False
     if rewrite:
         # Meaningless copy: rewrite only the overlay text from the full fact.
         reasons.append("overlay_semantics")
@@ -1518,6 +1649,8 @@ def apply_repairs(
         record["before_overlay"] = copy.deepcopy((scene.get("visual_director") or {}).get("overlay_spec"))
         kind = action["action"]
         overlay_codes = {issue_id.split(":")[-1] for issue_id in action.get("issue_ids") or []} & set(OVERLAY_SEMANTIC_CODES)
+        if ((scene.get("visual_director") or {}).get("overlay_spec") or {}).get("source") == TRIPLE_HOOK_SOURCE:
+            overlay_codes = set()  # the hook label is removed by its composition action
         rewritten = repairer.rewrite_overlay(scene, row) if overlay_codes or action.get("rewrite_overlay") else None
         if kind in _MEDIA_ACTIONS:
             outcome = repairer.escalate_media(action, scene, row)
@@ -1606,6 +1739,7 @@ _UNRESOLVED_MESSAGES = {
     "repair_render_failed": "the repair render failed; the original was kept",
     "no_clear_relation_in_fact": "no clear relation could be shown for this fact",
 }
+
 
 
 def _result_message(record: dict[str, Any]) -> str:
@@ -1840,6 +1974,8 @@ def run_final_quality_review(
         "user_overrides": [],
         "summary": _summary(status, repaired, errors, warnings),
     }
+    if review.hook_summary is not None:
+        result["hook"] = review.hook_summary
     if render_error:
         result["repair_error"] = render_error
     state["final_quality_review"] = result

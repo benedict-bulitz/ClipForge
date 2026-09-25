@@ -196,7 +196,9 @@ def test_pipeline_persists_triple_hook_and_uses_visual_hook_for_opening_scene() 
     triple = state["script"]["triple_hook"]
     assert state["payoff_plan"]["curiosity_question"]
     assert triple["verbal_hook"] == (state["script"]["selected_hook"] or "")
-    assert triple["on_screen_text_hook"] != triple["verbal_hook"]
+    # V2 omits the on-screen hook rather than showing generic filler text.
+    assert not triple["on_screen_text_hook"] or triple["on_screen_text_hook"] != triple["verbal_hook"]
+    assert triple["version"] == 2 and triple["on_screen_hook_status"] in {"shown", "omitted"}
     assert state["scenes"][0]["visual_intent"]["visual_goal"] == triple["visual_hook"]["visual_goal"]
 
 
