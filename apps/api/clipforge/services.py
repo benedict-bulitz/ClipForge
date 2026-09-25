@@ -643,7 +643,11 @@ def render_project(
         **render_kwargs,
     )
     # Secondary metadata never changes the outcome of a completed render.
-    state["social_metadata"] = generate_social_metadata(state, settings)
+    # Saved metadata (generated or edited) is kept: only an explicit
+    # regeneration replaces it.
+    saved = state.get("social_metadata") or {}
+    if saved.get("status") != "available" or not saved.get("platforms"):
+        state["social_metadata"] = generate_social_metadata(state, settings)
     # Covers are secondary too: unavailable project imagery must never fail a
     # finished video render.
     try:

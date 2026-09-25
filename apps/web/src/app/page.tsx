@@ -4,7 +4,8 @@ import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ArrowRight, ChevronDown, Clock3, CornerDownLeft, ListVideo, LoaderCircle, Plus, Settings, Trash2 } from "lucide-react";
-import { clearGenerationQueue, deleteAllProjects, getBulkProjectDeletePlan, listGenerationJobs, listProjectOverview, removeQueuedGenerationJob, startGeneration } from "@/lib/api";
+import { ApiError, clearGenerationQueue, deleteAllProjects, getBulkProjectDeletePlan, getGenerationJob, getProject, listGenerationJobs, listProjectOverview, removeQueuedGenerationJob, startGeneration } from "@/lib/api";
+import { createGenerationWatcher, POLL_TIMEOUT_MS, withTimeout, type GenerationWatcher } from "@/lib/generation-poll";
 import type { BulkProjectDeletePlan, GenerationJob, ProjectOverview } from "@/lib/types";
 import { activeQueueJobs, visibleProjectHistory } from "@/lib/queue-overview";
 import { splitQuestions, submitQuestionsInOrder } from "@/lib/multi-question";
@@ -41,6 +42,7 @@ export default function Home() {
   const [recentOpen, setRecentOpen] = useState(false);
   const refreshSequence = useRef(0);
   const mounted = useRef(false);
+  const startedWatcher = useRef<GenerationWatcher | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [bulkDeletePlan, setBulkDeletePlan] = useState<BulkProjectDeletePlan | null>(null);
   const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
@@ -49,7 +51,11 @@ export default function Home() {
   async function refresh() {
     const sequence = ++refreshSequence.current;
     try {
-      const [projects, jobs] = await Promise.all([listProjectOverview(), listGenerationJobs()]);
+      // Bounded: a hung request must never stop the poll loop on stale progress.
+      const [projects, jobs] = await Promise.all([
+        withTimeout((signal) => listProjectOverview(signal), POLL_TIMEOUT_MS),
+        withTimeout((signal) => listGenerationJobs(signal), POLL_TIMEOUT_MS),
+      ]);
       if (!mounted.current || sequence !== refreshSequence.current) return;
       setRecent(projects);
       setQueue(jobs);
@@ -71,8 +77,37 @@ export default function Home() {
       stopped = true;
       mounted.current = false;
       if (timer !== undefined) window.clearTimeout(timer);
+      startedWatcher.current?.stop();
+      startedWatcher.current = null;
     };
   }, []);
+
+  /** Open the project this tab just started as soon as its job completes. */
+  function openWhenComplete(job: GenerationJob) {
+    startedWatcher.current?.stop();
+    const watcher = createGenerationWatcher({
+      loadJob: (signal) => getGenerationJob(job.id, signal),
+      loadProject: (signal) =>
+        getProject(job.project_id, signal).catch((reason: unknown) => {
+          if (reason instanceof ApiError && reason.statusCode === 404) return null;
+          throw reason;
+        }),
+      onJob: (next) => {
+        if (!mounted.current) return;
+        setQueue((items) => items.map((item) => (item.id === next.id ? next : item)));
+      },
+      onCompleted: (project) => {
+        if (!mounted.current || startedWatcher.current !== watcher) return;
+        startedWatcher.current = null;
+        router.push(`/projects/${project.id}`);
+      },
+      onFailed: () => {
+        if (startedWatcher.current === watcher) startedWatcher.current = null;
+      },
+    });
+    startedWatcher.current = watcher;
+    watcher.start();
+  }
 
   useEffect(() => {
     const frame = requestAnimationFrame(() => {
@@ -96,6 +131,7 @@ export default function Home() {
       if (!multipleQuestions) {
         const started = await startGeneration(prompt, options);
         if (!started.project_id) throw new Error("The project could not be created.");
+        openWhenComplete(started);
         setPrompt("");
         setQueueOpen(true);
         await refresh();

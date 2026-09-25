@@ -6,7 +6,7 @@ const projectPage = readFileSync(new URL("../components/project-page.tsx", impor
 const workspace = readFileSync(new URL("../components/project-workspace.tsx", import.meta.url), "utf8");
 
 test("project route hydrates from its project ID instead of navigation memory", () => {
-  assert.match(projectPage, /getProject\(projectId\)/);
+  assert.match(projectPage, /getProject\(projectId(, signal)?\)/);
   assert.match(projectPage, /\}, \[projectId\]\);/);
   assert.match(projectPage, /<ProjectWorkspace project=\{project\}/);
   assert.doesNotMatch(projectPage, /startGeneration|renderProject/);

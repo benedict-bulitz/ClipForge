@@ -23,7 +23,7 @@ test("active queue row renders persisted progress and topic", () => {
 
 test("queue state refreshes without navigation or a full page reload", () => {
   assert.match(home, /window\.setTimeout\(\(\) => void poll\(\), 2500\)/);
-  assert.match(home, /listGenerationJobs\(\)/);
+  assert.match(home, /listGenerationJobs\((signal)?\)/);
   assert.match(home, /item\.queue_position/);
   assert.match(home, /In Warteschlange/);
   assert.doesNotMatch(home, /setQueue\(\(items\) => \[started/);
