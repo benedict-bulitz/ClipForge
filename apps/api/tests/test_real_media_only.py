@@ -22,6 +22,8 @@ def test_neither_flashcard_nor_unrelated_real_media_wins(tmp_path):
     state["scenes"] = state["scenes"][:1]
     scene = state["scenes"][0]
     scene.update(narration="Water condenses into droplets", visual_goal="water droplets", visual_intent={"visual_strategy": "diagram_or_card"})
+    # The graphic's steps come from the complete fact (the script block).
+    state["script"]["blocks"][0]["text"] = "Water vapour cools; it condenses into droplets."
     card = candidate("1", title="Water droplets flashcard")
     real = candidate("2", title="Dog playing in a park")
     scene["media"] = {**vars(card), "identity": card.identity, "cache_path": "old.jpg"}
@@ -34,6 +36,7 @@ def test_neither_flashcard_nor_unrelated_real_media_wins(tmp_path):
     assert scene["visual_director"]["decision"] == "DEGRADED"
     assert scene["visual_director"]["resolved_type"] == "simple_graphic"
     assert (tmp_path / "old.jpg").exists()
+    assert scene["media"]["graphic"]["steps"] == ["Water vapour cools", "Condenses into droplets"]
 
 
 def test_broad_queries_find_real_stock_after_empty_specific_searches(tmp_path):

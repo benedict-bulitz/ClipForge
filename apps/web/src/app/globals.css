@@ -24,6 +24,9 @@
   --warning: #a15c00;
   --surface-strong: #fbfaf5;
   --line: rgba(0, 0, 0, .09);
+  /* Filled accent controls: text on --accent alone is below 4.5:1. */
+  --accent-solid: color-mix(in srgb, var(--accent) 80%, #000);
+  --on-accent-solid: #ffffff;
   color-scheme: light;
 }
 
@@ -121,6 +124,8 @@ html.dark {
   --warning: #fcd34d;
   --surface-strong: #252621;
   --line: rgba(255, 255, 255, .11);
+  --accent-solid: var(--accent);
+  --on-accent-solid: var(--background);
   background: #11120f;
   color-scheme: dark;
 }
@@ -190,6 +195,41 @@ audio { color-scheme: light dark; }
 .results-primary { grid-template-columns: minmax(300px, .82fr) minmax(0, 1.18fr); }
 @media (min-width: 1024px) { .results-canvas { margin: .75rem 0 .75rem .75rem; border: 1px solid var(--border); border-radius: 1.35rem 0 0 1.35rem; } }
 button:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+
+/* Change Media panel: every text and control colour comes from the theme
+   tokens, so both themes stay readable (no hardcoded light surfaces). */
+.media-panel { color: var(--foreground); background: color-mix(in srgb, var(--accent) 2.5%, var(--surface-elevated)); border: 1px solid color-mix(in srgb, var(--accent) 32%, var(--border)); }
+.media-muted { color: var(--muted-foreground); }
+.media-box { color: var(--foreground); background: var(--surface-elevated); border: 1px solid var(--border); }
+.media-note { color: var(--foreground); background: color-mix(in srgb, var(--warning) 9%, var(--surface-elevated)); border: 1px solid color-mix(in srgb, var(--warning) 38%, transparent); }
+.media-alert { color: var(--destructive); background: color-mix(in srgb, var(--destructive) 8%, var(--surface-elevated)); border: 1px solid color-mix(in srgb, var(--destructive) 32%, transparent); }
+.media-warning { color: var(--foreground); background: color-mix(in srgb, var(--warning) 10%, var(--surface-elevated)); border: 1px solid color-mix(in srgb, var(--warning) 40%, transparent); }
+.media-success { color: var(--success); }
+.media-action, .media-primary, .media-strong {
+  border: 1px solid transparent;
+  transition: background-color 150ms, border-color 150ms, color 150ms;
+}
+.media-action { color: var(--foreground); background: var(--surface-elevated); border-color: color-mix(in srgb, var(--foreground) 24%, transparent); }
+.media-action:hover:not(:disabled) { border-color: var(--accent); background: var(--accent-soft); }
+.media-primary { color: var(--on-accent-solid); background: var(--accent-solid); border-color: var(--accent-solid); }
+.media-primary:hover:not(:disabled) { background: color-mix(in srgb, var(--accent-solid) 86%, var(--foreground)); }
+.media-strong { color: var(--background); background: var(--foreground); border-color: var(--foreground); }
+.media-strong:hover:not(:disabled) { background: color-mix(in srgb, var(--foreground) 84%, var(--accent)); }
+.media-link { color: inherit; font-weight: 700; text-decoration: underline; text-underline-offset: 2px; }
+.media-link:hover:not(:disabled) { text-decoration-thickness: 2px; }
+/* Disabled stays readable (muted text, no fill, dashed edge) instead of fading out. */
+.media-action:disabled, .media-primary:disabled, .media-strong:disabled {
+  color: var(--muted-foreground);
+  background: transparent;
+  border-color: color-mix(in srgb, var(--muted-foreground) 55%, transparent);
+  border-style: dashed;
+  cursor: not-allowed;
+}
+.media-link:disabled { color: var(--muted-foreground); cursor: not-allowed; }
+.media-candidate { position: relative; color: var(--foreground); background: var(--surface-elevated); border: 1px solid var(--border); transition: border-color 150ms, box-shadow 150ms; }
+.media-candidate:hover { border-color: color-mix(in srgb, var(--accent) 60%, var(--border)); }
+.media-candidate[aria-pressed="true"] { border-color: var(--accent-solid); box-shadow: 0 0 0 2px var(--accent-solid); }
+.media-selected-badge { position: absolute; top: .375rem; left: .375rem; display: inline-flex; align-items: center; gap: .25rem; border-radius: 9999px; padding: .125rem .5rem; color: var(--on-accent-solid); background: var(--accent-solid); font-size: .625rem; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; } }
 
 @media (max-width: 640px) { .settings-grid { grid-template-columns: minmax(0, 1fr); } }

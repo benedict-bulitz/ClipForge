@@ -92,3 +92,16 @@ def forbid_real_visual_translation(monkeypatch):
 
     visual_translation.clear_translation_cache()
     monkeypatch.setattr(visual_translation, "TRANSLATOR_CLIENT_FACTORY", forbidden)
+
+
+@pytest.fixture(autouse=True)
+def forbid_real_overlay_summaries(monkeypatch):
+    """The overlay-copy summariser must be mocked; no real worker-model calls."""
+    from clipforge import overlay_copy
+
+    def forbidden(*_args, **_kwargs):
+        # Never a network client: the deterministic relation builder is used.
+        raise OSError("Real OpenAI overlay summaries are disabled in the test suite.")
+
+    overlay_copy.clear_summary_cache()
+    monkeypatch.setattr(overlay_copy, "SUMMARY_CLIENT_FACTORY", forbidden)

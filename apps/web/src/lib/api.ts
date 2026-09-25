@@ -183,8 +183,8 @@ export function previewVoice(payload: VoicePreviewRequest, signal?: AbortSignal)
   });
 }
 
-export function getProject(projectId: string) {
-  return request<Project>(`/projects/${projectId}`, { cache: "no-store" });
+export function getProject(projectId: string, signal?: AbortSignal) {
+  return request<Project>(`/projects/${projectId}`, { cache: "no-store", signal });
 }
 
 export function deleteProject(projectId: string) {
@@ -241,12 +241,12 @@ export function listProjects() {
   return request<Project[]>("/projects", { cache: "no-store" });
 }
 
-export function listProjectOverview() {
-  return request<ProjectOverview[]>("/projects/overview", { cache: "no-store" });
+export function listProjectOverview(signal?: AbortSignal) {
+  return request<ProjectOverview[]>("/projects/overview", { cache: "no-store", signal });
 }
 
-export function getProjectGenerationJob(projectId: string) {
-  return request<GenerationJob>(`/generation-jobs/projects/${projectId}`, { cache: "no-store" });
+export function getProjectGenerationJob(projectId: string, signal?: AbortSignal) {
+  return request<GenerationJob>(`/generation-jobs/projects/${projectId}`, { cache: "no-store", signal });
 }
 
 export function getBulkProjectDeletePlan() {

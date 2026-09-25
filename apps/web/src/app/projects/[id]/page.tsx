@@ -6,5 +6,6 @@ export default async function SavedProjectPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  return <ProjectPage projectId={id} />;
+  // Keyed: another project always starts from a clean watcher state.
+  return <ProjectPage key={id} projectId={id} />;
 }

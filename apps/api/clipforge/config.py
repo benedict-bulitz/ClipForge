@@ -43,6 +43,12 @@ class Settings(BaseSettings):
     # Turn a Story Arc fact into a concrete visual (worker model) before
     # generating an image; deterministic fallback when disabled or offline.
     visual_prompt_translation_enabled: bool = True
+    # Final Video Critic: review the rendered video, then at most this many
+    # automatic targeted repair passes (0 = report only, hard limit 2).
+    final_critic_enabled: bool = True
+    final_critic_max_repair_passes: int = 1
+    # Optional stronger vision critic; "none" keeps V1 local/free only.
+    final_critic_vision_provider: str = "none"
     shortform_max_duration: int = 180
     render_root: Path = Path("./projects")
     downloads_root: Path | None = None

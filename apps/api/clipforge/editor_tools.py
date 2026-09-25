@@ -600,6 +600,8 @@ class EditorToolbox:
         def mutate(state: dict) -> str:
             target = next(item for item in state["scenes"] if item["id"] == scene_id)
             target["asset_status"] = "replacement_required"
+            # The user asked for different footage: their earlier lock no longer applies.
+            target.pop("user_locked_visual", None)
             target["preferred_media"] = preferred_media
             if args.visual_direction:
                 target["visual_goal"] = args.visual_direction

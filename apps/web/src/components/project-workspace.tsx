@@ -51,7 +51,8 @@ import {
   musicVolumeGain,
   musicDisplayName,
 } from "@/lib/api";
-import type { ChatMessage, MusicTrack, Project, Readiness, Scene, Source, SceneMediaCandidates } from "@/lib/types";
+import type { ChatMessage, FinalQualityReview, MusicTrack, Project, Readiness, Scene, Source, SceneMediaCandidates } from "@/lib/types";
+import { appliedQualityRepairs, qualityReviewSummary, sceneQualityState, unresolvedQualityScenes } from "@/lib/quality-review";
 import { Brand } from "./brand";
 import { Button } from "./ui/button";
 import { ThemeToggle } from "./theme-toggle";
@@ -475,6 +476,7 @@ export function ProjectWorkspace({
                   <Stat label="Scenes" value={String(state.scenes.length)} hint={state.timeline.aspect_ratio} />
                   <Stat label="Revision" value={`v${project.current_revision}`} hint={`${project.revisions.length} saved`} />
                 </div>
+                {state.render.url && <QualityReviewPanel review={state.final_quality_review} renderRevision={state.render.revision} disabled={!!busy || mediaBusy !== null} onFixScene={(sceneNumber) => { setTab("scenes"); void chooseSceneMedia(sceneNumber); requestAnimationFrame(() => document.getElementById(`scene-row-${sceneNumber}`)?.scrollIntoView({ block: "center", behavior: "smooth" })); }} />}
                 {state.render.url && <div className="mt-6 space-y-4">
                   <AudioControls key={`${project.id}:${project.current_revision}`} project={project} disabled={!!busy || sending} onDirty={() => setAudioDirty(true)} onMusicVolumeChange={(volume) => onProjectChange({ ...project, revision: { ...project.revision, state: { ...project.revision.state, music: { ...project.revision.state.music, volume } } } })} onSave={async (audio) => {
                     setBusy("audio");
@@ -507,7 +509,7 @@ export function ProjectWorkspace({
             <div className="py-6">
               {tab === "overview" && <Overview project={project} readiness={readiness} />}
               {tab === "script" && <ScriptView project={project} />}
-              {tab === "scenes" && <ScenesView scenes={state.scenes} duration={duration} assets={state.assets} mediaBusy={mediaBusy} mediaError={mediaError} candidateScene={candidateScene} candidateSet={candidateSet} candidateSelection={candidateSelection} onSelectCandidate={setCandidateSelection} onChooseSceneMedia={chooseSceneMedia} onApplyCandidate={applySelectedMedia} onGenerateImage={generateSelectedSceneImage} generationState={generationState} onCancel={() => { setCandidateScene(null); setCandidateSet(null); setCandidateSelection(null); setGenerationState({ status: "idle" }); }} />}
+              {tab === "scenes" && <ScenesView scenes={state.scenes} qualityReview={state.final_quality_review} duration={duration} assets={state.assets} mediaBusy={mediaBusy} mediaError={mediaError} candidateScene={candidateScene} candidateSet={candidateSet} candidateSelection={candidateSelection} onSelectCandidate={setCandidateSelection} onChooseSceneMedia={chooseSceneMedia} onApplyCandidate={applySelectedMedia} onGenerateImage={generateSelectedSceneImage} generationState={generationState} onCancel={() => { setCandidateScene(null); setCandidateSet(null); setCandidateSelection(null); setGenerationState({ status: "idle" }); }} />}
               {tab === "sources" && <SourcesView project={project} />}
             </div>
           </div>
@@ -817,6 +819,45 @@ function Overview({ project, readiness }: { project: Project; readiness: Readine
   );
 }
 
+function QualityReviewPanel({ review, renderRevision, disabled, onFixScene }: { review?: FinalQualityReview; renderRevision?: number; disabled: boolean; onFixScene: (sceneNumber: number) => void }) {
+  const detailsId = useId();
+  const [expanded, setExpanded] = useState(false);
+  const summary = qualityReviewSummary(review, renderRevision);
+  if (!summary) return null;
+  const unresolved = unresolvedQualityScenes(review);
+  const repairs = appliedQualityRepairs(review);
+  const expandable = unresolved.length > 0 || repairs.length > 0;
+  const tone = { passed: "bg-emerald-50 text-emerald-800", repaired: "bg-blue-50 text-blue-800", attention: "bg-amber-50 text-amber-800", muted: "bg-black/[.04] text-[var(--muted-foreground)]" }[summary.tone];
+  return (
+    <div className="cf-surface mt-3 rounded-[16px] border p-3 text-xs" aria-label="Final quality review">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className="font-semibold">Quality review</span>
+        {expandable ? (
+          <button type="button" onClick={() => setExpanded((open) => !open)} aria-expanded={expanded} aria-controls={detailsId} className={cn("inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[10px] font-bold", tone)}>
+            {summary.label}<ChevronUp className={cn("size-3 transition-transform", !expanded && "rotate-180")} />
+          </button>
+        ) : <span className={cn("rounded-full px-2.5 py-1 text-[10px] font-bold", tone)}>{summary.label}</span>}
+      </div>
+      {expandable && expanded && (
+        <div id={detailsId} className="mt-2 space-y-3">
+          {repairs.length > 0 && (
+            <section aria-label="Automatically repaired">
+              <p className="mb-1 text-[9px] font-bold uppercase tracking-[.08em] text-emerald-700">Automatically repaired</p>
+              <ul className="space-y-1">{repairs.map((repair, index) => <li key={`${repair.sceneId}-${index}`} className="text-[var(--muted-foreground)]"><strong className="text-[var(--foreground)]">Scene {repair.sceneNumber ?? "?"}</strong>: {repair.text}</li>)}</ul>
+            </section>
+          )}
+          {unresolved.length > 0 && (
+            <section aria-label="Unresolved">
+              <p className="mb-1 text-[9px] font-bold uppercase tracking-[.08em] text-amber-700">Unresolved</p>
+              <ul className="space-y-1">{unresolved.map((item) => <li key={item.sceneId} className="flex items-start justify-between gap-2"><span className="text-amber-900"><strong>Scene {item.sceneNumber}</strong>: {item.attempt ?? item.message}{item.issueCount > 1 ? ` (+${item.issueCount - 1} more)` : ""}</span><button type="button" disabled={disabled} onClick={() => onFixScene(item.sceneNumber)} className="shrink-0 text-[10px] font-bold text-[#d94c20] hover:text-[#a93210] disabled:opacity-50" aria-label={`Change media for scene ${item.sceneNumber}`}>Fix</button></li>)}</ul>
+            </section>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function AIReviewPanel({ review }: { review: Project["revision"]["state"]["ai_review"] }) {
   const detailsId = useId();
   const [expanded, setExpanded] = useState(false);
@@ -917,19 +958,20 @@ function GenerationStatus({ state, onRetry, busy }: { state: GenerationState; on
   if (state.status === "idle") return null;
   if (state.status === "generating") {
     return (
-      <p role="status" aria-live="polite" className="inline-flex items-center gap-1.5 text-xs text-[#2f4054]">
+      <p role="status" aria-live="polite" className="inline-flex items-center gap-1.5 text-xs font-semibold">
         <LoaderCircle className="size-3 animate-spin" /> Generating… this can take up to a minute.
       </p>
     );
   }
   if (state.status === "generated") {
-    return <p role="status" aria-live="polite" className="text-xs font-semibold text-emerald-700">{state.message ?? "AI image generated."}</p>;
+    return <p role="status" aria-live="polite" className="media-success text-xs font-semibold">{state.message ?? "AI image generated."}</p>;
   }
-  // failed | rejected | unchanged: visible, specific, with a retry.
+  // failed | rejected | unchanged: visible, specific, with a retry.  An
+  // unchanged result broke nothing, so it reads as a warning, not an error.
   return (
-    <div role="alert" className="flex flex-wrap items-center gap-2 rounded-xl border border-red-700/15 bg-red-50 px-3 py-2 text-xs leading-5 text-red-700">
+    <div role="alert" className={cn("flex flex-wrap items-center gap-2 rounded-xl px-3 py-2 text-xs leading-5", state.status === "unchanged" ? "media-warning" : "media-alert")}>
       <span>{state.message ?? "The AI image could not be generated."}</span>
-      <button type="button" onClick={onRetry} disabled={busy} className="font-bold uppercase tracking-[.08em] underline">Retry</button>
+      <button type="button" onClick={onRetry} disabled={busy} className="media-link uppercase tracking-[.08em]">Retry</button>
     </div>
   );
 }
@@ -940,7 +982,7 @@ function GenerateImageOption({ option, busy, onGenerate, state }: { option: NonN
   const promptId = useId();
   if (!option.available) {
     return (
-      <p className="text-xs leading-5 text-[#66665d]">
+      <p className="media-muted text-xs leading-5">
         {option.unavailable_reason === "no_api_key"
           ? "Add an OpenAI API key in Settings to generate an AI image for this scene."
           : "No safe visual subject is available for an AI image at this point of the story."}
@@ -949,22 +991,22 @@ function GenerateImageOption({ option, busy, onGenerate, state }: { option: NonN
   }
   return (
     <div className="space-y-2">
-      <p className="text-xs leading-5 text-[#56564e]">
+      <p className="text-xs leading-5">
         Creates one image from this scene&apos;s visual intent. Model: <strong>{option.model_label}</strong> · Quality: <strong>{option.quality_label}</strong>. This uses paid OpenAI API credits.
       </p>
       {editing && (
         <div>
-          <label htmlFor={promptId} className="mb-1 block text-[10px] font-bold uppercase tracking-[.08em] text-[#66665d]">Prompt (optional edit)</label>
-          <textarea id={promptId} value={prompt} onChange={(event) => setPrompt(event.target.value)} rows={4} maxLength={1200} className="w-full rounded-xl border border-black/10 bg-white p-2 text-xs leading-5 text-[#383832]" />
+          <label htmlFor={promptId} className="media-muted mb-1 block text-[10px] font-bold uppercase tracking-[.08em]">Prompt (optional edit)</label>
+          <textarea id={promptId} value={prompt} onChange={(event) => setPrompt(event.target.value)} rows={4} maxLength={1200} className="cf-input text-xs leading-5" />
         </div>
       )}
       <div className="flex flex-wrap items-center gap-2">
         {/* An edited prompt is sent verbatim; otherwise the backend's automatic prompt is used. */}
-        <button type="button" onClick={() => onGenerate(editing && prompt.trim() !== option.prompt.trim() ? prompt : null)} disabled={busy} className="inline-flex items-center gap-1.5 rounded-full bg-[#2f4054] px-3 py-1.5 text-[10px] font-bold uppercase tracking-[.08em] text-white disabled:opacity-50">
+        <button type="button" onClick={() => onGenerate(editing && prompt.trim() !== option.prompt.trim() ? prompt : null)} disabled={busy} className="media-strong inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[10px] font-bold uppercase tracking-[.08em]">
           {state.status === "generating" ? <LoaderCircle className="size-3 animate-spin" /> : <ImagePlus className="size-3" />}
           {state.status === "generating" ? "Generating…" : "Generate AI image"}
         </button>
-        <button type="button" onClick={() => setEditing((value) => !value)} disabled={busy} className="text-[10px] font-bold uppercase tracking-[.08em] text-[#66665d] hover:text-[#d94c20]">
+        <button type="button" onClick={() => setEditing((value) => !value)} disabled={busy} className="media-action rounded-full px-3 py-1.5 text-[10px] font-bold uppercase tracking-[.08em]">
           {editing ? "Use automatic prompt" : "Edit prompt"}
         </button>
       </div>
@@ -973,7 +1015,7 @@ function GenerateImageOption({ option, busy, onGenerate, state }: { option: NonN
   );
 }
 
-function ScenesView({ scenes, duration, assets, mediaBusy, mediaError, candidateScene, candidateSet, candidateSelection, onSelectCandidate, onChooseSceneMedia, onApplyCandidate, onGenerateImage, generationState, onCancel }: { scenes: Scene[]; duration: number; assets: Project["revision"]["state"]["assets"]; mediaBusy: number | null; mediaError: string | null; candidateScene: number | null; candidateSet: SceneMediaCandidates | null; candidateSelection: string | null; onSelectCandidate: (token: string) => void; onChooseSceneMedia: (sceneNumber: number) => void; onApplyCandidate: () => void; onGenerateImage: (prompt: string | null) => void; generationState: GenerationState; onCancel: () => void }) {
+function ScenesView({ scenes, qualityReview, duration, assets, mediaBusy, mediaError, candidateScene, candidateSet, candidateSelection, onSelectCandidate, onChooseSceneMedia, onApplyCandidate, onGenerateImage, generationState, onCancel }: { scenes: Scene[]; qualityReview?: FinalQualityReview; duration: number; assets: Project["revision"]["state"]["assets"]; mediaBusy: number | null; mediaError: string | null; candidateScene: number | null; candidateSet: SceneMediaCandidates | null; candidateSelection: string | null; onSelectCandidate: (token: string) => void; onChooseSceneMedia: (sceneNumber: number) => void; onApplyCandidate: () => void; onGenerateImage: (prompt: string | null) => void; generationState: GenerationState; onCancel: () => void }) {
   return (
     <div className="space-y-3">
       {mediaError && (
@@ -994,16 +1036,16 @@ function ScenesView({ scenes, duration, assets, mediaBusy, mediaError, candidate
         ))}
       </div>
       {scenes.map((scene, index) => (
-        <div key={scene.id} className="cf-surface grid grid-cols-[46px_minmax(0,1fr)] items-center gap-3 rounded-[18px] border p-3 shadow-sm sm:grid-cols-[54px_minmax(0,1fr)_112px_auto] sm:gap-4">
+        <div key={scene.id} id={`scene-row-${index + 1}`} className="cf-surface grid grid-cols-[46px_minmax(0,1fr)] items-center gap-3 rounded-[18px] border p-3 shadow-sm sm:grid-cols-[54px_minmax(0,1fr)_112px_auto] sm:gap-4">
           <div className={cn("grid aspect-square place-items-center rounded-xl text-sm font-extrabold text-white", ["bg-[#ff7950]", "bg-[#34475d]", "bg-[#c89941]", "bg-[#7c8f67]"][index % 4])}>{index + 1}</div>
           <div className="min-w-0">
             <p className="truncate text-sm font-semibold">{scene.visual_goal}</p>
-            <p className="mt-1 truncate text-xs text-[#84847b]">{scene.narration}</p>
-            {scene.media && <p className="mt-1 text-[9px] font-semibold uppercase tracking-[.08em] text-[#88887f]">{scene.media.source_url ? <a href={scene.media.source_url} target="_blank" rel="noreferrer" className="hover:text-[#ff6838]">{mediaProvenance(scene.media)}</a> : mediaProvenance(scene.media)}</p>}
+            <p className="mt-1 truncate text-xs text-[var(--muted-foreground)]">{scene.narration}</p>
+            {scene.media && <p className="media-muted mt-1 text-[9px] font-semibold uppercase tracking-[.08em]">{scene.media.source_url ? <a href={scene.media.source_url} target="_blank" rel="noreferrer" className="underline-offset-2 hover:text-[var(--foreground)] hover:underline">{mediaProvenance(scene.media)}</a> : mediaProvenance(scene.media)}</p>}
           </div>
           {scene.media?.cache_path ? (
-            <div className="col-span-2 overflow-hidden rounded-xl border border-black/8 bg-black/[.03] sm:col-span-1">
-              <p className="px-2 pt-1 text-[9px] font-bold uppercase tracking-[.08em] text-[#88887f]">Current media</p>
+            <div className="media-box col-span-2 overflow-hidden rounded-xl sm:col-span-1">
+              <p className="media-muted px-2 pt-1 text-[9px] font-bold uppercase tracking-[.08em]">Current media</p>
               {scene.media.kind === "video" ? (
                 <video
                   src={mediaUrl(`/media/${scene.media.cache_path}`) ?? undefined}
@@ -1029,7 +1071,7 @@ function ScenesView({ scenes, duration, assets, mediaBusy, mediaError, candidate
               type="button"
               onClick={() => onChooseSceneMedia(index + 1)}
               disabled={mediaBusy !== null}
-              className="inline-flex items-center gap-1.5 rounded-full border border-black/10 px-2.5 py-1.5 text-[9px] font-bold uppercase tracking-[.08em] text-[#66665d] transition hover:border-[#ff6838] hover:text-[#d94c20] disabled:cursor-wait disabled:opacity-60 sm:mb-2"
+              className="media-action inline-flex items-center gap-1.5 rounded-full px-2.5 py-1.5 text-[9px] font-bold uppercase tracking-[.08em] sm:mb-2"
               aria-label={`Choose media for scene ${index + 1}`}
             >
               <RefreshCw className={cn("size-3", mediaBusy === index + 1 && "animate-spin")} />
@@ -1038,38 +1080,41 @@ function ScenesView({ scenes, duration, assets, mediaBusy, mediaError, candidate
             <p className="mono text-[10px] font-medium">{formatTime(scene.start)}–{formatTime(scene.end)}</p>
             <p className="mt-1 text-[9px] uppercase tracking-[.08em] text-amber-700">{scene.asset_status.replaceAll("_", " ")}</p>
             {scene.visual_director?.generation?.status === "project_budget_exhausted" && <p className="mt-1 text-[9px] uppercase tracking-[.08em] text-amber-700">AI image budget reached</p>}
-            {scene.overlays && scene.overlays.length > 0 && <p className="mt-1 text-[9px] uppercase tracking-[.08em] text-[#2f4054]">+ {scene.overlays[0].kind} overlay</p>}
+            {scene.overlays && scene.overlays.length > 0 && <p className="media-muted mt-1 text-[9px] uppercase tracking-[.08em]">+ {scene.overlays[0].kind} overlay</p>}
+            {sceneQualityState(qualityReview, scene.id) === "repaired" && <p className="mt-1 text-[9px] uppercase tracking-[.08em] text-emerald-700">Auto-repaired</p>}
+            {sceneQualityState(qualityReview, scene.id) === "issue" && <p className="mt-1 text-[9px] uppercase tracking-[.08em] text-amber-700">Quality issue</p>}
           </div>
           {candidateScene === index + 1 && candidateSet && (
-            <div className="col-span-2 rounded-2xl border border-[#ff6838]/25 bg-[#fffaf6] p-3 sm:col-span-4">
+            <div className="media-panel col-span-2 rounded-2xl p-3 sm:col-span-4">
               <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-                <p className="text-xs font-bold uppercase tracking-[.08em] text-[#66665d]">Alternatives · {candidateSet.preferred_kind} first</p>
-                <div className="flex flex-wrap items-center gap-3">
-                  <button type="button" onClick={() => onChooseSceneMedia(index + 1)} disabled={mediaBusy !== null} className="inline-flex items-center gap-1 text-xs"><RefreshCw className="size-3" />Retry real media search</button>
-                  <button type="button" onClick={onCancel} disabled={mediaBusy !== null} className="text-xs">Keep current media</button>
-                  {candidateSet.candidates.length > 0 && <button type="button" onClick={onApplyCandidate} disabled={!candidateSelection || mediaBusy !== null} className="rounded-full bg-[#ff6838] px-3 py-1.5 text-[10px] font-bold uppercase tracking-[.08em] text-white disabled:opacity-50">Apply</button>}
+                <p className="media-muted text-xs font-bold uppercase tracking-[.08em]">Alternatives · {candidateSet.preferred_kind} first</p>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button type="button" onClick={() => onChooseSceneMedia(index + 1)} disabled={mediaBusy !== null} className="media-action inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-semibold"><RefreshCw className="size-3" />Retry real media search</button>
+                  <button type="button" onClick={onCancel} disabled={mediaBusy !== null} className="media-action rounded-full px-3 py-1.5 text-xs font-semibold">Keep current media</button>
+                  {candidateSet.candidates.length > 0 && <button type="button" onClick={onApplyCandidate} disabled={!candidateSelection || mediaBusy !== null} className="media-primary rounded-full px-3 py-1.5 text-[10px] font-bold uppercase tracking-[.08em]">Apply</button>}
                 </div>
               </div>
-              {mediaError && <p role="alert" className="mb-3 rounded-xl border border-red-700/15 bg-red-50 px-3 py-2 text-xs text-red-700">{mediaError}</p>}
-              {candidateSet.candidates.filter((item) => !item.generated).length === 0 && <p role="status" className="mb-3 text-sm">No suitable real media found for this scene. Retry the search, keep the current media, or generate an AI image below.</p>}
+              {mediaError && <p role="alert" className="media-alert mb-3 rounded-xl px-3 py-2 text-xs">{mediaError}</p>}
+              {candidateSet.candidates.filter((item) => !item.generated).length === 0 && <p role="status" className="media-note mb-3 rounded-xl px-3 py-2 text-sm leading-5">No suitable real media found for this scene. Retry the search, keep the current media, or generate an AI image below.</p>}
               <div className="grid gap-2 sm:grid-cols-3">
                 {candidateSet.candidates.map((candidate) => (
-                  <button key={candidate.token} type="button" onClick={() => onSelectCandidate(candidate.token)} className={cn("overflow-hidden rounded-xl border text-left transition", candidateSelection === candidate.token ? "border-[#ff6838] ring-2 ring-[#ff6838]/20" : "border-black/10 hover:border-[#ff6838]/50")}>
+                  <button key={candidate.token} type="button" onClick={() => onSelectCandidate(candidate.token)} aria-pressed={candidateSelection === candidate.token} className="media-candidate overflow-hidden rounded-xl text-left">
+                    {candidateSelection === candidate.token && <span className="media-selected-badge"><Check className="size-3" aria-hidden="true" />Selected</span>}
                     {candidate.kind === "video" ? <video src={candidatePreview(candidate.preview_url)} muted controls preload="metadata" className="h-24 w-full bg-black object-cover" aria-label={`${candidate.kind} candidate preview`} /> : (
                       // eslint-disable-next-line @next/next/no-img-element
                       <img src={candidatePreview(candidate.preview_url)} alt={candidate.generated ? "AI-generated alternative" : `${candidate.provider} candidate by ${candidate.creator}`} loading="lazy" className="h-24 w-full object-cover" />
                     )}
                     <span className="block px-2 py-1.5 text-[10px] leading-4">
                       {candidate.generated
-                        ? <><strong className="uppercase">{candidate.new ? "New · AI image" : "AI image"}</strong> · {candidate.model_label ?? "OpenAI"}<br />{candidate.prompt_source === "user_edited" ? "Your prompt" : "Automatic prompt"}</>
-                        : <><strong className="uppercase">{candidate.kind}</strong> · {candidate.provider}<br />{candidate.creator}</>}
+                        ? <><strong className="uppercase">{candidate.new ? "New · AI image" : "AI image"}</strong> · {candidate.model_label ?? "OpenAI"}<br /><span className="media-muted">{candidate.prompt_source === "user_edited" ? "Your prompt" : "Automatic prompt"}</span></>
+                        : <><strong className="uppercase">{candidate.kind}</strong> · {candidate.provider}<br /><span className="media-muted">{candidate.creator}</span></>}
                     </span>
                   </button>
                 ))}
               </div>
               {candidateSet.generation && (
-                <div className="mt-3 rounded-xl border border-black/10 bg-white/60 p-3">
-                  <p className="mb-1.5 text-[10px] font-bold uppercase tracking-[.08em] text-[#66665d]">Generate AI image</p>
+                <div className="media-box mt-3 rounded-xl p-3">
+                  <p className="media-muted mb-1.5 text-[10px] font-bold uppercase tracking-[.08em]">Generate AI image</p>
                   <GenerateImageOption key={candidateSet.generation.prompt} option={candidateSet.generation} busy={mediaBusy !== null} onGenerate={onGenerateImage} state={generationState} />
                 </div>
               )}

@@ -651,7 +651,7 @@ def _caption_risk(state: dict[str, Any], timestamp: float) -> dict[str, Any]:
     return {"risk": round(min(1.0, base + len(active) * 0.06), 3), "active": True, "position": position, "active_count": len(active)}
 
 
-def _extract_frame(ffmpeg: str, video: Path, timestamp: float, destination: Path) -> bool:
+def extract_video_frame(ffmpeg: str, video: Path, timestamp: float, destination: Path, *, width: int = 1080) -> bool:
     try:
         completed = subprocess.run(
             [
@@ -666,7 +666,7 @@ def _extract_frame(ffmpeg: str, video: Path, timestamp: float, destination: Path
                 "-frames:v",
                 "1",
                 "-vf",
-                "scale=1080:-2",
+                f"scale={int(width)}:-2",
                 "-q:v",
                 "3",
                 str(destination),
@@ -691,6 +691,9 @@ def _frame_metrics(path: Path) -> tuple[float, list[str], tuple[int, int]] | Non
     if "nearly_black" in reasons:
         return None
     return score, reasons, (width, height)
+
+
+_extract_frame = extract_video_frame  # backwards-compatible private name
 
 
 def _frame_candidates(state: dict[str, Any], project_dir: Path, brief: dict[str, Any], frame_dir: Path) -> list[dict[str, Any]]:

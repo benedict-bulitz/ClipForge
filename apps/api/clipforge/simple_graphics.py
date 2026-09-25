@@ -14,6 +14,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 GRAPHIC_KINDS = ("number", "comparison", "process")
 MAX_LABEL_CHARS = 42
+OVERLAY_STEP_CHARS = 40
 MAX_STEPS = 3
 
 _BACKGROUND_TOP = (18, 20, 27)
@@ -47,7 +48,12 @@ def _font(size: int) -> ImageFont.ImageFont:
 
 
 def _clean(value: object, limit: int = MAX_LABEL_CHARS) -> str:
-    return " ".join(str(value or "").split())[:limit].strip(" ,.;:-")
+    text = " ".join(str(value or "").split())
+    if len(text) > limit:
+        # Never cut a word in half: a truncated label means nothing.
+        cut = text[: limit + 1].rsplit(" ", 1)[0] if " " in text[: limit + 1] else text[:limit]
+        text = cut
+    return text.strip(" ,.;:-")
 
 
 def normalise_graphic_spec(spec: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -206,48 +212,72 @@ def normalise_overlay_spec(spec: dict[str, Any] | None) -> dict[str, Any] | None
         return None
     kind = spec["kind"]
     if kind == "process":
-        steps = [_clean(step, 34) for step in spec.get("steps") or [] if _clean(step, 34)][:MAX_STEPS]
+        steps = [_clean(step, OVERLAY_STEP_CHARS) for step in spec.get("steps") or [] if _clean(step, OVERLAY_STEP_CHARS)][:MAX_STEPS]
         if not steps:
             return None
         active = spec.get("active")
         active = len(steps) - 1 if not isinstance(active, int) else max(0, min(len(steps) - 1, active))
-        return {"kind": kind, "steps": steps, "active": active}
+        clean = {"kind": kind, "steps": steps, "active": active}
+        if spec.get("relation") and len(steps) == 2:
+            # A two-part relation (cause -> effect) is one idea: always shown whole.
+            clean.update(relation=True, active=1)
+        return clean
     if kind == "comparison":
         left, right = _clean(spec.get("left"), 24), _clean(spec.get("right"), 24)
         return {"kind": kind, "left": left, "right": right} if left and right and left.casefold() != right.casefold() else None
-    text = _clean(spec.get("text"), 34)
+    text = _clean(spec.get("text"), OVERLAY_STEP_CHARS)
     return {"kind": kind, "text": text} if text else None
 
 
+OVERLAY_STYLES = ("pill", "minimal")
+
+
+def compact_overlay_spec(spec: dict[str, Any] | None) -> dict[str, Any] | None:
+    """The smallest form of an overlay: a process shows only its active step."""
+    clean = normalise_overlay_spec(spec)
+    if clean is None or clean["kind"] != "process" or clean.get("relation"):
+        return clean  # a relation keeps both sides; the minimal style shrinks it
+    return {"kind": "process", "steps": [clean["steps"][clean["active"]]], "active": 0}
+
+
 def _pill(
-    draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont, center_x: int, top: int, width: int, *, active: bool
+    draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont, center_x: int, top: int, width: int, *, active: bool,
+    style: str = "pill",
 ) -> int:
-    """Draw one translucent pill; returns its height."""
+    """Draw one translucent pill (or, minimal style, shadowed text only); returns its height."""
     text_width, text_height = _text_size(draw, text, font)
     pad_x, pad_y = round(width * 0.035), round(width * 0.018)
     box = (center_x - text_width // 2 - pad_x, top, center_x + text_width // 2 + pad_x, top + text_height + pad_y * 2)
-    draw.rounded_rectangle(
-        box, radius=(box[3] - box[1]) // 2, fill=_PILL_FILL_ACTIVE if active else _PILL_FILL,
-        outline=(*_ACCENT, 235) if active else None, width=max(3, width // 300),
-    )
+    if style != "minimal":
+        draw.rounded_rectangle(
+            box, radius=(box[3] - box[1]) // 2, fill=_PILL_FILL_ACTIVE if active else _PILL_FILL,
+            outline=(*_ACCENT, 235) if active else None, width=max(3, width // 300),
+        )
     left, text_top, _right, _bottom = draw.textbbox((0, 0), text, font=font)
     position = (center_x - text_width // 2 - left, top + pad_y - text_top)
+    fill = (*_TEXT, 255) if active else _TEXT_DIM
+    if style == "minimal":
+        # No panel: an outlined label keeps the base media visible around it.
+        draw.text(position, text, font=font, fill=fill, stroke_width=max(2, width // 360), stroke_fill=(0, 0, 0, 210))
+        return box[3] - box[1]
     draw.text((position[0] + 2, position[1] + 2), text, font=font, fill=(0, 0, 0, 120))
-    draw.text(position, text, font=font, fill=(*_TEXT, 255) if active else _TEXT_DIM)
+    draw.text(position, text, font=font, fill=fill)
     return box[3] - box[1]
 
 
 def render_overlay(
-    spec: dict[str, Any], destination: Path, *, width: int, height: int, placement: str = "upper"
+    spec: dict[str, Any], destination: Path, *, width: int, height: int, placement: str = "upper", style: str = "pill"
 ) -> Path:
-    """Transparent RGBA overlay at the timeline size; deterministic per spec/placement.
+    """Transparent RGBA overlay at the timeline size; deterministic per spec/placement/style.
 
     ``placement`` "upper" keeps the graphic in the upper band (under the
     attention-callout area); "lower" keeps it above the caption area.
+    ``style`` "minimal" draws outlined labels without panel backgrounds.
     """
     clean = normalise_overlay_spec(spec)
     if clean is None:
         raise GraphicSpecError("Unsupported or empty overlay spec.")
+    style = style if style in OVERLAY_STYLES else "pill"
     image = Image.new("RGBA", (width, height), (0, 0, 0, 0))
     draw = ImageDraw.Draw(image)
     center_x = width // 2
@@ -263,7 +293,7 @@ def render_overlay(
         top = round(height * 0.13) if placement == "upper" else round(height * 0.68) - total
         y = top
         for index, step in enumerate(visible):
-            y += _pill(draw, step, font, center_x, y, width, active=index == clean["active"])
+            y += _pill(draw, step, font, center_x, y, width, active=index == clean["active"], style=style)
             if index < len(visible) - 1:
                 y += gap
                 draw.polygon([(center_x - arrow, y), (center_x + arrow, y), (center_x, y + arrow * 2)], fill=(*_ACCENT, 235))
@@ -274,15 +304,15 @@ def render_overlay(
         left_width = _text_size(draw, clean["left"], font)[0]
         right_width = _text_size(draw, clean["right"], font)[0]
         badge, pad, gap_x = round(width * 0.04), round(width * 0.035), round(width * 0.015)
-        _pill(draw, clean["left"], font, center_x - badge - gap_x - pad - left_width // 2, top, width, active=False)
-        _pill(draw, clean["right"], font, center_x + badge + gap_x + pad + right_width // 2, top, width, active=False)
+        _pill(draw, clean["left"], font, center_x - badge - gap_x - pad - left_width // 2, top, width, active=False, style=style)
+        _pill(draw, clean["right"], font, center_x + badge + gap_x + pad + right_width // 2, top, width, active=False, style=style)
         middle = top + (_text_size(draw, "Ag", font)[1] + round(width * 0.036)) // 2
         draw.ellipse((center_x - badge, middle - badge, center_x + badge, middle + badge), fill=(*_ACCENT, 240))
         _centered(draw, "VS", _font(round(badge * 0.9)), center_x, middle - round(badge * 0.45), _TEXT)
     else:
         font = _fitted_font(draw, clean["text"], usable, round(width * 0.052), round(width * 0.034))
         top = round(height * 0.13) if placement == "upper" else round(height * 0.62)
-        _pill(draw, clean["text"], font, center_x, top, width, active=True)
+        _pill(draw, clean["text"], font, center_x, top, width, active=True, style=style)
     destination.parent.mkdir(parents=True, exist_ok=True)
     image.save(destination, format="PNG", optimize=True)
     return destination

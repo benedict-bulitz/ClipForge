@@ -22,6 +22,7 @@ from .exporter import (
     finalize_export,
     rollback_finalized_export,
 )
+from .final_critic import disabled_review, run_final_quality_review
 from .hashing import attach_hashes
 from .media import prepare_project_media
 from .models import GenerationJob, Project, ProjectChatMessage, ProjectRevision
@@ -38,7 +39,7 @@ from .pipeline import (
 )
 from .progress import ProgressCallback, report_progress
 from .reactions import plan_viewer_reactions
-from .renderer import RenderUnavailable, VoiceGenerationError, render_video
+from .renderer import RenderResult, RenderUnavailable, VoiceGenerationError, render_video
 from .review import pre_render_quality_gate, run_ai_review
 from .schemas import (
     AudioSettingsUpdate,
@@ -48,6 +49,7 @@ from .schemas import (
     SocialMetadataUpdate,
 )
 from .social_metadata import generate_social_metadata, normalize_hashtags
+from .story_arc import annotate_story_roles
 from .thumbnails import build_project_thumbnails
 
 
@@ -641,7 +643,11 @@ def render_project(
         **render_kwargs,
     )
     # Secondary metadata never changes the outcome of a completed render.
-    state["social_metadata"] = generate_social_metadata(state, settings)
+    # Saved metadata (generated or edited) is kept: only an explicit
+    # regeneration replaces it.
+    saved = state.get("social_metadata") or {}
+    if saved.get("status") != "available" or not saved.get("platforms"):
+        state["social_metadata"] = generate_social_metadata(state, settings)
     # Covers are secondary too: unavailable project imagery must never fail a
     # finished video render.
     try:
@@ -902,6 +908,13 @@ def _render_state(
     result = render_video(
         state, project_id, revision_number, settings, progress=progress
     )
+    _apply_render_result(state, result, revision_number)
+    _final_quality_review(state, project_id, revision_number, settings, progress=progress)
+    return attach_hashes(state)
+
+
+def _apply_render_result(state: dict, result: RenderResult, revision_number: int) -> None:
+    """Persist a finished render: measured timing, render metadata and QC."""
     state["duration"]["actual_seconds"] = result.actual_seconds
     state["voice"]["provider"] = result.voice_provider
     state["voice"]["status"] = "complete"
@@ -913,6 +926,8 @@ def _render_state(
         state["scenes"],
         str(state.get("timeline", {}).get("cut_pace") or "fast"),
     )
+    # Retimed scenes keep their Story Arc role/stage (the critic reads them).
+    annotate_story_roles(state)
     analyze_pacing(state)
     plan_viewer_reactions(state)
     pre_render_quality_gate(state)
@@ -930,12 +945,60 @@ def _render_state(
         "format": "mp4",
         "revision": revision_number,
         "stale": False,
+        # What each scene window of the file shows (for the Final Video Critic).
+        "layout": [dict(item) for item in result.layout],
     }
     state["qc"].update({"status": "passed", "round": 1, "issues": []})
     for stage in state["pipeline"]:
         if stage["status"] != "blocked":
             stage["status"] = "complete"
-    return attach_hashes(state)
+
+
+def _final_quality_review(
+    state: dict,
+    project_id: str,
+    revision_number: int,
+    settings: Settings,
+    *,
+    progress: ProgressCallback | None = None,
+) -> None:
+    """Review the rendered file and run the bounded targeted repair pass.
+
+    Repairs reuse the Visual Director media pass and re-render the same
+    revision; a critic failure never fails a finished render.
+    """
+    if not settings.final_critic_enabled:
+        # Never leave an earlier render's review attached to this render.
+        state["final_quality_review"] = disabled_review(revision_number)
+        return
+    report_progress(progress, "quality_review", "Reviewing the final video", phase="start")
+
+    def prepare(repair_state: dict) -> None:
+        prepare_project_media(repair_state, project_id, settings)
+
+    def rerender(repair_state: dict) -> None:
+        repaired = render_video(repair_state, project_id, revision_number, settings)
+        _apply_render_result(repair_state, repaired, revision_number)
+
+    try:
+        run_final_quality_review(
+            state,
+            project_id=project_id,
+            revision=revision_number,
+            settings=settings,
+            rerender=rerender,
+            prepare_media=prepare,
+        )
+    except Exception as exc:  # noqa: BLE001 - review is advisory after a finished render
+        state["final_quality_review"] = {
+            "version": 1,
+            "status": "not_reviewed",
+            "reason": "critic_failed",
+            "error": str(exc)[:300],
+            "revision": revision_number,
+            "summary": {"label": "Not reviewed", "repaired_scene_count": 0, "remaining_issue_count": 0, "warning_count": 0},
+        }
+    report_progress(progress, "quality_review", "Reviewing the final video", phase="complete")
 
 
 def _revision_map(project: Project) -> dict[int, ProjectRevision]:

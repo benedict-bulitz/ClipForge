@@ -6,6 +6,7 @@ import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import imageio_ffmpeg
 from openai import (
@@ -19,6 +20,7 @@ from openai import (
     PermissionDeniedError,
     RateLimitError,
 )
+from PIL import Image, UnidentifiedImageError
 
 from .alignment import (
     align_narration,
@@ -32,7 +34,7 @@ from .media import GRAPHIC_ASSET_SOURCE, _reuse_safe, is_scene_asset_allowed, me
 from .music import attach_discovered_track, resolve_track_path
 from .narration import clean_narration_text, contamination_issues
 from .progress import ProgressCallback, report_progress
-from .simple_graphics import GraphicSpecError, render_overlay
+from .simple_graphics import GraphicSpecError, compact_overlay_spec, render_overlay
 from .smart_crop import analyze_scene_media
 from .voice import OPENAI_VOICES, tts_instructions
 
@@ -56,6 +58,19 @@ class RenderResult:
     actual_seconds: float
     voice_provider: str
     file_size: int
+    # What each scene of the file shows: its time window, media, crop, still
+    # motion and the overlays actually drawn (with their frame footprint).
+    layout: tuple[dict[str, Any], ...] = ()
+
+
+# Encoded scene segments are reused across renders of a project when nothing
+# that affects their pixels changed (a targeted repair re-encodes only the
+# repaired scenes; captions and audio are always composed again).
+SEGMENT_CACHE_DIRECTORY = "segment-cache"
+# Caption layout shared by the ASS writer and the layout metadata.
+CAPTION_MARGIN_RATIO = 0.12
+CAPTION_LINE_HEIGHT = 1.25
+CAPTION_MAX_LINES = 2
 
 
 def ffmpeg_path() -> str | None:
@@ -191,7 +206,14 @@ def render_video(
             )
         scenes = state["scenes"]
         total_weight = max(1.0, sum(max(0.1, scene["end"] - scene["start"]) for scene in scenes))
-        durations = [target * max(0.1, scene["end"] - scene["start"]) / total_weight for scene in scenes]
+        fps = int(state["timeline"]["fps"])
+        # Whole frames per scene: the file's scene windows are then exact and
+        # an unchanged scene encodes identically in a later (repair) render.
+        frames = [max(1, round(target * max(0.1, scene["end"] - scene["start"]) / total_weight * fps)) for scene in scenes]
+        if frames:
+            # The last scene absorbs rounding so the picture spans the narration.
+            frames[-1] = max(1, round(target * fps) - sum(frames[:-1]))
+        durations = [count / fps for count in frames]
         report_progress(
             progress,
             "rendering",
@@ -201,14 +223,23 @@ def render_video(
             total_units=len(scenes),
         )
         segment_paths = []
+        segment_cache = settings.render_root.resolve() / project_id / SEGMENT_CACHE_DIRECTORY
+        layout: list[dict[str, Any]] = []
+        cursor = 0.0
+        cache_files: list[Path] = []
         for index, (scene, duration) in enumerate(
             zip(scenes, durations, strict=True)
         ):
             segment_paths.append(
                 _create_visual_segment(
-                    ffmpeg, state, scene, index, duration, temp, settings
+                    ffmpeg, state, scene, index, duration, temp, settings, cache_dir=segment_cache
                 )
             )
+            layout.append(_scene_layout(scene, index, cursor, min(target, cursor + duration)))
+            cursor += duration
+            segment = scene.pop("render_segment", None) or {}
+            if segment.get("cache_file"):
+                cache_files.append(Path(segment["cache_file"]))
             report_progress(
                 progress,
                 "rendering",
@@ -299,6 +330,7 @@ def render_video(
         if verify.returncode != 0 or not output.exists() or output.stat().st_size < 10_000:
             output.unlink(missing_ok=True)
             raise RenderUnavailable(verify.stderr.strip()[-500:] or "Rendered file failed quality checks")
+        _prune_segment_cache(segment_cache, cache_files)
         report_progress(
             progress,
             "finalizing",
@@ -318,7 +350,69 @@ def render_video(
         actual_seconds=round(target, 2),
         voice_provider=provider,
         file_size=output.stat().st_size,
+        layout=tuple(layout),
     )
+
+
+def _scene_layout(scene: dict, index: int, start: float, end: float) -> dict[str, Any]:
+    """Renderer layout metadata for one scene window of the finished file."""
+    media = scene.get("media") if isinstance(scene.get("media"), dict) else {}
+    strategy = scene.get("visual_director") if isinstance(scene.get("visual_director"), dict) else {}
+    crop = scene.get("smart_crop") if isinstance(scene.get("smart_crop"), dict) else {}
+    segment = scene.get("render_segment") if isinstance(scene.get("render_segment"), dict) else {}
+    return {
+        "scene_id": str(scene.get("id") or f"scene_{index + 1:02d}"),
+        "index": index,
+        "block_id": str(scene.get("block_id") or ""),
+        "start": round(start, 3),
+        "end": round(end, 3),
+        "media": {
+            "identity": str(media.get("identity") or ""),
+            "source": media_source(media) if media else "",
+            "kind": str(media.get("kind") or ""),
+            "cache_path": str(media.get("cache_path") or ""),
+            "asset_status": str(scene.get("asset_status") or ""),
+        },
+        "composition": strategy.get("composition"),
+        "crop": {
+            key: crop.get(key) for key in ("status", "mode", "center_x", "center_y", "confidence") if key in crop
+        },
+        "motion": dict(scene["still_motion"]) if isinstance(scene.get("still_motion"), dict) and media.get("kind") != "video" else None,
+        "overlays": [dict(item) for item in segment.get("overlays") or []],
+        "adjustments": dict(scene.get("render_adjustments") or {}),
+        "segment_cache": segment.get("cache", "disabled"),
+    }
+
+
+def _prune_segment_cache(cache_dir: Path, kept: list[Path]) -> None:
+    """Keep only the segments of the latest render (bounded disk use)."""
+    if not cache_dir.is_dir():
+        return
+    keep = {path.resolve() for path in kept}
+    for item in cache_dir.glob("*.mp4"):
+        if item.resolve() not in keep:
+            item.unlink(missing_ok=True)
+
+
+def caption_band(state: dict) -> dict[str, Any] | None:
+    """Normalised vertical band the burned-in captions can occupy (``None`` = no captions)."""
+    captions = state.get("captions") if isinstance(state.get("captions"), dict) else {}
+    if not captions.get("enabled", True):
+        return None
+    height = max(1, int((state.get("timeline") or {}).get("height") or 1920))
+    font_size = max(24, min(112, int(captions.get("font_size", 72))))
+    block = min(0.5, CAPTION_MAX_LINES * font_size * CAPTION_LINE_HEIGHT / height)
+    position = str(captions.get("position") or "lower")
+    if position == "upper":
+        top = CAPTION_MARGIN_RATIO
+        bottom = top + block
+    elif position == "center":
+        top, bottom = 0.5 - block / 2, 0.5 + block / 2
+    else:
+        position = "lower"
+        bottom = 1.0 - CAPTION_MARGIN_RATIO
+        top = bottom - block
+    return {"position": position, "top": round(top, 4), "bottom": round(bottom, 4)}
 
 
 def _write_ass_captions(state: dict, target: float, temp: Path) -> Path:
@@ -330,7 +424,7 @@ def _write_ass_captions(state: dict, target: float, temp: Path) -> Path:
     active_color = _ass_color(captions.get("highlight_color"), "ff6838")
     style = caption_style_config(str(captions.get("style") or "karaoke"))
     alignment = {"upper": 8, "center": 5}.get(captions.get("position"), 2)
-    margin = round(height * 0.12)
+    margin = round(height * CAPTION_MARGIN_RATIO)
     header = f"""[Script Info]
 ScriptType: v4.00+
 PlayResX: {width}
@@ -521,6 +615,7 @@ def replace_scene_video(state: dict, project_id: str, title: str, scene_number: 
     with tempfile.TemporaryDirectory(prefix="clipforge-replace-") as name:
         temp = Path(name)
         segment = _create_visual_segment(ffmpeg, state, scene, scene_number - 1, end - start, temp, settings, require_real_media=True)
+        scene.pop("render_segment", None)
         # Render the existing caption/attention timeline onto just the replacement.
         captions = _write_ass_captions(state, float(state["timeline"]["duration"]), temp)
         graph = f"[1:v]setpts=PTS-STARTPTS+{start:.6f}/TB"
@@ -818,20 +913,57 @@ def overlay_placement(state: dict, center_y: float) -> str:
     return "lower" if center_y < 0.42 else "upper"
 
 
+def overlay_footprint(path: Path) -> dict[str, Any]:
+    """Share of the frame an overlay occupies: its bounding box and its drawn pixels."""
+    try:
+        with Image.open(path) as image:
+            alpha = image.getchannel("A") if "A" in image.getbands() else None
+            if alpha is None:
+                return {"bbox": [0.0, 0.0, 1.0, 1.0], "bbox_area": 1.0, "coverage": 1.0}
+            width, height = image.size
+            bbox = alpha.getbbox()
+            drawn = alpha.point(lambda value: 255 if value > 40 else 0).histogram()[255]
+    except (OSError, UnidentifiedImageError, ValueError):
+        return {}
+    if bbox is None:
+        return {"bbox": None, "bbox_area": 0.0, "coverage": 0.0}
+    left, top, right, bottom = bbox
+    return {
+        "bbox": [round(left / width, 4), round(top / height, 4), round(right / width, 4), round(bottom / height, 4)],
+        "bbox_area": round((right - left) * (bottom - top) / (width * height), 4),
+        "coverage": round(drawn / (width * height), 4),
+    }
+
+
 def _render_scene_overlays(
     state: dict, scene: dict, index: int, temp: Path, width: int, height: int, center_y: float
 ) -> list[Path]:
     overlays = [item for item in scene.get("overlays") or [] if isinstance(item, dict) and isinstance(item.get("spec"), dict)]
     media = scene.get("media") if isinstance(scene.get("media"), dict) else {}
-    if not overlays or media_source(media) == GRAPHIC_ASSET_SOURCE:
+    adjustments = scene.get("render_adjustments") if isinstance(scene.get("render_adjustments"), dict) else {}
+    adjust = adjustments.get("overlay") if isinstance(adjustments.get("overlay"), dict) else {}
+    segment = scene.setdefault("render_segment", {})
+    segment["overlays"] = []
+    if not overlays or media_source(media) == GRAPHIC_ASSET_SOURCE or adjust.get("mode") == "remove":
         return []
-    placement = overlay_placement(state, center_y)
+    placement = adjust.get("placement") if adjust.get("placement") in {"upper", "lower"} else overlay_placement(state, center_y)
+    compact = adjust.get("mode") == "compact"
+    style = "minimal" if compact else "pill"
     paths: list[Path] = []
     for position, overlay in enumerate(overlays):
+        spec = compact_overlay_spec(overlay["spec"]) if compact else overlay["spec"]
         try:
-            paths.append(render_overlay(overlay["spec"], temp / f"overlay-{index:02d}-{position}.png", width=width, height=height, placement=placement))
+            path = render_overlay(spec, temp / f"overlay-{index:02d}-{position}.png", width=width, height=height, placement=placement, style=style)
         except (GraphicSpecError, OSError, ValueError):
             continue  # an overlay is never worth failing the scene
+        paths.append(path)
+        segment["overlays"].append({
+            "kind": spec.get("kind") if isinstance(spec, dict) else overlay.get("kind"),
+            "spec": spec,
+            "placement": placement,
+            "style": style,
+            **overlay_footprint(path),
+        })
     if paths:
         scene["overlay_render"] = {"placement": placement, "count": len(paths)}
     return paths
@@ -842,29 +974,76 @@ _ZOOM_STEPS = {"fast_cut": 0.0012, "dynamic": 0.0010, "subtle_pan": 0.0006, "slo
 # shows >= 92% of it, so the focal subject stays in view), ending on the side
 # of the focal point.
 _PAN_RANGE = (0.2, 0.8)
+# The focal point stays at least this far inside the visible window.
+FOCAL_MARGIN = 0.12
+_MIN_SAFE_PAN = 0.15
+REDUCED_MAX_ZOOM = 1.03
 
 
-def still_motion_plan(scene: dict, index: int, motion: str, center_x: float, frames: int) -> dict:
+def safe_pan_range(focal_x: float, zoom: float, margin: float = FOCAL_MARGIN) -> tuple[float, float] | None:
+    """Window positions (0..1 of the zoom slack) that keep the focal point in view.
+
+    With zoom ``z`` the window starts at ``t*(1-1/z)`` of the frame, so the
+    focal point sits at ``z*p - (z-1)*t`` of the window.  ``None`` when no
+    worthwhile pan keeps it inside ``[margin, 1-margin]``.
+    """
+    if zoom <= 1.0:
+        return None
+    low = (zoom * focal_x - (1 - margin)) / (zoom - 1)
+    high = (zoom * focal_x - margin) / (zoom - 1)
+    low, high = max(_PAN_RANGE[0], low), min(_PAN_RANGE[1], high)
+    return (low, high) if high - low >= _MIN_SAFE_PAN else None
+
+
+def still_motion_plan(
+    scene: dict,
+    index: int,
+    motion: str,
+    center_x: float,
+    frames: int,
+    *,
+    focal: tuple[float, float] | None = None,
+    limit: str | None = None,
+) -> dict:
     """Deterministic, subtle Ken Burns treatment for photos and generated stills.
 
     Scenes alternate push-in, pan across the focal point and pull-out so a run
     of stills does not feel identical.  A still without a motion setting stays
     static; simple graphics only get a very gentle push so text stays inside.
+    With a known ``focal`` point (its position inside the 9:16 work frame)
+    zooms stay anchored on it and a pan only covers positions that keep it in
+    view; without a safe pan the still gets a centred push-in instead.
+    ``limit="reduced"`` (a repair) allows only a very small anchored push.
     """
     step = _ZOOM_STEPS.get(motion, 0.0)
+    anchor = focal[0] if focal is not None else center_x
     if not step:
-        return {"type": "static", "max_zoom": 1.0, "zoom": "min(zoom+0.0000,1.0)", "x": f"{center_x:.4f}"}
+        return {"type": "static", "max_zoom": 1.0, "zoom": "min(zoom+0.0000,1.0)", "x": f"{anchor:.4f}"}
     media = scene.get("media") if isinstance(scene.get("media"), dict) else {}
     if media_source(media) == GRAPHIC_ASSET_SOURCE:
         return {"type": "push_in", "max_zoom": 1.03, "zoom": f"min(zoom+{min(step, 0.0004):.4f},1.03)", "x": "0.5000"}
+    if limit == "reduced":
+        return {
+            "type": "push_in", "max_zoom": REDUCED_MAX_ZOOM, "reduced": True,
+            "zoom": f"min(zoom+{min(step, 0.0003):.4f},{REDUCED_MAX_ZOOM})", "x": f"{anchor:.4f}",
+        }
     max_zoom = 1.08
     pattern = ("push_in", "pan", "pull_out")[index % 3]
+    if pattern == "pan" and focal is not None:
+        window = safe_pan_range(focal[0], max_zoom - 0.02)
+        if window is None:
+            return {"type": "push_in", "max_zoom": max_zoom, "zoom": f"min(zoom+{step:.4f},{max_zoom})", "x": f"{anchor:.4f}", "reason": "no_safe_pan"}
+        start, end = window if focal[0] >= 0.5 else window[::-1]
+        return {
+            "type": "pan", "max_zoom": max_zoom, "zoom": f"{max_zoom - 0.02:.2f}", "safe_range": [round(window[0], 4), round(window[1], 4)],
+            "x": f"({start:.4f}+{end - start:.4f}*on/{max(1, frames - 1)})",
+        }
     if pattern == "pull_out":
         return {
             "type": "pull_out",
             "max_zoom": max_zoom,
             "zoom": f"if(eq(on,0),{max_zoom},max(zoom-{step:.4f},1.0))",
-            "x": f"{center_x:.4f}",
+            "x": f"{anchor:.4f}",
         }
     if pattern == "pan":
         start, end = _PAN_RANGE if center_x >= 0.5 else _PAN_RANGE[::-1]
@@ -874,7 +1053,39 @@ def still_motion_plan(scene: dict, index: int, motion: str, center_x: float, fra
             "zoom": f"{max_zoom - 0.02:.2f}",
             "x": f"({start:.4f}+{end - start:.4f}*on/{max(1, frames - 1)})",
         }
-    return {"type": "push_in", "max_zoom": max_zoom, "zoom": f"min(zoom+{step:.4f},{max_zoom})", "x": f"{center_x:.4f}"}
+    return {"type": "push_in", "max_zoom": max_zoom, "zoom": f"min(zoom+{step:.4f},{max_zoom})", "x": f"{anchor:.4f}"}
+
+
+def _source_size(source: Path, media: dict) -> tuple[int, int] | None:
+    try:
+        with Image.open(source) as image:
+            return image.size
+    except (OSError, UnidentifiedImageError, ValueError):
+        width, height = media.get("width"), media.get("height")
+        if isinstance(width, (int, float)) and isinstance(height, (int, float)) and width > 0 and height > 0:
+            return int(width), int(height)
+        return None
+
+
+def focal_crop(center: tuple[float, float], source: tuple[int, int] | None, frame: tuple[int, int]) -> tuple[float, float, float, float] | None:
+    """Crop origin fractions that centre the frame on the focal point, and where it lands.
+
+    Returns ``(origin_x, origin_y, focal_x, focal_y)``: origins are fractions
+    of the scale-to-cover slack (the renderer's crop expression), focal values
+    the focal point's position inside the cropped 9:16 frame.
+    """
+    if not source or source[0] <= 0 or source[1] <= 0:
+        return None
+    scale = max(frame[0] / source[0], frame[1] / source[1])
+    result: list[float] = []
+    for axis in (0, 1):
+        size, target = source[axis] * scale, frame[axis]
+        focus = center[axis] * size
+        slack = size - target
+        origin = min(max(0.0, focus - target / 2), max(0.0, slack))
+        result.append(origin / slack if slack > 1 else 0.5)
+        result.append(min(1.0, max(0.0, (focus - origin) / target)))
+    return result[0], result[2], result[1], result[3]
 
 
 def _create_visual_segment(
@@ -887,6 +1098,7 @@ def _create_visual_segment(
     settings: Settings,
     *,
     require_real_media: bool = False,
+    cache_dir: Path | None = None,
 ) -> Path:
     width = int(state["timeline"]["width"])
     height = int(state["timeline"]["height"])
@@ -907,28 +1119,48 @@ def _create_visual_segment(
         if source is None:
             raise RenderUnavailable("No real scene media is available. Retry media discovery; text cards are disabled.")
     output = temp / f"segment-{index:02d}.mp4"
+    adjustments = scene.get("render_adjustments") if isinstance(scene.get("render_adjustments"), dict) else {}
     smart_crop = analyze_scene_media(scene, state, settings)
+    crop_override = adjustments.get("crop") if isinstance(adjustments.get("crop"), dict) else None
+    if crop_override and media_source(scene.get("media") or {}) != GRAPHIC_ASSET_SOURCE:
+        # A targeted repair (Final Video Critic) chose this focal point.
+        smart_crop = {
+            **(smart_crop or {}),
+            "status": "adjusted",
+            "mode": "critic_adjusted",
+            "center_x": min(1.0, max(0.0, float(crop_override.get("center_x", 0.5)))),
+            "center_y": min(1.0, max(0.0, float(crop_override.get("center_y", 0.5)))),
+        }
     if smart_crop:
         scene["smart_crop"] = smart_crop
     center_x = min(1.0, max(0.0, float((smart_crop or {}).get("center_x", 0.5))))
     center_y = min(1.0, max(0.0, float((smart_crop or {}).get("center_y", 0.5))))
     base = [ffmpeg, "-y", "-v", "error"]
+    # Centre the 9:16 crop on the focal point (known source size); otherwise
+    # the focal fractions position the crop directly.
+    geometry = focal_crop((center_x, center_y), _source_size(source, scene.get("media") or {}), (width, height))
+    origin_x, origin_y = (geometry[0], geometry[1]) if geometry else (center_x, center_y)
+    focal = (geometry[2], geometry[3]) if geometry else None
     if kind == "video":
         # Integer crop origins stay fixed for the whole clip so source motion is
         # preserved without sub-pixel re-rounding wobble.
         video_filter = (
             f"scale={width}:{height}:force_original_aspect_ratio=increase,"
-            f"crop={width}:{height}:x='trunc((in_w-{width})*{center_x:.4f})':"
-            f"y='trunc((in_h-{height})*{center_y:.4f})',fps={fps},"
+            f"crop={width}:{height}:x='trunc((in_w-{width})*{origin_x:.4f})':"
+            f"y='trunc((in_h-{height})*{origin_y:.4f})',fps={fps},"
             f"tpad=stop_mode=clone:stop_duration={duration:.3f},"
             f"trim=duration={duration:.3f},setpts=PTS-STARTPTS,format=yuv420p"
         )
         inputs, base_filter = ["-i", str(source), "-an"], video_filter
     else:
         frames = max(1, round(duration * fps))
-        motion = str(scene.get("motion") or "")
-        plan = still_motion_plan(scene, index, motion, center_x, frames)
-        scene["still_motion"] = {key: plan[key] for key in ("type", "max_zoom")}
+        motion = "" if adjustments.get("motion") == "static" else str(scene.get("motion") or "")
+        limit = "reduced" if adjustments.get("motion") == "reduced" else None
+        plan = still_motion_plan(scene, index, motion, center_x, frames, focal=focal, limit=limit)
+        scene["still_motion"] = {key: plan[key] for key in ("type", "max_zoom", "reason", "safe_range", "reduced") if key in plan}
+        if focal is not None:
+            scene["still_motion"]["focal"] = [round(focal[0], 4), round(focal[1], 4)]
+        anchor_y = focal[1] if focal is not None else center_y
         max_zoom = plan["max_zoom"]
         # Keep motion bounded and render it at 2x before the final downscale. At
         # output resolution, integer zoompan windows turn smooth motion into a
@@ -943,16 +1175,16 @@ def _create_visual_segment(
         # first keeps non-9:16 photos and generated images undistorted.
         zoom_filter = (
             f"scale={work_w}:{work_h}:force_original_aspect_ratio=increase,"
-            f"crop={work_w}:{work_h}:x='trunc((in_w-{work_w})*{center_x:.4f})':"
-            f"y='trunc((in_h-{work_h})*{center_y:.4f})',"
+            f"crop={work_w}:{work_h}:x='trunc((in_w-{work_w})*{origin_x:.4f})':"
+            f"y='trunc((in_h-{work_h})*{origin_y:.4f})',"
             f"zoompan=z='{plan['zoom']}':"
             f"x='trunc((iw-iw/zoom)*{plan['x']})':"
-            f"y='trunc((ih-ih/zoom)*{center_y:.4f})':"
+            f"y='trunc((ih-ih/zoom)*{anchor_y:.4f})':"
             f"d={frames}:s={output_w}x{output_h}:fps={fps},"
             f"scale={width}:{height}:flags=lanczos,format=yuv420p"
         )
         inputs, base_filter = ["-loop", "1", "-i", str(source)], zoom_filter
-    overlay_paths = _render_scene_overlays(state, scene, index, temp, width, height, center_y)
+    overlay_paths = _render_scene_overlays(state, scene, index, temp, width, height, focal[1] if focal is not None else center_y)
     if overlay_paths:
         # Base visual + transparent information overlays, composited per scene;
         # captions are burned in later over the whole timeline.
@@ -978,16 +1210,47 @@ def _create_visual_segment(
             "23",
             "-pix_fmt",
             "yuv420p",
-            str(output),
         ]
     )
+    segment = scene.setdefault("render_segment", {})
+    cached = _segment_cache_path(cache_dir, command, source, overlay_paths)
+    segment["cache_file"] = str(cached) if cached is not None else None
+    if cached is not None and cached.is_file() and cached.stat().st_size > 0:
+        segment["cache"] = "hit"
+        return cached
+    command.append(str(output))
     completed = _run_process(
         command, timeout=120, failure="A visual scene did not finish rendering."
     )
     if completed.returncode != 0 or not output.exists():
         output.unlink(missing_ok=True)
         raise RenderUnavailable(completed.stderr.strip()[-500:] or "A visual scene could not be rendered.")
+    segment["cache"] = "miss" if cached is not None else "disabled"
+    if cached is not None:
+        try:
+            cached.parent.mkdir(parents=True, exist_ok=True)
+            staging = cached.with_suffix(".partial")
+            shutil.copy2(output, staging)
+            staging.replace(cached)
+        except OSError:
+            pass  # the cache is an optimisation only
     return output
+
+
+def _segment_cache_path(cache_dir: Path | None, command: list[str], source: Path, overlays: list[Path]) -> Path | None:
+    """Content key of one segment: everything that decides its pixels."""
+    if cache_dir is None:
+        return None
+    try:
+        stat = source.stat()
+        replacements = {str(source): f"source:{source.resolve()}:{stat.st_size}:{stat.st_mtime_ns}"}
+        for path in overlays:
+            replacements[str(path)] = "overlay:" + hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return None
+    material = [replacements.get(part, part) for part in command[1:]]
+    key = hashlib.sha256(json.dumps(material).encode("utf-8")).hexdigest()[:24]
+    return cache_dir / f"{key}.mp4"
 
 
 def _audio_duration(ffmpeg: str, audio: Path) -> float:
