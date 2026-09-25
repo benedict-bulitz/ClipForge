@@ -182,6 +182,8 @@ export type ProjectState = {
     items: Array<{ check: string; severity: "info" | "warning" | "error"; message: string }>;
     automatic_corrections: string[];
   };
+  /** Final Video Critic review of the rendered file; absent on older projects. */
+  final_quality_review?: FinalQualityReview;
   timeline: { duration: number; width: number; height: number; fps: number; aspect_ratio: string; cut_pace: string };
   render: { status: string; url: string | null; file_size?: number; format?: string; revision?: number; stale?: boolean; error?: string };
   export?: {
@@ -393,4 +395,42 @@ export type Project = {
     is_user_visible: boolean;
     on_active_branch: boolean;
   }>;
+};
+
+export type FinalQualityIssue = {
+  id: string;
+  scene_id: string;
+  scene_number: number;
+  category: string;
+  code: string;
+  severity: "error" | "warning" | "info";
+  message: string;
+};
+
+export type FinalQualityRepair = {
+  scene_id: string;
+  scene_number?: number | null;
+  action: "replace_media" | "convert_graphic_to_overlay" | "continue_base_visual" | "adjust_composition" | "report_only";
+  status: "planned" | "applied" | "blocked" | "no_alternative" | "reverted" | "failed";
+  outcome?: "resolved" | "partially_resolved" | "unresolved" | "regressed";
+  reason?: string;
+  blocked_reason?: string;
+  message?: string;
+  adjustments?: { overlay?: { mode?: string; placement?: string }; motion?: string; crop?: { center_x: number; center_y: number } };
+  pass?: number;
+};
+
+export type FinalQualityReview = {
+  version: number;
+  status: "passed" | "passed_with_warnings" | "repaired" | "issues_remain" | "not_reviewed" | "disabled";
+  /** Render revision the review looked at. */
+  revision?: number;
+  reason?: string;
+  overall_score?: number | null;
+  repair_pass_count?: number;
+  issues?: FinalQualityIssue[];
+  repairs?: FinalQualityRepair[];
+  changed_scenes?: string[];
+  repaired_scenes?: string[];
+  summary?: { label: string; repaired_scene_count: number; remaining_issue_count: number; warning_count: number };
 };

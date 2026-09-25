@@ -785,6 +785,9 @@ def _dimensions(aspect_ratio: str) -> tuple[int, int]:
     return {"1:1": (1080, 1080), "16:9": (1920, 1080)}.get(aspect_ratio, (1080, 1920))
 
 
+_PERSISTENT_SCENE_KEYS = ("user_locked_visual", "render_adjustments", "rejected_media_identities", "visual_continuity")
+
+
 def _build_scenes(
     blocks: list[dict[str, str]],
     total_duration: float,
@@ -869,6 +872,11 @@ def _build_scenes(
                 scene["visual_director"] = copy.deepcopy(existing["visual_director"])
         if existing.get("edit_instruction"):
             scene["edit_instruction"] = existing["edit_instruction"]
+        # User locks and Final Video Critic render decisions belong to the scene
+        # identity and survive retiming.
+        for key in _PERSISTENT_SCENE_KEYS:
+            if existing.get(key):
+                scene[key] = copy.deepcopy(existing[key])
         scenes.append(scene)
         cursor = end
     return scenes

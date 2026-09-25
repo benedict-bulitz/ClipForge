@@ -8,6 +8,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from .config import Settings
+from .final_critic import record_manual_change
 from .hashing import attach_hashes
 from .image_generation import generation_message, get_image_generator, model_label, quality_label
 from .media import (
@@ -301,6 +302,7 @@ def apply_scene_media_candidate(
         scene["asset_status"] = f"{candidate.kind}_ready"
         scene.pop("fallback_reason", None)
         _mark_manual(scene, "real_media_user_selected", f"stock_{candidate.kind}")
+        record_manual_change(state, scene, "real_media_user_selected")
         assets = state.setdefault("assets", {})
         manifest = [item for item in assets.get("license_manifest", []) if item.get("identity") != candidate.identity]
         manifest.append(metadata)
@@ -340,6 +342,8 @@ def _commit_scene_media(
 
 
 def _mark_manual(scene: dict[str, Any], reason: str, resolved_type: str) -> None:
+    # A user choice locks the visual: automatic repairs may report, never replace it.
+    scene["user_locked_visual"] = True
     director = scene.get("visual_director") if isinstance(scene.get("visual_director"), dict) else {}
     director.update(
         decision="ACCEPTED_REAL" if resolved_type.startswith("stock_") else "GENERATE_FALLBACK",
@@ -545,6 +549,7 @@ def _apply_generated_alternative(
     scene["asset_status"] = "generated_image_ready"
     scene.pop("fallback_reason", None)
     _mark_manual(scene, "user_generated_image", GENERATED_IMAGE)
+    record_manual_change(state, scene, "user_generated_image")
     assets = state.setdefault("assets", {})
     manifest = [item for item in assets.get("license_manifest", []) if item.get("identity") != metadata["identity"]]
     manifest.append(scene["media"])

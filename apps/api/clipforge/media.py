@@ -1995,6 +1995,16 @@ def prepare_project_media(
             and is_scene_asset_allowed(existing)
         )
 
+        # Identities a targeted repair rejected for this scene are never picked
+        # again; a requested replacement also avoids footage other scenes show.
+        rejected = {str(value) for value in scene.get("rejected_media_identities") or [] if value}
+        excluded = used | rejected
+        if scene.get("asset_status") == "replacement_required":
+            excluded |= {
+                str(other["media"].get("identity"))
+                for other in scenes
+                if other is not scene and isinstance(other.get("media"), dict) and other["media"].get("identity")
+            }
         query_plan = build_visual_query_plan(scene, state)
         queries = query_plan["queries"]
         scene["search_queries"] = queries
@@ -2009,6 +2019,7 @@ def prepare_project_media(
         if (
             continued is not None
             and scene.get("asset_status") != "replacement_required"
+            and str(continued.get("identity") or "") not in rejected
             and (strategy.get("overlay_spec") or continued.get("kind") == "photo")
             and _reuse_safe(continued, strategy)
         ):
@@ -2049,7 +2060,7 @@ def prepare_project_media(
             preferred_kind=preferred_kind,
             portrait=portrait,
             scene_duration=duration,
-            used=used,
+            used=excluded,
             verifier=visual_verifier,
             extra_clients=extras,
         )
@@ -2091,13 +2102,13 @@ def prepare_project_media(
             search_provenance["wikimedia_fallback"] = True
             try:
                 wikimedia_ranked = _rank_verified(
-                    commons_candidates, scene, state, preferred_kind, used | staged.evaluated, scene_verifier
+                    commons_candidates, scene, state, preferred_kind, excluded | staged.evaluated, scene_verifier
                 )
             except Exception:  # noqa: BLE001 - verification must never fail media search
                 search_provenance["visual_verification"] = "failed_metadata_fallback"
                 scene_verifier = _METADATA_ONLY_VERIFIER
                 wikimedia_ranked = _rank_verified(
-                    commons_candidates, scene, state, preferred_kind, used | staged.evaluated, scene_verifier
+                    commons_candidates, scene, state, preferred_kind, excluded | staged.evaluated, scene_verifier
                 )
             for candidate, relevance in wikimedia_ranked:
                 if not accept(candidate, relevance):
@@ -2155,7 +2166,7 @@ def prepare_project_media(
                         except MediaProviderError as exc:
                             failure = exc
                 for candidate in batch[:24]:
-                    if candidate.identity in used or candidate.identity in relaxed_seen or not is_real_media_allowed(candidate):
+                    if candidate.identity in excluded or candidate.identity in relaxed_seen or not is_real_media_allowed(candidate):
                         continue
                     relaxed_seen.add(candidate.identity)
                     known = verified_rows.get(candidate.identity)
@@ -2201,12 +2212,17 @@ def prepare_project_media(
                 failure_reason=failure_reason,
                 run_state=run_state,
             )
+            if metadata is not None and str(metadata.get("identity") or "") in rejected:
+                metadata, resolved_type = None, None  # e.g. a cached copy of a rejected generated image
             _record_search_winner(search_provenance, metadata, resolved_type or "none")
             if metadata is not None:
                 decision = director.GENERATE_FALLBACK if resolved_type == director.GENERATED_IMAGE else director.DEGRADED
                 director.record_decision(scene, strategy, decision, resolved_type, failure_reason)
         if metadata is None:
-            safe_selected = [item for item in selected_media if is_scene_asset_allowed(item) and _reuse_safe(item, strategy)]
+            safe_selected = [
+                item for item in selected_media
+                if is_scene_asset_allowed(item) and _reuse_safe(item, strategy) and str(item.get("identity") or "") not in rejected
+            ]
             related = _related_media(queries, safe_selected) or (safe_selected[-1] if safe_selected else None)
             if related is None:
                 # Nothing to reuse: the remaining chain (a full-screen graphic,
@@ -2302,7 +2318,11 @@ def prepare_project_media(
         for scene in scenes:
             if scene.get("asset_status") == "real_media_unavailable":
                 strategy = scene.get("visual_director") if isinstance(scene.get("visual_director"), dict) else {}
-                reusable = next((item for item in selected_media if _reuse_safe(item, strategy)), None)
+                rejected = {str(value) for value in scene.get("rejected_media_identities") or [] if value}
+                reusable = next(
+                    (item for item in selected_media if _reuse_safe(item, strategy) and str(item.get("identity") or "") not in rejected),
+                    None,
+                )
                 if reusable is None:
                     continue
                 scene["media"] = dict(reusable)

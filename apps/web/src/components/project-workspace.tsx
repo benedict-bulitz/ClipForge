@@ -51,7 +51,8 @@ import {
   musicVolumeGain,
   musicDisplayName,
 } from "@/lib/api";
-import type { ChatMessage, MusicTrack, Project, Readiness, Scene, Source, SceneMediaCandidates } from "@/lib/types";
+import type { ChatMessage, FinalQualityReview, MusicTrack, Project, Readiness, Scene, Source, SceneMediaCandidates } from "@/lib/types";
+import { appliedQualityRepairs, qualityReviewSummary, remainingQualityIssues, sceneQualityState } from "@/lib/quality-review";
 import { Brand } from "./brand";
 import { Button } from "./ui/button";
 import { ThemeToggle } from "./theme-toggle";
@@ -475,6 +476,7 @@ export function ProjectWorkspace({
                   <Stat label="Scenes" value={String(state.scenes.length)} hint={state.timeline.aspect_ratio} />
                   <Stat label="Revision" value={`v${project.current_revision}`} hint={`${project.revisions.length} saved`} />
                 </div>
+                {state.render.url && <QualityReviewPanel review={state.final_quality_review} renderRevision={state.render.revision} disabled={!!busy || mediaBusy !== null} onFixScene={(sceneNumber) => { setTab("scenes"); void chooseSceneMedia(sceneNumber); }} />}
                 {state.render.url && <div className="mt-6 space-y-4">
                   <AudioControls key={`${project.id}:${project.current_revision}`} project={project} disabled={!!busy || sending} onDirty={() => setAudioDirty(true)} onMusicVolumeChange={(volume) => onProjectChange({ ...project, revision: { ...project.revision, state: { ...project.revision.state, music: { ...project.revision.state.music, volume } } } })} onSave={async (audio) => {
                     setBusy("audio");
@@ -507,7 +509,7 @@ export function ProjectWorkspace({
             <div className="py-6">
               {tab === "overview" && <Overview project={project} readiness={readiness} />}
               {tab === "script" && <ScriptView project={project} />}
-              {tab === "scenes" && <ScenesView scenes={state.scenes} duration={duration} assets={state.assets} mediaBusy={mediaBusy} mediaError={mediaError} candidateScene={candidateScene} candidateSet={candidateSet} candidateSelection={candidateSelection} onSelectCandidate={setCandidateSelection} onChooseSceneMedia={chooseSceneMedia} onApplyCandidate={applySelectedMedia} onGenerateImage={generateSelectedSceneImage} generationState={generationState} onCancel={() => { setCandidateScene(null); setCandidateSet(null); setCandidateSelection(null); setGenerationState({ status: "idle" }); }} />}
+              {tab === "scenes" && <ScenesView scenes={state.scenes} qualityReview={state.final_quality_review} duration={duration} assets={state.assets} mediaBusy={mediaBusy} mediaError={mediaError} candidateScene={candidateScene} candidateSet={candidateSet} candidateSelection={candidateSelection} onSelectCandidate={setCandidateSelection} onChooseSceneMedia={chooseSceneMedia} onApplyCandidate={applySelectedMedia} onGenerateImage={generateSelectedSceneImage} generationState={generationState} onCancel={() => { setCandidateScene(null); setCandidateSet(null); setCandidateSelection(null); setGenerationState({ status: "idle" }); }} />}
               {tab === "sources" && <SourcesView project={project} />}
             </div>
           </div>
@@ -817,6 +819,35 @@ function Overview({ project, readiness }: { project: Project; readiness: Readine
   );
 }
 
+function QualityReviewPanel({ review, renderRevision, disabled, onFixScene }: { review?: FinalQualityReview; renderRevision?: number; disabled: boolean; onFixScene: (sceneNumber: number) => void }) {
+  const detailsId = useId();
+  const [expanded, setExpanded] = useState(false);
+  const summary = qualityReviewSummary(review, renderRevision);
+  if (!summary) return null;
+  const issues = remainingQualityIssues(review);
+  const repairs = appliedQualityRepairs(review);
+  const expandable = issues.length > 0 || repairs.length > 0;
+  const tone = { passed: "bg-emerald-50 text-emerald-800", repaired: "bg-blue-50 text-blue-800", attention: "bg-amber-50 text-amber-800", muted: "bg-black/[.04] text-[var(--muted-foreground)]" }[summary.tone];
+  return (
+    <div className="cf-surface mt-3 rounded-[16px] border p-3 text-xs" aria-label="Final quality review">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className="font-semibold">Quality review</span>
+        {expandable ? (
+          <button type="button" onClick={() => setExpanded((open) => !open)} aria-expanded={expanded} aria-controls={detailsId} className={cn("inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[10px] font-bold", tone)}>
+            {summary.label}<ChevronUp className={cn("size-3 transition-transform", !expanded && "rotate-180")} />
+          </button>
+        ) : <span className={cn("rounded-full px-2.5 py-1 text-[10px] font-bold", tone)}>{summary.label}</span>}
+      </div>
+      {expandable && expanded && (
+        <div id={detailsId} className="mt-2 space-y-2">
+          {repairs.length > 0 && <ul className="space-y-1">{repairs.map((repair, index) => <li key={`${repair.sceneId}-${index}`} className="text-[var(--muted-foreground)]"><strong className="text-[var(--foreground)]">Scene {repair.sceneNumber ?? "?"}</strong>: {repair.text}{repair.outcome === "unresolved" ? " (did not help)" : ""}</li>)}</ul>}
+          {issues.length > 0 && <ul className="space-y-1">{issues.map((issue) => <li key={issue.id} className="flex items-start justify-between gap-2"><span className={issue.severity === "error" ? "text-amber-900" : "text-[var(--muted-foreground)]"}><strong>Scene {issue.scene_number}</strong>: {issue.message}</span><button type="button" disabled={disabled} onClick={() => onFixScene(issue.scene_number)} className="shrink-0 text-[10px] font-bold text-[#d94c20] hover:text-[#a93210] disabled:opacity-50" aria-label={`Change media for scene ${issue.scene_number}`}>Fix</button></li>)}</ul>}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function AIReviewPanel({ review }: { review: Project["revision"]["state"]["ai_review"] }) {
   const detailsId = useId();
   const [expanded, setExpanded] = useState(false);
@@ -973,7 +1004,7 @@ function GenerateImageOption({ option, busy, onGenerate, state }: { option: NonN
   );
 }
 
-function ScenesView({ scenes, duration, assets, mediaBusy, mediaError, candidateScene, candidateSet, candidateSelection, onSelectCandidate, onChooseSceneMedia, onApplyCandidate, onGenerateImage, generationState, onCancel }: { scenes: Scene[]; duration: number; assets: Project["revision"]["state"]["assets"]; mediaBusy: number | null; mediaError: string | null; candidateScene: number | null; candidateSet: SceneMediaCandidates | null; candidateSelection: string | null; onSelectCandidate: (token: string) => void; onChooseSceneMedia: (sceneNumber: number) => void; onApplyCandidate: () => void; onGenerateImage: (prompt: string | null) => void; generationState: GenerationState; onCancel: () => void }) {
+function ScenesView({ scenes, qualityReview, duration, assets, mediaBusy, mediaError, candidateScene, candidateSet, candidateSelection, onSelectCandidate, onChooseSceneMedia, onApplyCandidate, onGenerateImage, generationState, onCancel }: { scenes: Scene[]; qualityReview?: FinalQualityReview; duration: number; assets: Project["revision"]["state"]["assets"]; mediaBusy: number | null; mediaError: string | null; candidateScene: number | null; candidateSet: SceneMediaCandidates | null; candidateSelection: string | null; onSelectCandidate: (token: string) => void; onChooseSceneMedia: (sceneNumber: number) => void; onApplyCandidate: () => void; onGenerateImage: (prompt: string | null) => void; generationState: GenerationState; onCancel: () => void }) {
   return (
     <div className="space-y-3">
       {mediaError && (
@@ -1039,6 +1070,8 @@ function ScenesView({ scenes, duration, assets, mediaBusy, mediaError, candidate
             <p className="mt-1 text-[9px] uppercase tracking-[.08em] text-amber-700">{scene.asset_status.replaceAll("_", " ")}</p>
             {scene.visual_director?.generation?.status === "project_budget_exhausted" && <p className="mt-1 text-[9px] uppercase tracking-[.08em] text-amber-700">AI image budget reached</p>}
             {scene.overlays && scene.overlays.length > 0 && <p className="mt-1 text-[9px] uppercase tracking-[.08em] text-[#2f4054]">+ {scene.overlays[0].kind} overlay</p>}
+            {sceneQualityState(qualityReview, scene.id) === "repaired" && <p className="mt-1 text-[9px] uppercase tracking-[.08em] text-emerald-700">Auto-repaired</p>}
+            {sceneQualityState(qualityReview, scene.id) === "issue" && <p className="mt-1 text-[9px] uppercase tracking-[.08em] text-amber-700">Quality issue</p>}
           </div>
           {candidateScene === index + 1 && candidateSet && (
             <div className="col-span-2 rounded-2xl border border-[#ff6838]/25 bg-[#fffaf6] p-3 sm:col-span-4">

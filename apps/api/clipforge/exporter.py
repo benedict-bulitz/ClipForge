@@ -28,6 +28,8 @@ GENERATED_PROJECT_DIRECTORIES = (
     "generated",
     "tmp",
     "temp",
+    "segment-cache",
+    "critic",
 )
 
 

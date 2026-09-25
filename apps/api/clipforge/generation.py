@@ -36,6 +36,7 @@ BASELINE_SECONDS = {
     "rendering": 0.9,
     "music": 2.0,
     "finalizing": 12.0,
+    "quality_review": 6.0,
 }
 
 STAGE_LABELS = {
@@ -50,6 +51,7 @@ STAGE_LABELS = {
     "rendering": "Preparing scene video",
     "music": "Preparing the audio mix",
     "finalizing": "Finalizing and checking the video",
+    "quality_review": "Reviewing the final video",
 }
 
 
@@ -110,6 +112,7 @@ def build_stage_plan(db: Session, payload: ProjectCreate) -> list[dict[str, Any]
     if payload.options.music_enabled:
         stages.append(("music", None))
     stages.append(("finalizing", None))
+    stages.append(("quality_review", None))
     plan = []
     for stage, units in stages:
         estimate = _historical_estimate(stats, stage, units)
