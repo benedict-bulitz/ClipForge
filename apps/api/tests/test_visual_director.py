@@ -563,11 +563,17 @@ def test_strategy_types_cover_number_comparison_and_process():
     assert number["graphic"] == {"kind": "number", "value": "267.570", "label": "Inseln"}
     assert number["overlay"] == "statistic_callout"
 
-    process_scene = {**state["scenes"][1], "narration": "Nervensignal, Blutgefäße verengen sich, die Haut legt sich in Falten."}
+    process_state = copy.deepcopy(state)
+    # Steps come from the complete fact (its script block), not the scene fragment.
+    process_state["script"]["blocks"][1]["text"] = "Nervensignal, Blutgefäße verengen sich, die Haut legt sich in Falten."
+    process_scene = {**process_state["scenes"][1], "narration": "Nervensignal, Blutgefäße verengen sich"}
     process_scene["visual_intent"] = {**process_scene["visual_intent"], "visual_strategy": "process"}
-    process = visual_director.plan_scene_strategy(process_scene, state, plan)
+    process = visual_director.plan_scene_strategy(process_scene, process_state, plan)
     assert process["planned_type"] == visual_director.SIMPLE_GRAPHIC
-    assert len(process["graphic"]["steps"]) == 3
+    assert process["graphic"]["steps"] == ["Nervensignal", "Blutgefäße verengen sich", "Haut legt sich in Falten"]
+    # A fact without a clear relation gets no process graphic (never chopped words).
+    plain = visual_director.plan_scene_strategy({**state["scenes"][1], "visual_intent": process_scene["visual_intent"]}, state, plan)
+    assert plain["planned_type"] != visual_director.SIMPLE_GRAPHIC
     # The process is an overlay over a base visual (which may be generated);
     # the full-screen process graphic is the very last resort.
     assert process["overlay_spec"]["kind"] == "process" and process["composition"] == "base_with_overlay"

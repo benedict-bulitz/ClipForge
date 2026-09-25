@@ -51,6 +51,7 @@ from .media import (
     scene_coverage_targets,
     visual_target_key,
 )
+from .overlay_copy import explanatory_overlay
 from .payoff import reveals_protected_payoff
 from .simple_graphics import (
     GraphicSpecError,
@@ -116,7 +117,6 @@ _NUMBER_RE = re.compile(
     r"(\s*(?:%|prozent\b|percent\b))?",
     re.IGNORECASE,
 )
-_CLAUSE_SPLIT_RE = re.compile(r"\s*(?:[,;:→]|\s[-–—]\s)\s*")
 _WORD_RE = re.compile(r"[\wÀ-ÖØ-öø-ÿ-]+", re.UNICODE)
 _LABEL_STOP = _RELEVANCE_STOP | _VISUAL_QUERY_STOP | {
     "rund", "etwa", "fast", "über", "ueber", "knapp", "mehr", "als", "around", "about", "nearly", "over",
@@ -335,16 +335,6 @@ def salient_number(narration: str) -> dict[str, str] | None:
     return {"kind": "number", "value": value, "label": " ".join(label_words)}
 
 
-def process_steps(narration: str) -> list[str]:
-    """Up to three short, ordered labels taken from the narration itself."""
-    clauses = [clause for clause in _CLAUSE_SPLIT_RE.split(narration.strip(" .!?")) if clause.strip()]
-    if len(clauses) >= 2:
-        steps = [" ".join(_content_words(clause)[:3]) for clause in clauses]
-    else:
-        steps = _content_words(narration)
-    return list(dict.fromkeys(step for step in steps if step))[:3]
-
-
 def _title(value: str) -> str:
     return " ".join(word[:1].upper() + word[1:] for word in value.split())
 
@@ -369,8 +359,14 @@ def plan_scene_strategy(
     query_plan: dict[str, Any],
     *,
     arc: dict[str, dict[str, Any]] | None = None,
+    settings: Settings | None = None,
 ) -> dict[str, Any]:
-    """Structured visual strategy for one scene; deterministic and topic-agnostic."""
+    """Structured visual strategy for one scene; deterministic and topic-agnostic.
+
+    Explanatory steps come from ``overlay_copy`` (the complete fact as a
+    relation), never from the scene's narration fragment; ``settings`` only
+    enables its optional worker-model summary.
+    """
     story = scene_story_context(scene, state, arc)
     narration = " ".join(str(scene.get("narration") or "").split())
     intent = scene.get("visual_intent") if isinstance(scene.get("visual_intent"), dict) else {}
@@ -396,9 +392,12 @@ def plan_scene_strategy(
         and not _protected_text_blocked(f"{number['value']} {number['label']}", state, reveal_allowed, protected_terms)
     ):
         planned, graphic, reason = TEXT_NUMBER_VISUAL, number, "scene_states_a_statistic"
-    if planned in {STOCK_VIDEO, STOCK_PHOTO} and intent_strategy in _GRAPHIC_INTENT_STRATEGIES:
-        # Steps come from the whole fact: scenes may split a sentence mid-clause.
-        steps = process_steps(_block_text(scene, state) or narration)
+    explanatory: dict[str, Any] | None = None
+    if intent_strategy in _GRAPHIC_INTENT_STRATEGIES or story["visual_role"] in {"explanation", "final_payoff"} or story["story_role"] == "explanation":
+        # The complete fact as a relation (scenes may split a sentence mid-clause).
+        explanatory = explanatory_overlay(scene, state, settings, story.get("visual_role"))
+    if planned in {STOCK_VIDEO, STOCK_PHOTO} and intent_strategy in _GRAPHIC_INTENT_STRATEGIES and explanatory:
+        steps = list(explanatory["steps"])
         spec = {"kind": "process", "steps": steps}
         if len(steps) >= 2 and not _protected_text_blocked(" ".join(steps), state, reveal_allowed, protected_terms):
             planned, graphic, reason = SIMPLE_GRAPHIC, spec, f"intent_{intent_strategy}_better_explained"
@@ -412,7 +411,7 @@ def plan_scene_strategy(
     # last resort, used only when no acceptable base visual exists.
     overlay_spec: dict[str, Any] | None = None
     if planned == SIMPLE_GRAPHIC:
-        overlay_spec = {"kind": "process", "steps": list(graphic["steps"])}
+        overlay_spec = {**(explanatory or {}), "kind": "process", "steps": list(graphic["steps"])}
         chain = ["real_media", GENERATED_IMAGE, REUSE_PREVIOUS_VISUAL, SIMPLE_GRAPHIC]
     elif planned == COMPARISON_VISUAL:
         # Relevant real footage with "A vs B" labels; a pure split graphic
@@ -425,14 +424,14 @@ def plan_scene_strategy(
         chain = ["real_media", REUSE_PREVIOUS_VISUAL, SIMPLE_GRAPHIC]
     else:
         chain = ["real_media", GENERATED_IMAGE, REUSE_PREVIOUS_VISUAL]
-        if story["visual_role"] in {"explanation", "final_payoff"} or story["story_role"] == "explanation":
-            # Explanations get their causal steps as an overlay over the base
+        if explanatory:
+            # Explanations get their relation as an overlay over the base
             # visual; the full-screen process graphic stays a last resort.
-            steps = process_steps(_block_text(scene, state) or narration)
+            steps = list(explanatory["steps"])
             spec = normalise_graphic_spec({"kind": "process", "steps": steps})
             if spec and not _protected_text_blocked(" ".join(steps), state, reveal_allowed, protected_terms):
                 graphic = spec
-                overlay_spec = {"kind": "process", "steps": list(spec["steps"])}
+                overlay_spec = dict(explanatory)
                 chain = ["real_media", GENERATED_IMAGE, REUSE_PREVIOUS_VISUAL, SIMPLE_GRAPHIC]
     return {
         "version": VERSION,

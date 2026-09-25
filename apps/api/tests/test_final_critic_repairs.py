@@ -356,15 +356,17 @@ def test_card_like_overlay_is_simplified_and_the_frame_really_changes(monkeypatc
     review = Harness(tmp_path, provider).review(state)
 
     first = issue_codes(review, "scene_02_02", "initial_issues")
-    assert {"overlay_too_dominant", "text_heavy"} <= first
+    assert {"overlay_too_dominant", "text_heavy", "overlay_too_long"} <= first
     record = record_for(review, "scene_02_02")
     assert record["action"] == "adjust_composition" and record["adjustments"]["overlay"]["mode"] == "compact"
-    assert record["repair_effective"] and not {"overlay_too_dominant", "text_heavy"} & issue_codes(review, "scene_02_02")
+    assert record["accepted_step"] == "rewrite_overlay_from_fact"  # sentences -> the fact's relation
+    assert record["repair_effective"] and not {"overlay_too_dominant", "text_heavy", "overlay_too_long"} & issue_codes(review, "scene_02_02")
     after = {item["scene_id"]: item for item in state["render"]["layout"]}
     old, new = before_layout["scene_02_02"]["overlays"][0], after["scene_02_02"]["overlays"][0]
-    assert new["bbox_area"] < old["bbox_area"] / 3 and new["coverage"] < old["coverage"] / 3
+    assert new["bbox_area"] < old["bbox_area"] / 2 and new["coverage"] < old["coverage"] / 3
     assert new["bbox_area"] < final_critic.OVERLAY_MAX_BBOX and new["coverage"] < final_critic.OVERLAY_MAX_COVERAGE
-    assert new["spec"]["steps"] == [LONG_STEPS[-1]] and new["style"] == "minimal"  # key phrase only, no panel
+    assert new["style"] == "minimal" and new["spec"]["steps"] != LONG_STEPS  # short relation, no panel
+    assert all(len(step.split()) <= 6 for step in new["spec"]["steps"])
     # The repaired frame is materially different from the reviewed one.
     root = tmp_path
     old_frame = root / "project" / "critic" / "v2" / "pass0" / "scene_02_02-1.jpg"

@@ -2010,7 +2010,7 @@ def prepare_project_media(
             for key, value in query_plan.items()
             if key != "queries"
         }
-        strategy = director.plan_scene_strategy(scene, state, query_plan, arc=arc)
+        strategy = director.plan_scene_strategy(scene, state, query_plan, arc=arc, settings=settings)
         block_key = str(scene.get("block_id") or scene.get("id") or scene_index)
         continued = block_bases.get(block_key)
         if (

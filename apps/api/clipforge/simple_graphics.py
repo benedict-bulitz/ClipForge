@@ -14,6 +14,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 GRAPHIC_KINDS = ("number", "comparison", "process")
 MAX_LABEL_CHARS = 42
+OVERLAY_STEP_CHARS = 40
 MAX_STEPS = 3
 
 _BACKGROUND_TOP = (18, 20, 27)
@@ -47,7 +48,12 @@ def _font(size: int) -> ImageFont.ImageFont:
 
 
 def _clean(value: object, limit: int = MAX_LABEL_CHARS) -> str:
-    return " ".join(str(value or "").split())[:limit].strip(" ,.;:-")
+    text = " ".join(str(value or "").split())
+    if len(text) > limit:
+        # Never cut a word in half: a truncated label means nothing.
+        cut = text[: limit + 1].rsplit(" ", 1)[0] if " " in text[: limit + 1] else text[:limit]
+        text = cut
+    return text.strip(" ,.;:-")
 
 
 def normalise_graphic_spec(spec: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -206,16 +212,20 @@ def normalise_overlay_spec(spec: dict[str, Any] | None) -> dict[str, Any] | None
         return None
     kind = spec["kind"]
     if kind == "process":
-        steps = [_clean(step, 34) for step in spec.get("steps") or [] if _clean(step, 34)][:MAX_STEPS]
+        steps = [_clean(step, OVERLAY_STEP_CHARS) for step in spec.get("steps") or [] if _clean(step, OVERLAY_STEP_CHARS)][:MAX_STEPS]
         if not steps:
             return None
         active = spec.get("active")
         active = len(steps) - 1 if not isinstance(active, int) else max(0, min(len(steps) - 1, active))
-        return {"kind": kind, "steps": steps, "active": active}
+        clean = {"kind": kind, "steps": steps, "active": active}
+        if spec.get("relation") and len(steps) == 2:
+            # A two-part relation (cause -> effect) is one idea: always shown whole.
+            clean.update(relation=True, active=1)
+        return clean
     if kind == "comparison":
         left, right = _clean(spec.get("left"), 24), _clean(spec.get("right"), 24)
         return {"kind": kind, "left": left, "right": right} if left and right and left.casefold() != right.casefold() else None
-    text = _clean(spec.get("text"), 34)
+    text = _clean(spec.get("text"), OVERLAY_STEP_CHARS)
     return {"kind": kind, "text": text} if text else None
 
 
@@ -225,8 +235,8 @@ OVERLAY_STYLES = ("pill", "minimal")
 def compact_overlay_spec(spec: dict[str, Any] | None) -> dict[str, Any] | None:
     """The smallest form of an overlay: a process shows only its active step."""
     clean = normalise_overlay_spec(spec)
-    if clean is None or clean["kind"] != "process":
-        return clean
+    if clean is None or clean["kind"] != "process" or clean.get("relation"):
+        return clean  # a relation keeps both sides; the minimal style shrinks it
     return {"kind": "process", "steps": [clean["steps"][clean["active"]]], "active": 0}
 
 

@@ -44,6 +44,12 @@ from .media import (
     media_source,
     protected_candidate_terms,
 )
+from .overlay_copy import (
+    OVERLAY_SEMANTIC_CODES,
+    assess_overlay,
+    explanatory_overlay,
+    fact_statement,
+)
 from .renderer import caption_band, ffmpeg_path
 from .simple_graphics import normalise_graphic_spec, normalise_overlay_spec
 from .smart_crop import crop_windows
@@ -89,6 +95,7 @@ DIMENSIONS = (
     "reveal_safety",
     "motion",
     "graphic_usage",
+    "overlay_semantics",
 )
 
 # Thresholds reuse the media gate's OpenCLIP scale; rendered frames include
@@ -115,6 +122,7 @@ REPAIRABLE_CODES = {
     "overlay_too_dominant", "overlay_hits_captions", "fullscreen_graphic_with_base", "near_identical_graphics",
     "accidental_repeat", "repeats_primary_answer_visual", "answer_without_own_visual", "payoff_generic_reuse",
     "unnecessary_asset_switch",
+    *OVERLAY_SEMANTIC_CODES,
 }
 
 
@@ -517,6 +525,35 @@ class _Review:
             "rating": POOR if hits else GOOD, "caption_band": band, "overlay_bbox": [item.get("bbox") for item in overlays],
         }
 
+    def _overlay_semantics(self, row: _Row) -> None:
+        """Does the drawn text teach something?  Size and layout do not answer that.
+
+        Checks the fact's planned overlay (all steps) and every drawn
+        element against the complete Story Arc fact and the narration heard
+        in this scene.
+        """
+        drawn = [item.get("spec") for item in row.entry.get("overlays") or [] if isinstance(item, dict) and isinstance(item.get("spec"), dict)]
+        graphic = (row.scene.get("media") or {}).get("graphic") if row.graphic else None
+        if not drawn and not isinstance(graphic, dict):
+            row.dimensions["overlay_semantics"] = {"rating": NOT_APPLICABLE}
+            return
+        source = fact_statement(row.scene, self.state)
+        narration = " ".join(str(row.scene.get("narration") or "").split())
+        planned = row.strategy.get("overlay_spec") if isinstance(row.strategy.get("overlay_spec"), dict) else None
+        specs = [spec for spec in ([planned] if planned and drawn else []) + drawn + ([graphic] if isinstance(graphic, dict) else []) if spec]
+        found: dict[str, dict[str, str]] = {}
+        for spec in specs:
+            for issue in assess_overlay(spec, source=source, narration=narration):
+                found.setdefault(issue["code"], issue)
+        row.dimensions["overlay_semantics"] = {
+            "rating": POOR if found else GOOD,
+            "copy": [spec.get("steps") or [spec.get("left"), spec.get("right")] if spec.get("kind") != "label" else [spec.get("text")] for spec in specs][:2],
+            "source": "full_fact" if source else "narration",
+            "issues": sorted(found),
+        }
+        for code, issue in found.items():
+            self._issue(row, "overlay_semantics", code, "error", f"The {'graphic' if row.graphic else 'overlay'} text of scene {row.number}: {issue['message']}", element=issue.get("element"))
+
     def _story_context(self, row: _Row) -> dict[str, Any]:
         if not row.scene:
             return {"story_role": None, "visual_role": "evidence", "story_stage": None, "reveal_allowed": True, "fact_ids": []}
@@ -557,6 +594,7 @@ class _Review:
             self._visual_quality(row)
             self._subject_and_motion(row)
             self._overlay(row)
+            self._overlay_semantics(row)
             self._reveal(row, story, answer_identities)
             self._graphic(row, story)
             self._story_alignment(row, story, answer_rows)
@@ -1053,6 +1091,10 @@ def _composition_action(review: _Review, row: _Row, codes: dict[str, dict[str, A
         if overlay_now.get("placement") == overlay["placement"]:
             overlay.setdefault("mode", "compact")
         reasons.append("caption_overlay_collision")
+    rewrite = bool(set(codes) & set(OVERLAY_SEMANTIC_CODES))
+    if rewrite:
+        # Meaningless copy: rewrite only the overlay text from the full fact.
+        reasons.append("overlay_semantics")
     lost = "subject_lost_in_render" in codes or "motion_loses_subject" in codes
     if lost and row.entry.get("overlays") and row.dimensions.get("overlay_quality", {}).get("coverage", 0) >= OVERLAY_MAX_COVERAGE / 2:
         overlay.setdefault("mode", "compact")
@@ -1064,7 +1106,9 @@ def _composition_action(review: _Review, row: _Row, codes: dict[str, dict[str, A
         # Reframe before replacing: crop, then less motion, then a frozen still.
         action["reframe"] = True
         reasons.append("subject_visibility" if "subject_lost_in_render" in codes else "motion")
-    if not action["adjustments"] and not action.get("reframe"):
+    if rewrite:
+        action["rewrite_overlay"] = True
+    if not action["adjustments"] and not action.get("reframe") and not rewrite:
         return None
     action["reason"] = ",".join(dict.fromkeys(reasons))
     return action
@@ -1351,6 +1395,43 @@ class _Repairer:
         strategy.update(resolved_type=REUSE_PREVIOUS_VISUAL, decision_reason="final_critic_base_visual")
         return True
 
+    # -- overlay copy --------------------------------------------------------
+
+    def rewrite_overlay(self, scene: dict[str, Any], row: _Row) -> dict[str, Any]:
+        """New copy from the complete fact for every scene of that fact; the base visual stays."""
+        from .simple_graphics import normalise_graphic_spec as graphic_spec
+        from .visual_director import render_scene_graphic
+
+        strategy = self._strategy(scene)
+        source = fact_statement(scene, self.state)
+        narration = " ".join(str(scene.get("narration") or "").split())
+        story = self.review._story_context(row)
+        spec = explanatory_overlay(scene, self.state, self.settings, story.get("visual_role"))
+        if spec is not None and (assess_overlay(spec, source=source, narration=narration) or reveal_problems(scene, self.state, overlays=[{"spec": spec}])):
+            spec = None
+        block = scene.get("block_id")
+        siblings = [item for item in self.state.get("scenes") or [] if block and item.get("block_id") == block] or [scene]
+        for item in siblings:
+            target = item.get("visual_director") if isinstance(item.get("visual_director"), dict) else None
+            if target is None:
+                continue
+            target["overlay_spec"] = dict(spec) if spec else None
+            target["overlay_copy_source"] = (spec or {}).get("source", "removed")
+        if row.graphic:
+            graphic = graphic_spec({"kind": "process", "steps": list(spec["steps"])}) if spec else None
+            if graphic is None:
+                return {"status": "unresolved", "accepted_step": None, "unresolved_reason": "no_clear_relation_in_fact", "steps": [{"step": "rewrite_graphic_copy", "accepted": False}]}
+            strategy["graphic"] = graphic
+            metadata = render_scene_graphic(scene, self.state, strategy, project_id=self.project_id, settings=self.settings)
+            if metadata is None:
+                return {"status": "unresolved", "accepted_step": None, "steps": [{"step": "rewrite_graphic_copy", "accepted": False}]}
+            scene["media"] = metadata
+            return {"status": "applied", "accepted_step": "rewrite_overlay_from_fact", "steps": [{"step": "rewrite_graphic_copy", "copy": graphic["steps"], "accepted": True}]}
+        attach_overlays_for(self.state)
+        if spec is None:
+            return {"status": "applied", "accepted_step": "remove_meaningless_overlay", "steps": [{"step": "remove_meaningless_overlay", "accepted": True}]}
+        return {"status": "applied", "accepted_step": "rewrite_overlay_from_fact", "steps": [{"step": "rewrite_overlay_from_fact", "copy": spec["steps"], "source": spec.get("source"), "accepted": True}]}
+
     # -- framing steps -----------------------------------------------------
 
     def reframe(self, action: dict[str, Any], scene: dict[str, Any], row: _Row) -> dict[str, Any]:
@@ -1434,20 +1515,30 @@ def apply_repairs(
             continue
         record["before"] = _scene_snapshot(scene)
         record["before_score"] = row.semantic_score
+        record["before_overlay"] = copy.deepcopy((scene.get("visual_director") or {}).get("overlay_spec"))
         kind = action["action"]
+        overlay_codes = {issue_id.split(":")[-1] for issue_id in action.get("issue_ids") or []} & set(OVERLAY_SEMANTIC_CODES)
+        rewritten = repairer.rewrite_overlay(scene, row) if overlay_codes or action.get("rewrite_overlay") else None
         if kind in _MEDIA_ACTIONS:
             outcome = repairer.escalate_media(action, scene, row)
+            if rewritten:
+                outcome["steps"] = rewritten["steps"] + outcome.get("steps", [])
             record["invalidated"] = ["media", "crop", "overlay", "motion"]
         else:
             if action.get("adjustments"):
                 scene["render_adjustments"] = {**(scene.get("render_adjustments") or {}), **action["adjustments"], "source": "final_critic"}
             if action.get("reframe"):
                 outcome = repairer.reframe(action, scene, row)
+                if rewritten:
+                    outcome["steps"] = rewritten["steps"] + outcome.get("steps", [])
+            elif rewritten is not None:
+                outcome = rewritten
             else:
                 outcome = {"status": "applied", "accepted_step": "overlay_adjustment", "steps": [{"step": "overlay_adjustment", **action["adjustments"]}]}
             record["invalidated"] = sorted({key for key in (scene.get("render_adjustments") or {}) if key in {"overlay", "motion", "crop"}})
         record.update(outcome)
         record["after"] = _scene_snapshot(scene)
+        record["after_overlay"] = copy.deepcopy((scene.get("visual_director") or {}).get("overlay_spec"))
         record["generation"] = dict((scene.get("visual_director") or {}).get("generation") or {})
         trial_scores = [step.get("score") for step in outcome.get("steps") or [] if isinstance(step.get("score"), (int, float))]
         record["trial_score"] = max(trial_scores) if trial_scores else None
@@ -1498,6 +1589,8 @@ _STEP_MESSAGES = {
     "reduce_motion": "reduced the camera motion",
     "freeze_still": "disabled unsafe camera motion",
     "overlay_only": "adjusted the overlay",
+    "rewrite_overlay_from_fact": "rewrote the overlay text from the full fact",
+    "remove_meaningless_overlay": "removed an overlay that taught nothing",
 }
 _UNRESOLVED_MESSAGES = {
     "no_sufficiently_relevant_visual": "no sufficiently relevant visual found",
@@ -1511,6 +1604,7 @@ _UNRESOLVED_MESSAGES = {
     "no_alternative_found_earlier": "no better visual was found",
     "no_safe_targeted_repair": "no safe automatic repair exists",
     "repair_render_failed": "the repair render failed; the original was kept",
+    "no_clear_relation_in_fact": "no clear relation could be shown for this fact",
 }
 
 
@@ -1527,6 +1621,8 @@ def _result_message(record: dict[str, Any]) -> str:
     if reason in _UNRESOLVED_MESSAGES:
         return _UNRESOLVED_MESSAGES[reason]
     remaining = record.get("remaining_issue") or []
+    if set(OVERLAY_SEMANTIC_CODES) & set(remaining):
+        return "the overlay text is still not meaningful"
     if "text_heavy" in remaining:
         return "the scene is still text-heavy"
     if {"wrong_media", "weak_media"} & set(remaining):
