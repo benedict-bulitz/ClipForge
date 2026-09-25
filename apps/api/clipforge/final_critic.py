@@ -968,6 +968,12 @@ def intentional_continuity(first: dict[str, Any], second: dict[str, Any]) -> boo
     second_facts = {str(value) for value in second.get("story_unit_ids") or (second.get("visual_director") or {}).get("fact_ids") or []}
     if first_facts & second_facts:
         return True
+    for scene, other_facts in ((first, second_facts), (second, first_facts)):
+        # The opening hook shows the planned visual of a fact the body then
+        # explains: one subject continued, not an accidental repeat.
+        intent = scene.get("visual_intent") if isinstance(scene.get("visual_intent"), dict) else {}
+        if {str(value) for value in intent.get("source_fact_ids") or []} & other_facts:
+            return True
     for scene, other in ((second, first), (first, second)):
         continuity = scene.get("visual_continuity") if isinstance(scene.get("visual_continuity"), dict) else {}
         if continuity and (continuity.get("source_scene_id") == other.get("id") or scene.get("asset_status") in _CONTINUED_STATUSES):

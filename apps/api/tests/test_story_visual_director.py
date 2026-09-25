@@ -153,7 +153,11 @@ def test_generated_graphic_comparison_and_number_visuals_respect_the_reveal(monk
 
     # A comparison visual naming Sweden is only planned once the reveal is reached.
     comparison_state = copy.deepcopy(state)
-    hook = comparison_state["scenes"][0]
+    # The first scene before the reveal outside the hook window (the opening's
+    # text channel belongs to the triple hook).
+    hook_block = next(block["id"] for block in comparison_state["script"]["blocks"] if block["role"] == "hook")
+    hook = next(item for item in comparison_state["scenes"] if item["block_id"] != hook_block)
+    hook["story_stage"] = "before_reveal"
     hook["narration"] = "Wer gewinnt?"
     hook["visual_intent"] = {"visual_goal": "islands", "media_queries": ["swedish islands", "indonesian islands"], "media_query_targets": ["subject_a", "subject_b"]}
     hook.pop("search_queries", None)

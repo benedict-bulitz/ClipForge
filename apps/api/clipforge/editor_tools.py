@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from .config import Settings
 from .models import Project
-from .pipeline import _normalise_blocks, _refresh_script_derivatives
+from .pipeline import _normalise_blocks, _refresh_script_derivatives, enforce_selected_hook
 from .renderer import RenderUnavailable
 from .services import (
     RevisionConflict,
@@ -478,21 +478,14 @@ class EditorToolbox:
                     ]
                     if len(sentences) > 1:
                         blocks[0]["text"] = sentences[0] + "."
-            elif args.action == "shorter_intro":
-                words = blocks[0]["text"].split()
-                blocks[0]["text"] = " ".join(words[: max(4, math.ceil(len(words) * 0.65))])
             elif args.replacement_text:
                 blocks[0]["text"] = args.replacement_text
-            elif args.action in {"stronger_hook", "rewrite_intro"}:
-                sentences = [
-                    sentence.strip()
-                    for sentence in blocks[0]["text"].split(".")
-                    if sentence.strip()
-                ]
-                if sentences:
-                    blocks[0]["text"] = sentences[0] + "."
-                else:
-                    raise ValueError("A stronger opening needs replacement_text.")
+            elif args.action in {"stronger_hook", "rewrite_intro", "shorter_intro"}:
+                # Another opening comes only from the documented hook
+                # strategies (never a truncated or generic sentence).
+                if enforce_selected_hook(state, reselect=True, shorter=args.action == "shorter_intro") != "reselected":
+                    raise ValueError("No other documented hook fits this research; provide replacement_text.")
+                blocks = state["script"]["blocks"]
             else:
                 raise ValueError("A clearer rewrite needs replacement_text.")
             blocks[:] = _normalise_blocks(blocks, int(state["duration"]["max_seconds"]), story_arc=state.get("story_arc"))

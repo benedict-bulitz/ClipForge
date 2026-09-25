@@ -140,10 +140,12 @@ def test_hook_stronger_and_natural_format_requests_are_concrete_edits():
     settings = local_settings()
     state = sample_state(settings)
 
-    hooked, _ = apply_edit(state, "Make the hook stronger", settings)
+    # A story without research has no documented alternative opening: the
+    # request is answered honestly instead of inserting a generic template.
+    with pytest.raises(UnsupportedEdit, match="documented hook strategies"):
+        apply_edit(state, "Make the hook stronger", settings)
     portrait, _ = apply_edit(state, "Make the video landscape", settings)
 
-    assert hooked["script"]["blocks"][0]["text"] != state["script"]["blocks"][0]["text"]
     assert portrait["timeline"]["aspect_ratio"] == "16:9"
 
 

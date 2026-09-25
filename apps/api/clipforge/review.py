@@ -16,7 +16,7 @@ from .language import detect_text_language
 from .narration import begins_with_preamble, contamination_issues
 from .novelty import novelty_quality_issues
 from .payoff import payoff_quality_issues
-from .pipeline import _normalise_blocks, _refresh_script_derivatives
+from .pipeline import _apply_selected_hook, _normalise_blocks, _refresh_script_derivatives
 from .reactions import reaction_quality_issues
 from .story_arc import story_quality_issues
 
@@ -581,16 +581,16 @@ def run_ai_review(
                 decision.corrected_script_blocks, int(state["duration"]["max_seconds"]),
                 story_arc=state.get("story_arc"),
             )
-            hook_block = next(
-                (
-                    block
-                    for block in state["script"]["blocks"]
-                    if str(block.get("role") or "").casefold() == "hook"
-                ),
-                None,
-            )
-            if hook_block and str(hook_block.get("text") or "").strip():
-                state["script"]["selected_hook"] = str(hook_block["text"]).strip()
+            # The review may fix the body, never replace the selected hook:
+            # the authoritative verbal hook is restored as the opening.
+            authoritative = str((state["script"].get("triple_hook") or {}).get("verbal_hook") or state["script"].get("selected_hook") or "").strip()
+            if authoritative:
+                state["script"]["blocks"] = _apply_selected_hook(state["script"]["blocks"], authoritative)
+            else:
+                # No selected hook exists: the review cannot introduce one.
+                for block in state["script"]["blocks"]:
+                    if str(block.get("role") or "").casefold() == "hook":
+                        block["role"] = "setup"
             _refresh_script_derivatives(state, old_scenes=old_scenes)
             corrections.append(
                 "Rewrote the narration for language, directness, brevity, and clean spoken text."

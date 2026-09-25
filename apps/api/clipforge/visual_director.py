@@ -447,15 +447,19 @@ def plan_scene_strategy(
             "visual_from_hook": intent.get("source") == TRIPLE_HOOK_SOURCE,
             "on_screen_hook": None,
         }
+        # The hook window's text channel belongs to the triple hook: its label,
+        # or nothing (an omitted on-screen hook is never replaced by other copy).
         label = hook_overlay_spec(state)
+        overlay_spec = None
         if label is not None and (reveal_allowed or not hook_text_leaks(state, label["text"])):
             overlay_spec = label
             hook["on_screen_hook"] = label["text"]
-            if planned in {SIMPLE_GRAPHIC, TEXT_NUMBER_VISUAL}:
-                # The opening stays a real visual with the hook text over it.
-                planned = STOCK_PHOTO if str(scene.get("preferred_media") or "video") == "photo" else STOCK_VIDEO
-                reason = "triple_hook_opening"
-                chain = ["real_media", GENERATED_IMAGE, REUSE_PREVIOUS_VISUAL]
+        if planned in {SIMPLE_GRAPHIC, TEXT_NUMBER_VISUAL, COMPARISON_VISUAL}:
+            # The opening stays a real visual (with the hook text over it).
+            planned = STOCK_PHOTO if str(scene.get("preferred_media") or "video") == "photo" else STOCK_VIDEO
+            reason = "triple_hook_opening"
+            graphic = None
+            chain = ["real_media", GENERATED_IMAGE, REUSE_PREVIOUS_VISUAL]
     strategy = {
         "version": VERSION,
         "story_role": story["story_role"],

@@ -4,7 +4,9 @@ export type TripleHookSummary = {
   verbal: string;
   onScreen: string;
   visual: string;
+  /** The documented strategy the spoken hook uses (canonical name). */
   strategy: string;
+  evidence: string;
   meta: string;
 };
 
@@ -28,7 +30,8 @@ export function tripleHookSummary(plan?: TripleHook | null): TripleHookSummary |
     verbal: plan.verbal_hook,
     onScreen,
     visual: visualText || "—",
-    strategy: label(plan.selected_strategy) || "—",
+    strategy: plan.selected_strategy || "—",
+    evidence: (plan.supported_by_fact_ids ?? []).join(", "),
     meta: parts.join(" · "),
   };
 }

@@ -143,7 +143,11 @@ def test_comparison_pipeline_protects_the_real_answer_and_keeps_story_order(monk
     assert state["payoff_plan"]["hook_must_not_reveal"].rstrip(".") == "Schweden"
     assert state["payoff_plan"]["primary_answer_id"] == "fact_02"
     assert state["payoff_plan"]["final_payoff_id"] == "fact_04"
-    assert hook["role"] == "hook" and "schweden" not in hook["text"].casefold()
+    # The winner may be named only as an open option, never revealed.
+    from clipforge.triple_hook import hook_text_leaks
+
+    assert hook["role"] == "hook" and hook_text_leaks(state, hook["text"]) is None
+    assert "schweden hat" not in hook["text"].casefold()
     assert body_fact_order(state) == ["fact_01", "fact_02", "fact_03", "fact_04"]
     assert arc["completeness"] == {"mapped": True, "complete": True, "missing_required_ids": []}
     assert arc["script_issues"] == []

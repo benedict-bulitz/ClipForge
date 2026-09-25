@@ -10,7 +10,6 @@ from clipforge.ai import (
     generate_hook_candidates_with_openai,
 )
 from clipforge.config import Settings
-from clipforge.hooks import select_hook_candidate
 from clipforge.models import Project
 from clipforge.payoff import (
     build_payoff_plan,
@@ -22,6 +21,7 @@ from clipforge.payoff import (
 from clipforge.pipeline import build_initial_state
 from clipforge.schemas import AdvancedOptions, ProjectCreate
 from clipforge.services import create_project
+from clipforge.verbal_hook import assess_verbal, hook_context
 
 
 def comparison_intent() -> dict:
@@ -46,19 +46,17 @@ def test_comparison_plan_protects_winner_and_uses_content_based_reveal() -> None
     assert "second" not in json.dumps(plan).casefold()
 
 
-def test_existing_hook_library_rejects_a_candidate_that_spoils_protected_payoff() -> None:
-    candidate = select_hook_candidate(
-        comparison_intent(),
-        [],
-        body="Egypt has famous pyramids. Sudan has more pyramids than Egypt.",
-        model_candidates=[
-            {"strategy": "curiosity_gap", "text": "Sudan has more pyramids than Egypt."},
-            {"strategy": "curiosity_gap", "text": "Would you bet on Egypt?"},
-        ],
-        forbidden_terms={"sudan"},
-    )
-    assert candidate is not None
-    assert "Sudan" not in candidate.text
+def test_verbal_authority_rejects_a_candidate_that_spoils_protected_payoff() -> None:
+    body = [
+        {"role": "support", "text": "Egypt has famous pyramids."},
+        {"role": "payoff", "text": "Sudan has more pyramids than Egypt."},
+    ]
+    plan = build_payoff_plan(comparison_intent(), body)
+    context = hook_context(comparison_intent(), [], story_arc=None, payoff_plan=plan, format_plan={"selected_format": "comparison"}, novelty_plan=None, body_blocks=body)
+    spoiler = assess_verbal("Sudan has more pyramids than Egypt.", "evidence_insight", context)
+    assert "verbal_names_protected_answer" in spoiler["hard_fail"]
+    open_question = assess_verbal("Egypt or Sudan: who has more pyramids?", "curiosity_gap", context)
+    assert not any("protected" in code for code in open_question["hard_fail"])
 
 
 def test_triple_hook_is_complementary_and_visual_constraint_is_preserved() -> None:

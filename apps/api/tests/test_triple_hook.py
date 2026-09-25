@@ -52,8 +52,9 @@ from clipforge.visual_verifier import visual_intent_text
 FINGERS_Q = "Warum werden unsere Finger im Wasser schrumpelig?"
 FINGER_FACTS = [
     fact(1, "Schrumpelige Finger entstehen, weil das Nervensystem die Blutgefäße in den Fingerkuppen verengt.", 0.95),
-    fact(2, "Die Falten helfen vermutlich dabei, nasse Gegenstände besser zu greifen.", 0.7),
+    fact(2, "Die Falten entstehen nicht, weil die Haut Wasser aufsaugt, sondern weil sich Blutgefäße unter der Haut zusammenziehen."),
     fact(3, "Bei durchtrennten Fingernerven bleiben die Falten aus."),
+    fact(4, "Die Falten helfen vermutlich dabei, nasse Gegenstände besser zu greifen.", 0.7),
 ]
 QUIZ_Q = "Quiz: Welches Tier kann nicht rückwärts laufen?"
 QUIZ_FACTS = [
@@ -147,15 +148,15 @@ def channels(plan: dict) -> str:
 
 def islands_candidates() -> list[dict]:
     return [
-        ai_candidate("A", "surprising_scale", "Schweden hat die meisten Inseln der Welt.", "Swedish archipelago from above", ["swedish archipelago"],
+        ai_candidate("A", "verified_statistic", "Schweden hat die meisten Inseln der Welt.", "Swedish archipelago from above", ["swedish archipelago"],
                      targets=["subject_a"], payoff_fact="fact_02"),
-        ai_candidate("B", "comparison_tension", "Indonesien hat etwa 17.000 Inseln – und liegt trotzdem nicht vorn.", "Indonesian islands from the air",
+        ai_candidate("B", "counterintuitive_insight", "Indonesien hat etwa 17.000 Inseln – und liegt trotzdem nicht vorn.", "Indonesian islands from the air",
                      ["indonesian islands aerial"], targets=["subject_b"], payoff_fact="fact_02"),
-        ai_candidate("C", "challenge_question", "Indonesien hat etwa 17.000 Inseln. Reicht das für Platz eins?", "countless green islands in a turquoise sea",
+        ai_candidate("C", "verified_statistic", "Indonesien hat etwa 17.000 Inseln. Reicht das für Platz eins?", "countless green islands in a turquoise sea",
                      ["indonesian islands aerial", "tropical islands from above"], targets=["subject_b", "context"], framing="aerial shot",
                      action="drone glides over the island chain", detail="islands up to the horizon", tension="looks unbeatable",
                      on_screen="Reicht das für Platz 1?", payoff="Schweden hat rund 267.570 Inseln", payoff_fact="fact_02"),
-        ai_candidate("D", "visual_mystery", "Vulkane formen die schönsten Inseln im Pazifik.", "smoking volcano on an island",
+        ai_candidate("D", "curiosity_gap", "Vulkane formen die schönsten Inseln im Pazifik.", "smoking volcano on an island",
                      ["volcano island smoke"], payoff="Warum Vulkane Inselketten bilden"),
     ]
 
@@ -167,7 +168,8 @@ def test_islands_four_distinct_candidates_and_protected_winner_never_leaks():
     plan = plan_for(fixture, islands_candidates(), judge=judge, protected_target="subject_a")
 
     candidates = by_id(plan)
-    assert plan["selection"]["candidate_count"] == 4 and len({item["strategy"] for item in candidates.values()}) == 4
+    assert plan["selection"]["candidate_count"] == 4 and len({item["strategy"] for item in candidates.values()}) >= 3
+    assert all(item["strategy"] in triple_hook.STRATEGIES for item in candidates.values())
     assert "verbal_names_protected_answer" in candidates["hook_a"]["hard_fail"]
     assert "visual_queries_protected_target" in candidates["hook_a"]["hard_fail"]
     assert "verbal_implies_protected_answer" in candidates["hook_b"]["hard_fail"]
@@ -176,7 +178,7 @@ def test_islands_four_distinct_candidates_and_protected_winner_never_leaks():
     # Complete: all three channels, strategy, promise and reasons persisted.
     assert plan["verbal_hook"] and plan["visual_hook"]["subject"] and plan["visual_hook"]["media_queries"]
     assert plan["on_screen_text_hook"] == "Reicht das für Platz 1?" and plan["on_screen_hook_status"] == "shown"
-    assert plan["payoff_fact_id"] == "fact_02" and plan["selected_strategy"] == "challenge_question"
+    assert plan["payoff_fact_id"] == "fact_02" and plan["selected_strategy"] == "verified_statistic"
     # Only one complete candidate survived the checks: no judge call is spent on it.
     assert isinstance(plan["score"], float) and plan["selection"]["judge"]["status"] == "not_called"
     # Sweden never appears in any selected channel; Indonesia (evidence) may.
@@ -186,7 +188,7 @@ def test_islands_four_distinct_candidates_and_protected_winner_never_leaks():
     assert judge.calls == []
     # With two complete, safe candidates the judge sees only those (a leaking
     # hook is never "scored up").
-    second = ai_candidate("E", "surprising_scale", "17.000 Inseln – und Indonesien ist trotzdem nicht allein an der Spitze der Rekordliste?",
+    second = ai_candidate("E", "verified_statistic", "17.000 Inseln – und Indonesien ist trotzdem nicht allein an der Spitze der Rekordliste?",
                           "tropical island chain from above", ["tropical islands from above"], targets=["context"], action="waves around the islands",
                           detail="white beaches", payoff_fact="fact_02")
     plan = plan_for(fixture, [*islands_candidates()[:3], second], judge=judge, protected_target="subject_a")
@@ -219,15 +221,15 @@ def test_islands_protected_subject_may_be_an_open_option_only_when_spoken():
 
 def finger_candidates() -> list[dict]:
     return [
-        ai_candidate("A", "misconception_gap", "Deine Finger schrumpeln nicht, weil sie Wasser aufsaugen.", "wet fingertips with deep wrinkles",
+        ai_candidate("A", "counterintuitive_insight", "Deine Finger schrumpeln nicht, weil sie Wasser aufsaugen.", "wet fingertips with deep wrinkles",
                      ["wrinkled wet fingertips", "wrinkled fingers gripping wet stone"], framing="extreme close-up",
                      action="gripping a smooth wet stone", detail="deep ridges on the fingertip pads",
                      on_screen="Dein Nervensystem steckt dahinter", payoff_fact="fact_01"),
-        ai_candidate("B", "concrete_anomaly", "Finger werden im Wasser schrumpelig.", "fingers wrinkling in water", ["wrinkled fingers water"],
+        ai_candidate("B", "evidence_insight", "Finger werden im Wasser schrumpelig.", "fingers wrinkling in water", ["wrinkled fingers water"],
                      framing="", on_screen="Finger werden schrumpelig", payoff_fact="fact_01"),
-        ai_candidate("C", "unexpected_consequence", "Das wirst du nicht glauben: Deine Finger!", "wet hand in a bathtub", ["wet hand bathtub"],
+        ai_candidate("C", "high_stakes_consequence", "Das wirst du nicht glauben: Deine Finger!", "wet hand in a bathtub", ["wet hand bathtub"],
                      action="rising out of the water", detail="water droplets", payoff_fact="fact_01"),
-        ai_candidate("D", "cause_effect_mystery", "Nach langem Baden verändert sich deine Haut an einer ganz bestimmten Stelle.",
+        ai_candidate("D", "curiosity_gap", "Nach langem Baden verändert sich deine Haut an einer ganz bestimmten Stelle.",
                      "Interesting science concept about why skin changes", ["science concept"], payoff_fact="fact_01"),
     ]
 
@@ -251,10 +253,10 @@ def test_fingers_selects_a_concrete_complementary_opening():
 
 def test_impossible_visual_loses_even_with_a_great_verbal_hook():
     fixture = story(FINGERS_Q, [dict(item) for item in FINGER_FACTS])
-    great = ai_candidate("A", "misconception_gap", "Deine Finger schrumpeln nicht, weil sie Wasser aufsaugen.",
+    great = ai_candidate("A", "counterintuitive_insight", "Deine Finger schrumpeln nicht, weil sie Wasser aufsaugen.",
                          "nerve signal travelling live through the blood vessels of a finger", ["nerve signal inside finger blood vessel"],
                          feasibility="impossible", payoff_fact="fact_01")
-    plain = ai_candidate("B", "concrete_anomaly", "Nach zehn Minuten in der Wanne sehen deine Finger plötzlich anders aus.",
+    plain = ai_candidate("B", "evidence_insight", "Nach zehn Minuten in der Wanne verengt dein Nervensystem die Blutgefäße in deinen Fingerkuppen.",
                          "wet fingertips with wrinkles", ["wrinkled wet fingertips"], action="pressing on a smooth tile",
                          detail="deep wrinkles", payoff_fact="fact_01")
     plan = plan_for(fixture, [great, plain], judge=Judge({"hook_a": {"curiosity": 10, "verbal_quality": 10}}))
@@ -264,9 +266,9 @@ def test_impossible_visual_loses_even_with_a_great_verbal_hook():
 
 def test_judge_prefers_the_complementary_triple_and_can_veto():
     fixture = story(FINGERS_Q, [dict(item) for item in FINGER_FACTS])
-    first = ai_candidate("A", "misconception_gap", "Deine Finger schrumpeln nicht, weil sie Wasser aufsaugen.", "wet fingertips with deep wrinkles",
+    first = ai_candidate("A", "counterintuitive_insight", "Deine Finger schrumpeln nicht, weil sie Wasser aufsaugen.", "wet fingertips with deep wrinkles",
                          ["wrinkled wet fingertips"], action="gripping a wet stone", detail="deep ridges", on_screen="Dein Nervensystem steckt dahinter")
-    second = ai_candidate("B", "concrete_anomaly", "Nach langem Baden legen sich deine Fingerkuppen in Falten.", "fingertips in a bathtub",
+    second = ai_candidate("B", "evidence_insight", "Nach langem Baden legen sich deine Fingerkuppen in Falten.", "fingertips in a bathtub",
                           ["wrinkled fingertips bath"], action="rising out of the water", detail="wrinkles")
     judge = Judge({"hook_a": {"complementarity": 10, "curiosity": 9}, "hook_b": {"complementarity": 2, "curiosity": 5}})
     assert plan_for(fixture, [first, second], judge=judge)["hook_id"] == "hook_a"
@@ -285,9 +287,9 @@ def test_judge_prefers_the_complementary_triple_and_can_veto():
 
 def test_generic_opener_and_duplicate_on_screen_text_are_penalized():
     fixture = story(FINGERS_Q, [dict(item) for item in FINGER_FACTS])
-    generic = ai_candidate("A", "concrete_anomaly", "Wusstest du, dass Finger im Wasser Falten bekommen?", "wet fingertips with wrinkles",
+    generic = ai_candidate("A", "evidence_insight", "Wusstest du, dass Finger im Wasser Falten bekommen?", "wet fingertips with wrinkles",
                            ["wrinkled wet fingertips"], action="gripping a stone", detail="wrinkles")
-    concrete = ai_candidate("B", "misconception_gap", "Deine Finger schrumpeln nicht, weil sie Wasser aufsaugen.", "wet fingertips with wrinkles",
+    concrete = ai_candidate("B", "counterintuitive_insight", "Deine Finger schrumpeln nicht, weil sie Wasser aufsaugen.", "wet fingertips with wrinkles",
                             ["wrinkled wet fingertips"], action="gripping a stone", detail="wrinkles",
                             on_screen="Deine Finger schrumpeln nicht")
     plan = plan_for(fixture, [generic, concrete])
@@ -327,7 +329,7 @@ def test_broken_or_useless_on_screen_hook_is_omitted_never_truncated(text, reaso
 
 def test_topic_without_useful_supplementary_text_omits_the_overlay():
     fixture = story(FINGERS_Q, [dict(item) for item in FINGER_FACTS])
-    candidate = ai_candidate("A", "misconception_gap", "Deine Finger schrumpeln nicht, weil sie Wasser aufsaugen.", "wet fingertips with wrinkles",
+    candidate = ai_candidate("A", "counterintuitive_insight", "Deine Finger schrumpeln nicht, weil sie Wasser aufsaugen.", "wet fingertips with wrinkles",
                              ["wrinkled wet fingertips"], action="gripping a stone", detail="wrinkles", on_screen="Das ist verrückt!")
     plan = plan_for(fixture, [candidate])
     assert plan["hook_id"] == "hook_a" and plan["on_screen_text_hook"] == ""
@@ -342,8 +344,8 @@ def test_topic_without_useful_supplementary_text_omits_the_overlay():
 
 def test_english_project_keeps_language_and_prefers_concrete_anomaly_over_trivia():
     fixture = story(PURR_Q, [dict(item) for item in PURR_FACTS], language="en")
-    trivia = ai_candidate("A", "concrete_anomaly", "Did you know cats purr?", "Cat lying on a sofa", ["cat purring sofa"], action="purring", detail="closed eyes")
-    anomaly = ai_candidate("B", "contradiction", "A purring cat is not always a happy cat.", "Injured cat at the vet", ["cat at vet"],
+    trivia = ai_candidate("A", "evidence_insight", "Did you know cats purr?", "Cat lying on a sofa", ["cat purring sofa"], action="purring", detail="closed eyes")
+    anomaly = ai_candidate("B", "counterintuitive_insight", "A purring cat is not always a happy cat.", "Injured cat at the vet", ["cat at vet"],
                            action="purring on the examination table", detail="bandaged paw", on_screen="Purring can mean pain", payoff_fact="fact_02")
     plan = plan_for(fixture, [trivia, anomaly])
     assert plan["hook_id"] == "hook_b" and plan["verbal_hook"].startswith("A purring cat")
@@ -355,8 +357,8 @@ def test_english_project_keeps_language_and_prefers_concrete_anomaly_over_trivia
 def test_ranking_never_leaks_the_top_item():
     fixture = story(RANKING_Q, [dict(item) for item in RANKING])
     assert fixture["arc"]["structure"] == "ranked_progression" and fixture["arc"]["primary_answer_id"] == "fact_01"
-    leak = ai_candidate("A", "surprising_scale", "Der Nil ist der längste Fluss der Welt.", "Nile river from the air", ["nile river aerial"])
-    tease = ai_candidate("B", "challenge_question", "Rate mal, welcher Fluss ganz oben steht.", "wide river winding through rainforest",
+    leak = ai_candidate("A", "verified_statistic", "Der Nil ist der längste Fluss der Welt.", "Nile river from the air", ["nile river aerial"])
+    tease = ai_candidate("B", "curiosity_gap", "Rate mal, welcher Fluss ganz oben steht.", "wide river winding through rainforest",
                          ["river winding through rainforest aerial"], action="winding to the horizon", detail="brown water",
                          on_screen="Platz 1 bleibt noch geheim")
     plan = plan_for(fixture, [leak, tease])
@@ -367,13 +369,13 @@ def test_ranking_never_leaks_the_top_item():
 def test_quiz_answer_never_appears_in_any_channel():
     fixture = story(QUIZ_Q, [dict(item) for item in QUIZ_FACTS])
     assert fixture["format"]["selected_format"] == "quiz" and fixture["arc"]["curiosity_gap"]["withhold_answer"]
-    spoken = ai_candidate("A", "challenge_question", "Das Känguru kann nicht rückwärts laufen – wusstest du das?", "animal hopping across a meadow",
+    spoken = ai_candidate("A", "ego_challenge", "Das Känguru kann nicht rückwärts laufen – wusstest du das?", "animal hopping across a meadow",
                           ["animal hopping meadow"], protected=["Känguru", "kangaroo"])
-    shown = ai_candidate("B", "visual_mystery", "Dieses Tier kommt nur in eine Richtung voran.", "kangaroo hopping across a meadow",
+    shown = ai_candidate("B", "curiosity_gap", "Dieses Tier kommt nur in eine Richtung voran.", "kangaroo hopping across a meadow",
                          ["kangaroo hopping"], protected=["Känguru", "kangaroo"])
-    english = ai_candidate("C", "comparison_tension", "Rückwärts? Für dieses Tier unmöglich.", "powerful hind legs mid-jump",
+    english = ai_candidate("C", "counterintuitive_insight", "Rückwärts? Für dieses Tier unmöglich.", "powerful hind legs mid-jump",
                            ["kangaroo legs jumping"], protected=["Känguru", "kangaroo"])
-    good = ai_candidate("D", "challenge_question", "Ein Tier kann nur vorwärts – errätst du welches?", "powerful hind legs and a long tail",
+    good = ai_candidate("D", "ego_challenge", "Ein Tier kann nur vorwärts – errätst du welches?", "powerful hind legs and a long tail",
                         ["powerful hind legs jumping animal"], action="pushing off the ground", detail="long tail used for balance",
                         on_screen="Nur vorwärts möglich?", protected=["Känguru", "kangaroo"])
     plan = plan_for(fixture, [spoken, shown, english, good])
@@ -407,14 +409,19 @@ def test_without_a_provider_the_plan_is_deterministic_and_never_invents_text():
                           "context": ["bathtub"], "media_queries": ["wrinkled wet fingertips"]}],
     )
     assert plan["version"] == 2 and plan["status"] == "deterministic" and plan["selection"]["judge"]["status"] == "not_called"
-    assert plan["verbal_hook"] == baseline.text and plan["visual_hook"]["media_queries"] == ["wrinkled wet fingertips"]
+    # A documented strategy with research provenance (the planner's hook only competes).
+    assert plan["selected_strategy"] in triple_hook.STRATEGIES and plan["supported_by_fact_ids"]
+    assert plan["selected_strategy"] in {"counterintuitive_insight", "direct_reframe"}
+    assert baseline.text in {item["verbal_hook"] for item in plan["selection"]["candidates"]}
+    assert plan["visual_hook"]["media_queries"] == ["wrinkled wet fingertips"]
     assert plan["visual_hook"]["objects"] == ["fingertips"]  # the planner's own structure is kept
     no_visual = triple_hook.plan_triple_hook(
         intent=fixture["intent"], facts=fixture["facts"], story_arc=fixture["arc"], payoff_plan=fixture["payoff"],
         format_plan=fixture["format"], novelty_plan=None, body_blocks=fixture["body"], baseline=baseline,
         generation=None, judge=None, settings=None,
     )
-    assert no_visual["status"] == "fallback" and no_visual["verbal_hook"] == baseline.text
+    assert no_visual["status"] == "fallback" and no_visual["selected_strategy"] in triple_hook.STRATEGIES
+    assert no_visual["verbal_hook"] and no_visual["verbal_origin"] in {"planner", "deterministic"}
     assert no_visual["visual_hook"]["source"] == f"{triple_hook.SOURCE}_fallback"
 
 
@@ -475,7 +482,7 @@ def pipeline_state(monkeypatch, question: str, facts: list[dict], candidates: li
 
 
 def finger_pipeline_candidates() -> list[dict]:
-    plain = ai_candidate("E", "concrete_anomaly", "Nach zehn Minuten in der Wanne sehen deine Finger plötzlich anders aus.",
+    plain = ai_candidate("E", "evidence_insight", "Nach zehn Minuten in der Wanne verengt dein Nervensystem die Blutgefäße in deinen Fingerkuppen.",
                          "wet fingertips with wrinkles", ["wrinkled wet fingertips"], action="pressing on a smooth tile",
                          detail="deep wrinkles", payoff_fact="fact_01")
     return [*finger_candidates()[:3], plain]
@@ -628,7 +635,12 @@ def test_rendered_opening_shows_the_hook_and_the_critic_reviews_the_real_frames(
     silent_voice(monkeypatch)
     monkeypatch.setattr("clipforge.pipeline.generate_hook_candidates_with_openai", lambda *_a, **_k: generation(finger_pipeline_candidates()))
     monkeypatch.setattr("clipforge.pipeline.judge_triple_hooks_with_openai", Judge({"hook_a": {"complementarity": 10}}))
-    state = small_timeline(planner_generate(monkeypatch, tmp_path, FINGERS_Q, FINGERS, planner_target=""))
+    from test_story_visual_integration import fact as planner_fact
+    from test_story_visual_integration import visual as planner_visual
+
+    contrast = (planner_fact("Die Falten entstehen nicht, weil die Haut Wasser aufsaugt, sondern weil sich Blutgefäße zusammenziehen."), "explanation",
+                planner_visual("wrinkled fingertip skin close-up", ["wrinkled fingertip skin"], ["shared"]))
+    state = small_timeline(planner_generate(monkeypatch, tmp_path, FINGERS_Q, [FINGERS[0], contrast, *FINGERS[1:]], planner_target=""))
     plan = state["script"]["triple_hook"]
     assert plan["hook_id"] == "hook_a" and state["script"]["blocks"][0]["text"] == plan["verbal_hook"]
     provider = finger_provider("hand")
@@ -651,10 +663,10 @@ def test_rendered_opening_shows_the_hook_and_the_critic_reviews_the_real_frames(
 def test_hook_paraphrasing_the_first_body_sentence_loses_but_an_identical_one_is_folded(monkeypatch):
     fixture = story(FINGERS_Q, [dict(item) for item in FINGER_FACTS])
     first = fixture["body"][0]["text"]
-    paraphrase = ai_candidate("A", "concrete_anomaly", first.replace("das Nervensystem", "dein Nervensystem"), "wet fingertips with wrinkles",
+    paraphrase = ai_candidate("A", "evidence_insight", first.replace("das Nervensystem", "dein Nervensystem"), "wet fingertips with wrinkles",
                               ["wrinkled wet fingertips"], action="gripping a stone", detail="wrinkles")
     plan = plan_for(fixture, [paraphrase])
-    assert "repeats_first_body" in by_id(plan)["hook_a"]["hard_fail"]
+    assert "body_duplication" in by_id(plan)["hook_a"]["hard_fail"]
     # Pipeline: the body after the hook never starts by restating the hook.
     state = pipeline_state(monkeypatch, FINGERS_Q, [dict(item) for item in FINGER_FACTS], finger_pipeline_candidates())
     hook, body = state["script"]["blocks"][0], state["script"]["blocks"][1]

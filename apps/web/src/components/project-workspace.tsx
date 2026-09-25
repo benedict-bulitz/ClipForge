@@ -1254,10 +1254,10 @@ function Panel({ icon, title, children, wide = false }: { icon: React.ReactNode;
 
 function OpeningHook({ hook }: { hook: TripleHookSummary | null }) {
   if (!hook) return null;
-  const rows: Array<[string, string]> = [["Says", hook.verbal], ["Shows", hook.visual], ["Text", hook.onScreen]];
+  const rows: Array<[string, string]> = [["Says", hook.verbal], ["Shows", hook.visual], ["Text", hook.onScreen], ...(hook.evidence ? [["Facts", hook.evidence] as [string, string]] : [])];
   return (
     <div className="cf-subtle rounded-xl border p-3 text-xs" aria-label="Opening hook">
-      <div className="flex items-center justify-between gap-2"><span className="font-semibold">Opening hook</span><span className="rounded-full bg-black/[.04] px-2 py-0.5 text-[10px] font-bold capitalize">{hook.strategy}</span></div>
+      <div className="flex items-center justify-between gap-2"><span className="font-semibold">Opening hook</span><span className="mono rounded-full bg-black/[.04] px-2 py-0.5 text-[10px] font-bold" title="Documented hook strategy">{hook.strategy}</span></div>
       <dl className="mt-2 space-y-1">{rows.map(([name, value]) => <div key={name} className="flex gap-2"><dt className="w-10 shrink-0 text-[var(--muted-foreground)]">{name}</dt><dd className="min-w-0 break-words">{value}</dd></div>)}</dl>
       {hook.meta && <p className="mt-2 text-[10px] text-[var(--muted-foreground)]">{hook.meta}</p>}
     </div>

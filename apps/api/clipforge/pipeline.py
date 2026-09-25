@@ -18,7 +18,7 @@ from .config import Settings
 from .dependencies import resolve_edit_scope
 from .format_intelligence import plan_format
 from .hashing import attach_hashes
-from .hooks import STRATEGIES, select_hook, select_hook_candidate
+from .hooks import STRATEGIES, HookCandidate, canonical_strategy
 from .language import detect_text_language, resolve_language
 from .media import _NON_SIDE_TARGET_KEYS, visual_target_key
 from .music import automatic_music_layer
@@ -32,9 +32,7 @@ from .novelty import safe_novelty_plan
 from .pacing import analyze_pacing
 from .payoff import (
     _is_protected_question,
-    _protected_answer,
     build_payoff_plan,
-    hidden_payoff_words,
     trim_post_payoff_fluff,
 )
 from .progress import ProgressCallback, report_progress
@@ -61,14 +59,15 @@ from .story_arc import (
     annotate_story_roles,
     arc_units,
     essential_fact_ids,
-    hook_safe_facts,
     omittable_fact_ids,
+    order_blocks_for_reveal,
     safe_story_arc,
     story_brief,
 )
 from .triple_hook import SOURCE as TRIPLE_HOOK_SOURCE
 from .triple_hook import plan_triple_hook
 from .triple_hook import selected_hook_candidate as triple_hook_verbal
+from .verbal_hook import hook_context
 from .voice import apply_voice_preferences, initial_voice
 
 STAGE_LABELS = [
@@ -155,16 +154,6 @@ def _fiction_plan(prompt: str, intent: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _arc_forbidden_terms(story_arc: dict[str, Any] | None, intent: dict[str, Any]) -> set[str]:
-    """Words of a withheld primary answer that an opening hook must not use."""
-    if not isinstance(story_arc, dict) or not (story_arc.get("curiosity_gap") or {}).get("withhold_answer"):
-        return set()
-    claim = str(arc_units(story_arc).get(str(story_arc.get("primary_answer_id") or ""), {}).get("claim") or "")
-    if not claim:
-        return set()
-    return hidden_payoff_words({"hook_must_not_reveal": _protected_answer(claim, str(intent.get("question") or ""))})
-
-
 def _story_blocks(
     intent: dict[str, Any], facts: list[dict[str, Any]], story_arc: dict[str, Any]
 ) -> list[dict[str, Any]]:
@@ -205,13 +194,9 @@ def _factual_blocks(
     if facts and isinstance(story_arc, dict) and story_arc.get("units") and story_arc.get("status") != "fallback":
         body = _story_blocks(intent, facts, story_arc)
         if body:
-            hook = select_hook(
-                intent,
-                hook_safe_facts(facts, story_arc),
-                body=body[0]["text"],
-                forbidden_terms=_arc_forbidden_terms(story_arc, intent),
-            )
-            return ([{"role": "hook", "text": hook}] if hook else []) + body
+            # Body only: the one verbal-hook authority (Triple Hook V2 with the
+            # documented strategies) writes the opening later.
+            return body
     if not facts:
         message = (
             "Ohne verlässliche Recherche kann ich diese Frage noch nicht gut beantworten."
@@ -238,9 +223,7 @@ def _factual_blocks(
             if (claim := clean_research_claim(fact.get("claim")))
         ][:2]
     roles = ["answer", "support", "context"]
-    blocks = [{"role": roles[index], "text": claim} for index, claim in enumerate(useful)]
-    hook = select_hook(intent, facts, body=useful[1] if len(useful) > 1 else (useful[0] if useful else None))
-    return ([{"role": "hook", "text": hook}] if hook else []) + blocks
+    return [{"role": roles[index], "text": claim} for index, claim in enumerate(useful)]
 
 
 def _attach_story_fact_ids(blocks: list[dict[str, Any]], facts: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -531,102 +514,6 @@ def _generate_body_with_v2_or_fallback(
     return _v2_body_blocks(result.draft.blocks), diagnostics
 
 
-def _audience_hook(intent: dict[str, Any]) -> str | None:
-    question = clean_narration_text(intent.get("question") or "").strip()
-    if not question:
-        return None
-    question = re.sub(
-        r"(?i)^(?:please\s+)?(?:explain|tell me|show me|erkläre|erklaere|erzähl mir|erzaehl mir)\s+",
-        "",
-        question,
-    ).strip()
-    words = question.rstrip(".!?").split()
-    if len(words) <= 14:
-        return " ".join(words).rstrip(".!?") + "?"
-    topic = str(intent.get("topic") or "").strip(" .!?")
-    topic_words = topic.split()
-    if len(topic_words) > 7:
-        topic = " ".join(topic_words[:7])
-    if intent.get("language") == "de":
-        return f"Was ist das Überraschende an {topic}?" if topic else None
-    return f"What is surprising about {topic}?" if topic else None
-
-
-def _ensure_audience_hook(
-    blocks: list[dict[str, Any]], intent: dict[str, Any], facts: list[dict[str, Any]] | None = None, model_candidates: list[dict[str, Any]] | None = None
-) -> list[dict[str, Any]]:
-    if (
-        not blocks
-        or intent.get("content_type") == "fictional_story"
-        or str(blocks[0].get("role") or "").casefold() == "status"
-    ):
-        return blocks
-    first_role = str(blocks[0].get("role") or "").casefold()
-    evidence = facts or []
-    if first_role == "hook":
-        body = next((str(block.get("text") or "") for block in blocks[1:] if block.get("text")), "")
-        safe = select_hook(intent, evidence, body=body, existing=str(blocks[0].get("text") or ""), model_candidates=model_candidates)
-        if safe:
-            blocks[0]["text"] = safe
-        return blocks
-    body = str(blocks[0].get("text") or "")
-    hook = select_hook(intent, evidence, body=body, model_candidates=model_candidates)
-    return ([{"role": "hook", "text": hook}] if hook else []) + blocks
-
-
-def _authoritative_hook_blocks(
-    blocks: list[dict[str, Any]],
-    intent: dict[str, Any],
-    facts: list[dict[str, Any]] | None = None,
-    model_candidates: list[dict[str, Any]] | None = None,
-    payoff_plan: dict[str, Any] | None = None,
-    story_arc: dict[str, Any] | None = None,
-) -> tuple[list[dict[str, Any]], Any | None]:
-    """Select one hook independently of whether the model supplied a hook block.
-
-    Hook selection is performed before duration normalization so an inserted hook
-    participates in the normal word budget and can never be lost from the
-    canonical narration path.
-    """
-    if not blocks and not str(intent.get("question") or "").strip():
-        return blocks, None
-    existing = next(
-        (str(block.get("text") or "").strip() for block in blocks
-         if str(block.get("role") or "").casefold() == "hook" and str(block.get("text") or "").strip()),
-        None,
-    )
-    body = " ".join(
-        str(block.get("text") or "").strip()
-        for block in blocks
-        if str(block.get("role") or "").casefold() != "hook" and str(block.get("text") or "").strip()
-    )
-    candidate = select_hook_candidate(
-        intent,
-        hook_safe_facts(facts or [], story_arc),
-        body=body,
-        existing=existing,
-        model_candidates=model_candidates or [],
-        forbidden_terms=hidden_payoff_words(payoff_plan or {}) | _arc_forbidden_terms(story_arc, intent),
-    )
-    if not candidate:
-        return blocks, None
-    remaining = [
-        block for block in blocks
-        if str(block.get("role") or "").casefold() != "hook"
-    ]
-    hook_block: dict[str, Any] = {"role": "hook", "text": candidate.text}
-    if story_arc and remaining:
-        # When the hook states the arc's opening fact verbatim, it delivers that
-        # fact: drop the duplicate body block instead of saying it twice.
-        def _norm(value: object) -> str:
-            return " ".join(str(value or "").casefold().split()).rstrip(".!?")
-
-        if _norm(candidate.text) == _norm(remaining[0].get("text")):
-            hook_block["fact_ids"] = list(remaining[0].get("fact_ids") or [])
-            remaining = remaining[1:]
-    return ([hook_block, *remaining], candidate)
-
-
 def _hooked_blocks(
     body_blocks: list[dict[str, Any]], hook_text: str, story_arc: dict[str, Any] | None = None
 ) -> list[dict[str, Any]]:
@@ -658,7 +545,8 @@ def _hook_planner_visuals(
         fact_ids = {str(value) for value in block.get("fact_ids") or []}
         if fact_ids & protected:
             continue
-        ranked.append((0 if _is_hook_block(block) else 1 + index, intent))
+        # Provenance: which facts this planned visual depicts (for continuity).
+        ranked.append((0 if _is_hook_block(block) else 1 + index, {**intent, "source_fact_ids": sorted(fact_ids)}))
     return [intent for _rank, intent in sorted(ranked, key=lambda item: item[0])]
 
 
@@ -679,8 +567,8 @@ def _hook_protected_target(
     return next(iter(keys)) if len(keys) == 1 else None
 
 
-def _generate_authoritative_hook_blocks(
-    blocks: list[dict[str, Any]],
+def _generate_hook_candidates(
+    body_blocks: list[dict[str, Any]],
     prompt: str,
     intent: dict[str, Any],
     facts: list[dict[str, Any]],
@@ -690,36 +578,93 @@ def _generate_authoritative_hook_blocks(
     format_plan: dict[str, Any] | None = None,
     novelty_plan: dict[str, Any] | None = None,
     story_arc: dict[str, Any] | None = None,
-) -> tuple[list[dict[str, Any]], Any | None, Any]:
-    """Use the one post-body hook path shared by production and validation."""
-    body_blocks = [
-        block for block in blocks
-        if str(block.get("role") or "").casefold() != "hook"
-    ]
+) -> Any:
+    """The one bounded provider call for complete, document-strategy hook candidates."""
     final_body = " ".join(
-        str(block.get("text") or "").strip() for block in body_blocks
+        str(block.get("text") or "").strip() for block in body_blocks if not _is_hook_block(block)
     )
     planning = {
         "payoff_plan": payoff_plan, "reaction_arc": reaction_arc,
         "format_plan": format_plan, "novelty_plan": novelty_plan,
     }
+    # Strategy fit comes before wording: the provider receives the documented
+    # strategies the research actually supports, with their fact ids.
+    context = hook_context(
+        intent, facts, story_arc=story_arc, payoff_plan=payoff_plan, format_plan=format_plan,
+        novelty_plan=novelty_plan, body_blocks=body_blocks,
+    )
+    supported = {name: {"fact_ids": entry["fact_ids"], "signals": entry["signals"]} for name, entry in context["signals"].items() if entry["viable"]}
     try:
-        hook_generation = generate_hook_candidates_with_openai(
+        return generate_hook_candidates_with_openai(
             prompt, intent, facts, final_body, settings, **planning, story_arc=story_brief(story_arc) or None,
+            supported_strategies=supported,
         )
     except TypeError:  # Compatibility with hook-provider test doubles of older signatures.
         try:
-            hook_generation = generate_hook_candidates_with_openai(
-                prompt, intent, facts, final_body, settings, **planning
-            )
+            return generate_hook_candidates_with_openai(prompt, intent, facts, final_body, settings, **planning)
         except TypeError:
-            hook_generation = generate_hook_candidates_with_openai(
-                prompt, intent, facts, final_body, settings
-            )
-    hooked_blocks, candidate = _authoritative_hook_blocks(
-        body_blocks, intent, facts, hook_generation.candidates, payoff_plan, story_arc
-    )
-    return hooked_blocks, candidate, hook_generation
+            return generate_hook_candidates_with_openai(prompt, intent, facts, final_body, settings)
+
+
+def _planner_hook(plan: dict[str, Any], facts: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """The planner's own hook block, only when it declared a documented strategy."""
+    block = next((item for item in plan.get("script_blocks") or [] if _is_hook_block(item) and str(item.get("text") or "").strip()), None)
+    strategy = canonical_strategy(plan.get("selected_hook_strategy"))
+    if block is None or strategy is None:
+        return None
+    return {"strategy": strategy, "text": str(block["text"]), "fact_ids": list(block.get("fact_ids") or [])}
+
+
+def enforce_selected_hook(state: dict[str, Any], *, reselect: bool = False, shorter: bool = False) -> str:
+    """Keep exactly one hook block: the authoritative, still-valid verbal hook.
+
+    Later stages (review rewrites, re-renders, retiming) may never replace the
+    selected hook with the question, an answer block or a stale hook.  A hook
+    that became invalid after a content change — or an explicit request for
+    a different opening (``reselect``) — is reselected from the documented
+    strategy candidates.  Returns what happened (for diagnostics/tests).
+    """
+    from .triple_hook import reselect_verbal, state_plan, verbal_still_valid
+
+    script = state.setdefault("script", {})
+    blocks = list(script.get("blocks") or [])
+    if not blocks or all(str(block.get("role") or "").casefold() == "status" for block in blocks if not _is_hook_block(block)):
+        return "no_hook_needed"
+    plan = state_plan(state)
+    hooks = [block for block in blocks if _is_hook_block(block) and str(block.get("text") or "").strip()]
+    authoritative = str((plan or {}).get("verbal_hook") or script.get("selected_hook") or "").strip()
+    strategy = (plan or {}).get("selected_strategy") or script.get("selected_hook_strategy")
+    current = str(hooks[0]["text"]).strip() if len(hooks) == 1 else ""
+    # A single hook that differs from the plan is a user's own edit: it stays
+    # authoritative while it passes the safety rules; otherwise the plan's
+    # hook is restored, and only if that is invalid too is one reselected.
+    options = [] if reselect else list(dict.fromkeys(option for option in (current, authoritative) if option))
+    chosen = next((option for option in options if verbal_still_valid(state, option, strategy)), "")
+    action = "kept" if chosen and chosen == authoritative else "user_hook_kept" if chosen else "reselected"
+    if chosen and current and chosen != current:
+        action = "restored"
+    if not chosen:
+        excluded = {option for option in (current, authoritative) if option}
+        limit = len((current or authoritative).split()) - 1 if shorter and (current or authoritative) else None
+        replacement = reselect_verbal(state, exclude=excluded, max_words=limit)
+        if replacement is not None:
+            chosen, strategy = replacement["text"], replacement["strategy"]
+            if plan is not None:
+                plan["selected_strategy"] = plan["legacy_strategy"] = strategy
+                plan["supported_by_fact_ids"] = list(replacement.get("supported_by_fact_ids") or [])
+                plan["reason_codes"] = list(dict.fromkeys([*(replacement.get("positive_codes") or []), *(replacement.get("reason_codes") or []), "reselected_after_content_change"]))[:10]
+        else:
+            action = "no_alternative"
+            chosen = "" if reselect else (current or authoritative)
+    if chosen:
+        script["blocks"] = _apply_selected_hook(blocks, chosen)
+        for index, block in enumerate(script["blocks"], 1):
+            block["id"] = f"voice_block_{index:02d}"
+        script["selected_hook"] = chosen
+        script["selected_hook_strategy"] = strategy
+        if plan is not None:
+            plan["verbal_hook"] = chosen
+    return action
 
 
 def _words(text: str) -> list[str]:
@@ -799,12 +744,15 @@ def _fit_blocks(
         return sum(len(_words(item["text"])) for item in items)
 
     while len(fitted) > 1 and total_words(fitted) > max_words:
-        # Never drop the authoritative hook; trim trailing body blocks first.
-        drop_index = min(
-            (index for index in range(len(fitted)) if not _is_hook_block(fitted[index])),
-            key=drop_priority,
-            default=None,
-        )
+        # Trim trailing optional body first.  The Story Arc outranks the hook:
+        # the primary answer and final payoff are never dropped to keep a
+        # hook; the hook goes (and is reselected shorter by the caller).
+        droppable = [index for index in range(len(fitted)) if not _is_hook_block(fitted[index])]
+        hook_index = next((index for index in range(len(fitted)) if _is_hook_block(fitted[index])), None)
+        if hook_index is not None and droppable and all(drop_priority(index)[0] == 3 for index in droppable):
+            fitted.pop(hook_index)
+            continue
+        drop_index = min(droppable, key=drop_priority, default=None)
         if drop_index is None:
             break
         fitted.pop(drop_index)
@@ -987,6 +935,33 @@ def _normalise_blocks(
     return fitted
 
 
+def _refit_hook(state: dict[str, Any], blocks: list[dict[str, Any]], max_words: int) -> list[dict[str, Any]]:
+    """The duration no longer fits the selected hook: a shorter documented one, or none."""
+    from .triple_hook import reselect_verbal, state_plan
+
+    budget = max_words - sum(len(_words(block["text"])) for block in blocks)
+    replacement = reselect_verbal(state, max_words=budget) if budget >= 4 else None
+    plan = state_plan(state)
+    script = state["script"]
+    if replacement is None:
+        script["selected_hook"] = None
+        script["selected_hook_strategy"] = None
+        if plan is not None:
+            plan["verbal_hook"] = ""
+            plan["reason_codes"] = list(dict.fromkeys([*(plan.get("reason_codes") or []), "hook_dropped_for_duration"]))
+        return blocks
+    fitted = _apply_selected_hook(blocks, replacement["text"])
+    for index, block in enumerate(fitted, 1):
+        block["id"] = f"voice_block_{index:02d}"
+    script["selected_hook"] = replacement["text"]
+    script["selected_hook_strategy"] = replacement["strategy"]
+    if plan is not None:
+        plan["verbal_hook"] = replacement["text"]
+        plan["selected_strategy"] = plan["legacy_strategy"] = replacement["strategy"]
+        plan["reason_codes"] = list(dict.fromkeys([*(replacement.get("positive_codes") or []), "reselected_for_duration"]))[:10]
+    return fitted
+
+
 def _refresh_script_derivatives(
     state: dict[str, Any], *, old_scenes: list[dict] | None = None
 ) -> None:
@@ -994,7 +969,10 @@ def _refresh_script_derivatives(
     voice_speed = max(0.7, min(1.4, float(state.get("voice", {}).get("speed") or 1.0)))
     wpm = max(1, round(SPEAKING_RATE_WPM * voice_speed))
     story_arc = state.get("story_arc") if isinstance(state.get("story_arc"), dict) else None
+    had_hook = any(_is_hook_block(block) for block in state["script"]["blocks"])
     blocks = _normalise_blocks(state["script"]["blocks"], max_duration, wpm, story_arc)
+    if had_hook and not any(_is_hook_block(block) for block in blocks):
+        blocks = _refit_hook(state, blocks, max(12, int(max_duration * wpm / 60)))
     state["script"]["blocks"] = blocks
     script_text = " ".join(block["text"] for block in blocks)
     word_count = len(_words(script_text))
@@ -1184,9 +1162,13 @@ def build_initial_state(
         story_arc=story_arc,
     )
     planned_reaction_arc = reaction_arc(intent, payoff_plan, format_plan)
-    body_before_hook = [copy.deepcopy(block) for block in raw_blocks if not _is_hook_block(block)]
-    raw_blocks, selected_hook_candidate, hook_generation = _generate_authoritative_hook_blocks(
-        raw_blocks,
+    # The Story Arc decides when a protected answer may be said: a body that
+    # would open with it is reordered behind the answer's dependencies.
+    body_before_hook = order_blocks_for_reveal(
+        [copy.deepcopy(block) for block in raw_blocks if not _is_hook_block(block)], story_arc
+    )
+    hook_generation = _generate_hook_candidates(
+        body_before_hook,
         prompt,
         intent,
         facts,
@@ -1197,10 +1179,9 @@ def build_initial_state(
         novelty_plan,
         story_arc,
     )
-    hook_candidates = hook_generation.candidates
-    # Triple Hook V2: the verbal, visual and on-screen hooks are selected
-    # together as one complete opening; the selected verbal hook becomes the
-    # authoritative hook block.
+    # Triple Hook V2 is the one verbal-hook authority: the spoken hook uses a
+    # documented strategy supported by the research, selected together with
+    # the visual and on-screen hooks as one opening.
     triple_hook = plan_triple_hook(
         intent=intent,
         facts=facts,
@@ -1209,7 +1190,6 @@ def build_initial_state(
         format_plan=format_plan,
         novelty_plan=novelty_plan,
         body_blocks=body_before_hook,
-        baseline=selected_hook_candidate,
         generation=hook_generation,
         judge=judge_triple_hooks_with_openai,
         settings=settings,
@@ -1220,12 +1200,20 @@ def build_initial_state(
         protected_target=_hook_protected_target(
             planner_blocks, list(plan.get("visual_intents") or []), story_arc
         ),
+        planner_hook=_planner_hook(plan, facts),
     )
-    triple_verbal = triple_hook_verbal(triple_hook)
-    if triple_verbal is not None:
-        if selected_hook_candidate is None or triple_verbal.text != selected_hook_candidate.text:
-            raw_blocks = _hooked_blocks(body_before_hook, triple_verbal.text, story_arc)
-        selected_hook_candidate = triple_verbal
+    selected_hook_candidate: HookCandidate | None = triple_hook_verbal(triple_hook)
+    body_is_status = bool(body_before_hook) and all(str(block.get("role") or "").casefold() == "status" for block in body_before_hook)
+    if selected_hook_candidate is None or body_is_status:
+        selected_hook_candidate = None
+        raw_blocks = body_before_hook
+    else:
+        raw_blocks = _hooked_blocks(body_before_hook, selected_hook_candidate.text, story_arc)
+    hook_candidates = [
+        {"strategy": item["strategy"], "text": item["verbal_hook"]}
+        for item in (triple_hook.get("selection") or {}).get("candidates") or []
+        if item.get("strategy") in STRATEGIES and str(item.get("verbal_hook") or "").strip()
+    ]
     wpm = max(1, round(SPEAKING_RATE_WPM * float(options.voice_speed or 1.0)))
     blocks = _normalise_blocks(raw_blocks, max_duration, wpm, story_arc)
     # Normalization must preserve the authoritative hook intact. Re-apply the
@@ -1316,18 +1304,14 @@ def build_initial_state(
             "script_writer_v2": script_writer_diagnostics,
             "narration_owned_by_v2": script_writer_diagnostics.get("status") == "v2_success",
             "selected_hook": selected_hook,
-            "selected_hook_strategy": selected_hook_candidate.strategy if selected_hook_candidate else None,
+            "selected_hook_strategy": triple_hook.get("selected_strategy") if selected_hook_candidate else None,
             "triple_hook": triple_hook,
             "hook_generation": {
                 "status": hook_generation.status,
-                "selected_strategy": hook_generation.selected_strategy,
+                "selected_strategy": canonical_strategy(hook_generation.selected_strategy),
                 "error": hook_generation.error,
             },
-            "hook_candidates": [
-                {"strategy": str(item.get("strategy") or "") if str(item.get("strategy") or "") in STRATEGIES else "evidence_insight", "text": str(item.get("text") or "")}
-                for item in hook_candidates
-                if str(item.get("text") or "").strip()
-            ][:5],
+            "hook_candidates": hook_candidates[:5],
             "fact_map": [
                 {
                     "block_id": block["id"],
@@ -1593,15 +1577,15 @@ def apply_edit(
         applied.append("shorter script")
 
     if directive.script_action in {"rewrite_intro", "stronger_hook"}:
-        de = state["intent"]["language"] == "de"
-        topic = state["intent"]["topic"]
-        blocks[0]["text"] = (
-            f"Was, wenn alles, was du über {topic} zu wissen glaubst, nur die halbe Wahrheit ist?"
-            if de
-            else f"What if everything you think you know about {topic} is only half the story?"
-        )
-        blocks[0]["role"] = "hook"
-        state["script"]["selected_hook"] = blocks[0]["text"]
+        # A different opening comes from the documented hook strategies and
+        # the research, never from a generic template.
+        state["script"]["blocks"] = blocks
+        if enforce_selected_hook(state, reselect=True) != "reselected":
+            raise UnsupportedEdit(
+                "No other opening from the documented hook strategies fits this project's research. "
+                "Describe the opening you want, and it will be used as written."
+            )
+        blocks[:] = state["script"]["blocks"]
         script_changed = True
         applied.append("rewritten opening" if directive.script_action == "rewrite_intro" else "stronger hook")
 

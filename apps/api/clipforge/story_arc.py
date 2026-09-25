@@ -720,6 +720,37 @@ def bind_story_visual_protection(state: dict[str, Any]) -> dict[str, Any] | None
     return arc["visual_protection"]
 
 
+def order_blocks_for_reveal(blocks: list[dict[str, Any]], arc: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Move a withheld primary answer behind the facts it depends on.
+
+    Only when the arc withholds its answer and the body says it before one
+    of its dependencies (by fact identity); answer-first explainers and
+    correctly ordered bodies are returned unchanged.
+    """
+    units = arc_units(arc)
+    if not isinstance(arc, dict) or not units or not (arc.get("curiosity_gap") or {}).get("withhold_answer"):
+        return blocks
+    primary = str(arc.get("primary_answer_id") or "")
+    dependencies: set[str] = set()
+    stack = list(units.get(primary, {}).get("depends_on") or [])
+    while stack:
+        current = str(stack.pop())
+        if current not in dependencies and current in units:
+            dependencies.add(current)
+            stack.extend(units[current].get("depends_on") or [])
+    answer = [index for index, block in enumerate(blocks) if primary in (block.get("fact_ids") or [])]
+    needed = [
+        index for index, block in enumerate(blocks)
+        if set(block.get("fact_ids") or []) & dependencies and primary not in (block.get("fact_ids") or [])
+    ]
+    if not answer or not needed or answer[0] > max(needed):
+        return blocks
+    moving = [blocks[index] for index in answer if index < max(needed)]
+    kept = [block for block in blocks if not any(block is item for item in moving)]
+    anchor = max(index for index, block in enumerate(kept) if set(block.get("fact_ids") or []) & dependencies)
+    return [*kept[: anchor + 1], *moving, *kept[anchor + 1:]]
+
+
 def _reveal_reached(
     state: dict[str, Any], scene: dict[str, Any], arc: dict[str, Any], block_units: dict[str, list[str]]
 ) -> bool:

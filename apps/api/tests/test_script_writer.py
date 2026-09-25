@@ -7,6 +7,7 @@ from pydantic import ValidationError
 
 from clipforge.ai import AIHookGenerationResult
 from clipforge.config import Settings
+from clipforge.hooks import STRATEGIES
 from clipforge.pipeline import _generate_body_with_v2_or_fallback, build_initial_state
 from clipforge.renderer import RenderResult, _create_voice
 from clipforge.research import ResearchResult
@@ -394,24 +395,28 @@ def test_fresh_generation_uses_v2_body_and_preserves_legacy_hook(monkeypatch) ->
 
 
 @pytest.mark.parametrize(
-    ("prompt", "body", "hook", "strategy"),
+    ("prompt", "body", "provider_hook", "strategy", "provider_hook_wins"),
     [
         (
+            # The dull-knife claim is not in the research: the documented
+            # strategy engine rejects it and selects a supported hook.
             "Warum tränen unsere Augen beim Zwiebelschneiden?",
             "Beim Schneiden setzt die Zwiebel reizende Stoffe frei.",
             "Schneidest du mit einem stumpfen Messer? Das kann deine Augen stärker reizen.",
             "ego_challenge",
+            False,
         ),
         (
             "Wieso kriegen wir Gänsehaut?",
             "Kleine Muskeln an den Haarwurzeln stellen deine Haare auf.",
             "Deine Haare stellen sich auf – aber warum eigentlich?",
             "curiosity_gap",
+            True,
         ),
     ],
 )
 def test_production_pipeline_uses_shared_post_body_hook_for_narration_tts_and_captions(
-    monkeypatch, tmp_path, prompt, body, hook, strategy
+    monkeypatch, tmp_path, prompt, body, provider_hook, strategy, provider_hook_wins
 ) -> None:
     source = {"label": "Test source", "url": "https://source.test"}
     facts = [{
@@ -443,7 +448,7 @@ def test_production_pipeline_uses_shared_post_body_hook_for_narration_tts_and_ca
     def generate_hook(_prompt, _intent, _facts, finalized_body, _settings):
         hook_inputs.append(finalized_body)
         return AIHookGenerationResult(
-            [{"strategy": strategy, "text": hook}], strategy, "connected"
+            [{"strategy": strategy, "text": provider_hook}], strategy, "connected"
         )
 
     monkeypatch.setattr("clipforge.pipeline.generate_hook_candidates_with_openai", generate_hook)
@@ -457,11 +462,15 @@ def test_production_pipeline_uses_shared_post_body_hook_for_narration_tts_and_ca
         script_writer_provider=provider,
     )
     assert hook_inputs and hook_inputs[0].startswith(body)
-    assert state["script"]["selected_hook"] == hook
-    assert state["script"]["selected_hook_strategy"] == strategy
-    assert state["script"]["blocks"][0]["text"] == hook
+    hook = state["script"]["selected_hook"]
+    assert (hook == provider_hook) is provider_hook_wins
+    assert state["script"]["selected_hook_strategy"] == state["script"]["triple_hook"]["selected_strategy"]
+    if provider_hook_wins:
+        assert state["script"]["selected_hook_strategy"] == strategy
+        assert state["script"]["blocks"][1]["text"] == body
+    assert state["script"]["selected_hook_strategy"] in STRATEGIES
+    assert state["script"]["blocks"][0]["text"] == hook == state["script"]["triple_hook"]["verbal_hook"]
     assert state["script"]["text"].startswith(hook)
-    assert state["script"]["blocks"][1]["text"] == body
     assert state["captions"]["items"][0]["text"].startswith(hook.split()[0])
 
     captured: dict[str, object] = {}

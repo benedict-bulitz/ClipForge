@@ -9,9 +9,6 @@ from clipforge.alignment import (
     phrase_fallback_items,
 )
 from clipforge.config import Settings
-from clipforge.hooks import (
-    select_hook_candidate,
-)
 from clipforge.language import detect_text_language, resolve_language
 from clipforge.pipeline import apply_edit, build_initial_state
 from clipforge.renderer import (
@@ -50,7 +47,7 @@ def test_active_hook_selection_preserves_the_selected_hook_text():
         existing=hook,
     )
     assert candidate is not None
-    assert candidate.text == hook
+    assert candidate["text"] == hook
 
 
 def test_selected_candidate_uses_the_active_strategy_value():
@@ -75,8 +72,20 @@ def test_selected_candidate_uses_the_active_strategy_value():
         ],
     )
     assert candidate is not None
-    assert candidate.strategy in {"counterintuitive_insight", "direct_reframe", "evidence_insight"}
+    assert candidate["strategy"] in {"counterintuitive_insight", "direct_reframe", "evidence_insight"}
 from clipforge.schemas import AdvancedOptions
+from clipforge.verbal_hook import hook_context, select_verbal
+
+
+def select_hook_candidate(intent, facts, *, body="", existing=None, model_candidates=None):
+    """The document-based verbal authority over the given candidates (test helper)."""
+    facts = [{"id": f"fact_{index:02d}", **fact} for index, fact in enumerate(facts, 1)]
+    context = hook_context(intent, facts, story_arc=None, payoff_plan=None, format_plan=None, novelty_plan=None,
+                           body_blocks=[{"role": "answer", "text": body}] if body else [])
+    extra = [{"strategy": item["strategy"], "text": item["text"], "origin": "ai"} for item in model_candidates or []]
+    if existing:
+        extra.append({"strategy": "counterintuitive_insight", "text": existing, "origin": "planner"})
+    return select_verbal(context, extra=extra)
 
 
 def settings(tmp_path: Path | None = None, **updates) -> Settings:
@@ -220,9 +229,11 @@ def test_realistic_airplane_path_keeps_tier_one_through_review(
             )
 
     run_ai_review(state, settings(), provider=Provider(), max_rounds=1)
-    assert state["script"]["selected_hook"] == mechanism
-    assert state["script"]["blocks"][0]["text"] == mechanism
-    assert state["script"]["text"].startswith(mechanism)
+    # The review may correct the body, never replace the selected verbal hook.
+    assert state["script"]["selected_hook"] == tier_one
+    assert state["script"]["blocks"][0]["text"] == tier_one
+    assert state["script"]["text"].startswith(tier_one)
+    assert state["script"]["triple_hook"]["selected_strategy"] == "direct_reframe"
 
 
 @pytest.mark.parametrize(("choice", "expected"), [("de", "de"), ("en", "en")])
@@ -374,14 +385,14 @@ def test_review_failure_preserves_authoritative_airplane_window_hook(
         ],
     )
     assert candidate is not None
-    assert candidate.text != question_echo
+    assert candidate["text"] != question_echo
     state["script"]["blocks"] = [
-        {"id": "voice_block_01", "role": "hook", "text": candidate.text},
+        {"id": "voice_block_01", "role": "hook", "text": candidate["text"]},
         {"id": "voice_block_02", "role": "detail", "text": claim},
     ]
-    state["script"]["selected_hook"] = candidate.text
-    state["script"]["selected_hook_strategy"] = candidate.strategy
-    state["script"]["text"] = f"{candidate.text} {claim}"
+    state["script"]["selected_hook"] = candidate["text"]
+    state["script"]["selected_hook_strategy"] = candidate["strategy"]
+    state["script"]["text"] = f"{candidate['text']} {claim}"
     class Provider:
         name = "failing-review"
 
@@ -489,9 +500,11 @@ def test_successful_review_correction_rejects_question_echo_hook(
     run_ai_review(state, settings(), provider=Provider())
 
     assert state["ai_review"]["status"] in {"passed", "passed_with_warnings"}
-    assert state["script"]["selected_hook"] == question_echo
-    assert state["script"]["blocks"][0]["text"] == question_echo
-    assert state["script"]["text"].startswith(question_echo)
+    # A review rewrite never turns the question into the hook.
+    assert state["script"]["selected_hook"] == substantive
+    assert state["script"]["blocks"][0]["text"] == substantive
+    assert state["script"]["text"].startswith(substantive)
+    assert question_echo not in state["script"]["text"]
     assert sum(block["role"] == "hook" for block in state["script"]["blocks"]) == 1
     assert sum(block["role"] == "hook" for block in state["script"]["blocks"]) == 1
 

@@ -8,7 +8,7 @@ from openai import OpenAI, OpenAIError
 from pydantic import BaseModel, Field
 
 from .config import Settings
-from .hook_library import generation_playbook
+from .hook_library import document_strategy_map, generation_playbook
 from .narration import clean_research_claim
 from .schemas import AdvancedOptions
 
@@ -158,14 +158,23 @@ class AIProjectPlan(BaseModel):
     story_arc: AIStoryArc | None = None
 
 
+# The documented Hook Strategy framework in canonical form (hooks.CANONICAL_STRATEGIES).
 TRIPLE_HOOK_STRATEGIES = (
-    "contradiction", "unexpected_consequence", "concrete_anomaly", "challenge_question", "visual_mystery",
-    "comparison_tension", "misconception_gap", "cause_effect_mystery", "surprising_scale", "immediate_scenario",
+    "curiosity_gap", "counterintuitive_insight", "direct_reframe", "evidence_insight", "common_mistake",
+    "verified_statistic", "social_proof_or_trend", "high_stakes_consequence", "ego_challenge",
 )
 TripleHookStrategy = Literal[
-    "contradiction", "unexpected_consequence", "concrete_anomaly", "challenge_question", "visual_mystery",
-    "comparison_tension", "misconception_gap", "cause_effect_mystery", "surprising_scale", "immediate_scenario",
+    "curiosity_gap", "counterintuitive_insight", "direct_reframe", "evidence_insight", "common_mistake",
+    "verified_statistic", "social_proof_or_trend", "high_stakes_consequence", "ego_challenge",
 ]
+
+
+class AIStrategyChoice(BaseModel):
+    """Step 1: a documented strategy the researched content supports (before any wording)."""
+
+    strategy: TripleHookStrategy
+    fact_ids: list[str] = Field(default_factory=list, max_length=4)
+    reason_codes: list[str] = Field(default_factory=list, max_length=4)
 
 
 class AITripleHookVisual(BaseModel):
@@ -196,10 +205,13 @@ class AITripleHookCandidate(BaseModel):
     payoff_fact_id: str = Field(default="", max_length=16)
     protected_information: list[str] = Field(default_factory=list, max_length=4)
     production_feasibility: Literal["real_media_likely", "generated_image_ok", "hard_to_source", "impossible"] = "real_media_likely"
+    supported_by_fact_ids: list[str] = Field(default_factory=list, max_length=4)
+    reason_codes: list[str] = Field(default_factory=list, max_length=5)
     rationale: str = Field(default="", max_length=180)
 
 
 class AIHookGenerationResponse(BaseModel):
+    strategy_plan: list[AIStrategyChoice] = Field(default_factory=list, max_length=5)
     triple_hook_candidates: list[AITripleHookCandidate] = Field(default_factory=list, max_length=5)
     hook_candidates: list[AIHookCandidate] = Field(default_factory=list, max_length=5)
     selected_hook_strategy: str | None = None
@@ -208,23 +220,31 @@ class AIHookGenerationResponse(BaseModel):
 
 
 class AITripleHookJudgement(BaseModel):
-    """Rubric scores (0-10) for one complete triple hook; short reason codes only."""
+    """Rubric scores (0-10) for one complete triple hook; short reason codes only.
+
+    The verbal dimensions follow the documented hook rubric in its priority
+    order; the rest judge the visual/on-screen channels and the opening as a whole.
+    """
 
     candidate_id: str = Field(min_length=1, max_length=8)
+    useful_information: int = Field(ge=0, le=10)
+    topic_relevance: int = Field(ge=0, le=10)
+    attention_value: int = Field(ge=0, le=10)
+    factual_defensibility: int = Field(ge=0, le=10)
+    natural_language: int = Field(ge=0, le=10)
+    brevity: int = Field(ge=0, le=10)
+    body_transition: int = Field(ge=0, le=10)
     curiosity: int = Field(ge=0, le=10)
-    specificity: int = Field(ge=0, le=10)
-    comprehension: int = Field(ge=0, le=10)
+    insight: int = Field(ge=0, le=10)
+    non_repetition: int = Field(ge=0, le=10)
+    strategy_fit: int = Field(ge=0, le=10)
     visual_intrigue: int = Field(ge=0, le=10)
     visual_feasibility: int = Field(ge=0, le=10)
-    verbal_quality: int = Field(ge=0, le=10)
     on_screen_quality: int = Field(ge=0, le=10)
     complementarity: int = Field(ge=0, le=10)
-    story_alignment: int = Field(ge=0, le=10)
     payoff_alignment: int = Field(ge=0, le=10)
     reveal_safety: int = Field(ge=0, le=10)
     format_fit: int = Field(ge=0, le=10)
-    novelty: int = Field(ge=0, le=10)
-    credibility: int = Field(ge=0, le=10)
     clickbait_free: int = Field(ge=0, le=10)
     production_feasibility: int = Field(ge=0, le=10)
     veto: Literal[
@@ -304,48 +324,58 @@ class AIMusicRecommendationResult:
 
 HOOK_GENERATION_INSTRUCTIONS = (
     "You are ClipForge's opening designer (Triple Hook V2). The supplied body is final and must remain "
-    "unchanged. Design exactly four COMPLETE opening candidates in triple_hook_candidates. Each candidate is one "
-    "coordinated unit of three channels designed together: verbal_hook (what the viewer hears first), visual "
-    "(what the viewer sees immediately) and on_screen_hook (a very short overlay on top of that visual). The four "
-    "candidates must use genuinely different strategies, never paraphrases of each other. Strategies: "
-    "contradiction, unexpected_consequence, concrete_anomaly, challenge_question, visual_mystery, "
-    "comparison_tension, misconception_gap, cause_effect_mystery, surprising_scale, immediate_scenario. "
-    "The supplied story_arc is authoritative: it names the primary question, the primary answer, the final payoff, "
-    "fact roles, dependencies and which facts may appear in a hook (may_appear_in_hook). Never use a fact that may "
-    "not appear in the hook and never contradict the arc. When withhold_answer is true, no channel may reveal the "
-    "protected answer (payoff_plan.hook_must_not_reveal) or imply it by elimination (for example saying the other "
-    "side loses); name the protected subject only as one open option of a question, never as the result. For a quiz, "
-    "never show the answer in any channel; for a ranking never reveal the top item; for a comparison never reveal "
-    "the winner; for a factual explanation prefer a concrete anomaly or causal mystery over trivia phrasing. When "
-    "withhold_answer is false, do not invent mystery, but the hook must still not simply state the primary answer. "
-    "Every promise must be paid off by the supplied body: promised_payoff names the arc fact that answers it and "
-    "payoff_fact_id its id. No fake clickbait, no invented numbers, trends or prevalence claims, no meta language. "
-    "Verbal hook: immediate, conversational, specific, understandable without prior context by a typical 10-14 year "
-    "old, naturally speakable, short; never open with generic filler such as 'Did you know', 'You won't believe', "
-    "'Here is an interesting fact', 'Have you ever wondered' (or 'Wusstest du', 'Das wirst du nicht glauben', "
-    "'Hast du dich jemals gefragt'); never begin with unexplained specialist terms; never repeat or lightly "
-    "paraphrase the user's question; it must lead naturally into the first body sentence without repeating it. "
+    "unchanged. The spoken hook follows the user's documented Hook Strategy framework (hook_playbook, in the "
+    "canonical form document_strategies): you write the topic-specific wording, never your own strategy system. "
+    "Work in this order. STEP 1 strategy_plan: before writing any sentence, pick three to five documented "
+    "strategies that the researched facts actually support, using supported_strategies (research signals with fact "
+    "ids) — strong sourced number -> verified_statistic; research contradicting intuition -> counterintuitive_insight; "
+    "a wrong framing corrected by research -> direct_reframe; a real, researched misconception -> common_mistake; an "
+    "interesting concrete fact -> evidence_insight; a real knowledge gap -> curiosity_gap; a researched trend -> "
+    "social_proof_or_trend; a researched consequence -> high_stakes_consequence; a viewer self-check -> ego_challenge. "
+    "Never pick a strategy the research does not support; prefer the material's own strength over loudness and never "
+    "force a provocative strategy. STEP 2 triple_hook_candidates: four COMPLETE openings (three to five allowed), "
+    "preferably each from a different planned strategy, each one coordinated unit of three channels: verbal_hook "
+    "(what the viewer hears first), visual (what the viewer sees immediately) and on_screen_hook (a very short "
+    "overlay). strategy must be the planned documented strategy the wording really uses; supported_by_fact_ids "
+    "names the facts it rests on; reason_codes are short snake_case codes (e.g. strong_sourced_number, "
+    "protected_answer_safe, specific), never reasoning. "
+    "The supplied story_arc is authoritative: primary question, primary answer, final payoff, fact roles, "
+    "dependencies and which facts may appear in a hook (may_appear_in_hook). When withhold_answer is true no channel "
+    "may reveal the protected answer (payoff_plan.hook_must_not_reveal) or imply it by elimination; name the "
+    "protected subject only as one open option of a question. A number of a protected fact may be spoken only "
+    "detached from its subject, e.g. two sourced numbers as a self-test without saying which belongs to whom. For a "
+    "quiz never reveal the answer; for a ranking never the top item; for a comparison never the winner. When "
+    "withhold_answer is false, do not invent mystery, and the hook must still not simply state the primary answer. "
+    "Every promise must be paid off by the body: promised_payoff names the arc fact that answers it and "
+    "payoff_fact_id its id. Verbal hook rules from the document: useful specific information first, exact relevance "
+    "to the question, immediate attention, factual defensibility (every number, trend or prevalence claim must be in "
+    "the supplied facts with the same value and context), natural spoken language a 10-14 year old understands on "
+    "first listen, brevity, and a clean transition: it leads into first_body_sentence without repeating it. Never "
+    "repeat or lightly paraphrase the user's question, no empty curiosity, no generic filler ('Did you know', "
+    "'You won't believe', 'Wusstest du', 'Hast du dich jemals gefragt'), no meta language, no fake controversy, no "
+    "attack on a person, no unexplained specialist term first. "
     "Visual: structured, concrete and sourceable as real stock footage or photos (or, rarely, one generated image): "
     "a concrete subject, its action or state, framing, the key visible detail, contrast, motion opportunity and "
     "visual tension, written in English because it drives stock search and visual verification; never prose about a "
     "concept, never text, maps with labels, diagrams or logos. protected_information names the protected answer in the "
-    "project language and in English. "
-    "Give up to four "
-    "short English provider-facing media_queries, each with a media_query_targets key at the same position "
-    "(subject_a, subject_b, shared, context); never query the protected_visual_target, and list what must not be "
-    "shown before the reveal in must_not_show. On-screen hook: at most six words and 38 characters, a complete "
-    "phrase (no fragments, no ellipsis) in the project language that adds ONE extra dimension the voice does not "
-    "say (stakes, contrast, question, surprising detail, scale, uncertainty or tension); it must never duplicate "
-    "the verbal hook, the captions or the narration. When no such text exists return an empty on_screen_hook. "
-    "The three channels must complement each other: never let voice, image and text say the same thing. "
-    "The supplied hook_playbook, reaction_arc, format_plan and novelty_plan are guidance only and never permission "
-    "to exaggerate. Also return the four verbal hooks in hook_candidates with their closest hook_playbook strategy "
-    "ID. rationale is one short sentence, not reasoning steps. Return structured output only."
+    "project language and in English. Give up to four short English provider-facing media_queries, each with a "
+    "media_query_targets key at the same position (subject_a, subject_b, shared, context); never query the "
+    "protected_visual_target, and list what must not be shown before the reveal in must_not_show. On-screen hook: at "
+    "most six words and 38 characters, a complete phrase (no fragments, no ellipsis) in the project language that "
+    "adds ONE extra dimension the voice does not say (stakes, contrast, question, surprising detail, scale, "
+    "uncertainty or tension); never a copy of the verbal hook, captions or narration; empty when no such text exists. "
+    "The three channels must complement each other. reaction_arc, format_plan and novelty_plan are guidance only. "
+    "Also return the verbal hooks in hook_candidates with the same documented strategy. rationale is one short "
+    "sentence, not reasoning steps. Return structured output only."
 )
 
 TRIPLE_HOOK_JUDGE_INSTRUCTIONS = (
     "You are ClipForge's opening judge. Score each COMPLETE opening candidate (verbal hook, visual, on-screen text "
-    "together) from 0 to 10 on every rubric dimension. Judge the triple, not the best sentence. Hard rules: a "
+    "together) from 0 to 10 on every rubric dimension. Judge the triple, not the best sentence. The verbal "
+    "dimensions are the documented hook rubric in priority order: useful_information, topic_relevance, "
+    "attention_value, factual_defensibility, natural_language, brevity, body_transition, curiosity, insight, "
+    "non_repetition; strategy_fit rates whether the documented strategy is supported by the research and really used "
+    "by the wording — the strategy's name earns nothing by itself. Hard rules: a "
     "candidate that reveals or implies the protected answer (payoff.hook_must_not_reveal, or protected facts of the "
     "story arc) must get veto leaks_answer; a promise the supplied story cannot pay off gets payoff_mismatch; a "
     "visual that cannot realistically be sourced or generated gets impossible_visual; voice, image and text that "
@@ -400,8 +430,9 @@ def generate_hook_candidates_with_openai(
     format_plan: dict[str, Any] | None = None,
     novelty_plan: dict[str, Any] | None = None,
     story_arc: dict[str, Any] | None = None,
+    supported_strategies: dict[str, Any] | None = None,
 ) -> AIHookGenerationResult:
-    """One bounded call: four complete triple-hook candidates for the finalized body."""
+    """One bounded call: documented strategies first, then complete triple-hook candidates."""
     if not settings.openai_api_key:
         return AIHookGenerationResult([], None, "missing_key", "OPENAI_API_KEY is not configured")
     request = {
@@ -423,6 +454,8 @@ def generate_hook_candidates_with_openai(
             if fact.get("claim")
         ],
         "hook_playbook": generation_playbook(facts),
+        "document_strategies": document_strategy_map(),
+        "supported_strategies": supported_strategies or {},
     }
     try:
         response = OpenAI(api_key=settings.openai_api_key).responses.parse(

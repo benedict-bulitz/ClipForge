@@ -29,13 +29,11 @@ from .models import GenerationJob, Project, ProjectChatMessage, ProjectRevision
 from .music import MusicTrack, available_music_tracks, music_track_state, ranked_music_tracks
 from .pacing import analyze_pacing
 from .pipeline import (
-    _apply_selected_hook,
-    _authoritative_hook_blocks,
     _build_scenes,
-    _is_hook_block,
     _refresh_script_derivatives,
     apply_edit,
     build_initial_state,
+    enforce_selected_hook,
 )
 from .progress import ProgressCallback, report_progress
 from .reactions import plan_viewer_reactions
@@ -873,32 +871,10 @@ def _render_state(
     analyze_pacing(state)
     plan_viewer_reactions(state)
     # Review may rewrite the opening. Keep exactly one hook for TTS/captions:
-    # sync selected_hook to a single surviving hook, or insert/collapse via the
-    # authoritative selector when review left zero or many hook blocks.
+    # the authoritative Triple Hook V2 verbal hook (reselected from the
+    # documented strategies only if a content change made it invalid).
     blocks_before_hook = copy.deepcopy(state.get("script", {}).get("blocks", []))
-    hooks = [block for block in state["script"]["blocks"] if _is_hook_block(block)]
-    if len(hooks) == 1:
-        state["script"]["selected_hook"] = str(hooks[0].get("text") or "").strip() or state[
-            "script"
-        ].get("selected_hook")
-    elif len(hooks) > 1 or not hooks:
-        selected = state.get("script", {}).get("selected_hook")
-        if not hooks and selected:
-            state["script"]["blocks"] = _apply_selected_hook(
-                state["script"]["blocks"], str(selected)
-            )
-        else:
-            hooked_blocks, candidate = _authoritative_hook_blocks(
-                state["script"]["blocks"],
-                state.get("intent", {}),
-                state.get("facts", []),
-                state.get("script", {}).get("hook_candidates") or [],
-                state.get("payoff_plan"),
-            )
-            state["script"]["blocks"] = hooked_blocks
-            if candidate:
-                state["script"]["selected_hook"] = candidate.text
-                state["script"]["selected_hook_strategy"] = candidate.strategy
+    enforce_selected_hook(state)
     if state["script"]["blocks"] != blocks_before_hook:
         _refresh_script_derivatives(state, old_scenes=state.get("scenes", []))
     if state["script"]["text"] != script_before_review:

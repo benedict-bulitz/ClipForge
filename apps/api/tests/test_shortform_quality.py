@@ -17,14 +17,13 @@ from clipforge.config import Settings
 from clipforge.narration import clean_narration_text, contamination_issues
 from clipforge.pipeline import (
     _apply_selected_hook,
-    _audience_hook,
-    _authoritative_hook_blocks,
     _factual_blocks,
     _fit_blocks,
     _normalise_blocks,
     _refresh_script_derivatives,
     apply_edit,
     build_initial_state,
+    enforce_selected_hook,
 )
 from clipforge.renderer import (
     RenderUnavailable,
@@ -151,7 +150,8 @@ def test_earth_fallback_keeps_the_answer_when_no_real_hook_is_available():
     assert blocks[0]["role"] == "answer"
     assert "Baumaterial" in blocks[0]["text"]
     assert blocks[1]["role"] == "support"
-    assert _audience_hook(intent) != blocks[0]["text"]
+    # The body fallback writes no hook of its own: Triple Hook V2 owns the opening.
+    assert all(block["role"] != "hook" for block in blocks)
 
 
 def test_editorial_publication_guidance_and_all_structural_labels_are_removed():
@@ -387,36 +387,34 @@ def test_authoritative_hook_collapses_zero_one_and_many_input_hooks():
     ]
     body = [{"role": "answer", "text": facts[0]["claim"]}]
 
-    zero, zero_candidate = _authoritative_hook_blocks(body, intent, facts, candidates)
-    assert zero_candidate is not None
-    assert [block["role"] for block in zero].count("hook") == 1
-    assert zero[0]["role"] == "hook"
-    assert zero[0]["text"] == zero_candidate.text
+    facts = [{"id": "fact_01", "verification": "source_attributed", **facts[0]}]
+    selected = candidates[0]["text"]
 
-    one, one_candidate = _authoritative_hook_blocks(
+    def state_with(blocks: list[dict]) -> dict:
+        return {
+            "intent": intent,
+            "facts": facts,
+            "script": {
+                "blocks": [dict(block) for block in blocks],
+                "triple_hook": {
+                    "version": 2, "verbal_hook": selected, "selected_strategy": "direct_reframe",
+                    "selection": {"candidates": [{"strategy": "direct_reframe", "verbal_hook": selected, "eligible": True}]},
+                },
+            },
+        }
+
+    for blocks in (
+        body,
         [{"role": "hook", "text": intent["question"]}, *body],
-        intent,
-        facts,
-        candidates,
-    )
-    assert one_candidate is not None
-    assert [block["role"] for block in one].count("hook") == 1
-    assert one[0]["text"] == one_candidate.text
-    assert one[0]["text"] != intent["question"]
-
-    many, many_candidate = _authoritative_hook_blocks(
-        [
-            {"role": "hook", "text": "Erste schwache Hook-Frage?"},
-            {"role": "hook", "text": "Zweite schwache Hook-Frage?"},
-            *body,
-        ],
-        intent,
-        facts,
-        candidates,
-    )
-    assert many_candidate is not None
-    assert [block["role"] for block in many].count("hook") == 1
-    assert many[0]["text"] == many_candidate.text
+        [{"role": "hook", "text": "Erste schwache Hook-Frage?"}, {"role": "hook", "text": "Zweite schwache Hook-Frage?"}, *body],
+    ):
+        state = state_with(blocks)
+        enforce_selected_hook(state)
+        result = state["script"]["blocks"]
+        assert [block["role"] for block in result].count("hook") == 1
+        assert result[0]["role"] == "hook" and result[0]["text"] == selected
+        assert result[0]["text"] != intent["question"]
+        assert state["script"]["selected_hook"] == state["script"]["triple_hook"]["verbal_hook"] == selected
 
 
 def test_normalisation_preserves_multi_sentence_hook_without_duplication():

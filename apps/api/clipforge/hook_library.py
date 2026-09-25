@@ -260,3 +260,21 @@ def generation_playbook(facts: list[dict[str, Any]]) -> dict[str, Any]:
         "eligible_strategy_ids": eligible_strategy_ids(profile),
         "template_policy": "Do not copy fallback_templates. Write original spoken language from strategy semantics.",
     }
+
+
+def document_strategy_map() -> dict[str, Any]:
+    """The documented families in ClipForge's canonical strategy names.
+
+    Family IDs of the source document are aliases of canonical strategies
+    (``hooks.STRATEGY_ALIASES``); the evidence policy travels with them.
+    """
+    from .hooks import CANONICAL_STRATEGIES, canonical_strategy
+
+    families = {family["id"]: family for family in strategy_families()}
+    mapped: dict[str, Any] = {name: {"document_families": [], "evidence_policy": []} for name in CANONICAL_STRATEGIES}
+    for family_id, family in families.items():
+        canonical = canonical_strategy(family_id)
+        if canonical:
+            mapped[canonical]["document_families"].append(family_id)
+            mapped[canonical]["evidence_policy"].append(family["evidence_policy"])
+    return {"canonical_strategies": list(CANONICAL_STRATEGIES), "strategies": mapped}

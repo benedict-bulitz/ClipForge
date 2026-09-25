@@ -132,7 +132,9 @@ export type TripleHook = {
   on_screen_text_hook?: string | null;
   on_screen_hook_status?: "shown" | "omitted";
   on_screen_omitted_reason?: string | null;
+  /** Canonical documented hook strategy (DAS HOOK-MANIFEST), e.g. verified_statistic. */
   selected_strategy?: string | null;
+  supported_by_fact_ids?: string[];
   score?: number | null;
   reason_codes?: string[];
   visual_hook?: { subject?: string; visual_goal?: string; framing?: string; action_state?: string; key_detail?: string };
