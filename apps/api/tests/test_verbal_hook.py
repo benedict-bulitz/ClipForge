@@ -575,3 +575,77 @@ def test_normal_generation_never_ends_without_a_documented_hook(monkeypatch, pro
     assert plan["selected_strategy"] in CANONICAL_STRATEGIES
     assert state["script"]["selected_hook_strategy"] in CANONICAL_STRATEGIES
     assert not blocks[0]["text"].casefold().startswith(("tell a story", "write a fictional"))
+
+
+# --- the 14-year-old rule does not depend on how the user phrased the question ---
+
+def _technical(question: str, claim: str, language: str) -> dict:
+    return context_for(story(question, [fact(1, claim)], language=language))
+
+
+def test_technical_german_question_still_gets_the_simpler_spoken_hook():
+    from clipforge.verbal_hook import spoken_simplicity
+
+    context = _technical(
+        "Warum kommt es bei Kälte zur Piloerektion?",
+        "Bei Kälte ziehen sich winzige Muskeln an den Haarwurzeln zusammen und stellen die Haare auf – das nennt man Piloerektion.",
+        "de",
+    )
+    technical = "Was löst die Piloerektion an deinen Haarwurzeln aus?"
+    simple = "Was stellt bei Kälte deine Haare auf?"
+    # The user's own term is not "known" to a 14-year-old: it is evaluated.
+    score, codes = spoken_simplicity("Das ist Piloerektion.", context)
+    assert score < 1.0 and "unfamiliar_term" in codes
+    ranked = rank_verbal(context, [
+        {"strategy": "curiosity_gap", "text": technical, "origin": "ai"},
+        {"strategy": "curiosity_gap", "text": simple, "origin": "ai"},
+    ])
+    by_text = {item["text"]: item for item in ranked}
+    assert by_text[technical]["eligible"] and by_text[simple]["eligible"]
+    assert ranked[0]["text"] == simple
+    assert by_text[simple]["dimensions"]["spoken_simplicity"] > by_text[technical]["dimensions"]["spoken_simplicity"]
+
+
+def test_technical_english_question_still_gets_the_simpler_spoken_hook():
+    context = _technical(
+        "What causes piloerection in cold weather?",
+        "In the cold, tiny muscles at the hair roots contract and make hairs stand up – this is called piloerection.",
+        "en",
+    )
+    # Same content, same strategy – only the wording differs.
+    technical = "What pulls your hairs into piloerection when you get cold?"
+    simple = "What pulls your hairs upright when you get cold?"
+    ranked = rank_verbal(context, [
+        {"strategy": "curiosity_gap", "text": technical, "origin": "ai"},
+        {"strategy": "curiosity_gap", "text": simple, "origin": "ai"},
+    ])
+    by_text = {item["text"]: item for item in ranked}
+    assert by_text[technical]["eligible"] and by_text[simple]["eligible"]
+    assert ranked[0]["text"] == simple
+    assert "unfamiliar_term" in by_text[technical]["reason_codes"]
+    assert by_text[technical]["dimensions"]["spoken_simplicity"] < by_text[simple]["dimensions"]["spoken_simplicity"]
+
+
+def test_a_necessary_technical_term_may_stay_but_is_still_counted():
+    from clipforge.verbal_hook import spoken_simplicity
+
+    context = _technical(
+        "Was ist Photosynthese?",
+        "Bei der Photosynthese machen Pflanzen aus Licht, Wasser und Luft ihren eigenen Zucker.",
+        "de",
+    )
+    # Every candidate needs the term: it is not banned and a hook is selected ...
+    candidates = [
+        {"strategy": "curiosity_gap", "text": "Photosynthese: Wie machen Pflanzen Zucker aus Licht?", "origin": "ai"},
+        {"strategy": "curiosity_gap", "text": "Was passiert bei der Photosynthese mit dem Licht?", "origin": "ai"},
+    ]
+    chosen = select_verbal(context, extra=candidates)
+    assert "Photosynthese" in chosen["text"] and chosen["strategy"] in CANONICAL_STRATEGIES
+    # ... but it still costs spoken-comprehension points like any long word,
+    # even though the user's question used it.
+    score, codes = spoken_simplicity(chosen["text"], context)
+    assert score < 1.0 and "long_words" in codes
+    assert chosen["dimensions"]["spoken_simplicity"] == score
+    # Compared subjects stay exempt: they are the topic, not a wording choice.
+    islands_context = context_for(islands())
+    assert spoken_simplicity("Schweden oder Indonesien?", islands_context) == (1.0, [])

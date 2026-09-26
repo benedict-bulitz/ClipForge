@@ -427,7 +427,10 @@ def strategy_signals(context: dict[str, Any]) -> dict[str, dict[str, Any]]:
         add("ego_challenge", None, "numeric_self_test")
     if context["withhold"]:
         add("curiosity_gap", context.get("primary_answer_id"), "withheld_answer")
-    elif context["allowed_facts"] and re.search(r"(?i)\b(?:why|how|warum|wieso|weshalb|wie)\b", context["question"]):
+    elif context["allowed_facts"] and re.search(
+        r"(?i)\b(?:why|how|warum|wieso|weshalb|wie|what (?:causes|makes|happens)|was (?:löst|bewirkt|passiert|verursacht))\b",
+        context["question"],
+    ):
         add("curiosity_gap", None, "causal_question")
     if context["format"] == "quiz":
         add("ego_challenge", None, "quiz_self_test")
@@ -758,14 +761,19 @@ def spoken_simplicity(text: str, context: dict[str, Any]) -> tuple[float, list[s
     """How easily an average 14-year-old follows the hook on first listen (0..1).
 
     Spoken clarity, not a school-grade formula: short spoken units, common
-    words, one idea at a time.  Words the viewer already heard in the
-    question are fine; long or research-only terms, abstract noun chains,
-    office language, long spoken numbers and stacked clauses cost points.
+    words, one idea at a time.  Long, rare or research terms, abstract noun
+    chains, office language, long spoken numbers and stacked clauses cost
+    points — also when the user's own question used them: how technically
+    the user asked says nothing about what a 14-year-old understands.  A
+    necessary term may stay; it is simply counted.  Only the names of the
+    compared subjects (the question's sides) are exempt: they are the topic,
+    not a wording choice.
     """
     words = re.findall(r"[\wÄÖÜäöüß'-]+", text)
     if not words:
         return 0.0, ["empty"]
-    known = {word.casefold() for word in re.findall(r"[\wÄÖÜäöüß'-]+", f"{context['question']} {context['topic']}")}
+    subjects = set().union(*context.get("sides") or [set()])
+    known = {word.casefold() for word in words if _mentions(_visual_query_tokens(word), subjects)} if subjects else set()
     research = {word.casefold() for claim in context["claims"].values() for word in re.findall(r"[\wÄÖÜäöüß'-]+", claim)}
     units = [unit for unit in re.split(r"[.!?]+|\s[–—-]\s|;", text) if unit.strip()]
     longest = max(len(unit.split()) for unit in units)
