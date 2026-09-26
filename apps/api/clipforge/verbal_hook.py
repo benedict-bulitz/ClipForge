@@ -911,6 +911,42 @@ def _covers(spoken: set[str], sentence: str, verbal: str) -> bool:
     return bool(spoken and words and "?" not in verbal and len(spoken & words) / len(spoken) >= 0.75 and len(spoken & words) / len(words) >= 0.6)
 
 
+# Grammar that carries no proposition of its own: auxiliary/light verbs,
+# prepositions and pronouns (any topic).  "macht dich müder" and "bist du
+# müder" state the same thing.
+_LIGHT = {
+    "macht", "machen", "machst", "bist", "ist", "sind", "war", "waren", "hat", "hast", "haben", "gibt", "geben", "wird", "wirst",
+    "werden", "kommt", "sein", "nach", "vor", "beim", "einem", "einen", "einer", "eines", "dabei", "dafür", "davon", "darauf",
+    "mich", "dich", "sich", "euch", "makes", "make", "made", "gets", "get", "there", "after", "before", "into", "does", "being",
+    "been", "will", "would", "could", "should",
+}
+_NEGATED = re.compile(r"(?i)\b(?:nicht|kein\w*|nie|niemals|not|no|never)\b|\w+n[’']t\b")
+
+
+def _proposition_words(text: str) -> set[str]:
+    return {word for word in _words(text) if word not in _LIGHT}
+
+
+def information_gain(reference: str, sentence: str) -> list[str]:
+    """What ``sentence`` says that ``reference`` does not (empty: same proposition).
+
+    Content words and numbers beyond the reference (inflection tolerant), or a
+    flipped negation.  Exact wording and word order are irrelevant.
+    """
+    # A question asserts nothing: only the hook's statement part is "said";
+    # a sentence answering the question is progress.
+    asserted = " ".join(
+        part for part in re.split(r"\s*[–—:;]\s*|(?<=[.!?])\s+", reference)
+        if part.strip() and "?" not in part and not re.match(r"(?i)\s*(?:aber\s+|und\s+|but\s+|and\s+)?(?:why|how|what|which|who|warum|wieso|weshalb|wie|was|welche\w*|wer)\b", part)
+    )
+    known, said = _proposition_words(asserted), _proposition_words(sentence)
+    gain = sorted(said - _related(said, known))
+    gain += sorted(_numbers(sentence) - _numbers(asserted))
+    if bool(_NEGATED.search(asserted)) != bool(_NEGATED.search(sentence)):
+        gain.append("negation")
+    return gain
+
+
 def verbal_score(dimensions: dict[str, float]) -> float:
     total = sum(VERBAL_WEIGHTS.values())
     return 100 * sum(VERBAL_WEIGHTS[key] * float(dimensions.get(key, 0.0)) for key in VERBAL_DIMENSIONS) / total

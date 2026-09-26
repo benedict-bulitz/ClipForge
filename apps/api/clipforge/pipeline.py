@@ -18,7 +18,7 @@ from .config import Settings
 from .dependencies import resolve_edit_scope
 from .format_intelligence import plan_format
 from .hashing import attach_hashes
-from .hooks import STRATEGIES, HookCandidate, canonical_strategy
+from .hooks import _BACK_REFERENCE, STRATEGIES, HookCandidate, canonical_strategy
 from .language import detect_text_language, resolve_language
 from .media import _NON_SIDE_TARGET_KEYS, visual_target_key
 from .music import automatic_music_layer
@@ -67,7 +67,7 @@ from .story_arc import (
 from .triple_hook import SOURCE as TRIPLE_HOOK_SOURCE
 from .triple_hook import plan_triple_hook
 from .triple_hook import selected_hook_candidate as triple_hook_verbal
-from .verbal_hook import hook_context
+from .verbal_hook import hook_context, information_gain
 from .voice import apply_voice_preferences, initial_voice
 
 STAGE_LABELS = [
@@ -665,6 +665,7 @@ def enforce_selected_hook(state: dict[str, Any], *, reselect: bool = False, shor
         script["selected_hook_strategy"] = strategy
         if plan is not None:
             plan["verbal_hook"] = chosen
+        ensure_hook_advances(state)
     return action
 
 
@@ -712,6 +713,106 @@ def _apply_selected_hook(
     if existing is not None and existing.get("fact_ids"):
         hook["fact_ids"] = list(existing["fact_ids"])  # keep the hook's story identity
     return [hook, *remaining]
+
+
+def _advance_after_hook(
+    blocks: list[dict[str, Any]], story_arc: dict[str, Any] | None
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """The sentence after the hook must advance the story (positive information gain).
+
+    When the first body block only restates the hook's proposition, the next
+    body block that adds information moves up - if the Story Arc's
+    dependencies and reveal allow it.  The restating block stays later only
+    when it carries a fact no other block tells; otherwise the hook already
+    said it.  Nothing is rewritten or invented.  ``action`` is "ok",
+    "reordered" or "no_safe_reorder" (the caller may then reselect the hook).
+    """
+    if len(blocks) < 2 or not _is_hook_block(blocks[0]):
+        return blocks, {"action": "ok"}
+    hook = str(blocks[0].get("text") or "")
+    if information_gain(hook, str(blocks[1].get("text") or "")):
+        return blocks, {"action": "ok"}
+    arc = story_arc if isinstance(story_arc, dict) else {}
+    units = arc_units(arc)
+    withheld: set[str] = set()
+    if (arc.get("curiosity_gap") or {}).get("withhold_answer"):
+        withheld = {str(value) for value in (arc.get("hook") or {}).get("protected_ids") or []}
+        withheld |= {str(arc.get(key)) for key in ("primary_answer_id", "final_payoff_id") if arc.get(key)}
+
+    def facts(block: dict[str, Any]) -> set[str]:
+        return {str(value) for value in block.get("fact_ids") or []}
+
+    def movable(index: int) -> bool:
+        block = blocks[index]
+        if not information_gain(hook, str(block.get("text") or "")) or _BACK_REFERENCE.match(str(block.get("text") or "")):
+            return False
+        own = facts(block)
+        # Never pull the reveal forward: withheld facts may only take the
+        # place of a restating block that already said them.
+        if (own & withheld) - facts(blocks[1]):
+            return False
+        # Everything it depends on must already have been said (hook or itself).
+        told_before = facts(blocks[0]) | own
+        skipped = set().union(*(facts(blocks[between]) for between in range(1, index)))
+        needs = {str(dep) for fact_id in own for dep in units.get(fact_id, {}).get("depends_on") or []}
+        return not (needs - told_before) & skipped
+
+    target = next((index for index in range(2, len(blocks)) if movable(index)), None)
+    if target is None:
+        return blocks, {"action": "no_safe_reorder", "restating": blocks[1].get("text")}
+    restating = blocks[1]
+    rest = [block for index, block in enumerate(blocks[2:], 2) if index != target]
+    carried = facts(blocks[target]) | set().union(*(facts(block) for block in rest)) if rest else facts(blocks[target])
+    keep = bool(facts(restating) - carried)
+    moved = blocks[target]
+    if not keep and str(moved.get("role") or "") == "detail":
+        # The continuation of the dropped sentence's own block takes its role.
+        moved["role"] = restating.get("role") or "detail"
+    reordered = [blocks[0], moved, *([restating] if keep else []), *rest]
+    for index, block in enumerate(reordered, 1):
+        block["id"] = f"voice_block_{index:02d}"
+    return reordered, {
+        "action": "reordered", "moved_up": blocks[target].get("text"), "restating": restating.get("text"),
+        "restating_kept": keep,
+    }
+
+
+def ensure_hook_advances(state: dict[str, Any]) -> str:
+    """Final hook -> body continuity on the persisted script (after every stage).
+
+    Reorders the body when possible; only when no safe reorder exists is
+    another documented hook reselected (it must itself be followed by new
+    information).  The video always keeps a hook.
+    """
+    from .triple_hook import reselect_verbal, state_plan
+
+    script = state.get("script") or {}
+    blocks, report = _advance_after_hook(list(script.get("blocks") or []), state.get("story_arc"))
+    if report["action"] == "no_safe_reorder":
+        excluded = {str(blocks[0].get("text") or "")}
+        following = str(blocks[1].get("text") or "")
+        for _attempt in range(3):
+            replacement = reselect_verbal(state, exclude=excluded, allow_fallback=False)
+            if replacement is None:
+                break
+            if information_gain(replacement["text"], following):
+                blocks = _apply_selected_hook(blocks, replacement["text"])
+                script["selected_hook"] = replacement["text"]
+                script["selected_hook_strategy"] = replacement["strategy"]
+                plan = state_plan(state)
+                if plan is not None:
+                    plan["verbal_hook"] = replacement["text"]
+                    plan["selected_strategy"] = plan["legacy_strategy"] = replacement["strategy"]
+                    plan["reason_codes"] = list(dict.fromkeys([*(replacement.get("positive_codes") or []), "reselected_for_body_transition"]))[:10]
+                report = {"action": "hook_reselected", "restating": following}
+                break
+            excluded.add(replacement["text"])
+    if report["action"] != "ok":
+        for index, block in enumerate(blocks, 1):
+            block["id"] = f"voice_block_{index:02d}"
+        script["blocks"] = blocks
+        script["hook_transition"] = report
+    return report["action"]
 
 
 def _fit_blocks(
@@ -975,6 +1076,9 @@ def _refresh_script_derivatives(
     budget = max(12, int(max_duration * wpm / 60))
     if any(_is_hook_block(block) for block in blocks) and sum(len(_words(block["text"])) for block in blocks) > budget:
         blocks = _refit_hook(state, blocks, budget)
+    blocks, transition = _advance_after_hook(blocks, story_arc)
+    if transition["action"] != "ok":
+        state["script"]["hook_transition"] = transition
     state["script"]["blocks"] = blocks
     script_text = " ".join(block["text"] for block in blocks)
     word_count = len(_words(script_text))
@@ -1229,6 +1333,8 @@ def build_initial_state(
         blocks = _apply_selected_hook(blocks, selected_hook_candidate.text)
         for index, block in enumerate(blocks, 1):
             block["id"] = f"voice_block_{index:02d}"
+    # The sentence after the hook must advance the story (after ordering and fitting).
+    blocks, hook_transition = _advance_after_hook(blocks, story_arc)
     hook_block = next((block for block in blocks if _is_hook_block(block)), None)
     selected_hook = (
         selected_hook_candidate.text
@@ -1322,6 +1428,7 @@ def build_initial_state(
                 "first_error": getattr(hook_generation, "first_error", None),
             },
             "hook_candidates": hook_candidates[:5],
+            "hook_transition": hook_transition,
             "fact_map": [
                 {
                     "block_id": block["id"],
@@ -1447,6 +1554,8 @@ def build_initial_state(
         ],
         "edit_history": [],
     }
+    if hook_transition["action"] == "no_safe_reorder" and ensure_hook_advances(state) == "hook_reselected":
+        _refresh_script_derivatives(state, old_scenes=state["scenes"])
     replan_attention(state)
     annotate_story_roles(state)
     analyze_pacing(state)

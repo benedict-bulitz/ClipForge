@@ -554,7 +554,13 @@ def test_islands_pipeline_opening_is_reveal_safe(monkeypatch):
     state = pipeline_state(monkeypatch, ISLANDS_Q, [dict(item) for item in ISLANDS], islands_candidates(), Judge())
     plan = state["script"]["triple_hook"]
     assert plan["hook_id"] == "hook_c"
-    assert "schwed" not in state["script"]["blocks"][0]["text"].casefold()
+    # Hook C's sentence restates the first body sentence and no body reorder may
+    # pull the reveal forward, so another documented verbal hook opens: the
+    # winner may only be an open option, never revealed.
+    opening = state["script"]["blocks"][0]["text"]
+    assert state["script"]["hook_transition"]["action"] == "hook_reselected"
+    assert opening == plan["verbal_hook"] and triple_hook.leaks(opening, triple_hook.state_context(state)) is None
+    assert "schwed" not in state["script"]["blocks"][1]["text"].casefold()
     assert state["scenes"][0]["story_stage"] == "before_reveal"
     strategy = plan_scene_strategy(state["scenes"][0], state, build_visual_query_plan(state["scenes"][0], state))
     assert strategy["overlay_spec"]["text"] == "Reicht das für Platz 1?" and not strategy["reveal_allowed"]
