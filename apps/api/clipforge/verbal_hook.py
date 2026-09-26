@@ -119,6 +119,12 @@ _FACT_TREND = re.compile(
 )
 _NUMBER = re.compile(r"(?<![\w.,])(\d{1,3}(?:[.,  ]\d{3})+(?:[.,]\d+)?|\d+(?:[.,]\d+)?)(\s*(?:%|prozent\b|percent\b))?", re.IGNORECASE)
 _HEDGE = re.compile(r"(?i)\b(etwa|rund|circa|knapp|fast|über|about|around|roughly|nearly|almost|over|approximately)\s*$")
+# A sentence opening with a back-reference ("Aber …", "Deshalb …") answers a
+# previous sentence the viewer never heard - typically one lifted from research.
+_BACK_REFERENCE = re.compile(
+    r"(?i)^\s*(?:aber|und|doch|denn|jedoch|trotzdem|dennoch|deshalb|deswegen|daher|darum|dadurch|dabei|au(?:ß|ss)erdem|zudem|"
+    r"also|but|and|however|therefore|thus|hence|besides|moreover)\b"
+)
 _MALFORMED = re.compile(
     r"(?i)(?:\b(\w+)\s+\1\b|\b(?:und|oder|aber|weil|dass|and|or|but|because|that|the|der|die|das|ein|eine|a|an)\s*[.!?]?\s*$|"
     r"[,;:–—-]\s*[.!?]?\s*$)"
@@ -636,6 +642,18 @@ def assess_verbal(
     malformed = bool(_MALFORMED.search(verbal)) or (verbal[:1].isalpha() and verbal[:1].islower())
     if malformed:
         codes.append("malformed_grammar")
+    if _BACK_REFERENCE.match(verbal):
+        hard.append("context_dependent_opener")
+    # Off the story's axis: a statement importing research content (beyond
+    # the question's own words) that neither the story the viewer then hears
+    # nor the arc's answer and payoff carry - a promise the video never pays.
+    # A question only opens the gap.
+    own = {word for word in spoken - _related(spoken, question_words) if len(word) >= 4 and not word.isdigit()}
+    imported = _related(own, claim_words)
+    body_words = _words(context["body"])
+    axis_words = body_words | _words(context["primary_answer"]) | _words(context["final_payoff"])
+    if "?" not in verbal and imported and body_words and not _related(imported, axis_words) and not numbers & _numbers(context["body"]):
+        hard.append("off_story_axis")
     empty_curiosity = not specific and not numbers and not emergency
     if empty_curiosity:
         codes.append("empty_curiosity")

@@ -724,8 +724,9 @@ def order_blocks_for_reveal(blocks: list[dict[str, Any]], arc: dict[str, Any] | 
     """Move a withheld primary answer behind the facts it depends on.
 
     Only when the arc withholds its answer and the body says it before one
-    of its dependencies (by fact identity); answer-first explainers and
-    correctly ordered bodies are returned unchanged.
+    of its dependencies (by fact identity); a block the writer declared as
+    the answer counts too.  Answer-first explainers and correctly ordered
+    bodies are returned unchanged.
     """
     units = arc_units(arc)
     if not isinstance(arc, dict) or not units or not (arc.get("curiosity_gap") or {}).get("withhold_answer"):
@@ -738,10 +739,16 @@ def order_blocks_for_reveal(blocks: list[dict[str, Any]], arc: dict[str, Any] | 
         if current not in dependencies and current in units:
             dependencies.add(current)
             stack.extend(units[current].get("depends_on") or [])
-    answer = [index for index, block in enumerate(blocks) if primary in (block.get("fact_ids") or [])]
+
+    def states_answer(block: dict[str, Any]) -> bool:
+        # By fact identity, or the writer's own answer statement: a
+        # synthesized conclusion may cite other facts, or none.
+        return primary in (block.get("fact_ids") or []) or str(block.get("role") or "").casefold() == "answer"
+
+    answer = [index for index, block in enumerate(blocks) if states_answer(block)]
     needed = [
         index for index, block in enumerate(blocks)
-        if set(block.get("fact_ids") or []) & dependencies and primary not in (block.get("fact_ids") or [])
+        if set(block.get("fact_ids") or []) & dependencies and not states_answer(block)
     ]
     if not answer or not needed or answer[0] > max(needed):
         return blocks
