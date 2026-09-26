@@ -32,6 +32,8 @@ from .hooks import (
     _plain_evidence_explanation,
     canonical_strategy,
     hook_issues,
+    parse_number,
+    rounded_number_supported,
     strategy_matches,
 )
 from .media import _mentions, _visual_query_tokens, visual_target_key
@@ -72,8 +74,8 @@ _FAKE_CONTROVERSY = re.compile(
 )
 _ABSOLUTE = re.compile(r"(?i)\b(?:always|never|nobody|everyone|everybody|immer|nie|niemals|niemand|jeder|alle)\b")
 _CONTRAST = re.compile(
-    r"(?i)(?:\b(?:not|no|but|although|despite|instead|rather|yet|actually|nicht|kein\w*|aber|doch|sondern|"
-    r"obwohl|statt|trotzdem|eigentlich|gar nicht)\b)"
+    r"(?i)(?:\b(?:not|no|never|but|although|despite|instead|rather|yet|actually|still|nicht|kein\w*|aber|doch|sondern|"
+    r"obwohl|statt|trotzdem|eigentlich|gar nicht)\b|\w+n[’']t\b)"
 )
 _SELF_TEST = re.compile(r"(?i)(?:\?|\b(?:du|dein\w*|dich|dir|you|your|guess|rate mal)\b)")
 _NEGATED_RESULT = re.compile(
@@ -88,7 +90,7 @@ _COMPARATIVE_RESULT = re.compile(
 )
 # Research signals per documented strategy (grammar only).
 _FACT_CONTRAST = re.compile(
-    r"(?i)\b(?:but|although|despite|instead|rather than|yet|even though|nevertheless|however|actually|"
+    r"(?i)\b(?:but|although|despite|instead|rather than|yet|even though|nevertheless|nonetheless|however|actually|still|"
     r"aber|obwohl|trotzdem|dennoch|jedoch|statt|anstatt|sondern|entgegen|eigentlich|nicht|kein\w*|not|no)\b"
 )
 _FACT_REFRAME = re.compile(
@@ -129,11 +131,13 @@ _EVIDENCE_STRATEGIES = {
 # reframe, a misconception, a trend); the others may use any hook-safe fact.
 _LOOSE_EVIDENCE = {"counterintuitive_insight", "evidence_insight", "high_stakes_consequence"}
 VERBAL_DIMENSIONS = (
-    "useful_information", "topic_relevance", "attention_value", "factual_defensibility", "natural_language",
+    "spoken_simplicity", "useful_information", "topic_relevance", "attention_value", "factual_defensibility", "natural_language",
     "brevity", "body_transition", "curiosity", "insight", "non_repetition", "strategy_fit",
 )
 # The document's priority order: useful specific information first.
 VERBAL_WEIGHTS = {
+    # A 14-year-old must understand the hook on first listen.
+    "spoken_simplicity": 1.6,
     "useful_information": 1.6, "topic_relevance": 1.5, "attention_value": 1.4, "factual_defensibility": 1.4,
     "natural_language": 1.2, "brevity": 1.1, "body_transition": 1.0, "curiosity": 0.9, "insight": 0.9,
     "non_repetition": 0.8, "strategy_fit": 1.0,
@@ -375,9 +379,22 @@ def strategy_signals(context: dict[str, Any]) -> dict[str, dict[str, Any]]:
         if code not in entry["signals"]:
             entry["signals"].append(code)
 
-    for fact in context["allowed_facts"]:
+    allowed_ids = {str(fact.get("id") or "") for fact in context["allowed_facts"]}
+    # Before a withheld reveal, protected facts may inspire a hook only
+    # detached from their subject (the reveal checks forbid naming it).
+    detached = [
+        fact for fact in context["facts"]
+        if context["withhold"] and str(fact.get("id") or "") in set(context["protected_ids"]) - allowed_ids and _plain(fact.get("claim"))
+    ]
+    for fact in [*context["allowed_facts"], *detached]:
         claim = _plain(fact.get("claim"))
         fact_id = str(fact.get("id") or "") or None
+        if fact in detached:
+            if _FACT_CONTRAST.search(claim) or _FACT_RESTRICTION.search(claim):
+                add("counterintuitive_insight", fact_id, "researched_contrast_detached")
+            if _sourced(fact) and _salient_numbers(claim):
+                add("verified_statistic", fact_id, "strong_sourced_number_detached")
+            continue
         if _sourced(fact) and _salient_numbers(claim):
             add("verified_statistic", fact_id, "strong_sourced_number")
         if _FACT_REFRAME.search(claim):
@@ -421,6 +438,18 @@ def strategy_signals(context: dict[str, Any]) -> dict[str, dict[str, Any]]:
 # 2. Deterministic, document-based candidates (no provider)
 # ---------------------------------------------------------------------------
 
+def _speakable(item: dict[str, str], language: str) -> str:
+    """A figure as a 14-year-old hears it: long numbers as a true hedged rounding."""
+    value = parse_number(item["value"])
+    digits = re.sub(r"\D", "", item["value"]).rstrip("0")
+    if value is None or value < 10_000 or len(digits) <= 2 or "%" in item["value"]:
+        return f"{item['hedge']} {item['value']}".strip()
+    magnitude = 10 ** (len(str(int(value))) - 2)
+    rounded = int(round(value / magnitude) * magnitude)
+    text = f"{rounded:,}".replace(",", "." if language == "de" else ",")
+    return f"{'rund' if language == 'de' else 'about'} {text}"
+
+
 def _numeric_contrast(context: dict[str, Any]) -> dict[str, Any] | None:
     """verified_statistic + self-test: two sourced numbers, sides named as open options.
 
@@ -433,7 +462,7 @@ def _numeric_contrast(context: dict[str, Any]) -> dict[str, Any] | None:
     first, second = sorted(pair["sides"], key=lambda item: -float(re.sub(r"[^\d]", "", item["value"]) or 0))
 
     def said(item: dict[str, Any]) -> str:
-        return f"{item['hedge']} {item['value']}".strip()
+        return _speakable(item, context["language"])
 
     label = first["label"]
     if context["language"] == "de":
@@ -624,6 +653,7 @@ def assess_verbal(
             fact_id for fact_id in sorted(evidence_ids)
             if _related(evidence_words, _words(context["claims"].get(fact_id, "")) - question_words)
             or (numbers & _numbers(context["claims"].get(fact_id, "")))
+            or _rounded_from(verbal, context["claims"].get(fact_id, ""))
         ]
         if emergency and canonical == "curiosity_gap":
             fit = 0.5
@@ -676,7 +706,10 @@ def assess_verbal(
         attention -= 0.25
         insight -= 0.2
         transition = min(transition, 0.5)
+    simplicity, simplicity_codes = spoken_simplicity(verbal, context)
+    codes.extend(simplicity_codes)
     dimensions = {
+        "spoken_simplicity": simplicity,
         "useful_information": useful, "topic_relevance": relevance, "attention_value": attention,
         "factual_defensibility": defensibility, "natural_language": natural, "brevity": brevity,
         "body_transition": transition, "curiosity": curiosity, "insight": insight,
@@ -693,6 +726,8 @@ def assess_verbal(
         positive.append("high_curiosity")
     if transition == 1.0 and not repeats_first:
         positive.append("clean_transition")
+    if simplicity >= 0.9:
+        positive.append("easy_to_follow")
     return {
         "strategy": canonical,
         "hard_fail": list(dict.fromkeys(hard)),
@@ -701,6 +736,82 @@ def assess_verbal(
         "dimensions": dimensions,
         "supported_by_fact_ids": fact_ids,
     }
+
+
+# Spoken-clarity grammar (no topic vocabulary): abstract noun endings, office
+# language and clause connectors that make a sentence hard to follow by ear.
+_ABSTRACT_NOUN = re.compile(r"(?i)^\w{4,}(?:ung|heit|keit|tion|ität|ismus|ierung|schaft|ance|ence|ment|ity|ness)(?:en|s)?$")
+_BUREAUCRATIC = re.compile(
+    r"(?i)\b(?:bezüglich|hinsichtlich|diesbezüglich|seitens|infolgedessen|zwecks|gemäß|im rahmen|im hinblick|"
+    r"aufgrund dessen|demzufolge|regarding|pertaining|thereby|whereby|aforementioned|with respect to|in terms of|"
+    r"notwithstanding|henceforth)\b"
+)
+# Subordinating/relative connectors (interrogatives like "welche ...?" are not clauses).
+_CONNECTOR = re.compile(r"(?i)\b(?:dass|weil|obwohl|wobei|deren|dessen|sodass|whereas|whom|whose|although)\b")
+LONG_WORD = 13
+RARE_WORD = 11
+UNFAMILIAR_TERM = 10
+SPOKEN_UNIT_WORDS = 12
+
+
+def spoken_simplicity(text: str, context: dict[str, Any]) -> tuple[float, list[str]]:
+    """How easily an average 14-year-old follows the hook on first listen (0..1).
+
+    Spoken clarity, not a school-grade formula: short spoken units, common
+    words, one idea at a time.  Words the viewer already heard in the
+    question are fine; long or research-only terms, abstract noun chains,
+    office language, long spoken numbers and stacked clauses cost points.
+    """
+    words = re.findall(r"[\wÄÖÜäöüß'-]+", text)
+    if not words:
+        return 0.0, ["empty"]
+    known = {word.casefold() for word in re.findall(r"[\wÄÖÜäöüß'-]+", f"{context['question']} {context['topic']}")}
+    research = {word.casefold() for claim in context["claims"].values() for word in re.findall(r"[\wÄÖÜäöüß'-]+", claim)}
+    units = [unit for unit in re.split(r"[.!?]+|\s[–—-]\s|;", text) if unit.strip()]
+    longest = max(len(unit.split()) for unit in units)
+    unfamiliar = [word for word in words if word.casefold() not in known and not word[:1].isdigit()]
+    long_words = [word for word in unfamiliar if len(word) >= LONG_WORD]
+    rare_words = [word for word in unfamiliar if RARE_WORD <= len(word) < LONG_WORD and word.casefold() not in research]
+    research_terms = [word for word in unfamiliar if UNFAMILIAR_TERM <= len(word) < LONG_WORD and word.casefold() in research]
+    abstract = [word for word in unfamiliar if _ABSTRACT_NOUN.match(word)]
+    long_numbers = [raw for raw in re.findall(r"\d[\d.,\u202f]*\d|\d", text) if len(re.sub(r"\D", "", raw).rstrip("0")) > 3]
+    clauses = text.count(",") + text.count("(") + len(_CONNECTOR.findall(text))
+    score, codes = 1.0, []
+    if longest > SPOKEN_UNIT_WORDS:
+        score -= min(0.35, 0.05 * (longest - SPOKEN_UNIT_WORDS))
+        codes.append("long_sentence")
+    if len(words) > 18:
+        score -= min(0.2, 0.03 * (len(words) - 18))
+    if long_words or rare_words:
+        score -= 0.15 * len(long_words) + 0.05 * len(rare_words)
+        codes.append("long_words")
+    if research_terms:
+        score -= 0.1 * len(research_terms)
+        codes.append("unfamiliar_term")
+    if len(abstract) >= 2:
+        score -= 0.15 * (len(abstract) - 1)
+        codes.append("abstract_nouns")
+    if _BUREAUCRATIC.search(text):
+        score -= 0.3
+        codes.append("bureaucratic_wording")
+    if long_numbers:
+        score -= 0.1 * len(long_numbers)
+        codes.append("long_number")
+    if clauses > 2:
+        score -= 0.1 * (clauses - 2)
+        codes.append("nested_clauses")
+    return round(max(0.0, min(1.0, score)), 3), codes
+
+
+def _rounded_from(text: str, claim: str) -> bool:
+    """A hedged rounding in ``text`` stands for a figure of ``claim``."""
+    from .hooks import _NUMBER, hedge_kind
+
+    for match in _NUMBER.finditer(text):
+        value, hedge = parse_number(match.group(0)), hedge_kind(text[: match.start()])
+        if value is not None and hedge and rounded_number_supported(value, hedge, claim):
+            return True
+    return False
 
 
 def _plain_explanation(text: str, context: dict[str, Any]) -> bool:
@@ -736,6 +847,51 @@ def rank_verbal(context: dict[str, Any], candidates: list[dict[str, Any]]) -> li
     return sorted(ranked, key=lambda item: (not item["eligible"], -item["score"]))
 
 
+# Never relaxed in any tier: truth, safety and reveal rules.
+_NEVER_RELAXED = {
+    "non_document_strategy", "cheap_clickbait", "unnecessary_provocation", "meta_language",
+    "unsupported_statistic", "unsupported_trend", "fake_controversy",
+}
+# Only these say "the strategy fits imperfectly" (not "the sentence is untrue").
+_FIT_ONLY = {"strategy_not_supported_by_research", "strategy_not_in_wording", "strategy_evidence_not_used"}
+# When evidence is thin, the safest documented strategies claim the least.
+_SAFEST = ("evidence_insight", "curiosity_gap")
+
+
+def closest_strategy(text: str, context: dict[str, Any]) -> str:
+    """Rank ALL documented strategies by approximate fit for a truthful sentence.
+
+    The wording must carry the strategy's rhetoric; research support counts
+    next; with thin evidence the safest strategies win ties.  Always returns
+    one of ``CANONICAL_STRATEGIES``.
+    """
+    def fit(name: str) -> tuple[float, int]:
+        score = (2.0 if strategy_matches(name, text) else 0.0) + (1.0 if context["signals"][name]["viable"] else 0.0)
+        score += 0.5 if name in _SAFEST else 0.0
+        return score, -CANONICAL_STRATEGIES.index(name)
+
+    return max(CANONICAL_STRATEGIES, key=fit)
+
+
+def _relaxable(item: dict[str, Any], allowed: set[str]) -> bool:
+    hard = set(item["hard_fail"])
+    return bool(hard) and not (hard & _NEVER_RELAXED) and not any(code.endswith(REVEAL_CODES) for code in hard) and hard <= allowed
+
+
+def _topic_curiosity(context: dict[str, Any]) -> dict[str, Any] | None:
+    """Last resort: an honest open question about the topic (claims nothing)."""
+    topic = _clean(context["topic"] or context["question"]).rstrip(".!?:")
+    # "Tell a story about X" / "Erzähle eine Geschichte über X" -> X.
+    topic = re.sub(
+        r"(?i)^(?:please\s+|bitte\s+)?(?:erzähle?|erzaehle?|schreibe?|write|tell|explain|erkläre?|show|zeige?)\b.*?\b(?:über|ueber|about|von|on)\s+",
+        "", topic,
+    ).strip() or topic
+    if not topic:
+        return None
+    text = f"{topic} – was steckt dahinter?" if context["language"] == "de" else f"{topic} – what is behind it?"
+    return {"strategy": "curiosity_gap", "text": text[:1].upper() + text[1:], "supported_by_fact_ids": [], "reason_codes": ["topic_curiosity_fallback"], "origin": "emergency"}
+
+
 def select_verbal(
     context: dict[str, Any],
     *,
@@ -743,26 +899,55 @@ def select_verbal(
     exclude: set[str] | None = None,
     planner_hook: dict[str, Any] | None = None,
     max_words: int | None = None,
+    allow_fallback: bool = True,
 ) -> dict[str, Any] | None:
-    """The best document-based verbal hook without a provider.
+    """The best documented verbal hook — always one, never a non-document strategy.
 
-    Researched candidates always come first; the user's question survives
-    only as the emergency fallback when no researched candidate is usable.
+    1. Strong fit: candidates that pass every rule.
+    2. Approximate fit: a truthful candidate whose only problem is an
+       imperfect strategy fit gets the closest documented strategy.
+    3. Guaranteed truthful fallback: the first body sentence (said once), the
+       user's real question, or an open question about the topic.
+    Truth, clickbait and reveal rules are never relaxed.  ``None`` only when
+    ``max_words`` leaves no candidate, or there is no text at all.
     """
     exclude = {" ".join(text.casefold().split()) for text in exclude or set()}
 
     def allowed(item: dict[str, Any]) -> bool:
         text = str(item.get("text") or "")
-        return " ".join(text.casefold().split()) not in exclude and (max_words is None or len(text.split()) <= max_words)
+        return bool(text.strip()) and " ".join(text.casefold().split()) not in exclude and (max_words is None or len(text.split()) <= max_words)
 
     pool = [item for item in [*(extra or []), *deterministic_candidates(context, planner_hook=planner_hook)] if allowed(item)]
-    ranked = [item for item in rank_verbal(context, pool) if item["eligible"]]
-    if ranked:
-        return ranked[0]
-    emergency = emergency_candidate(context)
-    if emergency and allowed(emergency):
-        fallback = rank_verbal(context, [emergency])[0]
-        return fallback if fallback["eligible"] else None
+    ranked = rank_verbal(context, pool)
+    strong = [item for item in ranked if item["eligible"]]
+    if strong:
+        return strong[0]
+    approximate = []
+    for item in ranked:
+        if _relaxable(item, _FIT_ONLY):
+            closest = closest_strategy(item["text"], context)
+            retry = rank_verbal(context, [{**item, "strategy": closest, "reason_codes": [*(item.get("reason_codes") or []), "approximate_strategy_fit"]}])[0]
+            if retry["eligible"]:
+                approximate.append(retry)
+    if approximate:
+        return max(approximate, key=lambda item: item["score"])
+    if not allow_fallback:
+        # An explicit request for a *better* opening never gets the last resort.
+        return None
+    fallbacks: list[dict[str, Any]] = []
+    first = context["body_sentences"][0] if context.get("body_sentences") else ""
+    if first:
+        fallbacks.append({"strategy": closest_strategy(first, context), "text": first, "supported_by_fact_ids": [], "reason_codes": ["first_body_fallback"], "origin": "fallback"})
+    fallbacks.extend(item for item in (emergency_candidate(context), _topic_curiosity(context)) if item)
+    for item in fallbacks:
+        if not allowed(item):
+            continue
+        result = rank_verbal(context, [item])[0]
+        # The fallback is true by construction; only the fit may be imperfect.
+        if result["eligible"] or _relaxable(result, _FIT_ONLY | {"question_echo", "body_duplication"}):
+            result["eligible"] = True
+            result["score"] = result["score"] or round(verbal_score(result["dimensions"]), 1)
+            return result
     return None
 
 

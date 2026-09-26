@@ -227,6 +227,7 @@ class AITripleHookJudgement(BaseModel):
     """
 
     candidate_id: str = Field(min_length=1, max_length=8)
+    spoken_simplicity: int = Field(ge=0, le=10)
     useful_information: int = Field(ge=0, le=10)
     topic_relevance: int = Field(ge=0, le=10)
     attention_value: int = Field(ge=0, le=10)
@@ -333,7 +334,10 @@ HOOK_GENERATION_INSTRUCTIONS = (
     "interesting concrete fact -> evidence_insight; a real knowledge gap -> curiosity_gap; a researched trend -> "
     "social_proof_or_trend; a researched consequence -> high_stakes_consequence; a viewer self-check -> ego_challenge. "
     "Never pick a strategy the research does not support; prefer the material's own strength over loudness and never "
-    "force a provocative strategy. STEP 2 triple_hook_candidates: four COMPLETE openings (three to five allowed), "
+    "force a provocative strategy. There is ALWAYS a hook: if no strategy fits strongly, rank all nine documented "
+    "strategies by approximate fit and use the closest defensible one — with thin evidence usually evidence_insight or "
+    "curiosity_gap — never a strategy name outside the list and never invented facts, numbers, trends, misconceptions, "
+    "danger, popularity or consensus. STEP 2 triple_hook_candidates: four COMPLETE openings (three to five allowed), "
     "preferably each from a different planned strategy, each one coordinated unit of three channels: verbal_hook "
     "(what the viewer hears first), visual (what the viewer sees immediately) and on_screen_hook (a very short "
     "overlay). strategy must be the planned documented strategy the wording really uses; supported_by_fact_ids "
@@ -346,8 +350,13 @@ HOOK_GENERATION_INSTRUCTIONS = (
     "detached from its subject, e.g. two sourced numbers as a self-test without saying which belongs to whom. For a "
     "quiz never reveal the answer; for a ranking never the top item; for a comparison never the winner. When "
     "withhold_answer is false, do not invent mystery, and the hook must still not simply state the primary answer. "
+    "A protected fact may inspire a hook only without naming its subject (e.g. 'one of the two countries ...'). "
     "Every promise must be paid off by the body: promised_payoff names the arc fact that answers it and "
-    "payoff_fact_id its id. Verbal hook rules from the document: useful specific information first, exact relevance "
+    "payoff_fact_id its id. HARD RULE: an average 14-year-old must understand the spoken hook on first listen — "
+    "common everyday words, short spoken units, concrete wording, one idea at a time, natural speech; replace any "
+    "specialist, academic or bureaucratic term and any abstract noun chain with ordinary words; say long numbers as "
+    "a true rounded figure ('rund 270.000', 'about 270,000'); a slightly simpler hook beats a more sophisticated one. "
+    "Verbal hook rules from the document: useful specific information first, exact relevance "
     "to the question, immediate attention, factual defensibility (every number, trend or prevalence claim must be in "
     "the supplied facts with the same value and context), natural spoken language a 10-14 year old understands on "
     "first listen, brevity, and a clean transition: it leads into first_body_sentence without repeating it. Never "
@@ -372,7 +381,8 @@ HOOK_GENERATION_INSTRUCTIONS = (
 TRIPLE_HOOK_JUDGE_INSTRUCTIONS = (
     "You are ClipForge's opening judge. Score each COMPLETE opening candidate (verbal hook, visual, on-screen text "
     "together) from 0 to 10 on every rubric dimension. Judge the triple, not the best sentence. The verbal "
-    "dimensions are the documented hook rubric in priority order: useful_information, topic_relevance, "
+    "dimensions are the documented hook rubric in priority order: spoken_simplicity (would an average 14-year-old "
+    "understand it on first listen? a harder hook loses to a slightly simpler equivalent), useful_information, topic_relevance, "
     "attention_value, factual_defensibility, natural_language, brevity, body_transition, curiosity, insight, "
     "non_repetition; strategy_fit rates whether the documented strategy is supported by the research and really used "
     "by the wording — the strategy's name earns nothing by itself. Hard rules: a "

@@ -329,7 +329,11 @@ def test_review_can_apply_one_safe_language_fix_and_is_bounded():
     assert provider.calls == 2
     assert state["ai_review"]["rounds"] == 2
     assert state["ai_review"]["automatic_corrections"]
-    assert "Deutsch" in state["script"]["text"]
+    # The review corrects the language of the body; the authoritative (German)
+    # hook stays the opening instead of the review's rewrite.
+    assert "definitely in English" not in state["script"]["text"]
+    assert state["script"]["blocks"][0]["text"] == state["script"]["selected_hook"]
+    assert detect_text_language(state["script"]["text"]) == "de"
 
 
 @pytest.mark.parametrize(

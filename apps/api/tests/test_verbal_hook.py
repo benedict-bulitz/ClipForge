@@ -154,7 +154,9 @@ def test_islands_winner_protected_question_loses_and_statistic_hook_can_win():
     assert {"protected_answer_safe", "strong_sourced_number"} <= set(winner["positive_codes"])
     # Without a provider the same kind of hook comes from the documented strategies.
     chosen = select_verbal(context)
-    assert chosen["strategy"] == "verified_statistic" and "267.570" in chosen["text"] and "17.000" in chosen["text"]
+    # The long figure is spoken as a true rounding a 14-year-old can follow.
+    assert chosen["strategy"] == "verified_statistic" and "270.000" in chosen["text"] and "17.000" in chosen["text"]
+    assert "267.570" not in chosen["text"] and "easy_to_follow" in chosen["positive_codes"]
     assert triple_hook.leaks(chosen["text"], context) is None
 
 
@@ -271,8 +273,11 @@ def test_question_is_only_an_emergency_fallback():
     no_research = story("Warum ist der Himmel blau?", [])
     chosen = select_verbal(context_for(no_research))
     assert chosen["strategy"] == "curiosity_gap" and "question_fallback" in chosen["reason_codes"]
-    instruction = {**no_research, "intent": {**no_research["intent"], "question": "Erzähle eine Geschichte über den Mond", "content_type": "fictional_story"}}
-    assert select_verbal(context_for(instruction)) is None
+    # A story instruction never becomes the spoken hook, but a hook still exists.
+    instruction = {**no_research, "intent": {**no_research["intent"], "question": "Erzähle eine Geschichte über den Mond", "topic": "Erzähle eine Geschichte über den Mond", "content_type": "fictional_story"}}
+    chosen = select_verbal(context_for(instruction))
+    assert chosen is not None and chosen["strategy"] in CANONICAL_STRATEGIES
+    assert not chosen["text"].casefold().startswith("erzähle") and "mond" in chosen["text"].casefold()
 
 
 # 14, 15, 16, 17 — one hook from narration to TTS and captions ------------------------
@@ -443,3 +448,130 @@ def test_stronger_hook_request_reselects_a_documented_alternative(monkeypatch):
     assert edited["script"]["blocks"][0]["text"] == plan["verbal_hook"] == edited["script"]["selected_hook"]
     assert plan["selected_strategy"] in CANONICAL_STRATEGIES
     assert "half the story" not in edited["script"]["text"] and "halbe Wahrheit" not in edited["script"]["text"]
+
+
+# --- 14-year-old comprehension, closest documented strategy, always a hook ------
+
+ISLANDS_EN_Q = "Which country has more islands – Sweden or Indonesia?"
+ISLANDS_EN = [
+    fact(1, "Indonesia has about 17,000 islands."),
+    fact(2, "Sweden has around 267,570 islands – more than any other country in the world.", 0.95),
+    fact(3, "During the Ice Age, glaciers carved Sweden's coast into countless small islands."),
+    fact(4, "Indonesia is still the biggest island nation in the world.", 0.7),
+]
+
+
+def test_clear_wording_beats_a_harder_equivalent_for_the_same_idea():
+    context = context_for(islands())
+    hard = "Der offensichtlichere Inselstaat ist hier nicht der mit den meisten Inseln."
+    clear = "Eines der beiden Länder besteht komplett aus Inseln – und hat trotzdem nicht die meisten."
+    ranked = rank_verbal(context, [
+        {"strategy": "counterintuitive_insight", "text": hard, "origin": "ai"},
+        {"strategy": "counterintuitive_insight", "text": clear, "origin": "ai"},
+    ])
+    by_text = {item["text"]: item for item in ranked}
+    assert by_text[hard]["eligible"] and by_text[clear]["eligible"]  # both truthful and reveal-safe
+    assert ranked[0]["text"] == clear
+    assert by_text[clear]["dimensions"]["spoken_simplicity"] > by_text[hard]["dimensions"]["spoken_simplicity"]
+    assert {"long_words", "unfamiliar_term"} <= set(by_text[hard]["reason_codes"])
+    assert "protected_answer_safe" in by_text[clear]["positive_codes"]
+
+
+def test_english_clear_wording_beats_a_harder_equivalent():
+    fixture = story(ISLANDS_EN_Q, [dict(item) for item in ISLANDS_EN], language="en")
+    context = context_for(fixture)
+    hard = "The more conspicuous archipelagic nation is nevertheless not the one with the most islands."
+    clear = "One of the two countries is an island nation – and still doesn't have the most."
+    ranked = rank_verbal(context, [
+        {"strategy": "counterintuitive_insight", "text": hard, "origin": "ai"},
+        {"strategy": "counterintuitive_insight", "text": clear, "origin": "ai"},
+    ])
+    assert all(item["eligible"] for item in ranked) and ranked[0]["text"] == clear
+    chosen = select_verbal(context)
+    assert chosen["strategy"] in CANONICAL_STRATEGIES and triple_hook.leaks(chosen["text"], context) is None
+
+
+@pytest.mark.parametrize(
+    ("text", "code"),
+    [
+        ("Hinsichtlich der Inselanzahl ergibt sich eine Überraschung.", "bureaucratic_wording"),
+        ("Rund 267.570 Inseln – so viele?", "long_number"),
+        ("Das Land, das die Forscher, die dort waren, zählten, dass es viele sind, überrascht.", "nested_clauses"),
+        ("Die Fragmentierung der Küstenformation erklärt die Inselentstehung.", "abstract_nouns"),
+    ],
+)
+def test_spoken_simplicity_flags_what_is_hard_to_follow_by_ear(text, code):
+    from clipforge.verbal_hook import spoken_simplicity
+
+    score, codes = spoken_simplicity(text, context_for(islands()))
+    assert code in codes and score < 1.0
+    assert spoken_simplicity("Ein Land hat viel mehr Inseln, als du denkst.", context_for(islands()))[0] == 1.0
+
+
+def test_truthful_hook_with_an_imperfect_label_gets_the_closest_documented_strategy():
+    context = context_for(fingers())
+    # Labelled as a statistic, but it has no number: the wording is still true.
+    chosen = select_verbal(context, extra=[{"strategy": "verified_statistic", "text": "Diese Falten sind kein Wasserschaden.", "origin": "ai"}])
+    assert chosen["strategy"] in CANONICAL_STRATEGIES
+    ranked = rank_verbal(context, [{"strategy": "verified_statistic", "text": "Diese Falten sind kein Wasserschaden.", "origin": "ai"}])
+    assert {"strategy_not_in_wording", "strategy_not_supported_by_research"} & set(ranked[0]["hard_fail"])
+    thin = story("Wie heißt der höchste Berg?", [fact(1, "Der Mount Everest ist der höchste Berg der Erde.")])
+    approximate = select_verbal(context_for(thin), extra=[{"strategy": "common_mistake", "text": "Der Mount Everest ist der höchste Berg der Erde – aber wie hoch?", "origin": "ai"}])
+    assert approximate["strategy"] in CANONICAL_STRATEGIES and approximate["strategy"] != "common_mistake"
+
+
+@pytest.mark.parametrize(
+    ("question", "claims"),
+    [
+        ("Wie heißt der höchste Berg?", ["Der Mount Everest ist der höchste Berg der Erde."]),  # thin research
+        ("Was ist Photosynthese?", ["Pflanzen nutzen Licht."]),  # very thin
+        ("Welche Stadt ist älter – Rom oder Athen?", ["Athen wurde vor Rom besiedelt."]),  # withheld, no numbers
+        ("Why is the sky blue?", []),  # no research at all
+    ],
+)
+def test_thin_or_unusual_research_still_produces_a_documented_hook(question, claims):
+    facts = [fact(index, claim) for index, claim in enumerate(claims, 1)]
+    context = context_for(story(question, facts, language="en" if question.startswith("Why") else "de"))
+    chosen = select_verbal(context)
+    assert chosen is not None and chosen["text"].strip()
+    assert chosen["strategy"] in CANONICAL_STRATEGIES
+    assert triple_hook.leaks(chosen["text"], context) is None
+
+
+def test_fallback_tiers_never_admit_unsupported_claims():
+    context = context_for(fingers())
+    bad = [
+        {"strategy": "verified_statistic", "text": "83 % aller Menschen haben schrumpelige Finger.", "origin": "ai"},
+        {"strategy": "social_proof_or_trend", "text": "Immer mehr Menschen haben schrumpelige Finger.", "origin": "ai"},
+        {"strategy": "common_mistake", "text": "Die meisten Menschen denken falsch über Finger.", "origin": "ai"},
+        {"strategy": "high_stakes_consequence", "text": "Du wurdest belogen: Schrumpelfinger sind gefährlich.", "origin": "ai"},
+    ]
+    chosen = select_verbal(context, extra=bad)
+    assert chosen["text"] not in {item["text"] for item in bad}
+    assert chosen["strategy"] in CANONICAL_STRATEGIES
+
+
+@pytest.mark.parametrize(
+    ("prompt", "options"),
+    [
+        (ISLANDS_Q, {}),
+        (FINGERS_Q, {}),
+        ("Tell a story about an astronaut on the moon", {"language": "en", "research": "off"}),
+        ("Write a fictional story about a lighthouse keeper", {"max_duration": 30}),
+    ],
+)
+def test_normal_generation_never_ends_without_a_documented_hook(monkeypatch, prompt, options):
+    failing = lambda *_a, **_k: AIHookGenerationResult([], None, "missing_key", "no key")
+    facts = ISLANDS if prompt == ISLANDS_Q else FINGER_FACTS if prompt == FINGERS_Q else []
+    monkeypatch.setattr(
+        "clipforge.pipeline.research_topic",
+        lambda *_a, **_k: ResearchResult([{key: value for key, value in item.items() if key != "id"} for item in facts], [{"label": "s", "url": "https://s.test"}], "verified_sources", "fixture"),
+    )
+    monkeypatch.setattr("clipforge.pipeline.generate_hook_candidates_with_openai", failing)
+    state = build_initial_state(prompt, AdvancedOptions(**options), LOCAL)
+    blocks = state["script"]["blocks"]
+    plan = state["script"]["triple_hook"]
+    assert blocks[0]["role"] == "hook" and blocks[0]["text"] == plan["verbal_hook"] == state["script"]["selected_hook"]
+    assert plan["selected_strategy"] in CANONICAL_STRATEGIES
+    assert state["script"]["selected_hook_strategy"] in CANONICAL_STRATEGIES
+    assert not blocks[0]["text"].casefold().startswith(("tell a story", "write a fictional"))

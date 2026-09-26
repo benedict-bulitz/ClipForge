@@ -646,7 +646,7 @@ def enforce_selected_hook(state: dict[str, Any], *, reselect: bool = False, shor
     if not chosen:
         excluded = {option for option in (current, authoritative) if option}
         limit = len((current or authoritative).split()) - 1 if shorter and (current or authoritative) else None
-        replacement = reselect_verbal(state, exclude=excluded, max_words=limit)
+        replacement = reselect_verbal(state, exclude=excluded, max_words=limit, allow_fallback=not reselect)
         if replacement is not None:
             chosen, strategy = replacement["text"], replacement["strategy"]
             if plan is not None:
@@ -654,8 +654,9 @@ def enforce_selected_hook(state: dict[str, Any], *, reselect: bool = False, shor
                 plan["supported_by_fact_ids"] = list(replacement.get("supported_by_fact_ids") or [])
                 plan["reason_codes"] = list(dict.fromkeys([*(replacement.get("positive_codes") or []), *(replacement.get("reason_codes") or []), "reselected_after_content_change"]))[:10]
         else:
+            # Never leaves the video without a hook.
             action = "no_alternative"
-            chosen = "" if reselect else (current or authoritative)
+            chosen = current or authoritative
     if chosen:
         script["blocks"] = _apply_selected_hook(blocks, chosen)
         for index, block in enumerate(script["blocks"], 1):
@@ -744,14 +745,14 @@ def _fit_blocks(
         return sum(len(_words(item["text"])) for item in items)
 
     while len(fitted) > 1 and total_words(fitted) > max_words:
-        # Trim trailing optional body first.  The Story Arc outranks the hook:
-        # the primary answer and final payoff are never dropped to keep a
-        # hook; the hook goes (and is reselected shorter by the caller).
+        # Trim trailing optional body first.  The hook is never dropped (a
+        # video always opens with one), and neither are the primary answer
+        # and final payoff: when only they remain, the caller reselects a
+        # shorter documented hook instead.
         droppable = [index for index in range(len(fitted)) if not _is_hook_block(fitted[index])]
-        hook_index = next((index for index in range(len(fitted)) if _is_hook_block(fitted[index])), None)
-        if hook_index is not None and droppable and all(drop_priority(index)[0] == 3 for index in droppable):
-            fitted.pop(hook_index)
-            continue
+        has_hook = any(_is_hook_block(block) for block in fitted)
+        if has_hook and droppable and all(drop_priority(index)[0] == 3 for index in droppable):
+            break
         drop_index = min(droppable, key=drop_priority, default=None)
         if drop_index is None:
             break
@@ -936,20 +937,21 @@ def _normalise_blocks(
 
 
 def _refit_hook(state: dict[str, Any], blocks: list[dict[str, Any]], max_words: int) -> list[dict[str, Any]]:
-    """The duration no longer fits the selected hook: a shorter documented one, or none."""
+    """The duration no longer fits the hook: a shorter documented hook, else keep it.
+
+    The opening is never removed; the Story Arc's answer and payoff are
+    never removed for it either.
+    """
     from .triple_hook import reselect_verbal, state_plan
 
-    budget = max_words - sum(len(_words(block["text"])) for block in blocks)
-    replacement = reselect_verbal(state, max_words=budget) if budget >= 4 else None
+    hook = next(block for block in blocks if _is_hook_block(block))
+    body_words = sum(len(_words(block["text"])) for block in blocks if block is not hook)
+    budget = max_words - body_words
+    replacement = reselect_verbal(state, exclude={hook["text"]}, max_words=budget) if budget >= 4 else None
+    if replacement is None or len(replacement["text"].split()) >= len(hook["text"].split()):
+        return blocks
     plan = state_plan(state)
     script = state["script"]
-    if replacement is None:
-        script["selected_hook"] = None
-        script["selected_hook_strategy"] = None
-        if plan is not None:
-            plan["verbal_hook"] = ""
-            plan["reason_codes"] = list(dict.fromkeys([*(plan.get("reason_codes") or []), "hook_dropped_for_duration"]))
-        return blocks
     fitted = _apply_selected_hook(blocks, replacement["text"])
     for index, block in enumerate(fitted, 1):
         block["id"] = f"voice_block_{index:02d}"
@@ -969,10 +971,10 @@ def _refresh_script_derivatives(
     voice_speed = max(0.7, min(1.4, float(state.get("voice", {}).get("speed") or 1.0)))
     wpm = max(1, round(SPEAKING_RATE_WPM * voice_speed))
     story_arc = state.get("story_arc") if isinstance(state.get("story_arc"), dict) else None
-    had_hook = any(_is_hook_block(block) for block in state["script"]["blocks"])
     blocks = _normalise_blocks(state["script"]["blocks"], max_duration, wpm, story_arc)
-    if had_hook and not any(_is_hook_block(block) for block in blocks):
-        blocks = _refit_hook(state, blocks, max(12, int(max_duration * wpm / 60)))
+    budget = max(12, int(max_duration * wpm / 60))
+    if any(_is_hook_block(block) for block in blocks) and sum(len(_words(block["text"])) for block in blocks) > budget:
+        blocks = _refit_hook(state, blocks, budget)
     state["script"]["blocks"] = blocks
     script_text = " ".join(block["text"] for block in blocks)
     word_count = len(_words(script_text))

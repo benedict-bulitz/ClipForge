@@ -455,11 +455,14 @@ def plan_scene_strategy(
             overlay_spec = label
             hook["on_screen_hook"] = label["text"]
         if planned in {SIMPLE_GRAPHIC, TEXT_NUMBER_VISUAL, COMPARISON_VISUAL}:
-            # The opening stays a real visual (with the hook text over it).
+            # The opening stays a real visual (with the hook text over it).  A
+            # number or A-vs-B graphic would only repeat what is spoken; a
+            # process graphic remains the last-resort full-screen fallback.
+            process = planned == SIMPLE_GRAPHIC and graphic is not None
             planned = STOCK_PHOTO if str(scene.get("preferred_media") or "video") == "photo" else STOCK_VIDEO
             reason = "triple_hook_opening"
-            graphic = None
-            chain = ["real_media", GENERATED_IMAGE, REUSE_PREVIOUS_VISUAL]
+            graphic = graphic if process else None
+            chain = ["real_media", GENERATED_IMAGE, REUSE_PREVIOUS_VISUAL, *([SIMPLE_GRAPHIC] if process else [])]
     strategy = {
         "version": VERSION,
         "story_role": story["story_role"],

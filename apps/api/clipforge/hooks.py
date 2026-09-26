@@ -46,7 +46,7 @@ def canonical_strategy(value: object) -> str | None:
 
 
 _TREND_WORDS = re.compile(r"(?i)\b(?:currently|lately|increasingly|suddenly|trending|viral|adopt(?:ed|ion)|switching|more and more|aktuell|zunehmend|immer mehr|im trend)\b")
-_PREVALENCE = re.compile(r"(?i)\b(?:most people|most creators|almost everyone|everyone|the most common mistake|everyone makes|experts usually|top performers|die meisten|fast alle|jeder|der häufigste fehler|die meisten menschen|experten machen meistens|erfolgreiche menschen)\b")
+_PREVALENCE = re.compile(r"(?i)\b(?:most people|most creators|almost everyone|everyone|the most common mistake|everyone makes|experts usually|top performers|die meisten (?:menschen|leute|von uns|deutschen|eltern|kinder|nutzer|kunden|leser|zuschauer|machen|denken|glauben|wissen|halten|sagen|tun|kennen)|fast alle|jeder|der häufigste fehler|experten machen meistens|erfolgreiche menschen)\b")
 _NUMBER = re.compile(r"(?<!\w)(?:\d+(?:[.,]\d+)?\s*%?|\d+(?:[.,]\d+)?\s*(?:million|billion|milliarde[n]?|millionen?))\b", re.IGNORECASE)
 _CLICHE = re.compile(r"(?i)(?:they don't want you to know|you(?:'|’)ve been lied to|nobody talks about this|this will change everything|experts hate this|everything you know is wrong|das wollen sie dir nicht sagen|du wurdest belogen)")
 _ATTACK = re.compile(r"(?i)\b(?:lazy|stupid|idiot|loser|du bist faul|dumm|versager)\b")
@@ -88,7 +88,13 @@ def _number_supported(text: str, facts: list[dict[str, Any]], intent: dict[str, 
     topic = set() if research_scoped else _words(str((intent or {}).get("topic") or "") + " " + _question(intent or {}))
     for match in _NUMBER.finditer(text):
         number = match.group(0).lower().replace(",", ".")
-        matches = [f for f in facts if f.get("sources") and f.get("verification") == "source_attributed" and number in str(f.get("claim") or "").lower().replace(",", ".")]
+        sourced = [f for f in facts if f.get("sources") and f.get("verification") == "source_attributed"]
+        matches = [f for f in sourced if number in str(f.get("claim") or "").lower().replace(",", ".")]
+        if not matches:
+            # A hedged rounding ("rund 270.000") of a sourced figure is still
+            # that figure, said simply; the hedge must make it true.
+            value, hedge = parse_number(match.group(0)), hedge_kind(text[: match.start()])
+            matches = [f for f in sourced if value is not None and hedge and rounded_number_supported(value, hedge, str(f.get("claim") or ""))]
         if not matches:
             return False
         candidate_words = _words(text)
@@ -97,6 +103,47 @@ def _number_supported(text: str, facts: list[dict[str, Any]], intent: dict[str, 
         if research_scoped and not any(_words(str(f.get("claim") or "")) & candidate_words for f in matches):
             return False
     return True
+
+
+_HEDGES = (
+    ("above", r"mehr als|more than|über|over"),
+    ("below", r"fast|knapp|nearly|almost|just under|knapp unter"),
+    ("near", r"rund|etwa|ungefähr|circa|ca\.|about|around|roughly|approximately"),
+)
+
+
+def parse_number(raw: str) -> float | None:
+    """A spoken figure as a value ("267.570" / "267,570" / "6,4" / "12 %")."""
+    value = re.sub(r"\s*(?:%|prozent|percent)$", "", str(raw or "").strip(), flags=re.IGNORECASE).strip()
+    if re.fullmatch(r"\d{1,3}(?:[.,\u202f ]\d{3})+", value):
+        return float(re.sub(r"\D", "", value))
+    try:
+        return float(value.replace(",", "."))
+    except ValueError:
+        return None
+
+
+def hedge_kind(before: str) -> str | None:
+    """What the hedge right before a number claims: above, below or near."""
+    for kind, pattern in _HEDGES:
+        if re.search(rf"(?i)\b(?:{pattern})\s*$", before):
+            return kind
+    return None
+
+
+def rounded_number_supported(value: float, hedge: str, claim: str) -> bool:
+    """``hedge`` + ``value`` is true of a figure in ``claim`` (only a close rounding)."""
+    for match in _NUMBER.finditer(claim):
+        figure = parse_number(match.group(0))
+        if not figure:
+            continue
+        if hedge == "above" and figure > value >= figure * 0.85:
+            return True
+        if hedge == "below" and value > figure >= value * 0.9:
+            return True
+        if hedge == "near" and abs(figure - value) <= figure * 0.05:
+            return True
+    return False
 
 
 def _topic_evidence(text: str, intent: dict[str, Any]) -> bool:
@@ -189,7 +236,7 @@ def strategy_matches(strategy: str, text: str) -> bool:
     canonical = canonical_strategy(strategy)
     if canonical == "counterintuitive_insight":
         return bool(re.search(
-            r"\b(?:not|no|isn't|aren't|doesn't|but|although|despite|opposite|rather than|instead of|actually|"
+            r"(?:\w+n[’']t\b)|\b(?:not|no|never|but|although|despite|opposite|rather than|instead of|actually|still|"
             r"nicht|kein\w*|sondern|obwohl|statt|trotzdem|doch|eigentlich|gar nicht)\b", value
         ))
     if canonical == "direct_reframe":

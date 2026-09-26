@@ -259,9 +259,10 @@ def test_ai_review_correction_cleans_spoken_text():
             return ReviewDecision(status="passed")
 
     run_ai_review(project, settings(), provider=Provider())
+    # A hook always exists; the review cleans the body but keeps the hook.
     selected_hook = project["script"]["selected_hook"]
-    assert selected_hook is None
-    assert project["script"]["text"] == "The answer is simple."
+    assert selected_hook and project["script"]["blocks"][0]["text"] == selected_hook
+    assert project["script"]["text"] == f"{selected_hook} The answer is simple."
     assert contamination_issues(project["script"]["text"]) == []
 
 

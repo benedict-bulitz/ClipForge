@@ -856,7 +856,9 @@ def verbal_still_valid(state: dict[str, Any], text: str, strategy: object) -> bo
     return not any(code in _INVALIDATING or code.endswith(REVEAL_CODES) for code in hard)
 
 
-def reselect_verbal(state: dict[str, Any], *, exclude: set[str] | None = None, max_words: int | None = None) -> dict[str, Any] | None:
+def reselect_verbal(
+    state: dict[str, Any], *, exclude: set[str] | None = None, max_words: int | None = None, allow_fallback: bool = True,
+) -> dict[str, Any] | None:
     """The next valid document-based verbal hook: earlier eligible candidates first."""
     plan = state_plan(state) or {}
     previous = [
@@ -864,4 +866,4 @@ def reselect_verbal(state: dict[str, Any], *, exclude: set[str] | None = None, m
         for item in (plan.get("selection") or {}).get("candidates") or []
         if isinstance(item, dict) and item.get("eligible") and canonical_strategy(item.get("strategy"))
     ]
-    return select_verbal(state_context(state), extra=previous, exclude=exclude, max_words=max_words)
+    return select_verbal(state_context(state), extra=previous, exclude=exclude, max_words=max_words, allow_fallback=allow_fallback)
