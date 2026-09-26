@@ -111,25 +111,33 @@ def select_format(
     prompt_text = " ".join(
         str(intent.get(key) or "") for key in ("question", "topic", "content_type")
     ).casefold()
+    # The user's request decides the format; research only informs it.  A
+    # rank the evidence happens to mention ("Top 5", "ranking") never turns
+    # a question into a list video.
+    binary = bool(_COMPARISON_MARKER.search(question)) and bool(_COMPARISON.search(question) or re.search(r"(?i)\b(?:vs\.?|versus)\b", question))
     if content_type == "fictional_story" or _STORY.search(question):
-        selected = "story"
-    elif _RANKING.search(question) or _RANKING.search(text):
-        selected = "ranking"
+        selected, reason = "story", "question_is_narrative"
+    elif binary:
+        selected, reason = "comparison", "question_names_two_alternatives"
+    elif _RANKING.search(question):
+        selected, reason = "ranking", "question_asks_for_an_ordering"
     elif _COMPARISON.search(question) or _COMPARISON_MARKER.search(question):
-        selected = "comparison"
+        selected, reason = "comparison", "question_compares"
     elif _QUIZ.search(question):
-        selected = "quiz"
+        selected, reason = "quiz", "question_is_a_challenge"
     elif _CORRECTION.search(prompt_text):
-        selected = "misconception_correction"
+        selected, reason = "misconception_correction", "prompt_corrects_an_assumption"
     elif _BEFORE_AFTER.search(prompt_text):
-        selected = "before_after"
+        selected, reason = "before_after", "prompt_describes_a_change"
     else:
-        selected = "explanation"
+        selected, reason = "explanation", "default"
     details = _details(selected)
     novelty_plan = novelty_plan if isinstance(novelty_plan, dict) else {}
     return {
         "status": "planned",
         "selected_format": selected,
+        "selection_reason": reason,
+        "research_mentions_ranking": bool(_RANKING.search(text)),
         "confidence": _confidence(selected, text),
         "rationale": {
             "comparison": "The question asks viewers to distinguish comparable alternatives.",

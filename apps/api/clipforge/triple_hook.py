@@ -652,6 +652,7 @@ def plan_triple_hook(
         "version": VERSION,
         "generation": {
             "status": generation_status, "error": getattr(generation, "error", None), "candidate_count": len(raw_ai),
+            "attempts": getattr(generation, "attempts", 1), "retry_reason": getattr(generation, "retry_reason", None),
             "rejected_non_document_strategies": rejected_strategies,
         },
         "supported_strategies": {name: {"fact_ids": entry["fact_ids"], "signals": entry["signals"]} for name, entry in context["signals"].items() if entry["viable"]},
@@ -852,7 +853,11 @@ def verbal_still_valid(state: dict[str, Any], text: str, strategy: object) -> bo
     """A hook survives a content change only if it still passes the document's safety rules."""
     if not _clean(text):
         return False
-    hard = assess_verbal(text, canonical_strategy(strategy) or "evidence_insight", state_context(state))["hard_fail"]
+    # The plan's own emergency hook (the user's question) is judged as what it
+    # was selected as, so a later check never swaps it for a worse opening.
+    plan = state_plan(state) or {}
+    emergency = plan.get("verbal_origin") == "emergency" and _clean(text) == _clean(plan.get("verbal_hook"))
+    hard = assess_verbal(text, canonical_strategy(strategy) or "evidence_insight", state_context(state), emergency=emergency)["hard_fail"]
     return not any(code in _INVALIDATING or code.endswith(REVEAL_CODES) for code in hard)
 
 

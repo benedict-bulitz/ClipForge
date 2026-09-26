@@ -480,7 +480,7 @@ def test_clear_wording_beats_a_harder_equivalent_for_the_same_idea():
 def test_english_clear_wording_beats_a_harder_equivalent():
     fixture = story(ISLANDS_EN_Q, [dict(item) for item in ISLANDS_EN], language="en")
     context = context_for(fixture)
-    hard = "The more conspicuous archipelagic nation is nevertheless not the one with the most islands."
+    hard = "The more conspicuous archipelagic nation is not the one with the most islands."
     clear = "One of the two countries is an island nation – and still doesn't have the most."
     ranked = rank_verbal(context, [
         {"strategy": "counterintuitive_insight", "text": hard, "origin": "ai"},

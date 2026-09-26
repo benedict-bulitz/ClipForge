@@ -446,7 +446,7 @@ def test_generation_and_judge_are_single_bounded_structured_calls(monkeypatch):
     assert result.status == "connected" and len(result.triple_candidates) == 4
     request = json.loads(calls[0]["input"])
     assert request["story_arc"]["primary_question"] == FINGERS_Q and request["facts"][0]["id"] == "fact_01"
-    assert calls[0]["max_output_tokens"] <= 2400
+    assert calls[0]["max_output_tokens"] <= 3200 and len(calls) == 1  # one bounded call when the answer is complete
     verdict = judge_triple_hooks_with_openai({"primary_question": FINGERS_Q}, [{"candidate_id": "hook_a"}], settings)
     assert verdict.status == "connected" and verdict.judgements[0]["candidate_id"] == "hook_a"
     assert len(calls) == 2 and calls[1]["max_output_tokens"] <= 1600

@@ -228,9 +228,95 @@ def clean_narration_text(value: object) -> str:
     return text
 
 
+# Research hygiene (any site, any topic): page chrome and attribution that
+# search snippets carry along, and the grammar of a sentence that was cut off.
+_PAGE_CHROME = re.compile(
+    r"(?i)\b(?:beitrag archiviert|dieser beitrag wurde archiviert|this (?:post|thread|topic) (?:is|has been|was) archived|"
+    r"archived post|(?:neue )?kommentare (?:können|hinzufügen|schreiben|sind geschlossen)|kommentare hinzugefügt|"
+    r"up- oder downvotes|new comments cannot be posted|votes cannot be cast|comments? (?:are|is) (?:closed|disabled)|"
+    r"(?:log|sign) in to (?:comment|reply|vote)|zum kommentieren anmelden|alle rechte vorbehalten|all rights reserved|"
+    r"zum inhalt springen|skip to (?:main )?content|weiterlesen|read more|min\.? lesezeit|minutes? read|"
+    r"diese (?:web)?seite verwendet cookies|this (?:web)?site uses cookies|cookies akzeptieren|accept (?:all )?cookies|"
+    r"newsletter abonnieren|subscribe to (?:our|the) newsletter)\b"
+)
+_ATTRIBUTION_TAIL = re.compile(
+    r"\s*[(\[]?\b(?:fotos?|bild(?:er|quelle)?|photos?|images?|credits?|copyright)\s*:\s*[^.!?]{1,60}?[)\]]?\s*(?=[.!?]?$)",
+    re.IGNORECASE,
+)
+# A sentence cannot end on these: an article, a fused preposition, a
+# conjunction or a quantity hedge still waiting for its word ("... dennoch
+# rund.").  German prepositions are left out: they end sentences as verb
+# particles ("lädt ... ein", "führt ... an").
+_DANGLING_END = re.compile(
+    r"(?i)\b(?:dem|des|einem|einer|eines|zum|zur|im|am|beim|vom|und|oder|sowie|sondern|weil|dass|ob|"
+    r"rund|etwa|ca|circa|knapp|the|a|and|or|of|than|approximately|roughly)\s*[.!?]?$"
+)
+_ABBREVIATION_END = re.compile(r"(?i)(?:\b(?:ca|bzw|vgl|inkl|nr|dr|prof|st|mio|mrd|etc|z\.b|u\.a|d\.h|e\.g|i\.e|vs|approx|no)|\b\w)\.$")
+_ELLIPSIS = re.compile(r"\s*(?:…|\.{3,})\s*")
+
+
+def _sentences(text: str) -> list[str]:
+    parts = [part for part in re.split(r"(?<=[.!?])\s+", text) if part.strip()]
+    merged: list[str] = []
+    for part in parts:
+        if merged and _ABBREVIATION_END.search(merged[-1]):
+            merged[-1] = f"{merged[-1]} {part}"
+        else:
+            merged.append(part)
+    return merged
+
+
+def _without_cut_fragments(raw: str) -> str:
+    """Drop the partial sentences on both sides of a snippet cut ("…")."""
+    segments = _ELLIPSIS.split(raw)
+    if len(segments) == 1:
+        return raw
+    kept: list[str] = []
+    for index, segment in enumerate(segments):
+        sentences = _sentences(segment.strip())
+        if index > 0 and sentences:
+            tail = re.search(r":\s+([A-ZÄÖÜ].+)$", sentences[0])
+            # Starts mid-sentence; a complete statement after a colon survives.
+            sentences = ([tail.group(1)] if tail else []) + sentences[1:]
+        if index < len(segments) - 1 and sentences and not re.search(r"[.!?]$", sentences[-1]):
+            sentences = sentences[:-1]  # cut off mid-sentence
+        kept.extend(sentences)
+    return " ".join(kept)
+
+
+def _complete_research_sentences(text: str) -> str:
+    """Keep only complete, content-bearing sentences; never complete a broken one."""
+    sentences = _sentences(text)
+    kept: list[str] = []
+    for index, sentence in enumerate(sentences):
+        following = sentences[index + 1] if index + 1 < len(sentences) else ""
+        if following[:1].islower():
+            # "... wenn man das. in dem ..." - a cut joined by a false full stop:
+            # neither side is a complete sentence.  A complete statement after
+            # a colon in the fragment survives.
+            continue
+        if index and sentence[:1].islower():
+            tail = re.search(r":\s+([A-ZÄÖÜ].+)$", sentence)
+            if not tail:
+                continue
+            sentence = tail.group(1)
+        sentence = _ATTRIBUTION_TAIL.sub("", sentence).strip()
+        if not sentence or _PAGE_CHROME.search(sentence) or _DANGLING_END.search(sentence):
+            continue
+        if not re.search(r"[.!?\"'”’]$", sentence):
+            sentence += "."
+        kept.append(sentence)
+    return " ".join(kept)
+
+
 def clean_research_claim(value: object) -> str:
-    """Reduce a search snippet to useful evidence without spoken attribution scaffolding."""
-    text = clean_narration_text(value)
+    """Reduce a search snippet to useful evidence without spoken attribution scaffolding.
+
+    This is the research boundary: page chrome, image credits and sentences cut
+    off by the snippet are dropped here (never completed), so Story Arc, hooks,
+    format planning and narration only ever see complete researched sentences.
+    """
+    text = clean_narration_text(_without_cut_fragments(str(value or "")))
     text = re.sub(
         r"(?i)^(?:according to|as reported by|source:?|quelle:?|laut)\s+[^,;:]{2,90}[,;:]\s*",
         "",
@@ -259,7 +345,7 @@ def clean_research_claim(value: object) -> str:
     )
     if re.search(r"(?i)\beditor\b|(?:\.{3}|…)", str(value or "")):
         text = re.sub(r"(?i)\beditor\b\.?", "", text)
-    return re.sub(r"\s+", " ", text).strip()
+    return _complete_research_sentences(re.sub(r"\s+", " ", text).strip())
 
 
 def contamination_issues(value: object) -> list[str]:

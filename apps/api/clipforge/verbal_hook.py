@@ -34,6 +34,7 @@ from .hooks import (
     hook_issues,
     parse_number,
     rounded_number_supported,
+    standalone_issue,
     strategy_matches,
 )
 from .media import _mentions, _visual_query_tokens, visual_target_key
@@ -119,12 +120,6 @@ _FACT_TREND = re.compile(
 )
 _NUMBER = re.compile(r"(?<![\w.,])(\d{1,3}(?:[.,  ]\d{3})+(?:[.,]\d+)?|\d+(?:[.,]\d+)?)(\s*(?:%|prozent\b|percent\b))?", re.IGNORECASE)
 _HEDGE = re.compile(r"(?i)\b(etwa|rund|circa|knapp|fast|über|about|around|roughly|nearly|almost|over|approximately)\s*$")
-# A sentence opening with a back-reference ("Aber …", "Deshalb …") answers a
-# previous sentence the viewer never heard - typically one lifted from research.
-_BACK_REFERENCE = re.compile(
-    r"(?i)^\s*(?:aber|und|doch|denn|jedoch|trotzdem|dennoch|deshalb|deswegen|daher|darum|dadurch|dabei|au(?:ß|ss)erdem|zudem|"
-    r"also|but|and|however|therefore|thus|hence|besides|moreover)\b"
-)
 _MALFORMED = re.compile(
     r"(?i)(?:\b(\w+)\s+\1\b|\b(?:und|oder|aber|weil|dass|and|or|but|because|that|the|der|die|das|ein|eine|a|an)\s*[.!?]?\s*$|"
     r"[,;:–—-]\s*[.!?]?\s*$)"
@@ -368,9 +363,18 @@ def comparison_numbers(context: dict[str, Any]) -> dict[str, Any] | None:
             return None
         found.append(match)
     first, second = found
-    if first["value"] == second["value"] or not (first["label"] and second["label"]) or not _mentions([first["label"].casefold()], {second["label"].casefold()}):
+    if first["value"] == second["value"]:
         return None
-    return {"sides": found}
+    # Both numbers must count the same thing: the unit word after one number
+    # that both claims name ("267.570 zählt man hier" in a claim about islands).
+    claims = [_visual_query_tokens(context["claims"].get(item["fact_id"], "")) for item in found]
+    unit = next((
+        item["label"] for item in found
+        if item["label"] and all(_mentions(tokens, {item["label"].casefold()}) for tokens in claims)
+    ), "")
+    if not unit:
+        return None
+    return {"sides": [{**item, "label": unit} for item in found]}
 
 
 def strategy_signals(context: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -612,7 +616,9 @@ def assess_verbal(
     if reason:
         hard.append(f"verbal_{reason}")
     answer_words = _words(context["primary_answer"])
-    states_answer = bool(spoken and answer_words and _overlap(spoken, answer_words) >= 0.75 and len(spoken & answer_words) >= 3)
+    # A question offering both alternatives as open options states nothing.
+    open_options = "?" in verbal and len(context["sides"]) == 2 and all(_mentions(_visual_query_tokens(verbal), side) for side in context["sides"])
+    states_answer = not open_options and bool(spoken and answer_words and _overlap(spoken, answer_words) >= 0.75 and len(spoken & answer_words) >= 3)
     if states_answer:
         (hard if context["withhold"] else codes).append("states_primary_answer")
     final_words = _words(context["final_payoff"])
@@ -642,8 +648,11 @@ def assess_verbal(
     malformed = bool(_MALFORMED.search(verbal)) or (verbal[:1].isalpha() and verbal[:1].islower())
     if malformed:
         codes.append("malformed_grammar")
-    if _BACK_REFERENCE.match(verbal):
-        hard.append("context_dependent_opener")
+    # The first thing heard must stand alone: no clause cut out of a longer
+    # sentence, no back-reference to text the viewer never heard.
+    incomplete = standalone_issue(verbal)
+    if incomplete:
+        hard.append(incomplete)
     # Off the story's axis: a statement importing research content (beyond
     # the question's own words) that neither the story the viewer then hears
     # nor the arc's answer and payoff carry - a promise the video never pays.

@@ -1041,8 +1041,13 @@ def build_initial_state(
     else:
         report_progress(progress, "research", "Researching the topic", phase="skipped")
 
-    for index, fact in enumerate(facts, 1):
+    # The research boundary: a snippet with nothing complete left (page chrome,
+    # a cut-off sentence) is no evidence; the rest keeps its own sources.
+    for fact in facts:
+        fact["raw_claim"] = str(fact.get("claim") or "")
         fact["claim"] = clean_research_claim(fact.get("claim"))
+    facts = [fact for fact in facts if fact["claim"]]
+    for index, fact in enumerate(facts, 1):
         fact["id"] = f"fact_{index:02d}"
         fact["priority"] = fact.get("priority") or (
             "MUST_KNOW" if fact.get("importance", 0) >= 0.7 else "USEFUL"
@@ -1312,6 +1317,9 @@ def build_initial_state(
                 "status": hook_generation.status,
                 "selected_strategy": canonical_strategy(hook_generation.selected_strategy),
                 "error": hook_generation.error,
+                "attempts": getattr(hook_generation, "attempts", 1),
+                "retry_reason": getattr(hook_generation, "retry_reason", None),
+                "first_error": getattr(hook_generation, "first_error", None),
             },
             "hook_candidates": hook_candidates[:5],
             "fact_map": [

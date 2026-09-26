@@ -73,12 +73,17 @@ def _words(text: str) -> set[str]:
     return {word for word in re.findall(r"[a-zäöüß]{3,}", text.casefold()) if word not in _STOP}
 
 
+# A research snippet with its source page is sourced evidence (as for the
+# Script Writer and the verbal hook authority).
+_SOURCED = {"source_attributed", "source_snippet"}
+
+
 def _evidence_facts(facts: list[dict[str, Any]]) -> list[str]:
     return [clean_narration_text(fact.get("claim")) for fact in facts if clean_narration_text(fact.get("claim"))]
 
 
 def _supported_numbers(facts: list[dict[str, Any]]) -> set[str]:
-    return {m.group(0).lower().replace(",", ".") for f in facts if f.get("sources") and f.get("verification") == "source_attributed" for m in _NUMBER.finditer(str(f.get("claim") or ""))}
+    return {m.group(0).lower().replace(",", ".") for f in facts if f.get("sources") and f.get("verification") in _SOURCED for m in _NUMBER.finditer(str(f.get("claim") or ""))}
 
 
 def _number_supported(text: str, facts: list[dict[str, Any]], intent: dict[str, Any] | None, *, research_scoped: bool = False) -> bool:
@@ -88,7 +93,7 @@ def _number_supported(text: str, facts: list[dict[str, Any]], intent: dict[str, 
     topic = set() if research_scoped else _words(str((intent or {}).get("topic") or "") + " " + _question(intent or {}))
     for match in _NUMBER.finditer(text):
         number = match.group(0).lower().replace(",", ".")
-        sourced = [f for f in facts if f.get("sources") and f.get("verification") == "source_attributed"]
+        sourced = [f for f in facts if f.get("sources") and f.get("verification") in _SOURCED]
         matches = [f for f in sourced if number in str(f.get("claim") or "").lower().replace(",", ".")]
         if not matches:
             # A hedged rounding ("rund 270.000") of a sourced figure is still
@@ -151,13 +156,54 @@ def _topic_evidence(text: str, intent: dict[str, Any]) -> bool:
     return bool(topic & _words(text)) or not topic
 
 
+# Structural sentence completeness (grammar only, any topic).  A spoken hook
+# is the first thing heard: it must stand alone.
+_BACK_REFERENCE = re.compile(
+    r"(?i)^\s*(?:aber|und|doch|denn|jedoch|trotzdem|dennoch|deshalb|deswegen|daher|darum|dadurch|dabei|au(?:ß|ss)erdem|zudem|"
+    r"also|but|and|however|therefore|thus|hence|besides|moreover)\b"
+)
+# A pronoun subject whose referent was in the omitted text ("Es ist der ...").
+_OPENING_PRONOUN = re.compile(
+    r"(?i)^\s*(?:(?:er|sie|es(?!\s+gibt\b)|it(?:'s|’s)?|they|he|she)\b(?!\s*[?!])|"
+    r"(?:dies|diese[rs]?|this|these|those|that)\s+(?:ist|sind|war|waren|is|are|was|were|means|bedeutet|zeigt|shows)\b)"
+)
+# Adverbs that answer an earlier sentence, unless the sentence carries the
+# clause they answer ("Obwohl X, ist Y trotzdem Z" stands alone).
+_REFERRING_ADVERB = {
+    re.compile(r"(?i)\b(?:trotzdem|dennoch|nevertheless|nonetheless)\b"): re.compile(r"(?i)\b(?:obwohl|obgleich|wenn auch|although|though|even if|despite|trotz)\b"),
+    re.compile(r"(?i)\b(?:deshalb|deswegen|daher|darum|dadurch|therefore|hence|thus)\b"): re.compile(r"(?i)\b(?:weil|da|denn|because|since|as)\b"),
+}
+
+
+def standalone_issue(text: str) -> str | None:
+    """Why a sentence cannot be the first thing a viewer hears (None when it stands alone)."""
+    value = clean_narration_text(str(text or "")).strip().lstrip("\"'„“»«(")
+    if not value:
+        return "clause_fragment"
+    if value[:1].isalpha() and value[:1].islower():
+        return "clause_fragment"  # cut out of a longer sentence ("ist es der größte ...")
+    if not re.search(r"[.!?…\"'”’)]$", value):
+        return "clause_fragment"
+    if _BACK_REFERENCE.match(value):
+        return "context_dependent_opener"
+    if _OPENING_PRONOUN.match(value):
+        return "unresolved_reference"
+    # Only the first clause can point outside the sentence; a later one
+    # ("... – und hat trotzdem ...") refers to the clause before it.
+    first_clause = re.split(r"[,;:–—]|\s(?:und|and|but|aber|doch)\s", value, maxsplit=1)[0]
+    for adverb, own_clause in _REFERRING_ADVERB.items():
+        if adverb.search(first_clause) and not own_clause.search(value):
+            return "unresolved_reference"
+    return None
+
+
 def _grounded_insight(claim: str, intent: dict[str, Any]) -> str:
     value = clean_narration_text(claim).strip()
     if len(value.split()) <= 24:
         return value.rstrip(".!?") + "."
     parts = [part.strip() for part in re.split(r"(?<=[,;—])\s+|\s+(?=(?:but|because|although|while|sondern|weil|obwohl|während)\s)", value, flags=re.IGNORECASE)]
     for part in parts:
-        if 5 <= len(part.split()) <= 18 and re.search(r"\b(?:is|are|was|were|scatters|causes|can|does|wird|werden|ist|sind|kann|führt|verursacht|gestreut)\b", part, re.IGNORECASE) and not re.search(r"(?:\b(?:is|are|was|were|will|wird|werden|can|kann|and|but|because|although|sondern|weil|obwohl|dass|und|in|als|than)\s*)$", part, re.IGNORECASE):
+        if standalone_issue(part.rstrip(",;—") + ".") is None and 5 <= len(part.split()) <= 18 and re.search(r"\b(?:is|are|was|were|scatters|causes|can|does|wird|werden|ist|sind|kann|führt|verursacht|gestreut)\b", part, re.IGNORECASE) and not re.search(r"(?:\b(?:is|are|was|were|will|wird|werden|can|kann|and|but|because|although|sondern|weil|obwohl|dass|und|in|als|than)\s*)$", part, re.IGNORECASE):
             return part.rstrip(".!?,;:") + "."
     return value.rstrip(".!?") + "."
 

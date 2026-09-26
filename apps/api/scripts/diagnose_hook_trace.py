@@ -1,9 +1,11 @@
 """Read-only verbal-hook trace per revision; run from apps/api with PYTHONPATH=.
 
-Prints, for a project (default: the most recently created one), the Story Arc
-reveal contract, every Triple Hook candidate with its assessment, and the
-opening at each persisted revision: hook block, next block, narration, TTS
-input and captions.  Nothing is written.
+Prints, for a project (default: the most recently created one), the format
+decision, raw vs sanitized research, the Story Arc reveal contract with its
+answer consistency, the hook generation (retry) status, every Triple Hook
+candidate with its assessment, the fallback reason, and the opening at each
+persisted revision: hook block, next block, narration, TTS input and
+captions.  Nothing is written.
 """
 
 import argparse
@@ -13,7 +15,8 @@ from sqlalchemy import select
 
 from clipforge.database import SessionLocal
 from clipforge.models import Project, ProjectRevision
-from clipforge.narration import clean_narration_text
+from clipforge.narration import clean_narration_text, clean_research_claim
+from clipforge.story_arc import comparison_verdicts
 
 
 def _first_sentences(text: object, count: int = 2) -> str:
@@ -38,21 +41,44 @@ def main() -> None:
         print(f"project {project.id}\nprompt  {project.original_prompt}")
         first = revisions[0].state if revisions else {}
         arc = first.get("story_arc") or {}
-        print(f"format  {(first.get('format_plan') or {}).get('selected_format')}")
-        print(f"arc     primary_question={arc.get('primary_question')!r} primary_answer_id={arc.get('primary_answer_id')} "
-              f"final_payoff_id={arc.get('final_payoff_id')} withhold={(arc.get('curiosity_gap') or {}).get('withhold_answer')} "
-              f"protected={(arc.get('hook') or {}).get('protected_ids')}")
-        for fact in first.get("facts") or []:
+        fmt = first.get("format_plan") or {}
+        print(f"format  {fmt.get('selected_format')} reason={fmt.get('selection_reason')} "
+              f"research_mentions_ranking={fmt.get('research_mentions_ranking')}")
+        facts = first.get("facts") or []
+        for fact in facts:
+            raw = fact.get("raw_claim")
             print(f"fact    {fact.get('id')}: {fact.get('claim')}")
+            if raw and raw != fact.get("claim"):
+                print(f"  raw   {raw}")
+            elif raw is None and clean_research_claim(fact.get("claim")) != fact.get("claim"):
+                print(f"  now   {clean_research_claim(fact.get('claim'))!r} (current sanitizer)")
+        primary_id = arc.get("primary_answer_id")
+        primary = next((unit.get("claim") for unit in arc.get("units") or [] if unit.get("id") == primary_id), None)
+        question = str(arc.get("primary_question") or "")
+        _winner, verdicts = comparison_verdicts(facts, question)
+        print(f"arc     primary_question={question!r}")
+        print(f"        primary_answer_id={primary_id} final_payoff_id={arc.get('final_payoff_id')} "
+              f"withhold={(arc.get('curiosity_gap') or {}).get('withhold_answer')} protected={(arc.get('hook') or {}).get('protected_ids')}")
+        print(f"        primary_answer={primary!r}")
+        print(f"        answer_subject={arc.get('answer_subject')} hook_must_not_reveal="
+              f"{(first.get('payoff_plan') or {}).get('hook_must_not_reveal')!r} repairs={arc.get('repairs')}")
+        if verdicts:
+            consistent = primary_id in verdicts
+            print(f"        answer consistency: facts stating the winner={sorted(verdicts)} primary states it={consistent}")
         plan = (first.get("script") or {}).get("triple_hook") or {}
         selection = plan.get("selection") or {}
-        print(f"hook generation {selection.get('generation')} judge {selection.get('judge')}")
+        generation = (first.get("script") or {}).get("hook_generation") or {}
+        print(f"hook generation status={generation.get('status')} attempts={generation.get('attempts', 1)} "
+              f"retry={generation.get('retry_reason')} error={str(generation.get('error') or '')[:160]!r}")
+        print(f"judge   {selection.get('judge')}")
         for item in selection.get("candidates") or []:
             print(f"cand    {item.get('id')} origin={item.get('origin')} {item.get('strategy')} score={item.get('score')} "
                   f"eligible={item.get('eligible')} hard={item.get('hard_fail')} codes={item.get('reason_codes')} "
                   f"facts={item.get('supported_by_fact_ids')} | {item.get('verbal_hook')}")
+        fallback = plan.get("status") == "fallback"
         print(f"selected {plan.get('verbal_hook')!r} strategy={plan.get('selected_strategy')} source={plan.get('source')} "
-              f"verbal_origin={plan.get('verbal_origin')}")
+              f"verbal_origin={plan.get('verbal_origin')}"
+              + (f" fallback_reason={'no_ai_candidates' if not selection.get('candidates') else 'no_complete_triple_passed'}" if fallback else ""))
         print("\nREV | KIND | HOOK BLOCK | NEXT BLOCK | PLAN VERBAL HOOK | NARRATION (2) | TTS (2) | CAPTIONS (2)")
         for revision in revisions:
             state = revision.state or {}

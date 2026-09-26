@@ -226,6 +226,49 @@ def _classify(
     return units, primary
 
 
+_NEGATION = re.compile(r"(?i)\b(?:nicht|kein\w*|not|no|never|nie|niemals|neither|weder)\b")
+
+
+def comparison_verdicts(facts: list[dict[str, Any]], question: str) -> tuple[int | None, dict[str, tuple[int, int, int]]]:
+    """Which alternative of an "A or B" question the research names as the answer.
+
+    A clause states a verdict when it names exactly one alternative before the
+    question's own comparative word ("mehr", "meisten", "more", "most") and is
+    not negated.  Returns the winning side (index into ``comparison_sides``,
+    or None when the research does not decide it) and, per fact, the side it
+    states with the position of its first such clause (sentence, clause).
+    Grammar only: no topic vocabulary.
+    """
+    sides = comparison_sides(question)
+    families = _families(_words(question) | set(_WORD.findall(question.lower())))
+    if len(sides) != 2 or not families:
+        return None, {}
+    comparative = set().union(*(_COMPARATIVE_FAMILIES[name] for name in families))
+    verdicts: dict[str, tuple[int, int, int]] = {}
+    for fact in facts:
+        claim = str(fact.get("claim") or "")
+        sentences = [part for part in re.split(r"(?<=[.!?])\s+", claim) if part.strip()]
+        found = None
+        for sentence_index, sentence in enumerate(sentences):
+            for clause_index, clause in enumerate(re.split(r"\s*(?:[,;:]|\s[–—-]\s)\s*", sentence)):
+                tokens = _WORD.findall(clause.lower())
+                cut = next((index for index, token in enumerate(tokens) if token in comparative), None)
+                if cut is None or _NEGATION.search(clause):
+                    continue
+                before = set(tokens[:cut])
+                named = [index for index, side in enumerate(sides) if _overlap(before, side)]
+                if len(named) == 1:
+                    found = (named[0], sentence_index, clause_index)
+                    break
+            if found:
+                break
+        if found:
+            verdicts[str(fact.get("id"))] = found
+    votes = [sum(1 for verdict in verdicts.values() if verdict[0] == side) for side in (0, 1)]
+    winner = 0 if votes[0] > votes[1] else 1 if votes[1] > votes[0] else None
+    return winner, {fact_id: verdict for fact_id, verdict in verdicts.items() if verdict[0] == winner}
+
+
 def _apply_supplied(
     units: dict[str, dict[str, Any]], supplied: dict[str, Any] | None, repairs: list[str]
 ) -> tuple[str | None, str | None, str]:
@@ -353,6 +396,14 @@ def build_story_arc(
     supplied_primary, supplied_final, supplied_gap = _apply_supplied(units, supplied, repairs)
     if supplied_primary:
         primary = supplied_primary
+    # Semantic consistency: for an "A or B" question the primary answer is a
+    # fact that states the researched winner, the most directly stated one.
+    winner, verdicts = comparison_verdicts(facts, question) if structure != "ranked_progression" else (None, {})
+    if verdicts:
+        best = min(verdicts, key=lambda fact_id: (verdicts[fact_id][1:], list(units).index(fact_id)))
+        if primary not in verdicts or verdicts[primary][1:] > verdicts[best][1:]:
+            primary = best
+            repairs.append("primary_answer_states_the_winner")
     ranked = sorted((unit for unit in units.values() if unit["role"] == "ranked_item"), key=lambda unit: (unit["rank"] is None, unit["rank"] or 0))
     if structure == "ranked_progression":
         if len(ranked) < 2:
@@ -430,7 +481,7 @@ def build_story_arc(
         unit["order"] = position
         unit["requires_prior_context"] = bool(unit["depends_on"])
         # In a withheld arc nothing that presupposes the answer may open the video.
-        if withhold and (fact_id in {primary, final} or fact_id in after_answer or unit["role"] == "secondary_insight"):
+        if withhold and (fact_id in {primary, final} or fact_id in after_answer or fact_id in verdicts or unit["role"] == "secondary_insight"):
             unit["may_appear_in_hook"] = False
         if fact_id in {primary, final} or unit["role"] in {"primary_answer", "ranked_item"}:
             unit["may_be_omitted"] = False
@@ -467,6 +518,8 @@ def build_story_arc(
         "primary_answer_id": primary,
         "final_payoff_id": final,
         "key_surprise_id": key_surprise["id"] if key_surprise else None,
+        # The alternative the research names as the answer ("A or B" questions).
+        "answer_subject": sorted(comparison_sides(question)[winner]) if winner is not None else None,
         "curiosity_gap": {
             "question": question,
             "planner_text": supplied_gap or None,

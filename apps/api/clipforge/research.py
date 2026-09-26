@@ -49,8 +49,13 @@ def research_topic(prompt: str, language: str, settings: Settings) -> ResearchRe
                 for item in results
                 if item.get("url")
             ]
-            claims = [item.get("description", "").strip() for item in results]
-            facts = _fact_records([claim for claim in claims if claim], sources)
+            # Each snippet keeps the page it came from (provenance).
+            pairs = [
+                (item.get("description", "").strip(), {"label": item.get("title") or item.get("url"), "url": item.get("url")})
+                for item in results
+                if item.get("url") and item.get("description", "").strip()
+            ]
+            facts = _fact_records([claim for claim, _source in pairs], [source for _claim, source in pairs], per_claim=True)
             return ResearchResult(facts, sources, "verified_sources", "brave")
 
         host = "de.wikipedia.org" if language == "de" else "en.wikipedia.org"
@@ -97,7 +102,7 @@ def research_topic(prompt: str, language: str, settings: Settings) -> ResearchRe
         return ResearchResult([], [], "unavailable", "wikipedia", str(exc)[:240])
 
 
-def _fact_records(claims: list[str], sources: list[dict]) -> list[dict]:
+def _fact_records(claims: list[str], sources: list[dict], *, per_claim: bool = False) -> list[dict]:
     return [
         {
             "id": f"fact_{index:02d}",
@@ -105,7 +110,7 @@ def _fact_records(claims: list[str], sources: list[dict]) -> list[dict]:
             "confidence": 0.78,
             "importance": max(0.55, 0.95 - index * 0.1),
             "priority": "MUST_KNOW" if index <= 3 else "USEFUL",
-            "sources": sources[:1],
+            "sources": sources[index - 1:index] if per_claim else sources[:1],
             "verification": "source_snippet",
         }
         for index, claim in enumerate(claims[:6], 1)

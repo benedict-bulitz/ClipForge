@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from openai import OpenAI, OpenAIError
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from .config import Settings
 from .hook_library import document_strategy_map, generation_playbook
@@ -207,7 +207,6 @@ class AITripleHookCandidate(BaseModel):
     production_feasibility: Literal["real_media_likely", "generated_image_ok", "hard_to_source", "impossible"] = "real_media_likely"
     supported_by_fact_ids: list[str] = Field(default_factory=list, max_length=4)
     reason_codes: list[str] = Field(default_factory=list, max_length=5)
-    rationale: str = Field(default="", max_length=180)
 
 
 class AIHookGenerationResponse(BaseModel):
@@ -306,6 +305,11 @@ class AIHookGenerationResult:
     triple_hook: dict[str, Any] | None = None
     # Triple Hook V2: complete verbal/visual/on-screen candidates from one call.
     triple_candidates: list[dict[str, Any]] = dataclasses.field(default_factory=list)
+    # Diagnostics: provider calls made (1, or 2 after one bounded retry) and
+    # why the first answer was retried.
+    attempts: int = 1
+    retry_reason: str | None = None
+    first_error: str | None = None
 
 
 @dataclass(frozen=True)
@@ -337,7 +341,7 @@ HOOK_GENERATION_INSTRUCTIONS = (
     "force a provocative strategy. There is ALWAYS a hook: if no strategy fits strongly, rank all nine documented "
     "strategies by approximate fit and use the closest defensible one — with thin evidence usually evidence_insight or "
     "curiosity_gap — never a strategy name outside the list and never invented facts, numbers, trends, misconceptions, "
-    "danger, popularity or consensus. STEP 2 triple_hook_candidates: four COMPLETE openings (three to five allowed), "
+    "danger, popularity or consensus. STEP 2 triple_hook_candidates: three or four COMPLETE openings (never more than five), "
     "preferably each from a different planned strategy, each one coordinated unit of three channels: verbal_hook "
     "(what the viewer hears first), visual (what the viewer sees immediately) and on_screen_hook (a very short "
     "overlay). strategy must be the planned documented strategy the wording really uses; supported_by_fact_ids "
@@ -374,8 +378,8 @@ HOOK_GENERATION_INSTRUCTIONS = (
     "adds ONE extra dimension the voice does not say (stakes, contrast, question, surprising detail, scale, "
     "uncertainty or tension); never a copy of the verbal hook, captions or narration; empty when no such text exists. "
     "The three channels must complement each other. reaction_arc, format_plan and novelty_plan are guidance only. "
-    "Also return the verbal hooks in hook_candidates with the same documented strategy. rationale is one short "
-    "sentence, not reasoning steps. Return structured output only."
+    "Keep every field short. Leave hook_candidates, visual_hook and on_screen_text_hook empty (the triples carry "
+    "them). Return structured output only, no reasoning."
 )
 
 TRIPLE_HOOK_JUDGE_INSTRUCTIONS = (
@@ -442,7 +446,11 @@ def generate_hook_candidates_with_openai(
     story_arc: dict[str, Any] | None = None,
     supported_strategies: dict[str, Any] | None = None,
 ) -> AIHookGenerationResult:
-    """One bounded call: documented strategies first, then complete triple-hook candidates."""
+    """One bounded call: documented strategies first, then complete triple-hook candidates.
+
+    A structured answer cut off mid-JSON (output budget exhausted) gets exactly
+    one bounded retry; every other failure is reported as it is.
+    """
     if not settings.openai_api_key:
         return AIHookGenerationResult([], None, "missing_key", "OPENAI_API_KEY is not configured")
     request = {
@@ -467,19 +475,40 @@ def generate_hook_candidates_with_openai(
         "document_strategies": document_strategy_map(),
         "supported_strategies": supported_strategies or {},
     }
-    try:
-        response = OpenAI(api_key=settings.openai_api_key).responses.parse(
-            model=settings.openai_director_model,
-            instructions=HOOK_GENERATION_INSTRUCTIONS,
-            input=json.dumps(request, ensure_ascii=False),
-            text_format=AIHookGenerationResponse,
-            max_output_tokens=2400,
-            store=False,
-        )
+    client = OpenAI(api_key=settings.openai_api_key)
+    first_error: str | None = None
+    for attempt in (1, 2):
+        payload = request if attempt == 1 else {
+            **request,
+            # The one bounded retry: same documented strategy system, fewer
+            # and shorter candidates, more room for the answer.
+            "retry": "The previous answer was cut off. Return exactly three complete candidates with short fields.",
+        }
+        try:
+            response = client.responses.parse(
+                model=settings.openai_director_model,
+                instructions=HOOK_GENERATION_INSTRUCTIONS,
+                input=json.dumps(payload, ensure_ascii=False),
+                text_format=AIHookGenerationResponse,
+                max_output_tokens=HOOK_GENERATION_MAX_OUTPUT_TOKENS[attempt - 1],
+                store=False,
+                **_reasoning_options(settings.openai_director_model),
+            )
+        except ValidationError as exc:
+            if attempt == 1 and _truncated_structured_output(exc):
+                first_error = str(exc)[:240]
+                continue
+            return _failed_generation(str(exc), attempt, first_error)
+        except (OpenAIError, ValueError, TypeError) as exc:
+            return _failed_generation(str(exc), attempt, first_error)
         parsed = response.output_parsed
+        incomplete = getattr(getattr(response, "incomplete_details", None), "reason", None)
         if not isinstance(parsed, AIHookGenerationResponse):
-            return AIHookGenerationResult([], None, "provider_error", "No parsed hook result")
-        triples = [candidate.model_dump(mode="json") for candidate in parsed.triple_hook_candidates]
+            if attempt == 1 and incomplete:
+                first_error = f"incomplete: {incomplete}"
+                continue
+            return _failed_generation("No parsed hook result", attempt, first_error)
+        triples = [candidate.model_dump(mode="json") for candidate in parsed.triple_hook_candidates[:5]]
         verbal = [candidate.model_dump() for candidate in parsed.hook_candidates] or [
             {"strategy": "evidence_insight", "text": item["verbal_hook"]} for item in triples
         ]
@@ -492,9 +521,32 @@ def generate_hook_candidates_with_openai(
                 "on_screen_text_hook": parsed.on_screen_text_hook,
             },
             triple_candidates=triples,
+            attempts=attempt,
+            retry_reason="truncated_structured_output" if first_error else None,
+            first_error=first_error,
         )
-    except (OpenAIError, ValueError, TypeError) as exc:
-        return AIHookGenerationResult([], None, "provider_error", str(exc)[:240])
+    return _failed_generation("No parsed hook result", 2, first_error)
+
+
+# One bounded call; one bounded retry only when the structured answer was cut off.
+HOOK_GENERATION_MAX_OUTPUT_TOKENS = (3200, 4800)
+
+
+def _reasoning_options(model: str) -> dict[str, Any]:
+    """Reasoning models spend hidden tokens from ``max_output_tokens``: keep it low for structured writing."""
+    return {"reasoning": {"effort": "low"}} if re.match(r"(?i)^(?:gpt-5|o\d)", str(model or "")) else {}
+
+
+def _truncated_structured_output(exc: ValidationError) -> bool:
+    """The answer stopped mid-JSON (output budget exhausted), not a schema disagreement."""
+    return any(error.get("type") == "json_invalid" for error in exc.errors())
+
+
+def _failed_generation(error: str, attempts: int, first_error: str | None) -> AIHookGenerationResult:
+    return AIHookGenerationResult(
+        [], None, "provider_error", error[:240], attempts=attempts,
+        retry_reason="truncated_structured_output" if first_error else None, first_error=first_error,
+    )
 
 
 def judge_triple_hooks_with_openai(
