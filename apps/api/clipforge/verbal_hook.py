@@ -35,6 +35,7 @@ from .hooks import (
     parse_number,
     rounded_number_supported,
     standalone_issue,
+    strategy_function,
     strategy_matches,
 )
 from .media import _mentions, _visual_query_tokens, visual_target_key
@@ -121,9 +122,47 @@ _FACT_TREND = re.compile(
 _NUMBER = re.compile(r"(?<![\w.,])(\d{1,3}(?:[.,  ]\d{3})+(?:[.,]\d+)?|\d+(?:[.,]\d+)?)(\s*(?:%|prozent\b|percent\b))?", re.IGNORECASE)
 _HEDGE = re.compile(r"(?i)\b(etwa|rund|circa|knapp|fast|über|about|around|roughly|nearly|almost|over|approximately)\s*$")
 _MALFORMED = re.compile(
-    r"(?i)(?:\b(\w+)\s+\1\b|\b(?:und|oder|aber|weil|dass|and|or|but|because|that|the|der|die|das|ein|eine|a|an)\s*[.!?]?\s*$|"
+    r"(?i)(?:\b(\w+)\s+\1\b|\b(?:und|oder|aber|weil|dass|and|or|but|because|that|the|der|die|eine|a)\s*[.!?]?\s*$|"
     r"[,;:–—-]\s*[.!?]?\s*$)"
 )
+# Spoken fluency (grammar only, any topic): sentences a listener can parse
+# but nobody would say aloud.
+# A main clause whose fronted phrase is followed by an auxiliary/modal verb
+# and then no subject at all ("Bei X kann [?] kurz besser sein").
+_FRONTED_AUXILIARY = re.compile(
+    r"(?i)^(?:bei|beim|in|im|nach|mit|für|vor|ohne|am|zum|zur|durch|wegen|während|unter|über|auf|aus)\s[^,–—:;?!.]{1,60}?\s"
+    r"(?:kann|können|könnte|muss|müssen|soll|sollte|darf|ist|sind|war|wird|werden|wäre)\s(?P<rest>[^.!?]*)"
+    r"|^(?:at|in|on|with|for|after|during|before|without|by)\s[^,–—:;?!.]{1,60}?\s"
+    r"(?:can|could|may|might|will|would|should|must|is|are|was|were)\s(?P<rest_en>[^.!?]*)"
+)
+_SUBJECT = re.compile(
+    r"(?:\b(?:ich|du|er|sie|es|man|wir|ihr|das|dies\w*|jede\w*|viele|alle|nichts|etwas|der|die|den|dem|des|ein\w*|kein\w*|"
+    r"dein\w*|mein\w*|seine\w*|ihre?\w*|unser\w*|i|you|he|she|it|we|they|this|that|these|those|the|a|an|your|my|his|her|"
+    r"our|their|everyone|nothing|something)\b|\b[A-ZÄÖÜ]\w+|\d)"
+)
+# A comparison with nothing to compare to ("kann besser sein", "can be better").
+_VAGUE_COMPARISON = re.compile(
+    r"(?i)\b(?:kann|können|könnte|kann auch|can|could|may|might)\b[^.!?]{0,30}?\b(?:besser|schlechter|mehr|weniger|größer|"
+    r"kleiner|länger|kürzer|schneller|langsamer|gesünder|sinnvoller|wichtiger|leichter|schwerer|stärker|höher|wacher|müder|"
+    r"better|worse|more|less|bigger|smaller|longer|shorter|faster|slower|healthier)\s+(?:sein|be)\b"
+    r"|\b(?:can|could|may|might)\s+(?:\w+\s+)?be\s+(?:better|worse|more|less|bigger|smaller|longer|shorter|faster|slower|healthier)\b"
+)
+_COMPARISON_TARGET = re.compile(r"(?i)\b(?:als|than|wie|as)\b")
+
+
+def fluency_issues(text: str) -> list[str]:
+    """Structural signs of unnatural spoken wording (grammar, not a phrase list)."""
+    issues: list[str] = []
+    if "?" not in text:
+        match = _FRONTED_AUXILIARY.search(text.strip())
+        rest = (match.group("rest") if match and match.group("rest") is not None else match.group("rest_en")) if match else None
+        if rest is not None and not _SUBJECT.search(rest):
+            issues.append("missing_subject")
+    if _VAGUE_COMPARISON.search(text) and not _COMPARISON_TARGET.search(text):
+        issues.append("vague_comparison")
+    return issues
+
+
 _EVIDENCE_STRATEGIES = {
     "verified_statistic", "counterintuitive_insight", "direct_reframe", "common_mistake",
     "social_proof_or_trend", "high_stakes_consequence", "evidence_insight",
@@ -140,7 +179,8 @@ VERBAL_WEIGHTS = {
     # A 14-year-old must understand the hook on first listen.
     "spoken_simplicity": 1.6,
     "useful_information": 1.6, "topic_relevance": 1.5, "attention_value": 1.4, "factual_defensibility": 1.4,
-    "natural_language": 1.2, "brevity": 1.1, "body_transition": 1.0, "curiosity": 0.9, "insight": 0.9,
+    # Said aloud as a person would say it: as important as being easy.
+    "natural_language": 1.6, "brevity": 1.1, "body_transition": 1.0, "curiosity": 0.9, "insight": 0.9,
     "non_repetition": 0.8, "strategy_fit": 1.0,
 }
 REVEAL_CODES = ("names_protected_answer", "implies_protected_answer", "states_comparison_result", "queries_protected_target", "states_primary_answer")
@@ -648,6 +688,8 @@ def assess_verbal(
     malformed = bool(_MALFORMED.search(verbal)) or (verbal[:1].isalpha() and verbal[:1].islower())
     if malformed:
         codes.append("malformed_grammar")
+    fluency = fluency_issues(verbal)
+    codes.extend(fluency)
     # The first thing heard must stand alone: no clause cut out of a longer
     # sentence, no back-reference to text the viewer never heard.
     incomplete = standalone_issue(verbal)
@@ -667,11 +709,12 @@ def assess_verbal(
     if empty_curiosity:
         codes.append("empty_curiosity")
 
-    # Strategy fit: supported by research, and carried by the wording.
+    # Strategy fit: supported by research, and performed by the sentence (its
+    # rhetorical function, not its vocabulary).
     fit = 0.0
     if canonical:
         entry = context["signals"].get(canonical) or {}
-        text_fit = strategy_matches(canonical, verbal)
+        text_fit = strategy_function(canonical, verbal)
         evidence_ids = set(entry.get("fact_ids") or [])
         if canonical in _LOOSE_EVIDENCE:
             # Insight-type strategies may draw on any hook-safe researched fact.
@@ -690,11 +733,14 @@ def assess_verbal(
         elif not entry.get("viable"):
             hard.append("strategy_not_supported_by_research")
         elif not text_fit:
+            # The sentence genuinely does not do what the strategy does.
             hard.append("strategy_not_in_wording")
         elif canonical in _EVIDENCE_STRATEGIES and not used:
             hard.append("strategy_evidence_not_used")
         else:
-            fit = 1.0
+            fit = text_fit
+            if text_fit < 1:
+                codes.append("strategy_implicit")
             positive.extend(entry.get("signals") or [])
         claimed = [str(value) for value in fact_ids or [] if str(value) in context["claims"]]
         fact_ids = list(dict.fromkeys([*claimed, *used]))
@@ -709,7 +755,10 @@ def assess_verbal(
     relevance = 1.0 if (specific or supported_number) and _related(spoken, question_words | claim_words) else 0.6 if _related(spoken, question_words) else 0.2
     attention = 0.35 + (0.2 if contrast else 0) + (0.25 if supported_number else 0) + (0.15 if self_test else 0) - (0.35 if generic_opener else 0)
     defensibility = 1.0 - (0.3 if _ABSOLUTE.search(verbal) and not any(_ABSOLUTE.search(_plain(fact.get("claim"))) for fact in context["sourced_facts"]) else 0)
-    natural = 1.0 - (0.4 if malformed else 0) - (0.3 if "verbal_jargon_first" in codes else 0) - (0.2 if "verbal_too_long" in codes else 0)
+    natural = (
+        1.0 - (0.4 if malformed else 0) - (0.3 if "verbal_jargon_first" in codes else 0) - (0.2 if "verbal_too_long" in codes else 0)
+        - (0.5 if "missing_subject" in fluency else 0) - (0.3 if "vague_comparison" in fluency else 0)
+    )
     brevity = 1.0 if word_count <= 14 else max(0.2, 1.0 - (word_count - 14) * 0.07)
     body_words = _words(context["body"])
     transition = 0.7 if same_as_first else 1.0 if (not body_words or _related(spoken, body_words)) else 0.75

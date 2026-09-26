@@ -272,42 +272,68 @@ def _plain_evidence_explanation(text: str, facts: list[dict[str, Any]], body: st
     return False
 
 
-def strategy_matches(strategy: str, text: str) -> bool:
-    """The rhetoric a canonical strategy requires is actually present in the text.
+# Rhetorical functions (grammar only, any topic, German and English).  A
+# strategy is a function the sentence performs, not a template it copies.
+# A direct question, or an indirect one opening a clause ("Rate mal, welcher ...").
+_OPEN_QUESTION = re.compile(r"(?i)\?|(?:^|[,–—:]\s*)(?:why|how|what|which|who|warum|wieso|weshalb|wie|was|welche\w*|wer)\b")
+# Two states joined by a concessive/adversative turn: an observation the
+# sentence does not explain ("... – und wachst trotzdem müde auf").
+_UNEXPLAINED_TURN = re.compile(
+    r"(?i)\S[^.!?]*?(?:[,–—;:]\s*|\s)(?:und\s+)?(?:trotzdem|dennoch|doch|aber|and\s+(?:still|yet)|yet|still|but|even though|obwohl|although)\b"
+)
+# A reason or answer that the sentence announces but keeps back.
+_WITHHELD = re.compile(
+    r"(?i)\b(?:der grund|den grund|the (?:real )?reason|dahinter steckt|steckt dahinter|liegt (?:nicht )?an|"
+    r"hat einen grund|has a reason|comes down to|das eigentliche|the real)\b"
+)
+_CONTRAST = re.compile(
+    r"(?:\w+n[’']t\b)|\b(?:not|no|never|but|although|despite|opposite|rather than|instead of|actually|still|"
+    r"nicht|kein\w*|sondern|obwohl|statt|trotzdem|doch|eigentlich|gar nicht)\b"
+)
 
-    Language grammar only (negation, contrast, address, numbers); a label the
-    wording does not carry is never accepted.
+
+def strategy_function(strategy: str, text: str) -> float:
+    """How clearly the sentence performs the strategy's rhetorical function (0..1).
+
+    Semantic function over surface vocabulary: a curiosity gap may be an
+    unexplained contradiction without any question word.  0 means the
+    sentence genuinely does not do what the strategy does.
     """
     value = text.casefold()
     canonical = canonical_strategy(strategy)
-    if canonical == "counterintuitive_insight":
-        return bool(re.search(
-            r"(?:\w+n[’']t\b)|\b(?:not|no|never|but|although|despite|opposite|rather than|instead of|actually|still|"
-            r"nicht|kein\w*|sondern|obwohl|statt|trotzdem|doch|eigentlich|gar nicht)\b", value
-        ))
-    if canonical == "direct_reframe":
-        return bool(re.search(r"\b(?:not|nicht|kein\w*|no|isn't|aren't)\b[^.!?]{0,80}(?:\b(?:but|sondern|rather|instead)\b|\s[—–;:]\s*\w|[—–;:]\s*(?:it|es|sie|they|er)\b)", value)) or bool(
-            re.search(r"\b(?:less about|more about|statt|instead of|rather than)\b", value)
-        )
-    if canonical == "ego_challenge":
-        return bool(re.search(
-            r"(?:\?|\b(?:can you|do you|could you|would you|guess|kannst du|erkennst du|schaffst du|weißt du|"
-            r"errätst du|würdest du|rate mal|tippst du)\b)", value
-        ))
-    if canonical == "common_mistake":
-        return bool(re.search(
-            r"\b(?:mistake|error|wrong|myth|fail(?:s|ed|ure)?|misconception|people think|you think|"
-            r"fehler|irrtum|falsch\w*|mythos|scheitert|scheitern|denken viele|glauben viele|du denkst|die meisten denken)\b", value
-        ))
-    if canonical == "high_stakes_consequence":
-        return bool(re.search(r"\b(?:risk|cost|lose|prevents?|leads?|consequence|impact|damage|risiko|kostet|verhindert|führt|folge|schaden)\b", value))
-    if canonical == "verified_statistic":
-        return bool(_NUMBER.search(text))
-    if canonical == "social_proof_or_trend":
-        return bool(_TREND_WORDS.search(text))
+    question = bool(_OPEN_QUESTION.search(text))
+    turn = bool(_UNEXPLAINED_TURN.search(text))
     if canonical == "curiosity_gap":
-        return "?" in text or bool(re.search(r"\b(?:why|how|what|which|who|warum|wieso|weshalb|wie|was|welche\w*|wer)\b", value))
-    return canonical == "evidence_insight"
+        # An open question, or a stated puzzle / withheld reason the viewer wants resolved.
+        return 1.0 if question else 0.8 if turn or _WITHHELD.search(text) else 0.0
+    if canonical == "counterintuitive_insight":
+        return 1.0 if _CONTRAST.search(value) else 0.0
+    if canonical == "direct_reframe":
+        return 1.0 if re.search(r"\b(?:not|nicht|kein\w*|no|isn't|aren't)\b[^.!?]{0,80}(?:\b(?:but|sondern|rather|instead)\b|\s[—–;:]\s*\w|[—–;:]\s*(?:it|es|sie|they|er)\b)", value) or re.search(
+            r"\b(?:less about|more about|statt|instead of|rather than)\b", value
+        ) else 0.0
+    if canonical == "ego_challenge":
+        return 1.0 if re.search(
+            r"(?:\?|\b(?:can you|do you|could you|would you|guess|test yourself|kannst du|erkennst du|schaffst du|weißt du|"
+            r"errätst du|würdest du|rate mal|tippst du|teste dich)\b)", value
+        ) else 0.0
+    if canonical == "common_mistake":
+        return 1.0 if re.search(
+            r"\b(?:mistake|error|wrong|myth|fail(?:s|ed|ure)?|misconception|people think|you think|most people|"
+            r"fehler|irrtum|falsch\w*|mythos|scheitert|scheitern|denken viele|glauben viele|du denkst|die meisten denken)\b", value
+        ) else 0.0
+    if canonical == "high_stakes_consequence":
+        return 1.0 if re.search(r"\b(?:risk|cost|lose|prevents?|leads?|consequence|impact|damage|risiko|kostet|verhindert|führt|folge|schaden)\b", value) else 0.0
+    if canonical == "verified_statistic":
+        return 1.0 if _NUMBER.search(text) else 0.0
+    if canonical == "social_proof_or_trend":
+        return 1.0 if _TREND_WORDS.search(text) else 0.0
+    return 1.0 if canonical == "evidence_insight" else 0.0
+
+
+def strategy_matches(strategy: str, text: str) -> bool:
+    """The sentence performs the canonical strategy's function (see ``strategy_function``)."""
+    return strategy_function(strategy, text) > 0
 
 
 # Backwards-compatible private name.
