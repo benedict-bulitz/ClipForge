@@ -425,6 +425,36 @@ export type FinalQualityIssue = {
   message: string;
 };
 
+/** fixed = repaired automatically (measured); manual = a user control can help; unfixable = no safe repair and no manual control. */
+export type FinalQualityReportStatus = "fixed" | "manual" | "unfixable";
+
+/** A manual control that can actually help with an issue. */
+export type FinalQualityFix = { kind: "change_media"; label: string; scene_id: string; scene_number: number; description: string };
+
+/** One scene + issue type of the Final Video Critic's per-issue report. */
+export type FinalQualityReportEntry = {
+  id: string;
+  issue_ids: string[];
+  scene_id: string;
+  scene_number: number;
+  code: string;
+  category: string;
+  severity: FinalQualityIssue["severity"];
+  /** Concise, scene-independent label, e.g. "Subject leaves the frame". */
+  title: string;
+  message: string;
+  status: FinalQualityReportStatus;
+  /** Why automatic repair stopped (remaining issues only). */
+  reason: string | null;
+  reason_text: string | null;
+  /** What the automatic repair did (fixed issues only). */
+  detail: string | null;
+  fix: FinalQualityFix | null;
+  before_score?: number | null;
+  after_score?: number | null;
+  attempted?: boolean;
+};
+
 export type FinalQualityRepair = {
   scene_id: string;
   scene_number?: number | null;
@@ -461,5 +491,15 @@ export type FinalQualityReview = {
   unresolved?: string[];
   changed_scenes?: string[];
   repaired_scenes?: string[];
-  summary?: { label: string; repaired_scene_count: number; remaining_issue_count: number; warning_count: number };
+  /** Per-issue outcome report (newer reviews); the UI groups it, it never re-derives it. */
+  report?: FinalQualityReportEntry[];
+  summary?: {
+    label: string;
+    repaired_scene_count: number;
+    remaining_issue_count: number;
+    warning_count: number;
+    fixed_count?: number;
+    manual_count?: number;
+    unfixable_count?: number;
+  };
 };

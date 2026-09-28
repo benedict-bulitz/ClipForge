@@ -52,7 +52,7 @@ import {
   musicDisplayName,
 } from "@/lib/api";
 import type { ChatMessage, FinalQualityReview, MusicTrack, Project, Readiness, Scene, Source, SceneMediaCandidates } from "@/lib/types";
-import { appliedQualityRepairs, qualityReviewSummary, sceneQualityState, unresolvedQualityScenes } from "@/lib/quality-review";
+import { groupQualityReport, qualityReviewSummary, qualitySummaryParts, sceneListLabel, sceneQualityState } from "@/lib/quality-review";
 import { tripleHookSummary, type TripleHookSummary } from "@/lib/triple-hook";
 import { Brand } from "./brand";
 import { Button } from "./ui/button";
@@ -638,14 +638,14 @@ function VideoPreview({ project, onRender, rendering, musicPreview }: { project:
         )}
       </div>
       {musicPreview && musicSource && <audio ref={audioRef} src={musicSource} preload="auto" aria-hidden="true" />}
-      <p className="mt-3 text-center text-[10px] font-semibold uppercase tracking-[.12em] text-[#88887f]">{label} · {state.timeline.aspect_ratio}</p>
+      <p className="cf-text-label mt-3 text-center">{label} · {state.timeline.aspect_ratio}</p>
       {navigableScenes.length > 0 && <div className="mt-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-2 text-left" aria-label="Scene navigation">
-        <p className="px-2 pb-1 text-[10px] font-bold uppercase tracking-[.12em] text-[var(--muted-foreground)]">Scenes</p>
+        <p className="cf-text-label px-2 pb-1">Scenes</p>
         <div className="grid max-h-40 gap-0.5 overflow-y-auto">
           {navigableScenes.map((scene, index) => {
             const sceneKey = scene.id || String(index);
             const isActive = activeScene === index;
-            return <button key={sceneKey} type="button" className={cn("flex min-w-0 items-center justify-between rounded-lg px-2 py-1.5 text-xs transition-colors", isActive ? "bg-[var(--accent-soft)] font-semibold text-[var(--foreground)]" : "text-[var(--muted-foreground)] hover:bg-[var(--surface-hover)] hover:text-[var(--foreground)]")} aria-current={isActive ? "true" : undefined} onClick={() => seekToScene(scene.start)}><span className="flex min-w-0 items-center gap-2"><span className={cn("size-1.5 shrink-0 rounded-full", isActive ? "bg-[var(--accent)]" : "bg-[var(--border)]")} /><span>Scene {index + 1}</span></span><span className="mono shrink-0 text-[10px]">{formatTime(scene.start)}–{formatTime(scene.end)}</span></button>;
+            return <button key={sceneKey} type="button" className={cn("flex min-h-8 min-w-0 items-center justify-between rounded-lg px-2 py-1.5 text-[length:var(--text-body-sm)] transition-colors", isActive ? "bg-[var(--accent-soft)] font-semibold text-[var(--foreground)]" : "text-[var(--muted-foreground)] hover:bg-[var(--surface-hover)] hover:text-[var(--foreground)]")} aria-current={isActive ? "true" : undefined} onClick={() => seekToScene(scene.start)}><span className="flex min-w-0 items-center gap-2"><span className={cn("size-1.5 shrink-0 rounded-full", isActive ? "bg-[var(--accent)]" : "bg-[var(--border)]")} /><span>Scene {index + 1}</span></span><span className="mono shrink-0 text-[length:var(--text-meta)]">{formatTime(scene.start)}–{formatTime(scene.end)}</span></button>;
           })}
         </div>
       </div>}
@@ -826,37 +826,64 @@ function QualityReviewPanel({ review, renderRevision, disabled, onFixScene }: { 
   const [expanded, setExpanded] = useState(false);
   const summary = qualityReviewSummary(review, renderRevision);
   if (!summary) return null;
-  const unresolved = unresolvedQualityScenes(review);
-  const repairs = appliedQualityRepairs(review);
-  const expandable = unresolved.length > 0 || repairs.length > 0;
-  const tone = { passed: "bg-emerald-50 text-emerald-800", repaired: "bg-blue-50 text-blue-800", attention: "bg-amber-50 text-amber-800", muted: "bg-black/[.04] text-[var(--muted-foreground)]" }[summary.tone];
+  const groups = groupQualityReport(review);
+  const parts = qualitySummaryParts(review);
+  const stale = summary.tone === "muted" && review?.revision !== undefined && renderRevision !== undefined && review.revision !== renderRevision;
+  const expandable = groups.length > 0;
   return (
-    <div className="cf-surface mt-3 rounded-[16px] border p-3 text-xs" aria-label="Final quality review">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <span className="font-semibold">Quality review</span>
-        {expandable ? (
-          <button type="button" onClick={() => setExpanded((open) => !open)} aria-expanded={expanded} aria-controls={detailsId} className={cn("inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[10px] font-bold", tone)}>
-            {summary.label}<ChevronUp className={cn("size-3 transition-transform", !expanded && "rotate-180")} />
+    <section className="quality-review mt-4" aria-label="Final quality review">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h2 className="quality-review-title">Quality review</h2>
+        {expandable && (
+          <button type="button" onClick={() => setExpanded((open) => !open)} aria-expanded={expanded} aria-controls={detailsId} className="cf-action">
+            {expanded ? "Hide details" : "Show details"}<ChevronUp className={cn("size-4 transition-transform", !expanded && "rotate-180")} aria-hidden="true" />
           </button>
-        ) : <span className={cn("rounded-full px-2.5 py-1 text-[10px] font-bold", tone)}>{summary.label}</span>}
+        )}
       </div>
+      {/* One status display: the measured counts when the report exists, otherwise the review's own label. */}
+      <div className="quality-review-counts mt-2" aria-label="Quality review summary">
+        {parts.length > 0 && !stale
+          ? parts.map((part) => <span key={part.status} className={cn("status-badge", `status-${part.status}`)}>{part.text}</span>)
+          : <span className={cn("status-badge", summary.tone === "attention" ? "status-manual" : summary.tone === "muted" ? "status-muted" : "status-fixed")}>{summary.label}</span>}
+      </div>
+      {stale && <p className="cf-text-meta mt-2">This review belongs to an earlier render; it is shown for reference.</p>}
       {expandable && expanded && (
-        <div id={detailsId} className="mt-2 space-y-3">
-          {repairs.length > 0 && (
-            <section aria-label="Automatically repaired">
-              <p className="mb-1 text-[9px] font-bold uppercase tracking-[.08em] text-emerald-700">Automatically repaired</p>
-              <ul className="space-y-1">{repairs.map((repair, index) => <li key={`${repair.sceneId}-${index}`} className="text-[var(--muted-foreground)]"><strong className="text-[var(--foreground)]">Scene {repair.sceneNumber ?? "?"}</strong>: {repair.text}</li>)}</ul>
+        <div id={detailsId} className="mt-4">
+          {groups.map((group) => (
+            <section key={group.status} className="quality-group" aria-label={group.title}>
+              <h3 className="quality-group-title"><span className={cn("status-badge", `status-${group.status}`)}>{group.items.reduce((total, item) => total + item.scenes.length, 0)}</span>{group.title}</h3>
+              {group.status === "fixed" ? (
+                // Nothing to do here: one compact line per repair, no cards or buttons.
+                <ul className="mt-2 space-y-1.5">
+                  {group.items.map((item) => (
+                    <li key={item.key} className="quality-line">
+                      <span className="quality-line-scenes">{sceneListLabel(item.scenes.map((scene) => scene.sceneNumber))}</span>
+                      <span><span className="quality-item-title">{item.title}</span>{item.note && <span className="quality-item-note"> — {item.note}</span>}</span>
+                    </li>
+                  ))}
+                </ul>
+              ) : <ul className="mt-2">
+                {group.items.map((item) => (
+                  <li key={item.key} className="quality-item">
+                    <p className="quality-item-title">{item.title}</p>
+                    {item.note && <p className="quality-item-note">{item.note}</p>}
+                    <div className="quality-item-scenes">
+                      {item.scenes.map((scene) => scene.fix ? (
+                        <button key={scene.entryId} type="button" disabled={disabled} onClick={() => onFixScene(scene.sceneNumber)} className="cf-action" aria-label={`Fix scene ${scene.sceneNumber}: ${item.title}. ${scene.fix.description}.`} title={scene.fix.description}>
+                          <RefreshCw className="size-3.5" aria-hidden="true" />Fix scene {scene.sceneNumber}
+                        </button>
+                      ) : (
+                        <span key={scene.entryId} className="scene-chip">Scene {scene.sceneNumber}</span>
+                      ))}
+                    </div>
+                  </li>
+                ))}
+              </ul>}
             </section>
-          )}
-          {unresolved.length > 0 && (
-            <section aria-label="Unresolved">
-              <p className="mb-1 text-[9px] font-bold uppercase tracking-[.08em] text-amber-700">Unresolved</p>
-              <ul className="space-y-1">{unresolved.map((item) => <li key={item.sceneId} className="flex items-start justify-between gap-2"><span className="text-amber-900"><strong>Scene {item.sceneNumber}</strong>: {item.attempt ?? item.message}{item.issueCount > 1 ? ` (+${item.issueCount - 1} more)` : ""}</span><button type="button" disabled={disabled} onClick={() => onFixScene(item.sceneNumber)} className="shrink-0 text-[10px] font-bold text-[#d94c20] hover:text-[#a93210] disabled:opacity-50" aria-label={`Change media for scene ${item.sceneNumber}`}>Fix</button></li>)}</ul>
-            </section>
-          )}
+          ))}
         </div>
       )}
-    </div>
+    </section>
   );
 }
 
@@ -1033,21 +1060,21 @@ function ScenesView({ scenes, qualityReview, duration, assets, mediaBusy, mediaE
       <div className="cf-surface relative mb-6 flex h-16 overflow-hidden rounded-[16px] border p-1.5 shadow-sm">
         {scenes.map((scene, index) => (
           <div key={scene.id} title={scene.narration} style={{ width: `${((scene.end - scene.start) / Math.max(1, duration)) * 100}%` }} className={cn("relative min-w-[5%] overflow-hidden border-r border-white/50 last:border-0", ["bg-[#ff8b62]", "bg-[#2f4054]", "bg-[#dbb164]", "bg-[#8b9c77]"][index % 4])}>
-            <span className="mono absolute bottom-1.5 left-2 text-[8px] text-white/80">{index + 1}</span>
+            <span className="mono absolute bottom-1.5 left-2 text-[length:var(--text-label)] text-white/90">{index + 1}</span>
           </div>
         ))}
       </div>
       {scenes.map((scene, index) => (
-        <div key={scene.id} id={`scene-row-${index + 1}`} className="cf-surface grid grid-cols-[46px_minmax(0,1fr)] items-center gap-3 rounded-[18px] border p-3 shadow-sm sm:grid-cols-[54px_minmax(0,1fr)_112px_auto] sm:gap-4">
+        <div key={scene.id} id={`scene-row-${index + 1}`} className="cf-surface grid grid-cols-[46px_minmax(0,1fr)] items-center gap-3 rounded-[18px] border p-3 shadow-sm sm:grid-cols-[54px_minmax(0,1fr)_112px_auto] sm:gap-4 scroll-mt-24">
           <div className={cn("grid aspect-square place-items-center rounded-xl text-sm font-extrabold text-white", ["bg-[#ff7950]", "bg-[#34475d]", "bg-[#c89941]", "bg-[#7c8f67]"][index % 4])}>{index + 1}</div>
           <div className="min-w-0">
-            <p className="truncate text-sm font-semibold">{scene.visual_goal}</p>
-            <p className="mt-1 truncate text-xs text-[var(--muted-foreground)]">{scene.narration}</p>
-            {scene.media && <p className="media-muted mt-1 text-[9px] font-semibold uppercase tracking-[.08em]">{scene.media.source_url ? <a href={scene.media.source_url} target="_blank" rel="noreferrer" className="underline-offset-2 hover:text-[var(--foreground)] hover:underline">{mediaProvenance(scene.media)}</a> : mediaProvenance(scene.media)}</p>}
+            <p className="cf-text-body truncate font-semibold">{scene.visual_goal}</p>
+            <p className="cf-text-meta mt-1 truncate">{scene.narration}</p>
+            {scene.media && <p className="cf-text-meta mt-1">{scene.media.source_url ? <a href={scene.media.source_url} target="_blank" rel="noreferrer" className="underline-offset-2 hover:text-[var(--foreground)] hover:underline">{mediaProvenance(scene.media)}</a> : mediaProvenance(scene.media)}</p>}
           </div>
           {scene.media?.cache_path ? (
             <div className="media-box col-span-2 overflow-hidden rounded-xl sm:col-span-1">
-              <p className="media-muted px-2 pt-1 text-[9px] font-bold uppercase tracking-[.08em]">Current media</p>
+              <p className="cf-text-label px-2 pt-1">Current media</p>
               {scene.media.kind === "video" ? (
                 <video
                   src={mediaUrl(`/media/${scene.media.cache_path}`) ?? undefined}
@@ -1073,18 +1100,18 @@ function ScenesView({ scenes, qualityReview, duration, assets, mediaBusy, mediaE
               type="button"
               onClick={() => onChooseSceneMedia(index + 1)}
               disabled={mediaBusy !== null}
-              className="media-action inline-flex items-center gap-1.5 rounded-full px-2.5 py-1.5 text-[9px] font-bold uppercase tracking-[.08em] sm:mb-2"
+              className="cf-action sm:mb-2"
               aria-label={`Choose media for scene ${index + 1}`}
             >
-              <RefreshCw className={cn("size-3", mediaBusy === index + 1 && "animate-spin")} />
+              <RefreshCw className={cn("size-3.5", mediaBusy === index + 1 && "animate-spin")} aria-hidden="true" />
               {mediaBusy === index + 1 ? "Loading…" : "Replace"}
             </button>
-            <p className="mono text-[10px] font-medium">{formatTime(scene.start)}–{formatTime(scene.end)}</p>
-            <p className="mt-1 text-[9px] uppercase tracking-[.08em] text-amber-700">{scene.asset_status.replaceAll("_", " ")}</p>
-            {scene.visual_director?.generation?.status === "project_budget_exhausted" && <p className="mt-1 text-[9px] uppercase tracking-[.08em] text-amber-700">AI image budget reached</p>}
-            {scene.overlays && scene.overlays.length > 0 && <p className="media-muted mt-1 text-[9px] uppercase tracking-[.08em]">+ {scene.overlays[0].kind} overlay</p>}
-            {sceneQualityState(qualityReview, scene.id) === "repaired" && <p className="mt-1 text-[9px] uppercase tracking-[.08em] text-emerald-700">Auto-repaired</p>}
-            {sceneQualityState(qualityReview, scene.id) === "issue" && <p className="mt-1 text-[9px] uppercase tracking-[.08em] text-amber-700">Quality issue</p>}
+            <p className="mono cf-text-meta">{formatTime(scene.start)}–{formatTime(scene.end)}</p>
+            <p className="cf-text-meta mt-1">{scene.asset_status.replaceAll("_", " ")}</p>
+            {scene.visual_director?.generation?.status === "project_budget_exhausted" && <p className="cf-text-meta mt-1">AI image budget reached</p>}
+            {scene.overlays && scene.overlays.length > 0 && <p className="cf-text-meta mt-1">+ {scene.overlays[0].kind} overlay</p>}
+            {sceneQualityState(qualityReview, scene.id) === "repaired" && <span className="status-badge status-fixed mt-1.5">Auto-repaired</span>}
+            {sceneQualityState(qualityReview, scene.id) === "issue" && <span className="status-badge status-manual mt-1.5">Quality issue</span>}
           </div>
           {candidateScene === index + 1 && candidateSet && (
             <div className="media-panel col-span-2 rounded-2xl p-3 sm:col-span-4">
@@ -1093,7 +1120,7 @@ function ScenesView({ scenes, qualityReview, duration, assets, mediaBusy, mediaE
                 <div className="flex flex-wrap items-center gap-2">
                   <button type="button" onClick={() => onChooseSceneMedia(index + 1)} disabled={mediaBusy !== null} className="media-action inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-semibold"><RefreshCw className="size-3" />Retry real media search</button>
                   <button type="button" onClick={onCancel} disabled={mediaBusy !== null} className="media-action rounded-full px-3 py-1.5 text-xs font-semibold">Keep current media</button>
-                  {candidateSet.candidates.length > 0 && <button type="button" onClick={onApplyCandidate} disabled={!candidateSelection || mediaBusy !== null} className="media-primary rounded-full px-3 py-1.5 text-[10px] font-bold uppercase tracking-[.08em]">Apply</button>}
+                  {candidateSet.candidates.length > 0 && <button type="button" onClick={onApplyCandidate} disabled={!candidateSelection || mediaBusy !== null} className="media-primary rounded-full px-3.5 py-1.5 text-[length:var(--text-body-sm)] font-bold">Apply</button>}
                 </div>
               </div>
               {mediaError && <p role="alert" className="media-alert mb-3 rounded-xl px-3 py-2 text-xs">{mediaError}</p>}
@@ -1106,7 +1133,7 @@ function ScenesView({ scenes, qualityReview, duration, assets, mediaBusy, mediaE
                       // eslint-disable-next-line @next/next/no-img-element
                       <img src={candidatePreview(candidate.preview_url)} alt={candidate.generated ? "AI-generated alternative" : `${candidate.provider} candidate by ${candidate.creator}`} loading="lazy" className="h-24 w-full object-cover" />
                     )}
-                    <span className="block px-2 py-1.5 text-[10px] leading-4">
+                    <span className="block px-2 py-1.5 text-[length:var(--text-meta)] leading-5">
                       {candidate.generated
                         ? <><strong className="uppercase">{candidate.new ? "New · AI image" : "AI image"}</strong> · {candidate.model_label ?? "OpenAI"}<br /><span className="media-muted">{candidate.prompt_source === "user_edited" ? "Your prompt" : "Automatic prompt"}</span></>
                         : <><strong className="uppercase">{candidate.kind}</strong> · {candidate.provider}<br /><span className="media-muted">{candidate.creator}</span></>}
@@ -1116,7 +1143,7 @@ function ScenesView({ scenes, qualityReview, duration, assets, mediaBusy, mediaE
               </div>
               {candidateSet.generation && (
                 <div className="media-box mt-3 rounded-xl p-3">
-                  <p className="media-muted mb-1.5 text-[10px] font-bold uppercase tracking-[.08em]">Generate AI image</p>
+                  <p className="cf-text-label mb-1.5">Generate AI image</p>
                   <GenerateImageOption key={candidateSet.generation.prompt} option={candidateSet.generation} busy={mediaBusy !== null} onGenerate={onGenerateImage} state={generationState} />
                 </div>
               )}
@@ -1241,11 +1268,11 @@ function AssistantMessage({ children, subtle = false }: { children: React.ReactN
 }
 
 function Stat({ label, value, hint }: { label: string; value: string; hint: string }) {
-  return <div className="cf-surface rounded-[16px] border p-3"><p className="mono text-[8px] uppercase tracking-[.12em] text-[var(--muted-foreground)]">{label}</p><p className="mt-1 text-xl font-semibold tracking-[-.04em]">{value}</p><p className="mt-0.5 truncate text-[9px] text-[var(--muted-foreground)]">{hint}</p></div>;
+  return <div className="cf-surface rounded-[16px] border p-3"><p className="cf-text-label">{label}</p><p className="mt-1 text-xl font-semibold tracking-[-.04em]">{value}</p><p className="cf-text-meta mt-0.5 truncate">{hint}</p></div>;
 }
 
 function Badge({ children }: { children: React.ReactNode }) {
-  return <span className="cf-surface rounded-full border px-3 py-1.5 text-[10px] font-bold uppercase tracking-[.09em] text-[var(--muted-foreground)]">{children}</span>;
+  return <span className="cf-surface cf-text-label rounded-full border px-3 py-1.5">{children}</span>;
 }
 
 function Panel({ icon, title, children, wide = false }: { icon: React.ReactNode; title: string; children: React.ReactNode; wide?: boolean }) {

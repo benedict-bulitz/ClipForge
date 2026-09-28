@@ -65,6 +65,25 @@ export function jobProgressPercent(job: GenerationJob | null | undefined, previo
   return job.status === "running" ? Math.max(previous, Math.min(99, value)) : value;
 }
 
+/** m:ss (or h:mm:ss) for a non-negative number of seconds. */
+export function formatDuration(seconds: number): string {
+  const total = Math.max(0, Math.round(Number.isFinite(seconds) ? seconds : 0));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const rest = String(total % 60).padStart(2, "0");
+  return hours > 0 ? `${hours}:${String(minutes).padStart(2, "0")}:${rest}` : `${minutes}:${rest}`;
+}
+
+/** Timing line of a generation job, from the job's own elapsed/remaining fields (no client clock). */
+export function generationTimeLabel(job: GenerationJob | null | undefined): string | null {
+  if (!job) return null;
+  if (job.status === "completed") return job.elapsed_seconds > 0 ? `Completed in ${formatDuration(job.elapsed_seconds)}` : null;
+  if (job.status !== "running") return null;
+  const elapsed = `${formatDuration(job.elapsed_seconds)} elapsed`;
+  const remaining = job.estimated_remaining_seconds;
+  return typeof remaining === "number" && Number.isFinite(remaining) && remaining > 0 ? `${elapsed} · ~${formatDuration(remaining)} remaining` : elapsed;
+}
+
 /** A short, safe message for a failed poll (no stack traces or raw objects). */
 export function pollErrorMessage(reason: unknown): string {
   if (reason instanceof PollTimeoutError || (reason instanceof Error && reason.name === "TimeoutError")) {

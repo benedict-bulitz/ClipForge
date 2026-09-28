@@ -28,7 +28,7 @@ from .alignment import (
     group_aligned_words,
     phrase_fallback_items,
 )
-from .attention import replan_attention
+from .attention import replan_attention, visible_attention_events
 from .config import Settings
 from .media import GRAPHIC_ASSET_SOURCE, _reuse_safe, is_scene_asset_allowed, media_source
 from .music import attach_discovered_track, resolve_track_path
@@ -476,7 +476,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             events.append(
                 f"Dialogue: 0,{_ass_time(start)},{_ass_time(end)},Default,,0,0,0,,{text}"
             )
-    for item in state.get("attention_events", []) or []:
+    for item in visible_attention_events(state):
         start = max(0.0, min(target, float(item.get("start") or 0)))
         end = max(start + 0.08, min(target, start + float(item.get("duration") or 0)))
         text = _ass_escape(str(item.get("text") or "")).strip()

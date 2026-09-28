@@ -20,6 +20,40 @@ _SYMBOLS = (
 )
 
 
+# Callouts that draw words on screen (symbols and micro shapes are not text).
+TEXT_CALLOUT_TYPES = {"statistic_callout", "comparison_label", "keyword_callout", "text_emphasis"}
+# ``scene["render_adjustments"]["attention"]``: a targeted repair (Final Video
+# Critic) reduced the text callouts of one text-heavy scene.  "reduced" keeps
+# the statistic callout (it carries a number); "no_text" drops every text
+# callout.  Captions are never affected.
+ATTENTION_TEXT_MODES = {"reduced", "no_text"}
+
+
+def callout_suppressed(event: dict[str, Any], scene: dict[str, Any] | None) -> bool:
+    """Whether this callout is withheld by a scene-level text reduction."""
+    if not isinstance(scene, dict) or str(event.get("type") or "") not in TEXT_CALLOUT_TYPES:
+        return False
+    adjustments = scene.get("render_adjustments") if isinstance(scene.get("render_adjustments"), dict) else {}
+    mode = adjustments.get("attention")
+    if mode == "no_text":
+        return True
+    return mode == "reduced" and event.get("type") != "statistic_callout"
+
+
+def visible_attention_events(state: dict[str, Any]) -> list[dict[str, Any]]:
+    """The attention events that are actually drawn (scene-level reductions applied)."""
+    scenes = [scene for scene in state.get("scenes") or [] if isinstance(scene, dict)]
+    visible = []
+    for event in state.get("attention_events") or []:
+        if not isinstance(event, dict):
+            continue
+        index = event.get("scene_index")
+        scene = scenes[index] if isinstance(index, int) and 0 <= index < len(scenes) else None
+        if not callout_suppressed(event, scene):
+            visible.append(event)
+    return visible
+
+
 def resolve_attention_preferences(options: dict[str, Any] | None = None) -> dict[str, Any]:
     source = options or {}
     mode = str(source.get("attention_density") or source.get("density_mode") or "normal").casefold()
@@ -174,6 +208,14 @@ def replan_attention(state: dict[str, Any]) -> list[dict[str, Any]]:
         kept = [event for event in events if event.get("scene_index") not in reserved]
         if len(kept) != len(events):
             events = [dict(event, id=f"attention_{index + 1:03d}") for index, event in enumerate(kept)]
+    scenes = list(state.get("scenes") or [])
+    kept = [
+        event for event in events
+        if not callout_suppressed(event, scenes[event["scene_index"]] if isinstance(event.get("scene_index"), int) and 0 <= event["scene_index"] < len(scenes) else None)
+    ]
+    if len(kept) != len(events):
+        # A repaired text-heavy scene keeps its reduced text layers on re-render.
+        events = [dict(event, id=f"attention_{index + 1:03d}") for index, event in enumerate(kept)]
     state["attention_events"] = events
     intervals = [events[index]["start"] - events[index - 1]["start"] for index in range(1, len(events))]
     scene_cuts = max(0, len(state.get("scenes") or []) - 1)

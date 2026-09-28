@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ArrowRight, ChevronDown, Clock3, CornerDownLeft, ListVideo, LoaderCircle, Plus, Settings, Trash2 } from "lucide-react";
 import { ApiError, clearGenerationQueue, deleteAllProjects, getBulkProjectDeletePlan, getGenerationJob, getProject, listGenerationJobs, listProjectOverview, removeQueuedGenerationJob, startGeneration } from "@/lib/api";
-import { createGenerationWatcher, POLL_TIMEOUT_MS, withTimeout, type GenerationWatcher } from "@/lib/generation-poll";
+import { createGenerationWatcher, generationTimeLabel, POLL_TIMEOUT_MS, withTimeout, type GenerationWatcher } from "@/lib/generation-poll";
 import type { BulkProjectDeletePlan, GenerationJob, ProjectOverview } from "@/lib/types";
 import { activeQueueJobs, visibleProjectHistory } from "@/lib/queue-overview";
 import { splitQuestions, submitQuestionsInOrder } from "@/lib/multi-question";
@@ -363,6 +363,7 @@ function GenerationQueue({ jobs, onRemove, onClear, busy }: { jobs: GenerationJo
         <p className="flex items-center justify-between text-xs font-bold text-[#d94c20]"><span>● Wird erstellt</span><span>{Math.round(item.progress * 100)}%</span></p>
         <p className="mt-2 break-words text-sm font-semibold">{item.prompt}</p>
         <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-[#ff6838]/15" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(item.progress * 100)}><div className="h-full bg-[#ff6838]" style={{ width: `${Math.round(item.progress * 100)}%` }} /></div>
+        {generationTimeLabel(item) && <p className="generation-timing mt-2"><span className="mono">{generationTimeLabel(item)}</span>{item.stage_label && <span className="cf-text-meta"> · {item.stage_label}</span>}</p>}
       </Link>)}
       {waiting.length > 0 && <div className="mb-2 mt-4 flex items-center justify-between gap-3"><p className="text-[11px] font-bold uppercase tracking-[.12em] text-[#85857c]">Warteschlange</p><button type="button" disabled={busy} onClick={() => setClearConfirmationOpen(true)} className="text-xs font-semibold text-red-700 hover:text-red-800 disabled:opacity-50">Clear Queue</button></div>}
       {clearConfirmationOpen && <div className="mb-3 flex items-center justify-between gap-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-900"><span>Clear {waiting.length} queued project{waiting.length === 1 ? "" : "s"}?</span><span className="flex gap-2"><button type="button" disabled={busy} onClick={() => setClearConfirmationOpen(false)}>Cancel</button><button type="button" disabled={busy} onClick={() => { setClearConfirmationOpen(false); onClear(); }} className="font-bold text-red-800">Clear Queue</button></span></div>}
