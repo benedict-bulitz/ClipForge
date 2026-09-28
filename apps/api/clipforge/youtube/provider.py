@@ -30,6 +30,7 @@ TOKEN_URL = "https://oauth2.googleapis.com/token"
 REVOKE_URL = "https://oauth2.googleapis.com/revoke"
 DATA_API = "https://www.googleapis.com/youtube/v3"
 UPLOAD_API = "https://www.googleapis.com/upload/youtube/v3/videos"
+THUMBNAIL_API = "https://www.googleapis.com/upload/youtube/v3/thumbnails/set"
 ANALYTICS_API = "https://youtubeanalytics.googleapis.com/v2/reports"
 
 # Minimum scopes: upload + read the channel/video status, edit the video's
@@ -117,7 +118,7 @@ class YouTubeProvider(Protocol):
 
     def get_my_channel(self, access_token: str) -> ChannelIdentity: ...
 
-    def start_resumable_upload(self, access_token: str, body: dict[str, Any], size: int, content_type: str) -> str: ...
+    def start_resumable_upload(self, access_token: str, body: dict[str, Any], size: int, content_type: str, *, notify_subscribers: bool = True) -> str: ...
 
     def query_upload(self, access_token: str, session_uri: str, size: int) -> UploadProgress: ...
 
@@ -128,6 +129,10 @@ class YouTubeProvider(Protocol):
     def update_video(self, access_token: str, body: dict[str, Any], parts: str) -> dict[str, Any]: ...
 
     def analytics_report(self, access_token: str, params: dict[str, str]) -> dict[str, Any]: ...
+
+    def set_thumbnail(self, access_token: str, video_id: str, data: bytes, content_type: str) -> dict[str, Any]: ...
+
+    def list_categories(self, access_token: str, region_code: str, language: str) -> list[dict[str, Any]]: ...
 
 
 class _Redactor(logging.Filter):
@@ -183,7 +188,7 @@ def _google_error(response: httpx.Response, *, context: str) -> YouTubeApiError:
     lowered = reason.casefold()
     if reason in {"invalid_grant", "unauthorized_client", "invalid_client"} or status == 401:
         return YouTubeApiError("auth_expired", "YouTube access expired or was revoked. Reconnect YouTube.", status_code=status, reason=reason)
-    if lowered in {"quotaexceeded", "dailylimitexceeded", "ratelimitexceeded", "uploadlimitexceeded", "userratelimitexceeded"}:
+    if lowered in {"quotaexceeded", "dailylimitexceeded", "ratelimitexceeded", "uploadlimitexceeded", "userratelimitexceeded", "uploadratelimitexceeded"}:
         return YouTubeApiError("quota_exceeded", message or "The YouTube API quota or upload limit was reached. Try again later.", status_code=status, reason=reason, retryable=True)
     if lowered in {"accessnotconfigured", "service_disabled"} or "has not been used in project" in message or "is disabled" in message:
         return YouTubeApiError("api_disabled", message or f"The Google API needed for {context} is not enabled for this OAuth project.", status_code=status, reason=reason)
@@ -283,7 +288,7 @@ class GoogleYouTubeProvider:
         item = items[0]
         return ChannelIdentity(channel_id=str(item.get("id")), title=str((item.get("snippet") or {}).get("title") or ""))
 
-    def start_resumable_upload(self, access_token: str, body: dict[str, Any], size: int, content_type: str) -> str:
+    def start_resumable_upload(self, access_token: str, body: dict[str, Any], size: int, content_type: str, *, notify_subscribers: bool = True) -> str:
         headers = {
             **self._auth(access_token),
             "Content-Type": "application/json; charset=UTF-8",
@@ -292,7 +297,12 @@ class GoogleYouTubeProvider:
         }
         response = self._send(
             "POST", UPLOAD_API, context="upload",
-            params={"uploadType": "resumable", "part": ",".join(body.keys())},
+            params={
+                "uploadType": "resumable",
+                "part": ",".join(body.keys()),
+                # videos.insert query parameter (default true on YouTube's side).
+                "notifySubscribers": "true" if notify_subscribers else "false",
+            },
             headers=headers, json=body,
         )
         if response.status_code != 200 or not response.headers.get("Location"):
@@ -351,6 +361,32 @@ class GoogleYouTubeProvider:
         if response.status_code != 200:
             raise _google_error(response, context="analytics")
         return response.json()
+
+    def set_thumbnail(self, access_token: str, video_id: str, data: bytes, content_type: str) -> dict[str, Any]:
+        response = self._send(
+            "POST", THUMBNAIL_API, context="thumbnail", timeout=self._upload_timeout,
+            params={"videoId": video_id, "uploadType": "media"},
+            headers={**self._auth(access_token), "Content-Type": content_type}, content=data,
+        )
+        if response.status_code != 200:
+            error = _google_error(response, context="thumbnail")
+            if error.code == "forbidden":
+                error.code = "thumbnail_not_allowed"
+                error.message = (
+                    "YouTube does not allow custom thumbnails for this channel yet "
+                    "(verify the channel in YouTube Studio to enable them)."
+                )
+            raise error
+        return response.json()
+
+    def list_categories(self, access_token: str, region_code: str, language: str) -> list[dict[str, Any]]:
+        response = self._send(
+            "GET", f"{DATA_API}/videoCategories", context="categories",
+            params={"part": "snippet", "regionCode": region_code, "hl": language}, headers=self._auth(access_token),
+        )
+        if response.status_code != 200:
+            raise _google_error(response, context="categories")
+        return list(response.json().get("items") or [])
 
 
 def read_chunks(handle: BinaryIO, offset: int, chunk_size: int = UPLOAD_CHUNK_BYTES):

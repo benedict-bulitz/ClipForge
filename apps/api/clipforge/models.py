@@ -222,6 +222,25 @@ class YouTubeUpload(Base):
     # without being confused with the upload's own state.
     analytics_error_code: Mapped[str | None] = mapped_column(String(48), nullable=True)
     analytics_error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # V2 publishing settings: the exact values sent to YouTube for this video.
+    source_kind: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    made_for_kids: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    # YouTube's read-back of the audience answer after upload (None = not yet read).
+    made_for_kids_confirmed: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    contains_synthetic_media: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    requested_visibility: Mapped[str] = mapped_column(String(16), nullable=False, default="private")
+    visibility_restricted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    notify_subscribers: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    upload_settings: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    schedule_local_time: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    schedule_timezone: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    thumbnail_source: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    thumbnail_asset: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    thumbnail_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # none | pending | applied | failed | not_requested
+    thumbnail_upload_status: Mapped[str] = mapped_column(String(16), nullable=False, default="none")
+    thumbnail_failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    thumbnail_applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     uploaded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_status_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_analytics_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -332,3 +351,32 @@ class ProductionFingerprint(Base):
 @event.listens_for(ProductionFingerprint, "before_update")
 def protect_fingerprint_update(_mapper: Any, _connection: Any, _target: ProductionFingerprint) -> None:
     raise ValueError("production fingerprints are immutable")
+
+
+class YouTubeUploadDefaults(Base):
+    """User-chosen upload defaults (never silently pre-filled compliance answers)."""
+
+    __tablename__ = "youtube_upload_defaults"
+
+    slot: Mapped[str] = mapped_column(String(16), primary_key=True, default="primary")
+    values: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
+
+
+class YouTubeLearningArchive(Base):
+    """What remains of a deleted, successfully uploaded project besides its
+    upload mappings, fingerprints and analytics (which are kept as they are)."""
+
+    __tablename__ = "youtube_learning_archives"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    project_id: Mapped[str] = mapped_column(String(36), nullable=False, unique=True, index=True)
+    title: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    prompt: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    topic: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    upload_ids: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    bytes_freed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    retained_bytes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    archived_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)

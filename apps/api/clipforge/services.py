@@ -237,8 +237,18 @@ def delete_project(db: Session, project_id: str, settings: Settings) -> ProjectD
     return ProjectDeletionResult(reclaimed_bytes=plan.reclaimed_bytes)
 
 
-def delete_all_projects(db: Session, settings: Settings) -> BulkProjectDeletionResult:
-    """Delete validated projects sequentially; stop and report accurately on first failure."""
+def delete_all_projects(
+    db: Session,
+    settings: Settings,
+    *,
+    delete_one: Callable[[Session, str, Settings], ProjectDeletionResult] | None = None,
+) -> BulkProjectDeletionResult:
+    """Delete validated projects sequentially; stop and report accurately on first failure.
+
+    ``delete_one`` is the upload-aware lifecycle (``youtube.lifecycle``) when
+    called from the API, so uploaded projects keep their learning record.
+    """
+    delete_one = delete_one or delete_project
     plan = plan_bulk_project_deletion(db, settings)
     # Queued work has no Project row yet. It is safe to remove before project
     # cleanup, and no running job reaches this point (the plan blocks those).
@@ -249,7 +259,7 @@ def delete_all_projects(db: Session, settings: Settings) -> BulkProjectDeletionR
     failed_projects: dict[str, str] = {}
     for project in plan.projects:
         try:
-            result = delete_project(db, project.project_id, settings)
+            result = delete_one(db, project.project_id, settings)
         except ProjectDeletionError as exc:
             failed_projects[project.project_id] = str(exc)
             break

@@ -5,13 +5,16 @@ import test from "node:test";
 const api = readFileSync(new URL("./api.ts", import.meta.url), "utf8");
 const workspace = readFileSync(new URL("../components/project-workspace.tsx", import.meta.url), "utf8");
 
-test("project deletion uses the DELETE API and an explicit German confirmation dialog", () => {
+test("project deletion uses the DELETE API and an upload-aware explicit confirmation dialog", () => {
   assert.match(api, /deleteProject\(projectId: string\)/);
   assert.match(api, /method: "DELETE"/);
-  assert.match(workspace, /Projekt wirklich löschen\?/);
-  assert.match(workspace, /Das Projekt und seine zugehörigen Dateien werden dauerhaft gelöscht\./);
-  assert.match(workspace, />Abbrechen</);
-  assert.match(workspace, /Projekt löschen/);
+  assert.match(api, /\/delete-plan/);
+  assert.match(api, /confirm_unverified=true/);
+  assert.match(workspace, /getProjectDeletePlan\(project\.id\)/);
+  assert.match(workspace, /deleteDialogCopy\(deletePlan\)/);
+  assert.match(workspace, /Local storage to be freed/);
+  assert.match(workspace, /Learning data retained/);
+  assert.match(workspace, />Cancel</);
   assert.match(workspace, /deleteConfirmationOpen/);
   assert.doesNotMatch(workspace, /window\.confirm/);
 });

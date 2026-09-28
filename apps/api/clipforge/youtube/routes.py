@@ -1,8 +1,9 @@
 """HTTP API for the YouTube Learning Loop (connection, uploads, analytics)."""
 from __future__ import annotations
 
+import base64
+import binascii
 import logging
-from datetime import datetime
 from threading import Thread
 from typing import Annotated, Any
 from urllib.parse import urlencode
@@ -20,8 +21,8 @@ from ..database import SessionLocal, get_db
 from ..integrations import get_secret_store
 from ..models import YouTubeUpload
 from ..security.secrets import SecretStore
-from ..services import RevisionConflict, get_project
-from . import analytics, connection, learning, uploads
+from ..services import RevisionConflict, effective_revision_state, get_project
+from . import analytics, connection, learning, lifecycle, publishing, uploads
 from .provider import GoogleYouTubeProvider, YouTubeApiError, YouTubeProvider
 
 logger = logging.getLogger(__name__)
@@ -53,10 +54,7 @@ def start_upload_thread(upload_id: str, path: Any) -> None:
         with SessionLocal() as db:
             upload = uploads.run_upload(db, upload_id, path, settings, store, provider)
             if upload is not None and upload.youtube_video_id:
-                try:
-                    uploads.sync_status(db, upload, settings, store, provider)
-                except (YouTubeApiError, uploads.UploadRefused):
-                    pass  # status can be refreshed later; the video ID is saved
+                uploads.after_upload(db, upload, settings, store, provider)
 
     Thread(target=work, daemon=True, name=f"youtube-upload-{upload_id[:8]}").start()
 
@@ -96,6 +94,10 @@ ERROR_STATUS = {
     "export_outdated": status.HTTP_409_CONFLICT,
     "export_missing": status.HTTP_409_CONFLICT,
     "revision_conflict": status.HTTP_409_CONFLICT,
+    "not_rendered": status.HTTP_409_CONFLICT,
+    "render_missing": status.HTTP_409_CONFLICT,
+    "preflight_failed": 422,
+    "thumbnail_not_allowed": status.HTTP_403_FORBIDDEN,
 }
 
 
@@ -111,7 +113,9 @@ def _api_error(exc: YouTubeApiError) -> HTTPException:
 
 
 def _refused(exc: uploads.UploadRefused) -> HTTPException:
-    extra = {"upload": jsonable_encoder(uploads.serialize_upload(exc.upload))} if exc.upload is not None else {}
+    extra: dict[str, Any] = {"upload": jsonable_encoder(uploads.serialize_upload(exc.upload))} if exc.upload is not None else {}
+    if exc.issues:
+        extra["issues"] = exc.issues
     return _error(exc.code, exc.message, **extra)
 
 
@@ -197,11 +201,24 @@ def disconnect_route(db: DbSession, settings: SettingsDep, store: StoreDep, prov
 
 class UploadCreate(BaseModel):
     base_revision: int
+    options: publishing.PublishOptions
+    region: str = Field(default="US", min_length=2, max_length=2)
+    language: str = Field(default="en", max_length=20)
     force_new: bool = False
 
 
-class ScheduleCreate(BaseModel):
-    publish_at: datetime
+class PreflightCreate(BaseModel):
+    options: publishing.PublishOptions
+    region: str = Field(default="US", min_length=2, max_length=2)
+    language: str = Field(default="en", max_length=20)
+
+
+class CustomThumbnailCreate(BaseModel):
+    data_base64: str = Field(max_length=28_000_000)
+
+
+class AudienceUpdate(BaseModel):
+    made_for_kids: bool
 
 
 class ManualMetricCreate(BaseModel):
@@ -210,31 +227,54 @@ class ManualMetricCreate(BaseModel):
     note: str | None = Field(default=None, max_length=500)
 
 
-def _render_status(db: Session, project, settings: Settings, channel_id: str | None) -> dict[str, Any]:
+def _categories(db: Session, settings: Settings, store: SecretStore, provider: YouTubeProvider, region: str, language: str) -> tuple[list[dict[str, Any]] | None, dict[str, str] | None]:
     try:
-        target = uploads.resolve_export(project, settings)
-    except uploads.UploadRefused as exc:
-        return {"uploadable": False, "code": exc.code, "message": exc.message}
-    sha = uploads.cached_sha256(target.path)
+        _connection, token = connection.access_token(db, settings, store, provider, capability="read")
+        return publishing.list_categories(provider, token, region, language), None
+    except YouTubeApiError as exc:
+        return None, {"code": exc.code, "message": exc.message}
+
+
+def _render_status(db: Session, project, settings: Settings, channel_id: str | None) -> dict[str, Any]:
+    """Is the current render uploadable? Revision-level check: nothing is hashed or mixed here."""
+    state = effective_revision_state(project)
+    render = state.get("render") if isinstance(state.get("render"), dict) else {}
+    if render.get("status") != "complete" or render.get("stale"):
+        return {"uploadable": False, "code": "not_rendered", "message": "Render this revision before uploading it to YouTube."}
+    render_revision = int(render.get("revision") or project.current_revision)
     existing = None
     if channel_id:
-        existing = db.scalar(select(YouTubeUpload).where(YouTubeUpload.idempotency_key == uploads.idempotency_key(channel_id, project.id, sha)))
+        existing = db.scalar(
+            select(YouTubeUpload)
+            .where(
+                YouTubeUpload.project_id == project.id,
+                YouTubeUpload.channel_id == channel_id,
+                YouTubeUpload.render_revision == render_revision,
+                YouTubeUpload.idempotency_key.is_not(None),
+            )
+            .order_by(YouTubeUpload.created_at.desc())
+        )
+    retry = existing is not None and existing.youtube_video_id is None and existing.state == "failed" and existing.last_error_code != "session_expired_unknown_outcome"
     return {
-        "uploadable": existing is None or (existing.youtube_video_id is None and existing.state == "failed" and existing.last_error_code != "session_expired_unknown_outcome"),
+        "uploadable": existing is None or retry,
         "code": "already_uploaded" if existing is not None and existing.youtube_video_id else None,
-        "render_revision": target.render_revision,
-        "project_revision": target.project_revision,
-        "render_sha256": sha,
+        "render_revision": render_revision,
+        "project_revision": project.current_revision,
         "existing_upload_id": existing.id if existing else None,
         "message": f"Already uploaded as {existing.youtube_video_id}" if existing is not None and existing.youtube_video_id else None,
     }
 
 
-@router.get("/projects/{project_id}")
-def project_youtube_route(project_id: str, db: DbSession, settings: SettingsDep, store: StoreDep) -> dict:
+def _project_or_404(db: Session, project_id: str):
     project = get_project(db, project_id)
     if project is None:
         raise HTTPException(status_code=404, detail="Project not found")
+    return project
+
+
+@router.get("/projects/{project_id}")
+def project_youtube_route(project_id: str, db: DbSession, settings: SettingsDep, store: StoreDep) -> dict:
+    project = _project_or_404(db, project_id)
     record = connection.active_connection(db)
     rows = db.scalars(
         select(YouTubeUpload).where(YouTubeUpload.project_id == project_id).order_by(YouTubeUpload.created_at.desc())
@@ -251,34 +291,117 @@ def project_youtube_route(project_id: str, db: DbSession, settings: SettingsDep,
     }
 
 
+@router.get("/projects/{project_id}/draft")
+def publishing_draft_route(
+    project_id: str, db: DbSession, settings: SettingsDep, store: StoreDep, provider: ProviderDep,
+    region: str = "US", language: str = "en",
+) -> dict:
+    """Everything the publishing sheet needs, with only user-saved defaults applied."""
+    project = _project_or_404(db, project_id)
+    state = effective_revision_state(project)
+    defaults = publishing.load_defaults(db)
+    draft = publishing.options_with_defaults(publishing.default_metadata(state, project.title), defaults)
+    choices = publishing.thumbnail_choices(state, project.id, settings)
+    selected = publishing.default_thumbnail(choices)
+    draft["thumbnail"] = {"source": selected["source"], "asset": selected["asset"]} if selected else None
+    categories, category_error = _categories(db, settings, store, provider, region, language)
+    suggestion = publishing.suggest_category(categories or [], state)
+    render = state.get("render") if isinstance(state.get("render"), dict) else {}
+    render_revision = int(render.get("revision") or project.current_revision)
+    fingerprint_state = {rev.number: rev.state for rev in project.revisions}.get(render_revision, state)
+    from .fingerprint import build_fingerprint
+
+    fingerprint = build_fingerprint(fingerprint_state, project_id=project.id, render_revision=render_revision, render_sha256="", file_size=0)
+    return {
+        "options": draft,
+        "defaults": defaults.model_dump(),
+        "thumbnails": choices,
+        "categories": categories or [],
+        "category_error": category_error,
+        "suggested_category": suggestion,
+        "synthetic_suggestion": publishing.synthetic_suggestion(fingerprint),
+        "allowed_visibilities": publishing.allowed_visibilities(defaults),
+        "limits": {"title": publishing.TITLE_LIMIT, "description_bytes": publishing.DESCRIPTION_LIMIT_BYTES, "tags": publishing.TAGS_LIMIT_CHARS},
+        "catalog": publishing.settings_catalog(),
+        "render_status": _render_status(db, project, settings, record.channel_id if (record := connection.active_connection(db)) else None),
+    }
+
+
+@router.post("/projects/{project_id}/preflight")
+def preflight_route(project_id: str, payload: PreflightCreate, db: DbSession, settings: SettingsDep, store: StoreDep, provider: ProviderDep) -> dict:
+    project = _project_or_404(db, project_id)
+    categories, _error = _categories(db, settings, store, provider, payload.region, payload.language)
+    issues, resolution, _source = uploads.preflight(db, project, settings, payload.options, categories=categories)
+    return {"issues": issues, "schedule": resolution.as_dict() if resolution else None, "ready": not issues}
+
+
+@router.post("/projects/{project_id}/thumbnails")
+def custom_thumbnail_route(project_id: str, payload: CustomThumbnailCreate, db: DbSession, settings: SettingsDep) -> dict:
+    project = _project_or_404(db, project_id)
+    try:
+        data = base64.b64decode(payload.data_base64.split(",", 1)[-1], validate=True)
+        name = publishing.save_custom_thumbnail(project.id, data, settings)
+    except (ValueError, binascii.Error) as exc:
+        raise _error("invalid_thumbnail", str(exc) or "The image could not be read.") from exc
+    return {"asset": name, "thumbnails": publishing.thumbnail_choices(effective_revision_state(project), project.id, settings)}
+
+
+@router.post("/schedule/resolve")
+def resolve_schedule_route(payload: publishing.ScheduleChoice) -> dict:
+    return publishing.resolve_schedule(payload).as_dict()
+
+
+@router.get("/categories")
+def categories_route(db: DbSession, settings: SettingsDep, store: StoreDep, provider: ProviderDep, region: str = "US", language: str = "en") -> dict:
+    categories, error = _categories(db, settings, store, provider, region[:2], language[:20])
+    return {"categories": categories or [], "error": error}
+
+
+@router.get("/defaults")
+def get_defaults_route(db: DbSession) -> dict:
+    defaults = publishing.load_defaults(db)
+    return {"defaults": defaults.model_dump(), "allowed_visibilities": publishing.allowed_visibilities(defaults), "catalog": publishing.settings_catalog()}
+
+
+@router.put("/defaults")
+def save_defaults_route(payload: publishing.UploadDefaults, db: DbSession) -> dict:
+    try:
+        defaults = publishing.save_defaults(db, payload)
+    except ValueError as exc:
+        raise _error("invalid_defaults", str(exc)) from exc
+    return {"defaults": defaults.model_dump(), "allowed_visibilities": publishing.allowed_visibilities(defaults), "catalog": publishing.settings_catalog()}
+
+
 @router.post("/projects/{project_id}/uploads", status_code=status.HTTP_202_ACCEPTED)
 def create_upload_route(
     project_id: str,
     payload: UploadCreate,
     db: DbSession,
     settings: SettingsDep,
+    store: StoreDep,
+    provider: ProviderDep,
     dispatch: DispatcherDep,
 ) -> dict:
-    project = get_project(db, project_id)
-    if project is None:
-        raise HTTPException(status_code=404, detail="Project not found")
+    project = _project_or_404(db, project_id)
     if payload.base_revision != project.current_revision:
         raise _error("revision_conflict", "Project changed; reload before uploading.")
     record = connection.active_connection(db)
     if record is None:
         raise _error("not_connected", "Connect a YouTube channel first.")
+    categories, _error_detail = _categories(db, settings, store, provider, payload.region, payload.language)
     try:
-        upload, target, should_run = uploads.request_upload(
-            db, project, settings, channel_id=record.channel_id, force_new=payload.force_new
+        upload, source, should_run = uploads.request_upload(
+            db, project, settings, channel_id=record.channel_id, options=payload.options,
+            categories=categories, force_new=payload.force_new,
         )
     except uploads.UploadRefused as exc:
         raise _refused(exc) from exc
     except RevisionConflict as exc:
         raise _error("revision_conflict", str(exc)) from exc
     if should_run:
-        dispatch(upload.id, target.path)
+        dispatch(upload.id, source.path)
         db.refresh(upload)
-    return {"upload": uploads.serialize_upload(upload), "started": should_run}
+    return {"upload": uploads.serialize_upload(upload), "started": should_run, "warnings": list(source.warnings)}
 
 
 @router.post("/uploads/{upload_id}/retry", status_code=status.HTTP_202_ACCEPTED)
@@ -290,23 +413,43 @@ def retry_upload_route(upload_id: str, db: DbSession, settings: SettingsDep, dis
         raise _error("not_retryable", "Only a failed upload can be retried.")
     if upload.last_error_code == "session_expired_unknown_outcome":
         raise _error("unknown_outcome", "An earlier upload may have completed on YouTube. Check YouTube Studio, then confirm a new upload from the project.")
-    project = get_project(db, upload.project_id)
-    if project is None:
-        raise HTTPException(status_code=404, detail="Project not found")
+    project = _project_or_404(db, upload.project_id)
     try:
-        target = uploads.resolve_export(project, settings)
+        source = uploads.resolve_upload_source(project, settings)
     except uploads.UploadRefused as exc:
         raise _refused(exc) from exc
-    dispatch(upload.id, target.path)
+    dispatch(upload.id, source.path)
     db.refresh(upload)
     return {"upload": uploads.serialize_upload(upload), "started": True}
 
 
-@router.post("/uploads/{upload_id}/schedule")
-def schedule_route(upload_id: str, payload: ScheduleCreate, db: DbSession, settings: SettingsDep, store: StoreDep, provider: ProviderDep) -> dict:
+@router.post("/uploads/{upload_id}/thumbnail/retry")
+def retry_thumbnail_route(upload_id: str, db: DbSession, settings: SettingsDep, store: StoreDep, provider: ProviderDep) -> dict:
     upload = _upload_or_404(db, upload_id)
     try:
-        uploads.schedule_publication(db, upload, payload.publish_at, settings, store, provider)
+        uploads.apply_thumbnail(db, upload, settings, store, provider)
+    except uploads.UploadRefused as exc:
+        raise _refused(exc) from exc
+    return {"upload": uploads.serialize_upload(upload)}
+
+
+@router.post("/uploads/{upload_id}/audience")
+def audience_route(upload_id: str, payload: AudienceUpdate, db: DbSession, settings: SettingsDep, store: StoreDep, provider: ProviderDep) -> dict:
+    upload = _upload_or_404(db, upload_id)
+    try:
+        uploads.set_audience(db, upload, payload.made_for_kids, settings, store, provider)
+    except uploads.UploadRefused as exc:
+        raise _refused(exc) from exc
+    except YouTubeApiError as exc:
+        raise _api_error(exc) from exc
+    return {"upload": uploads.serialize_upload(upload)}
+
+
+@router.post("/uploads/{upload_id}/schedule")
+def schedule_route(upload_id: str, payload: publishing.ScheduleChoice, db: DbSession, settings: SettingsDep, store: StoreDep, provider: ProviderDep) -> dict:
+    upload = _upload_or_404(db, upload_id)
+    try:
+        uploads.schedule_publication(db, upload, payload, settings, store, provider)
     except uploads.UploadRefused as exc:
         raise _refused(exc) from exc
     except YouTubeApiError as exc:
@@ -366,4 +509,29 @@ def learning_route(db: DbSession, settings: SettingsDep) -> dict:
     return {
         "baseline": learning.channel_baseline(db, record.channel_id, min_sample=settings.youtube_baseline_min_sample),
         "table": learning.learning_table(db, record.channel_id),
+    }
+
+
+@router.get("/archive")
+def archive_route(db: DbSession, settings: SettingsDep) -> dict:
+    """Learning History: uploaded videos whose local project was deleted (read-only)."""
+    return {
+        "entries": [
+            lifecycle.serialize_archive_entry(db, upload, archive, min_sample=settings.youtube_baseline_min_sample)
+            for upload, archive in lifecycle.archived_uploads(db)
+        ]
+    }
+
+
+@router.get("/archive/{upload_id}")
+def archive_entry_route(upload_id: str, db: DbSession, settings: SettingsDep) -> dict:
+    entry = next(((upload, archive) for upload, archive in lifecycle.archived_uploads(db) if upload.id == upload_id), None)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="Archived video not found")
+    upload, archive = entry
+    fingerprint = learning.fingerprint_for(db, upload)
+    return {
+        **lifecycle.serialize_archive_entry(db, upload, archive, min_sample=settings.youtube_baseline_min_sample),
+        "performance": learning.performance_report(db, upload, min_sample=settings.youtube_baseline_min_sample),
+        "fingerprint": {key: fingerprint.get(key) for key in ("content", "hook", "visual", "pacing", "quality", "audio")},
     }

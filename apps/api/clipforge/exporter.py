@@ -182,6 +182,107 @@ def verify_mp4(path: Path) -> None:
         raise ExportUnavailable("The export is not a valid narrated MP4 with video and audio.")
 
 
+def _mix_music(source: Path, destination: Path, state: dict[str, Any], track: Path) -> None:
+    """Mix the selected licensed music under the immutable narrated render."""
+    music = state.get("music") if isinstance(state.get("music"), dict) else {}
+    selected = music.get("track") if isinstance(music.get("track"), dict) else {}
+    logger.info(
+        "Mixing music track_id=%s source=%s exists=%s size=%s",
+        selected.get("id"), track, track.is_file(), track.stat().st_size if track.is_file() else 0,
+    )
+    ffmpeg = ffmpeg_path()
+    if not ffmpeg:
+        raise ExportUnavailable("FFmpeg is unavailable, so ClipForge cannot mix the selected music.")
+    timeline = state.get("timeline") if isinstance(state.get("timeline"), dict) else {}
+    duration = max(1.0, float(timeline.get("duration") or 60))
+    command = [ffmpeg, "-y", "-v", "error", "-i", str(source), *music_input_args(track, duration)]
+    # The base render already contains the immutable narration. ffprobe is
+    # deliberately avoided here; -shortest safely follows the video source.
+    command.extend([
+        "-filter_complex", music_filter_graph(music_render_config(state), duration),
+        "-map", "0:v:0", "-map", "[mixed]", "-c:v", "copy", "-c:a", "aac",
+        "-shortest", "-movflags", "+faststart", str(destination),
+    ])
+    try:
+        completed = subprocess.run(command, capture_output=True, text=True, timeout=180, check=False)
+    except (OSError, subprocess.SubprocessError) as exc:
+        logger.warning("Music export FFmpeg invocation failed track_id=%s error=%s", selected.get("id"), exc)
+        raise ExportUnavailable("The selected music could not be mixed into the export.") from exc
+    if completed.returncode != 0 or not destination.is_file():
+        logger.warning(
+            "Music export mix failed track_id=%s returncode=%s output_exists=%s stderr=%s",
+            selected.get("id"), completed.returncode, destination.is_file(),
+            " ".join((completed.stderr or "").split())[-1000:],
+        )
+        raise ExportUnavailable("The selected music could not be mixed into the export.")
+    logger.info("Music export mix complete track_id=%s output=%s size=%s", selected.get("id"), destination, destination.stat().st_size)
+
+
+@dataclass(frozen=True)
+class FinalMaster:
+    """The one canonical final MP4 of a rendered revision (what viewers get)."""
+
+    path: Path
+    kind: str  # "render" | "mixed_master" | "export"
+    render_revision: int
+    warnings: tuple[str, ...] = ()
+
+
+def _music_signature(state: dict[str, Any], track: Path) -> str:
+    music = state.get("music") if isinstance(state.get("music"), dict) else {}
+    selected = music.get("track") if isinstance(music.get("track"), dict) else {}
+    payload = json.dumps(
+        {"config": music_render_config(state), "track": selected.get("id"), "file": track.name, "size": track.stat().st_size},
+        sort_keys=True, default=str,
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:12]
+
+
+def resolve_final_master(
+    project_id: str,
+    title: str,
+    state: dict[str, Any],
+    settings: Settings,
+    *,
+    verifier: Verifier | None = None,
+) -> FinalMaster:
+    """Resolve the final video directly from ClipForge storage - no export step.
+
+    Without music the narrated render *is* the final video (no copy).  With
+    music, the same mix the export uses is written once next to the render
+    (``renders/vN/final-<signature>.mp4``) and reused by every consumer.  After
+    an export cleaned the working render, the canonical export is the final.
+    """
+    render = state.get("render") if isinstance(state.get("render"), dict) else {}
+    export = state.get("export") if isinstance(state.get("export"), dict) else {}
+    if render.get("status") != "complete" or render.get("stale"):
+        raise ExportUnavailable("Finish rendering this revision first.")
+    revision = int(render.get("revision") or 0)
+    url = str(render.get("url") or "")
+    if url.startswith("/media/"):
+        project_dir = _project_directory(project_id, settings)
+        source = _source_render(state, project_dir, settings)
+        music = state.get("music") if isinstance(state.get("music"), dict) else {}
+        if not music.get("enabled"):
+            return FinalMaster(source, "render", revision)
+        track = resolve_track_path(music)
+        if track is None:
+            return FinalMaster(source, "render", revision, ("The selected music track is unavailable; the video has narration only.",))
+        master = source.parent / f"final-{_music_signature(state, track)}.mp4"
+        if not master.is_file():
+            staging = source.parent / f".final-{uuid.uuid4().hex}.staging.mp4"
+            try:
+                _mix_music(source, staging, state, track)
+                (verifier or verify_mp4)(staging)
+                os.replace(staging, master)
+            finally:
+                staging.unlink(missing_ok=True)
+        return FinalMaster(master, "mixed_master", revision)
+    if export.get("status") == "exported" and render.get("exported") and url == export.get("media_url"):
+        return FinalMaster(exported_video_path(project_id, title, export, settings), "export", revision)
+    raise ExportUnavailable("The final video of this revision is not available in ClipForge storage.")
+
+
 def cleanup_project_files(project_id: str, settings: Settings) -> CleanupResult:
     project_dir = _project_directory(project_id, settings)
     storage_root = settings.render_root.resolve()
@@ -284,37 +385,7 @@ def finalize_export(
                 )
             shutil.copy2(source, staging)
         else:
-            selected = music.get("track") if isinstance(music.get("track"), dict) else {}
-            logger.info(
-                "Mixing music track_id=%s source=%s exists=%s size=%s",
-                selected.get("id"), track, track.is_file(), track.stat().st_size if track.is_file() else 0,
-            )
-            ffmpeg = ffmpeg_path()
-            if not ffmpeg:
-                raise ExportUnavailable("FFmpeg is unavailable, so ClipForge cannot mix the selected music.")
-            timeline = state.get("timeline") if isinstance(state.get("timeline"), dict) else {}
-            duration = max(1.0, float(timeline.get("duration") or 60))
-            command = [ffmpeg, "-y", "-v", "error", "-i", str(source), *music_input_args(track, duration)]
-            # The base render already contains the immutable narration. ffprobe is
-            # deliberately avoided here; -shortest safely follows the video source.
-            command.extend([
-                "-filter_complex", music_filter_graph(music_render_config(state), duration),
-                "-map", "0:v:0", "-map", "[mixed]", "-c:v", "copy", "-c:a", "aac",
-                "-shortest", "-movflags", "+faststart", str(staging),
-            ])
-            try:
-                completed = subprocess.run(command, capture_output=True, text=True, timeout=180, check=False)
-            except (OSError, subprocess.SubprocessError) as exc:
-                logger.warning("Music export FFmpeg invocation failed track_id=%s error=%s", selected.get("id"), exc)
-                raise ExportUnavailable("The selected music could not be mixed into the export.") from exc
-            if completed.returncode != 0 or not staging.is_file():
-                logger.warning(
-                    "Music export mix failed track_id=%s returncode=%s output_exists=%s stderr=%s",
-                    selected.get("id"), completed.returncode, staging.is_file(),
-                    " ".join((completed.stderr or "").split())[-1000:],
-                )
-                raise ExportUnavailable("The selected music could not be mixed into the export.")
-            logger.info("Music export mix complete track_id=%s output=%s size=%s", selected.get("id"), staging, staging.stat().st_size)
+            _mix_music(source, staging, state, track)
         verifier(staging)
         if had_previous:
             os.replace(destination, backup)

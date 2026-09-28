@@ -1,0 +1,129 @@
+{
+ "enums": {
+  "VideoStatus.license": [
+   "youtube",
+   "creativeCommon"
+  ],
+  "VideoStatus.privacyStatus": [
+   "public",
+   "unlisted",
+   "private"
+  ]
+ },
+ "methods": {
+  "thumbnails.set": {
+   "accept": [
+    "image/jpeg",
+    "image/png",
+    "application/octet-stream"
+   ],
+   "parameters": [
+    "onBehalfOfContentOwner",
+    "videoId"
+   ]
+  },
+  "videoCategories.list": {
+   "parameters": [
+    "hl",
+    "id",
+    "part",
+    "regionCode"
+   ]
+  },
+  "videos.insert": {
+   "parameters": [
+    "autoLevels",
+    "notifySubscribers",
+    "onBehalfOfContentOwner",
+    "onBehalfOfContentOwnerChannel",
+    "part",
+    "stabilize"
+   ]
+  },
+  "videos.update": {
+   "parameters": [
+    "onBehalfOfContentOwner",
+    "part"
+   ]
+  }
+ },
+ "note": "Property names only, extracted from Google's official YouTube Data API v3 discovery document.",
+ "revision": "20260924",
+ "schemas": {
+  "Video": [
+   "ageGating",
+   "brandPartner",
+   "contentDetails",
+   "etag",
+   "fileDetails",
+   "id",
+   "kind",
+   "liveStreamingDetails",
+   "localizations",
+   "monetizationDetails",
+   "paidProductPlacementDetails",
+   "player",
+   "processingDetails",
+   "projectDetails",
+   "recordingDetails",
+   "snippet",
+   "statistics",
+   "status",
+   "suggestions",
+   "topicDetails"
+  ],
+  "VideoCategorySnippet": [
+   "assignable",
+   "channelId",
+   "title"
+  ],
+  "VideoContentDetails": [
+   "caption",
+   "contentRating",
+   "countryRestriction",
+   "definition",
+   "dimension",
+   "duration",
+   "hasCustomThumbnail",
+   "licensedContent",
+   "projection",
+   "regionRestriction"
+  ],
+  "VideoPaidProductPlacementDetails": [
+   "hasPaidProductPlacement"
+  ],
+  "VideoRecordingDetails": [
+   "location",
+   "locationDescription",
+   "recordingDate"
+  ],
+  "VideoSnippet": [
+   "categoryId",
+   "channelId",
+   "channelTitle",
+   "defaultAudioLanguage",
+   "defaultLanguage",
+   "description",
+   "liveBroadcastContent",
+   "localized",
+   "publishedAt",
+   "tags",
+   "thumbnails",
+   "title"
+  ],
+  "VideoStatus": [
+   "containsSyntheticMedia",
+   "embeddable",
+   "failureReason",
+   "license",
+   "madeForKids",
+   "privacyStatus",
+   "publicStatsViewable",
+   "publishAt",
+   "rejectionReason",
+   "selfDeclaredMadeForKids",
+   "uploadStatus"
+  ]
+ },
+ "source": "https://www.googleapis.com/discovery/v1/apis/youtube/v3/rest"
+}

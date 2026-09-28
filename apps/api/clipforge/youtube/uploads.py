@@ -1,8 +1,9 @@
-"""Private-first, revision-safe, resumable YouTube uploads (the one uploader).
+"""Revision-safe, resumable YouTube uploads (the one uploader).
 
-Identity is never inferred from titles: every row is keyed by the connected
-``channel_id``, ``project_id``, the exported render revision and the SHA-256
-of the exact exported MP4.  ``idempotency_key`` makes a second upload of the
+Uploads read ClipForge's canonical final render directly - no export or
+download step.  Identity is never inferred from titles: every row is keyed by
+the connected ``channel_id``, ``project_id``, the render revision and the
+SHA-256 of the exact uploaded MP4.  ``idempotency_key`` makes a second upload of the
 same render impossible without an explicit, safe user action.
 """
 from __future__ import annotations
@@ -10,10 +11,9 @@ from __future__ import annotations
 import copy
 import hashlib
 import logging
-import re
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -22,24 +22,30 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..config import Settings
-from ..exporter import ExportUnavailable, exported_video_path
-from ..models import ProductionFingerprint, Project, YouTubeUpload
+from ..exporter import ExportUnavailable, resolve_final_master
+from ..models import Project, YouTubeUpload
 from ..security.secrets import SecretStore
 from ..services import effective_revision_state
 from .connection import access_token
 from .fingerprint import get_or_create_fingerprint
 from .provider import YouTubeApiError, YouTubeProvider, read_chunks
+from .publishing import (
+    PublishOptions,
+    ScheduleChoice,
+    ScheduleResolution,
+    ThumbnailChoice,
+    insert_body,
+    load_defaults,
+    prepare_thumbnail,
+    resolve_schedule,
+    thumbnail_choices,
+    validate_options,
+)
 
 logger = logging.getLogger(__name__)
 
 UPLOAD_STATES = ("pending", "uploading", "uploaded", "processing", "ready", "failed")
 ACTIVE_STATES = ("pending", "uploading")
-TITLE_LIMIT = 100
-DESCRIPTION_LIMIT_BYTES = 5000
-TAGS_LIMIT_CHARS = 500
-MAX_DESCRIPTION_HASHTAGS = 15
-MIN_SCHEDULE_LEAD = timedelta(minutes=15)
-MAX_SCHEDULE_AHEAD = timedelta(days=365)
 # Mutable status fields that videos.update(part=status) would otherwise reset.
 MUTABLE_STATUS_FIELDS = (
     "privacyStatus",
@@ -53,20 +59,12 @@ MUTABLE_STATUS_FIELDS = (
 
 
 class UploadRefused(RuntimeError):
-    def __init__(self, code: str, message: str, upload: YouTubeUpload | None = None) -> None:
+    def __init__(self, code: str, message: str, upload: YouTubeUpload | None = None, *, issues: list[dict[str, str]] | None = None) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
         self.upload = upload
-
-
-@dataclass(frozen=True)
-class ExportTarget:
-    path: Path
-    project_revision: int
-    render_revision: int
-    current_state: dict[str, Any]
-    render_state: dict[str, Any]
+        self.issues = issues or []
 
 
 def _now() -> datetime:
@@ -98,37 +96,42 @@ def google_time(value: datetime) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Export resolution and metadata
+# Source resolution: the canonical final render, no export step
 # ---------------------------------------------------------------------------
 
 
-def resolve_export(project: Project, settings: Settings) -> ExportTarget:
-    """The canonical exported MP4 of the *current* revision, or a clear refusal."""
+@dataclass(frozen=True)
+class UploadSource:
+    path: Path
+    kind: str
+    project_revision: int
+    render_revision: int
+    current_state: dict[str, Any]
+    render_state: dict[str, Any]
+    warnings: tuple[str, ...] = ()
+
+
+def resolve_upload_source(project: Project, settings: Settings) -> UploadSource:
+    """The final video of the *current* revision, straight from ClipForge storage."""
     state = effective_revision_state(project)
-    export = state.get("export") if isinstance(state.get("export"), dict) else {}
     render = state.get("render") if isinstance(state.get("render"), dict) else {}
-    if export.get("status") != "exported":
-        raise UploadRefused("not_exported", "Export the MP4 first; ClipForge uploads the final exported video.")
-    if (
-        render.get("status") != "complete"
-        or render.get("stale")
-        or not render.get("exported")
-        or render.get("url") != export.get("media_url")
-    ):
-        raise UploadRefused("export_outdated", "This revision changed after the last export. Export the MP4 again before uploading.")
+    if render.get("status") != "complete" or render.get("stale"):
+        raise UploadRefused("not_rendered", "Render this revision before uploading it to YouTube.")
     try:
-        path = exported_video_path(project.id, project.title, export, settings)
+        master = resolve_final_master(project.id, project.title, state, settings)
     except ExportUnavailable as exc:
-        raise UploadRefused("export_missing", str(exc)) from exc
-    render_revision = int(render.get("revision") or export.get("source_revision") or project.current_revision)
+        raise UploadRefused("render_missing", str(exc)) from exc
+    render_revision = master.render_revision or project.current_revision
     revisions = {revision.number: revision for revision in project.revisions}
     render_state = copy.deepcopy(revisions[render_revision].state) if render_revision in revisions else state
-    return ExportTarget(
-        path=path,
+    return UploadSource(
+        path=master.path,
+        kind=master.kind,
         project_revision=project.current_revision,
         render_revision=render_revision,
         current_state=state,
         render_state=render_state,
+        warnings=master.warnings,
     )
 
 
@@ -144,7 +147,7 @@ _SHA_CACHE: dict[tuple[str, int, int], str] = {}
 
 
 def cached_sha256(path: Path) -> str:
-    """SHA-256 keyed by path, size and mtime (the canonical export is replaced atomically)."""
+    """SHA-256 keyed by path, size and mtime (final files are replaced atomically)."""
     stat = path.stat()
     key = (str(path), stat.st_size, stat.st_mtime_ns)
     if key not in _SHA_CACHE:
@@ -152,63 +155,6 @@ def cached_sha256(path: Path) -> str:
             _SHA_CACHE.clear()
         _SHA_CACHE[key] = file_sha256(path)
     return _SHA_CACHE[key]
-
-
-def _clean_text(value: Any) -> str:
-    # YouTube rejects "<" and ">" in titles and descriptions.
-    return re.sub(r"[<>]", "", str(value or "")).replace("\r\n", "\n").strip()
-
-
-def _truncate_bytes(text: str, limit: int) -> str:
-    encoded = text.encode("utf-8")
-    if len(encoded) <= limit:
-        return text
-    return encoded[:limit].decode("utf-8", "ignore").rstrip()
-
-
-def youtube_metadata(state: dict[str, Any], project: Project) -> dict[str, Any]:
-    """Title/description/tags from the saved YouTube social metadata, within API limits."""
-    platforms = ((state.get("social_metadata") or {}).get("platforms") or {})
-    youtube = platforms.get("youtube") if isinstance(platforms.get("youtube"), dict) else {}
-    title = _clean_text(youtube.get("title")) or _clean_text(project.title) or "ClipForge video"
-    title = " ".join(title.split())
-    if len(title) > TITLE_LIMIT:
-        title = title[:TITLE_LIMIT].rstrip()
-    hashtags = []
-    for tag in youtube.get("hashtags") or []:
-        clean = re.sub(r"[^\w]", "", str(tag).lstrip("#"), flags=re.UNICODE)
-        if clean and clean.casefold() not in {item.casefold() for item in hashtags}:
-            hashtags.append(clean)
-    description = _clean_text(youtube.get("description"))
-    missing = [tag for tag in hashtags[:MAX_DESCRIPTION_HASHTAGS] if f"#{tag}".casefold() not in description.casefold()]
-    if missing:
-        description = f"{description}\n\n{' '.join(f'#{tag}' for tag in missing)}".strip()
-    description = _truncate_bytes(description, DESCRIPTION_LIMIT_BYTES)
-    tags: list[str] = []
-    used = 0
-    for tag in hashtags:
-        cost = len(tag) + (2 if " " in tag else 0) + (1 if tags else 0)
-        if used + cost > TAGS_LIMIT_CHARS:
-            break
-        tags.append(tag)
-        used += cost
-    language = str((state.get("intent") or {}).get("language") or "").strip() or None
-    return {"title": title, "description": description, "tags": tags, "language": language}
-
-
-def upload_body(metadata: dict[str, Any], settings: Settings) -> dict[str, Any]:
-    snippet: dict[str, Any] = {
-        "title": metadata["title"],
-        "description": metadata["description"],
-        "categoryId": settings.youtube_upload_category_id,
-    }
-    if metadata.get("tags"):
-        snippet["tags"] = metadata["tags"]
-    if metadata.get("language"):
-        snippet["defaultLanguage"] = metadata["language"]
-        snippet["defaultAudioLanguage"] = metadata["language"]
-    # Private first, always; publication is a separate explicit action.
-    return {"snippet": snippet, "status": {"privacyStatus": "private"}}
 
 
 # ---------------------------------------------------------------------------
@@ -229,21 +175,73 @@ def _reupload_allowed(upload: YouTubeUpload) -> bool:
     )
 
 
+def _apply_options(upload: YouTubeUpload, options: PublishOptions, body: dict[str, Any], resolution: ScheduleResolution | None) -> None:
+    upload.title = body["snippet"]["title"][:120]
+    upload.description = body["snippet"]["description"]
+    upload.tags = list(body["snippet"].get("tags") or [])
+    upload.made_for_kids = bool(options.made_for_kids)
+    upload.contains_synthetic_media = bool(options.contains_synthetic_media)
+    upload.requested_visibility = options.visibility
+    upload.notify_subscribers = options.notify_subscribers
+    upload.upload_settings = {"body": body, "notify_subscribers": options.notify_subscribers, "options": options.model_dump()}
+    if options.thumbnail is None or options.thumbnail.source == "youtube_auto":
+        upload.thumbnail_source, upload.thumbnail_asset, upload.thumbnail_upload_status = "youtube_auto", None, "not_requested"
+    else:
+        upload.thumbnail_source, upload.thumbnail_asset, upload.thumbnail_upload_status = options.thumbnail.source, options.thumbnail.asset, "pending"
+    upload.thumbnail_failure_reason = None
+    if resolution is not None and resolution.status == "ok":
+        upload.publish_at = resolution.publish_at
+        upload.schedule_local_time = resolution.local_time
+        upload.schedule_timezone = resolution.timezone
+        upload.schedule_status = "scheduled"
+    else:
+        upload.publish_at, upload.schedule_local_time, upload.schedule_timezone, upload.schedule_status = None, None, None, "none"
+
+
+def preflight(
+    db: Session,
+    project: Project,
+    settings: Settings,
+    options: PublishOptions,
+    *,
+    categories: list[dict[str, Any]] | None = None,
+    now: datetime | None = None,
+) -> tuple[list[dict[str, str]], ScheduleResolution | None, UploadSource | None]:
+    issues: list[dict[str, str]] = []
+    try:
+        source = resolve_upload_source(project, settings)
+    except UploadRefused as exc:
+        issues.append({"field": "video", "message": exc.message})
+        source = None
+    defaults = load_defaults(db)
+    state = source.current_state if source else effective_revision_state(project)
+    option_issues, resolution = validate_options(
+        options, defaults=defaults, thumbnails=thumbnail_choices(state, project.id, settings), categories=categories, now=now,
+    )
+    return issues + option_issues, resolution, source
+
+
 def request_upload(
     db: Session,
     project: Project,
     settings: Settings,
     *,
     channel_id: str,
+    options: PublishOptions,
+    categories: list[dict[str, Any]] | None = None,
     force_new: bool = False,
-) -> tuple[YouTubeUpload, ExportTarget, bool]:
-    """Create (or reuse) the mapping for the current exported render.
+    now: datetime | None = None,
+) -> tuple[YouTubeUpload, UploadSource, bool]:
+    """Create (or reuse) the mapping for the current final render.
 
-    Returns ``(upload, target, should_run)``.  Raises ``UploadRefused`` with
-    code ``already_uploaded`` when this exact render already has a video.
+    Returns ``(upload, source, should_run)``.  Nothing is sent to YouTube if
+    the preflight finds anything missing (``UploadRefused("preflight_failed")``).
     """
-    target = resolve_export(project, settings)
-    sha = file_sha256(target.path)
+    issues, resolution, source = preflight(db, project, settings, options, categories=categories, now=now)
+    if issues or source is None:
+        raise UploadRefused("preflight_failed", f"{len(issues)} item{'s' if len(issues) != 1 else ''} need{'s' if len(issues) == 1 else ''} attention.", issues=issues)
+    body = insert_body(options, resolution)
+    sha = file_sha256(source.path)
     key = idempotency_key(channel_id, project.id, sha)
     existing = db.scalar(select(YouTubeUpload).where(YouTubeUpload.idempotency_key == key))
     if existing is not None:
@@ -261,40 +259,41 @@ def request_upload(
             existing.idempotency_key = None  # superseded, its history stays intact
             db.commit()
         elif existing.state in ACTIVE_STATES:
-            return existing, target, False
+            return existing, source, False
         else:
+            # A failed attempt that never produced a video: resume with the new settings.
             existing.state = "pending"
             existing.last_error_code = None
             existing.last_error_message = None
-            existing.project_revision = target.project_revision
+            existing.project_revision = source.project_revision
+            if not existing.upload_session_uri:
+                _apply_options(existing, options, body, resolution)
             db.commit()
-            return existing, target, True
+            return existing, source, True
     fingerprint = get_or_create_fingerprint(
         db,
-        target.render_state,
-        upload_state=target.current_state,
+        source.render_state,
+        upload_state=source.current_state,
         project_id=project.id,
-        render_revision=target.render_revision,
+        render_revision=source.render_revision,
         render_sha256=sha,
-        file_size=target.path.stat().st_size,
+        file_size=source.path.stat().st_size,
     )
-    metadata = youtube_metadata(target.current_state, project)
     upload = YouTubeUpload(
         project_id=project.id,
-        project_revision=target.project_revision,
-        render_revision=target.render_revision,
+        project_revision=source.project_revision,
+        render_revision=source.render_revision,
         render_sha256=sha,
-        render_file_size=target.path.stat().st_size,
-        render_content_hash=((target.render_state.get("content_hashes") or {}).get("render")),
+        render_file_size=source.path.stat().st_size,
+        render_content_hash=((source.render_state.get("content_hashes") or {}).get("render")),
+        source_kind=source.kind,
         channel_id=channel_id,
         idempotency_key=key,
         fingerprint_id=fingerprint.id,
         state="pending",
         privacy_status="private",
-        title=metadata["title"][:120],
-        description=metadata["description"],
-        tags=metadata["tags"],
     )
+    _apply_options(upload, options, body, resolution)
     db.add(upload)
     try:
         db.commit()
@@ -303,9 +302,9 @@ def request_upload(
         raced = db.scalar(select(YouTubeUpload).where(YouTubeUpload.idempotency_key == key))
         if raced is None:
             raise
-        return raced, target, False
+        return raced, source, False
     db.refresh(upload)
-    return upload, target, True
+    return upload, source, True
 
 
 def claim_upload(db: Session, upload_id: str) -> bool:
@@ -402,13 +401,15 @@ def run_upload(
                         return upload
                     offset = progress.offset
             if not upload.upload_session_uri:
-                fingerprint = db.get(ProductionFingerprint, upload.fingerprint_id) if upload.fingerprint_id else None
-                content = (fingerprint.fingerprint.get("content") or {}) if fingerprint is not None else {}
-                body = upload_body(
-                    {"title": upload.title, "description": upload.description, "tags": list(upload.tags or []), "language": content.get("language")},
-                    settings,
+                body = (upload.upload_settings or {}).get("body")
+                if not body or body.get("status", {}).get("selfDeclaredMadeForKids") is None:
+                    # Never send a video without an explicit audience answer.
+                    _fail(db, upload, "settings_missing", "This upload has no publishing settings. Start it again from the publishing sheet.", keep_session=False)
+                    return upload
+                upload.upload_session_uri = provider.start_resumable_upload(
+                    token, body, size, "video/mp4",
+                    notify_subscribers=bool((upload.upload_settings or {}).get("notify_subscribers", True)),
                 )
-                upload.upload_session_uri = provider.start_resumable_upload(token, body, size, "video/mp4")
                 upload.bytes_uploaded = 0
                 db.commit()  # the session exists before any byte is sent
                 offset = 0
@@ -504,6 +505,18 @@ def apply_video_resource(upload: YouTubeUpload, item: dict[str, Any], *, now: da
         upload.last_error_message = f"YouTube rejected the video ({upload.rejection_reason or 'no reason given'})."
     elif upload_status == "deleted":
         upload.deleted_on_youtube = True
+    # Read back YouTube's stored audience answer: this is what Studio shows.
+    declared = status.get("selfDeclaredMadeForKids", status.get("madeForKids"))
+    if isinstance(declared, bool):
+        upload.made_for_kids_confirmed = declared
+    placement = item.get("paidProductPlacementDetails") if isinstance(item.get("paidProductPlacementDetails"), dict) else None
+    if placement is not None:
+        settings_record = dict(upload.upload_settings or {})
+        settings_record["paid_product_placement_confirmed"] = placement.get("hasPaidProductPlacement")
+        upload.upload_settings = settings_record
+    if upload.requested_visibility in {"public", "unlisted"} and upload.privacy_status == "private" and upload_status == "processed":
+        # Unaudited API projects: YouTube locks API uploads to private.
+        upload.visibility_restricted = True
     if upload.privacy_status in {"public", "unlisted"}:
         if upload.published_at is None:
             scheduled = _utc(upload.publish_at)
@@ -524,7 +537,7 @@ def sync_status(
     connection, token = access_token(db, settings, store, provider, capability="read")
     if connection.channel_id != upload.channel_id:
         raise YouTubeApiError("wrong_channel", "YouTube is connected to a different channel than this video belongs to.")
-    items = provider.list_videos(token, [upload.youtube_video_id], "status,snippet,processingDetails")
+    items = provider.list_videos(token, [upload.youtube_video_id], "status,snippet,processingDetails,paidProductPlacementDetails")
     upload.last_status_sync_at = _now()
     if not items:
         upload.deleted_on_youtube = True
@@ -540,56 +553,153 @@ def sync_status(
     return upload
 
 
+def _status_update(
+    db: Session,
+    upload: YouTubeUpload,
+    settings: Settings,
+    store: SecretStore,
+    provider: YouTubeProvider,
+    changes: dict[str, Any],
+    *,
+    require_private: bool = False,
+) -> dict[str, Any]:
+    """videos.update(part=status) that preserves every other status field."""
+    connection, token = access_token(db, settings, store, provider, capability="schedule")
+    if connection.channel_id != upload.channel_id:
+        raise YouTubeApiError("wrong_channel", "YouTube is connected to a different channel than this video belongs to.")
+    items = provider.list_videos(token, [upload.youtube_video_id], "status")
+    if not items:
+        upload.deleted_on_youtube = True
+        raise YouTubeApiError("deleted_on_youtube", "This video no longer exists on YouTube.")
+    current = items[0].get("status") if isinstance(items[0].get("status"), dict) else {}
+    if require_private and current.get("privacyStatus") != "private":
+        upload.privacy_status = str(current.get("privacyStatus") or upload.privacy_status)
+        raise YouTubeApiError("not_private", "YouTube schedules only private videos; this video is no longer private.")
+    status = {name: current[name] for name in MUTABLE_STATUS_FIELDS if name in current}
+    if "selfDeclaredMadeForKids" not in status and upload.made_for_kids is not None:
+        status["selfDeclaredMadeForKids"] = upload.made_for_kids
+    if "containsSyntheticMedia" not in status and upload.contains_synthetic_media is not None:
+        status["containsSyntheticMedia"] = upload.contains_synthetic_media
+    status.update(changes)
+    result = provider.update_video(token, {"id": upload.youtube_video_id, "status": status}, "status")
+    return (result.get("status") or {}) if isinstance(result, dict) else {}
+
+
 def schedule_publication(
     db: Session,
     upload: YouTubeUpload,
-    publish_at: datetime,
+    choice: ScheduleChoice,
     settings: Settings,
     store: SecretStore,
     provider: YouTubeProvider,
     *,
     now: datetime | None = None,
 ) -> YouTubeUpload:
-    """Private + publishAt, at the exact time the user chose."""
-    now = now or _now()
-    if publish_at.tzinfo is None:
-        raise UploadRefused("invalid_time", "Choose a publication time with a time zone.", upload)
-    publish_at = _utc(publish_at)  # type: ignore[assignment]
+    """Private + publishAt at the wall time the user chose in their time zone."""
     if not upload.youtube_video_id or upload.deleted_on_youtube:
         raise UploadRefused("not_uploaded", "Only a video that exists on YouTube can be scheduled.", upload)
     if upload.published_at is not None or upload.privacy_status in {"public", "unlisted"}:
         raise UploadRefused("already_published", "This video was already published; YouTube only schedules private, never-published videos.", upload)
-    if publish_at < now + MIN_SCHEDULE_LEAD:
-        raise UploadRefused("invalid_time", "Choose a publication time at least 15 minutes in the future.", upload)
-    if publish_at > now + MAX_SCHEDULE_AHEAD:
-        raise UploadRefused("invalid_time", "Choose a publication time within the next year.", upload)
+    resolution = resolve_schedule(choice, now=now)
+    if resolution.status != "ok" or resolution.publish_at is None:
+        raise UploadRefused("invalid_time", resolution.message or "Choose a valid publication time.", upload)
     try:
-        connection, token = access_token(db, settings, store, provider, capability="schedule")
-        if connection.channel_id != upload.channel_id:
-            raise YouTubeApiError("wrong_channel", "YouTube is connected to a different channel than this video belongs to.")
-        items = provider.list_videos(token, [upload.youtube_video_id], "status")
-        if not items:
-            upload.deleted_on_youtube = True
-            raise YouTubeApiError("deleted_on_youtube", "This video no longer exists on YouTube.")
-        current = items[0].get("status") if isinstance(items[0].get("status"), dict) else {}
-        if current.get("privacyStatus") != "private":
-            upload.privacy_status = str(current.get("privacyStatus") or upload.privacy_status)
-            raise YouTubeApiError("not_private", "YouTube schedules only private videos; this video is no longer private.")
-        status = {name: current[name] for name in MUTABLE_STATUS_FIELDS if name in current}
-        status.update(privacyStatus="private", publishAt=google_time(publish_at))
-        result = provider.update_video(token, {"id": upload.youtube_video_id, "status": status}, "status")
+        status = _status_update(
+            db, upload, settings, store, provider,
+            {"privacyStatus": "private", "publishAt": google_time(resolution.publish_at)}, require_private=True,
+        )
     except YouTubeApiError as exc:
         upload.schedule_status = "schedule_failed"
         upload.schedule_error = exc.message[:500]
         db.commit()
         raise
-    confirmed = parse_google_time(((result.get("status") or {}) if isinstance(result, dict) else {}).get("publishAt"))
-    upload.publish_at = confirmed or publish_at
+    upload.publish_at = parse_google_time(status.get("publishAt")) or resolution.publish_at
+    upload.schedule_local_time = resolution.local_time
+    upload.schedule_timezone = resolution.timezone
     upload.privacy_status = "private"
     upload.schedule_status = "scheduled"
     upload.schedule_error = None
     db.commit()
     db.refresh(upload)
+    return upload
+
+
+def set_audience(
+    db: Session, upload: YouTubeUpload, made_for_kids: bool, settings: Settings, store: SecretStore, provider: YouTubeProvider
+) -> YouTubeUpload:
+    """Answer (or correct) the audience question on a video that already exists."""
+    if not upload.youtube_video_id or upload.deleted_on_youtube:
+        raise UploadRefused("not_uploaded", "This video does not exist on YouTube.", upload)
+    status = _status_update(db, upload, settings, store, provider, {"selfDeclaredMadeForKids": bool(made_for_kids)})
+    upload.made_for_kids = bool(made_for_kids)
+    declared = status.get("selfDeclaredMadeForKids", status.get("madeForKids"))
+    upload.made_for_kids_confirmed = declared if isinstance(declared, bool) else None
+    db.commit()
+    db.refresh(upload)
+    return upload
+
+
+# ---------------------------------------------------------------------------
+# After the video exists: thumbnail + read-back (never fails the upload)
+# ---------------------------------------------------------------------------
+
+
+def apply_thumbnail(
+    db: Session, upload: YouTubeUpload, settings: Settings, store: SecretStore, provider: YouTubeProvider
+) -> YouTubeUpload:
+    if not upload.youtube_video_id:
+        raise UploadRefused("not_uploaded", "The video must exist on YouTube before its thumbnail can be set.", upload)
+    if upload.thumbnail_source in {None, "youtube_auto"}:
+        upload.thumbnail_upload_status = "not_requested"
+        db.commit()
+        return upload
+    project = db.get(Project, upload.project_id)
+    if project is None:
+        upload.thumbnail_upload_status = "failed"
+        upload.thumbnail_failure_reason = "The ClipForge project and its cover files were deleted."
+        db.commit()
+        return upload
+    upload.thumbnail_upload_status = "pending"
+    db.commit()
+    try:
+        from ..services import effective_revision_state as current_state
+
+        prepared = prepare_thumbnail(
+            ThumbnailChoice(source=upload.thumbnail_source, asset=upload.thumbnail_asset),  # type: ignore[arg-type]
+            current_state(project), project.id, settings,
+        )
+        if prepared is None:
+            upload.thumbnail_upload_status = "not_requested"
+            db.commit()
+            return upload
+        connection, token = access_token(db, settings, store, provider, capability="upload")
+        if connection.channel_id != upload.channel_id:
+            raise YouTubeApiError("wrong_channel", "YouTube is connected to a different channel than this video belongs to.")
+        provider.set_thumbnail(token, upload.youtube_video_id, prepared.data, prepared.content_type)
+    except (YouTubeApiError, ValueError, OSError) as exc:
+        upload.thumbnail_upload_status = "failed"
+        upload.thumbnail_failure_reason = (exc.message if isinstance(exc, YouTubeApiError) else str(exc))[:500]
+        db.commit()
+        return upload
+    upload.thumbnail_upload_status = "applied"
+    upload.thumbnail_sha256 = prepared.sha256
+    upload.thumbnail_failure_reason = None
+    upload.thumbnail_applied_at = _now()
+    db.commit()
+    return upload
+
+
+def after_upload(
+    db: Session, upload: YouTubeUpload, settings: Settings, store: SecretStore, provider: YouTubeProvider
+) -> YouTubeUpload:
+    """Thumbnail first, then read YouTube's stored settings back."""
+    if not upload.youtube_video_id:
+        return upload
+    apply_thumbnail(db, upload, settings, store, provider)
+    try:
+        sync_status(db, upload, settings, store, provider)
+    except (YouTubeApiError, UploadRefused):
+        pass  # the video ID is saved; status can be refreshed later
     return upload
 
 
@@ -623,6 +733,17 @@ def lifecycle(upload: YouTubeUpload) -> str:
     return "private"
 
 
+def video_status(upload: YouTubeUpload) -> str:
+    """Uploading | Uploaded | Processing | Ready | Failed | Deleted - independent of visibility."""
+    if upload.deleted_on_youtube:
+        return "deleted"
+    if upload.state in ACTIVE_STATES:
+        return "uploading"
+    if upload.state == "failed":
+        return "failed"
+    return {"uploaded": "uploaded", "processing": "processing", "ready": "ready"}.get(upload.state, upload.state)
+
+
 def serialize_upload(upload: YouTubeUpload) -> dict[str, Any]:
     size = max(1, upload.render_file_size or 1)
     return {
@@ -648,6 +769,31 @@ def serialize_upload(upload: YouTubeUpload) -> dict[str, Any]:
         "content_type": upload.content_type,
         "deleted_on_youtube": upload.deleted_on_youtube,
         "title": upload.title,
+        "video_status": video_status(upload),
+        "thumbnail": {
+            "status": upload.thumbnail_upload_status,
+            "source": upload.thumbnail_source,
+            "asset": upload.thumbnail_asset,
+            "failure_reason": upload.thumbnail_failure_reason,
+            "applied_at": aware(upload.thumbnail_applied_at),
+        },
+        "audience": {
+            "made_for_kids": upload.made_for_kids,
+            "confirmed_by_youtube": upload.made_for_kids_confirmed,
+            "answered": upload.made_for_kids_confirmed is not None or upload.made_for_kids is not None,
+        },
+        "contains_synthetic_media": upload.contains_synthetic_media,
+        "requested_visibility": upload.requested_visibility,
+        "visibility_restricted": upload.visibility_restricted,
+        "schedule": {
+            "status": upload.schedule_status,
+            "publish_at": aware(upload.publish_at),
+            "local_time": upload.schedule_local_time,
+            "timezone": upload.schedule_timezone,
+            "error": upload.schedule_error,
+        },
+        "settings": (upload.upload_settings or {}).get("options"),
+        "source_kind": upload.source_kind,
         "progress": round(min(1.0, (upload.bytes_uploaded or 0) / size), 3) if upload.state in ACTIVE_STATES else None,
         "error": {"code": upload.last_error_code, "message": upload.last_error_message} if upload.last_error_code else None,
         "is_active_mapping": upload.idempotency_key is not None,

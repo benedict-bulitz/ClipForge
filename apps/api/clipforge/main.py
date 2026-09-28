@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException, Request, status
+from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -29,6 +30,7 @@ from .generation import (
     schedule_next_generation,
     serialize_generation_job,
 )
+from .integrations import get_secret_store
 from .integrations import router as integrations_router
 from .media_candidates import (
     CandidateError,
@@ -38,7 +40,7 @@ from .media_candidates import (
     scene_generated_alternatives,
     scene_generation_option,
 )
-from .models import GenerationJob, Project
+from .models import GenerationJob, Project, YouTubeUpload
 from .music import available_music_tracks, resolve_track_path
 from .pipeline import UnsupportedEdit
 from .renderer import RenderUnavailable, VoiceGenerationError, readiness
@@ -66,13 +68,13 @@ from .schemas import (
     VoicePreviewCreate,
     VoicePreviewRead,
 )
+from .security.secrets import SecretStore
 from .services import (
     ProjectDeletionBusy,
     ProjectDeletionError,
     RevisionConflict,
     canonical_export_metadata,
     create_project,
-    delete_all_projects,
     delete_project,
     edit_project,
     effective_revision_state,
@@ -96,6 +98,9 @@ from .voice_preview import (
     enforce_preview_rate_limit,
     generate_voice_preview,
 )
+from .youtube import lifecycle
+from .youtube.provider import YouTubeProvider
+from .youtube.routes import get_youtube_provider
 from .youtube.routes import router as youtube_router
 from .youtube.uploads import mark_interrupted_uploads
 
@@ -115,6 +120,11 @@ settings = get_settings()
 settings.render_root.mkdir(parents=True, exist_ok=True)
 DbSession = Annotated[Session, Depends(get_db)]
 SettingsDep = Annotated[Settings, Depends(get_settings)]
+SecretStoreDep = Annotated[SecretStore, Depends(get_secret_store)]
+YouTubeProviderDep = Annotated[YouTubeProvider, Depends(get_youtube_provider)]
+# Plain defaults keep delete_project_route callable directly (tests call it so).
+_STORE_DEPENDENCY = Depends(get_secret_store)
+_PROVIDER_DEPENDENCY = Depends(get_youtube_provider)
 app = FastAPI(title=settings.app_name, version="0.2.0", lifespan=lifespan)
 app.mount("/media", StaticFiles(directory=settings.render_root.resolve()), name="media")
 app.add_middleware(
@@ -192,23 +202,22 @@ def _serialize_bulk_delete_plan(plan) -> dict:
 @app.get("/api/projects/delete-plan")
 def bulk_delete_plan_route(db: DbSession, config: SettingsDep) -> dict:
     try:
-        return _serialize_bulk_delete_plan(plan_bulk_project_deletion(db, config))
+        plan = plan_bulk_project_deletion(db, config)
     except ProjectDeletionError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    archived = sum(
+        1 for item in plan.projects
+        if any(lifecycle.classify_upload(db, upload) == lifecycle.SUCCEEDED for upload in db.scalars(select(YouTubeUpload).where(YouTubeUpload.project_id == item.project_id)).all())
+    )
+    return {**_serialize_bulk_delete_plan(plan), "projects_keeping_learning_record": archived}
 
 
 @app.delete("/api/projects")
-def delete_all_projects_route(db: DbSession, config: SettingsDep) -> dict:
+def delete_all_projects_route(db: DbSession, config: SettingsDep, store: SecretStoreDep, provider: YouTubeProviderDep) -> dict:
     try:
-        result = delete_all_projects(db, config)
+        return lifecycle.delete_all_lifecycle(db, config, store, provider)
     except ProjectDeletionError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
-    return {
-        "deleted_projects": result.deleted_projects,
-        "freed_bytes": result.freed_bytes,
-        "failed_projects": result.failed_projects,
-        "remaining_projects": result.remaining_projects,
-    }
 
 
 @app.post("/api/projects", response_model=ProjectRead, status_code=status.HTTP_201_CREATED)
@@ -290,10 +299,35 @@ def get_project_route(project_id: str, db: DbSession) -> dict:
     return serialize_project(project)
 
 
-@app.delete("/api/projects/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_project_route(project_id: str, db: DbSession, config: SettingsDep) -> None:
+@app.get("/api/projects/{project_id}/delete-plan")
+def project_delete_plan_route(project_id: str, db: DbSession, config: SettingsDep, store: SecretStoreDep, provider: YouTubeProviderDep) -> dict:
+    """What deleting this project will do (verifies YouTube uploads live where possible)."""
     try:
-        delete_project(db, project_id, config)
+        return lifecycle.plan_deletion(db, project_id, config, store, provider).as_dict()
+    except ProjectDeletionError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.delete("/api/projects/{project_id}")
+def delete_project_route(
+    project_id: str,
+    db: DbSession,
+    config: SettingsDep,
+    store: SecretStore = _STORE_DEPENDENCY,
+    provider: YouTubeProvider = _PROVIDER_DEPENDENCY,
+    confirm_unverified: bool = False,
+) -> dict:
+    try:
+        if get_project(db, project_id) is None:
+            # Queued generation requests without a Project row.
+            result = delete_project(db, project_id, config)
+            return {"mode": "full", "freed_bytes": result.reclaimed_bytes, "retained_bytes": 0, "archive_id": None}
+        return lifecycle.delete_project_lifecycle(db, project_id, config, store, provider, confirm_unverified=confirm_unverified)
+    except lifecycle.ProjectDeletionUnverified as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"status": "upload_unverified", "message": "Upload status could not be verified.", "plan": jsonable_encoder(exc.plan.as_dict())},
+        ) from exc
     except ProjectDeletionBusy as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except ProjectDeletionError as exc:

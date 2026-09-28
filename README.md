@@ -38,25 +38,45 @@ For PostgreSQL, Redis, and the worker:
 docker compose up --build
 ```
 
-## YouTube Learning Loop
+## YouTube publishing and Learning Loop
 
-ClipForge can upload a finished export to your own YouTube channel **privately**, schedule it
-only when you choose a date and time, and read back real YouTube Analytics (including the raw
-audience-retention curve) mapped onto the rendered scenes. It never publishes automatically and
-never changes generation rules from performance data.
+When a video is rendered, **Upload to YouTube** is the main action: ClipForge uploads its
+canonical final render directly (the narrated render, or the one music mix next to it) — no
+export or download step. "Save local MP4" remains in the project's overflow menu.
+
+The publishing sheet asks for everything YouTube needs before any byte is sent:
+thumbnail (a ClipForge cover, your own JPEG/PNG, or explicitly YouTube's frame), title,
+description and tags with live limits, **Made for kids** (explicit Yes/No, always sent as
+`status.selfDeclaredMadeForKids`), **altered or synthetic content**
+(`status.containsSyntheticMedia`, with an explained suggestion), visibility, and a schedule with
+date, 24-hour or 12-hour time (per locale) and an explicit IANA time zone resolved DST-safely.
+Advanced settings (all verified against Google's discovery document): category (fetched from
+YouTube), language, license, embedding, public statistics, notify subscribers, recording date
+and paid promotion. Studio-only settings (chapters, comments, Shorts remixing, featured places,
+age restriction, caption certification, monetization, …) are listed, never faked.
+Upload defaults live in **Settings → Integrations → YouTube**; compliance answers default to
+"ask every time".
+
+Deleting a project is upload-aware: a project that was never uploaded is deleted completely;
+a successfully uploaded project loses all local media but keeps its compact learning record
+(upload mapping, production fingerprint, analytics snapshots, raw retention), browsable under
+**Learning History** (`/learning`). If an upload's outcome cannot be verified, deletion fails
+closed until you retry or explicitly confirm. ClipForge never deletes YouTube videos.
+
+Setup:
 
 1. In Google Cloud, enable **YouTube Data API v3** and **YouTube Analytics API**, configure the
    OAuth consent screen (add yourself as a test user while in testing) and create an OAuth client.
    Register `http://localhost:8000/api/youtube/oauth/callback` as its redirect URI.
 2. Add the client in **Settings → Integrations → YouTube** (or `YOUTUBE_OAUTH_CLIENT_ID` /
    `YOUTUBE_OAUTH_CLIENT_SECRET` in `.env`) and press **Connect**. Requested scopes:
-   `youtube` (upload, status and `publishAt` scheduling) and `yt-analytics.readonly`.
-3. Export a project, then use **Upload privately** in its YouTube section.
+   `youtube` (upload, status, thumbnails, scheduling) and `yt-analytics.readonly`.
 
-Note: YouTube restricts videos uploaded through unverified API projects (created after
-28 July 2020) to private viewing until the project passes YouTube's API audit, so scheduled
-publication only takes effect for an audited project. Studio's "Stayed to watch" is not exposed
-by the API and is stored as unavailable; it can be imported manually with provenance.
+Note: YouTube keeps videos uploaded through unverified API projects (created after
+28 July 2020) private until the project passes YouTube's API audit, so ClipForge offers only
+Private and Schedule until you mark the project as audited in the upload defaults. Custom
+thumbnails require a verified YouTube channel. Studio's "Stayed to watch" is not exposed by the
+API and is stored as unavailable; it can be imported manually with provenance.
 
 Read-only diagnostic (no secrets are printed; `--live` reads fresh data without saving it):
 

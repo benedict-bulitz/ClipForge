@@ -47,6 +47,13 @@ class FakeYouTube:
     chunk_errors: dict[int, YouTubeApiError] = field(default_factory=dict)  # chunk number -> error (once)
     expire_sessions: bool = False
     update_error: YouTubeApiError | None = None
+    thumbnail_error: YouTubeApiError | None = None
+    thumbnails_set: list[tuple[str, int, str]] = field(default_factory=list)
+    categories: list[dict[str, Any]] = field(default_factory=lambda: [
+        {"id": "27", "snippet": {"title": "Education", "assignable": True}},
+        {"id": "28", "snippet": {"title": "Science & Technology", "assignable": True}},
+        {"id": "18", "snippet": {"title": "Short Movies", "assignable": False}},
+    ])
     analytics_handler: Any = None
     sessions: dict[str, dict[str, Any]] = field(default_factory=dict)
     videos: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -75,8 +82,9 @@ class FakeYouTube:
         return self.channel
 
     # Upload ------------------------------------------------------------
-    def start_resumable_upload(self, access_token: str, body: dict[str, Any], size: int, content_type: str) -> str:
+    def start_resumable_upload(self, access_token: str, body: dict[str, Any], size: int, content_type: str, *, notify_subscribers: bool = True) -> str:
         self.calls.append(("start_upload", body))
+        self.calls.append(("notify_subscribers", notify_subscribers))
         if self.start_error:
             raise self.start_error
         uri = f"https://www.googleapis.com/upload/youtube/v3/videos?upload_id=session{len(self.sessions) + 1}"
@@ -95,7 +103,8 @@ class FakeYouTube:
             self.videos[video_id] = {
                 "id": video_id,
                 "snippet": {**session["body"]["snippet"], "publishedAt": "2026-09-01T10:00:00Z"},
-                "status": {**session["body"]["status"], "uploadStatus": "uploaded", "license": "youtube", "embeddable": True, "publicStatsViewable": True, "selfDeclaredMadeForKids": False},
+                # YouTube stores what was sent; unsent fields get its defaults.
+                "status": {"license": "youtube", "embeddable": True, "publicStatsViewable": True, **session["body"]["status"], "uploadStatus": "uploaded"},
             }
         return UploadProgress(complete=True, video=self.videos[session["video_id"]])
 
@@ -135,6 +144,17 @@ class FakeYouTube:
         if self.analytics_handler is None:
             return {"columnHeaders": [], "rows": []}
         return self.analytics_handler(params)
+
+    def set_thumbnail(self, access_token: str, video_id: str, data: bytes, content_type: str) -> dict[str, Any]:
+        self.calls.append(("set_thumbnail", video_id))
+        if self.thumbnail_error:
+            raise self.thumbnail_error
+        self.thumbnails_set.append((video_id, len(data), content_type))
+        return {"items": [{"default": {"url": "https://i.ytimg.com/x.jpg"}}]}
+
+    def list_categories(self, access_token: str, region_code: str, language: str) -> list[dict[str, Any]]:
+        self.calls.append(("list_categories", (region_code, language)))
+        return self.categories
 
     def publish(self, video_id: str, when: str = "2026-09-02T12:00:00Z") -> None:
         self.videos[video_id]["status"].update(privacyStatus="public", uploadStatus="processed")
@@ -282,3 +302,21 @@ def exported_project(db, settings: Settings, content: bytes = b"\x00mp4" * 6000,
     db.flush()
     add_export_revision(db, project, settings, content, rendered_state(duration, strategy=strategy))
     return project
+
+
+def publish_options(**overrides: Any):
+    from clipforge.youtube.publishing import PublishOptions
+
+    values: dict[str, Any] = {
+        "title": "Why are airplane windows round?",
+        "description": "The comet disaster explained.\n\n#aviation #shorts #engineering",
+        "tags": ["aviation", "shorts", "engineering"],
+        "thumbnail": {"source": "youtube_auto"},
+        "made_for_kids": False,
+        "contains_synthetic_media": False,
+        "visibility": "private",
+        "default_language": "en",
+        "default_audio_language": "en",
+    }
+    values.update(overrides)
+    return PublishOptions.model_validate(values)

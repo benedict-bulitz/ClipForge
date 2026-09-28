@@ -5,7 +5,9 @@ import { AlertCircle, CheckCircle2, KeyRound, LoaderCircle, LogOut, PlaySquare, 
 import { ApiError, disconnectYouTube, getYouTubeConnection, saveYouTubeClient, startYouTubeAuthorization } from "@/lib/api";
 import type { YouTubeConnection } from "@/lib/youtube";
 import { cn } from "@/lib/utils";
+import Link from "next/link";
 import { Button } from "./ui/button";
+import { YouTubeUploadDefaults } from "./youtube-upload-defaults";
 
 type Notice = { tone: "success" | "error" | "info"; text: string };
 
@@ -156,6 +158,12 @@ export function YouTubeConnectionCard() {
           )}
         </div>
       )}
+
+      {connection && <YouTubeUploadDefaults connected={connected} />}
+
+      <p className="mt-4 text-[11px] text-[var(--muted-foreground)]">
+        Deleted projects that were uploaded keep a compact analytics record: <Link href="/learning" className="underline">Learning History</Link>
+      </p>
 
       {notice && (
         <div role={notice.tone === "error" ? "alert" : "status"} className={cn("mt-4 flex gap-2 rounded-xl px-3 py-2 text-[11px] font-medium leading-4", notice.tone === "success" && "bg-emerald-50 text-emerald-800", notice.tone === "error" && "bg-red-50 text-red-800", notice.tone === "info" && "bg-amber-50 text-amber-800")}>

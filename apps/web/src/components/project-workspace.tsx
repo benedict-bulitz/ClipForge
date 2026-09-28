@@ -25,6 +25,7 @@ import {
   Settings,
   Sparkles,
   Trash2,
+  Upload,
   WandSparkles,
 } from "lucide-react";
 import {
@@ -32,6 +33,8 @@ import {
   getReadiness,
   applySceneMediaCandidate,
   deleteProject,
+  deleteProjectConfirmingUnverified,
+  getProjectDeletePlan,
   getSceneMediaCandidates,
   generateSceneImage,
   exportProject,
@@ -58,6 +61,7 @@ import { Brand } from "./brand";
 import { Button } from "./ui/button";
 import { ThemeToggle } from "./theme-toggle";
 import { YouTubePanel } from "./youtube-panel";
+import { deleteDialogCopy, formatBytes, lifecycleLabel, type DeletionPlan } from "@/lib/youtube";
 import { cn } from "@/lib/utils";
 
 type Tab = "overview" | "script" | "scenes" | "sources";
@@ -162,6 +166,8 @@ export function ProjectWorkspace({
   const [readiness, setReadiness] = useState<Readiness | null>(null);
   const [deleteConfirmationOpen, setDeleteConfirmationOpen] = useState(false);
   const [socialBusy, setSocialBusy] = useState(false);
+  const [publishOpen, setPublishOpen] = useState(false);
+  const [deletePlan, setDeletePlan] = useState<DeletionPlan | null>(null);
   const state = project.revision.state;
   const duration = state.duration.actual_seconds ?? state.duration.estimated_seconds;
 
@@ -349,16 +355,25 @@ export function ProjectWorkspace({
     }
   }
 
-  async function confirmProjectDeletion() {
+  function openDeleteDialog() {
+    setDeletePlan(null);
+    setDeleteConfirmationOpen(true);
+    getProjectDeletePlan(project.id)
+      .then(setDeletePlan)
+      .catch((reason) => { setError(reason instanceof Error ? reason.message : "The project could not be checked for deletion."); setDeleteConfirmationOpen(false); });
+  }
+
+  async function confirmProjectDeletion(unverified = false) {
     if (busy) return;
     setBusy("delete");
     setError(null);
     try {
-      await deleteProject(project.id);
+      if (unverified) await deleteProjectConfirmingUnverified(project.id);
+      else await deleteProject(project.id);
       setMessages([]);
       router.replace("/");
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Das Projekt konnte nicht gelöscht werden.");
+      setError(reason instanceof Error ? reason.message : "The project could not be deleted.");
       setDeleteConfirmationOpen(false);
       setBusy(null);
     }
@@ -390,10 +405,10 @@ export function ProjectWorkspace({
             </button>
           </div>
           <ThemeToggle />
-          {state.render.url ? (
-            <Button variant="outline" size="sm" onClick={() => void exportMp4()} disabled={!!busy || audioDirty}>
-              {busy === "export" ? <LoaderCircle className="size-3.5 animate-spin" /> : state.export?.status === "exported" ? <Check className="size-3.5" /> : <Download className="size-3.5" />}
-              <span className="hidden sm:inline">{busy === "export" ? "Exporting…" : state.export?.status === "exported" ? "Exported" : "Export MP4"}</span>
+          {state.render.status === "complete" && !state.render.stale ? (
+            <Button variant="accent" size="sm" onClick={() => { setPublishOpen(true); document.getElementById("youtube-publishing")?.scrollIntoView({ behavior: "smooth", block: "start" }); }} disabled={!!busy || audioDirty} title={audioDirty ? "Save the audio changes first" : undefined}>
+              <Upload className="size-3.5" />
+              <span className="hidden sm:inline">Upload to YouTube</span>
             </Button>
           ) : null}
           {state.render.status !== "complete" && (
@@ -422,9 +437,15 @@ export function ProjectWorkspace({
                   </div>
                 ))}
               </div>
-              <div className="mt-3 border-t pt-3">
-                <Button variant="outline" size="sm" className="w-full border-red-200 text-red-700 hover:bg-red-50" onClick={() => { setMoreOpen(false); setDeleteConfirmationOpen(true); }}>
-                  <Trash2 className="size-3.5" /> Projekt löschen
+              <div className="mt-3 space-y-2 border-t pt-3">
+                {state.render.url && (
+                  <Button variant="outline" size="sm" className="w-full" onClick={() => { setMoreOpen(false); void exportMp4(); }} disabled={!!busy || audioDirty}>
+                    {busy === "export" ? <LoaderCircle className="size-3.5 animate-spin" /> : state.export?.status === "exported" ? <Check className="size-3.5" /> : <Download className="size-3.5" />}
+                    {busy === "export" ? "Saving…" : state.export?.status === "exported" ? "Local MP4 saved" : "Save local MP4"}
+                  </Button>
+                )}
+                <Button variant="outline" size="sm" className="w-full border-red-200 text-red-700 hover:bg-red-50" onClick={() => { setMoreOpen(false); openDeleteDialog(); }}>
+                  <Trash2 className="size-3.5" /> Delete project
                 </Button>
               </div>
             </div>
@@ -434,15 +455,35 @@ export function ProjectWorkspace({
 
       {deleteConfirmationOpen && (
         <div className="fixed inset-0 z-[70] grid place-items-center bg-black/45 p-4" role="dialog" aria-modal="true" aria-labelledby="delete-project-title">
-          <div className="cf-surface w-full max-w-md rounded-[24px] border p-6 shadow-[0_22px_70px_rgba(0,0,0,.25)]">
-            <h2 id="delete-project-title" className="text-lg font-semibold">Projekt wirklich löschen?</h2>
-            <p className="mt-2 text-sm leading-6 text-[var(--muted-foreground)]">Das Projekt und seine zugehörigen Dateien werden dauerhaft gelöscht.</p>
-            <div className="mt-6 flex justify-end gap-2">
-              <Button variant="ghost" onClick={() => setDeleteConfirmationOpen(false)} disabled={busy === "delete"}>Abbrechen</Button>
-              <Button variant="accent" onClick={() => void confirmProjectDeletion()} disabled={busy === "delete"}>
-                {busy === "delete" ? <LoaderCircle className="size-3.5 animate-spin" /> : <Trash2 className="size-3.5" />} Projekt löschen
-              </Button>
-            </div>
+          <div className="w-full max-w-md rounded-[24px] border border-[var(--border)] bg-[var(--surface-elevated)] p-6 shadow-[0_22px_70px_rgba(0,0,0,.25)]">
+            {!deletePlan ? (
+              <p className="flex items-center gap-2 text-sm text-[var(--muted-foreground)]"><LoaderCircle className="size-4 animate-spin" /> Checking this project&apos;s YouTube status…</p>
+            ) : (
+              <>
+                <h2 id="delete-project-title" className="text-lg font-semibold">{deleteDialogCopy(deletePlan).title}</h2>
+                <p className="mt-2 text-sm leading-6 text-[var(--muted-foreground)]">{deleteDialogCopy(deletePlan).body}</p>
+                {deletePlan.mode === "archive" && deletePlan.uploads.filter((item) => item.youtube_video_id).map((item) => (
+                  <p key={item.id} className="mt-3 rounded-xl bg-black/[.03] px-3 py-2 text-xs"><span className="text-[var(--muted-foreground)]">YouTube video:</span> <strong>{item.title}</strong> · {item.youtube_video_id} · {lifecycleLabel(item)}</p>
+                ))}
+                {deletePlan.mode !== "busy" && (
+                  <dl className="mt-3 grid grid-cols-2 gap-2 text-xs">
+                    <div><dt className="text-[var(--muted-foreground)]">Local storage to be freed</dt><dd className="font-semibold">{formatBytes(deletePlan.reclaimable_bytes)}</dd></div>
+                    {deletePlan.mode === "archive" && <div><dt className="text-[var(--muted-foreground)]">Learning data retained</dt><dd className="font-semibold">{formatBytes(deletePlan.retained_bytes)}</dd></div>}
+                  </dl>
+                )}
+                {deletePlan.mode === "archive" && <p className="mt-3 text-[11px] text-[var(--muted-foreground)]">The video stays on YouTube. ClipForge never deletes YouTube videos.</p>}
+                {deletePlan.verification === "offline" && deletePlan.mode === "archive" && <p className="mt-2 text-[11px] text-amber-800">YouTube could not be reached; the last known upload status was used.</p>}
+                <div className="mt-6 flex flex-wrap justify-end gap-2">
+                  <Button variant="ghost" onClick={() => setDeleteConfirmationOpen(false)} disabled={busy === "delete"}>Cancel</Button>
+                  {deletePlan.mode === "unverified" && <Button variant="outline" onClick={() => openDeleteDialog()} disabled={busy === "delete"}><RefreshCw className="size-3.5" /> Retry check</Button>}
+                  {deletePlan.mode !== "busy" && (
+                    <Button variant="accent" onClick={() => void confirmProjectDeletion(deletePlan.mode === "unverified")} disabled={busy === "delete"}>
+                      {busy === "delete" ? <LoaderCircle className="size-3.5 animate-spin" /> : <Trash2 className="size-3.5" />} {deleteDialogCopy(deletePlan).confirm}
+                    </Button>
+                  )}
+                </div>
+              </>
+            )}
           </div>
         </div>
       )}
@@ -496,7 +537,7 @@ export function ProjectWorkspace({
             </div>
 
             <SocialMetadata key={`social:${project.id}:${project.current_revision}`} project={project} busy={socialBusy} onChange={onProjectChange} setBusy={setSocialBusy} />
-            {state.render.url && <YouTubePanel project={project} disabled={!!busy || sending || socialBusy} />}
+            {state.render.url && <YouTubePanel project={project} disabled={!!busy || sending || socialBusy} publishOpen={publishOpen} onPublishOpenChange={setPublishOpen} />}
             <ThumbnailControls key={`thumbnail:${project.id}:${project.current_revision}`} project={project} disabled={!!busy || sending} onChange={onProjectChange} />
 
             <div className="mt-8 border-b border-black/10">

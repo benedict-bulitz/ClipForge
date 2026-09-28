@@ -23,6 +23,26 @@ def enable_sqlite_foreign_keys(dbapi_connection, _connection_record) -> None:
         cursor.close()
 
 
+YOUTUBE_UPLOAD_V2_COLUMNS = (
+    ("source_kind", "VARCHAR(16)"),
+    ("made_for_kids", "BOOLEAN"),
+    ("made_for_kids_confirmed", "BOOLEAN"),
+    ("contains_synthetic_media", "BOOLEAN"),
+    ("requested_visibility", "VARCHAR(16) NOT NULL DEFAULT 'private'"),
+    ("visibility_restricted", "BOOLEAN NOT NULL DEFAULT 0"),
+    ("notify_subscribers", "BOOLEAN"),
+    ("upload_settings", "JSON NOT NULL DEFAULT '{}'"),
+    ("schedule_local_time", "VARCHAR(16)"),
+    ("schedule_timezone", "VARCHAR(64)"),
+    ("thumbnail_source", "VARCHAR(24)"),
+    ("thumbnail_asset", "VARCHAR(300)"),
+    ("thumbnail_sha256", "VARCHAR(64)"),
+    ("thumbnail_upload_status", "VARCHAR(16) NOT NULL DEFAULT 'none'"),
+    ("thumbnail_failure_reason", "TEXT"),
+    ("thumbnail_applied_at", "DATETIME"),
+)
+
+
 def ensure_runtime_schema() -> None:
     """Add protections to databases first created through metadata.create_all()."""
     if not settings.database_url.startswith("sqlite"):
@@ -40,6 +60,12 @@ def ensure_runtime_schema() -> None:
             connection.exec_driver_sql(
                 "ALTER TABLE generation_jobs ADD COLUMN request_payload JSON NOT NULL DEFAULT '{}'"
             )
+        if inspector.has_table("youtube_uploads"):
+            # YouTube publishing V2 columns for databases created by V1.
+            upload_columns = {column["name"] for column in inspector.get_columns("youtube_uploads")}
+            for name, ddl in YOUTUBE_UPLOAD_V2_COLUMNS:
+                if name not in upload_columns:
+                    connection.exec_driver_sql(f"ALTER TABLE youtube_uploads ADD COLUMN {name} {ddl}")
         if "active_tip_revision" not in project_columns:
             connection.exec_driver_sql(
                 "ALTER TABLE projects ADD COLUMN active_tip_revision INTEGER NOT NULL DEFAULT 1"

@@ -49,6 +49,11 @@ def _print_upload(db, upload: YouTubeUpload, settings, *, live: bool) -> None:
     print(f"  publishAt:        {upload.publish_at or '-'} (schedule={upload.schedule_status})")
     print(f"  published_at:     {upload.published_at or '-'} ({upload.published_source or '-'})")
     print(f"  content type:     {upload.content_type or 'not confirmed by YouTube'}")
+    print(f"  source:           {upload.source_kind or '-'} (uploaded directly from ClipForge storage)")
+    print(f"  audience:         sent={upload.made_for_kids} youtube={upload.made_for_kids_confirmed}")
+    print(f"  synthetic media:  {upload.contains_synthetic_media}")
+    print(f"  thumbnail:        {upload.thumbnail_upload_status} ({upload.thumbnail_source or '-'} {upload.thumbnail_asset or ''}) {upload.thumbnail_failure_reason or ''}")
+    print(f"  schedule:         {upload.schedule_local_time or '-'} {upload.schedule_timezone or ''} -> {upload.publish_at or '-'}")
     if upload.deleted_on_youtube:
         print("  !! deleted on YouTube")
     if upload.last_error_code:

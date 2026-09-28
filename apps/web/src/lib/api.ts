@@ -188,7 +188,7 @@ export function getProject(projectId: string, signal?: AbortSignal) {
 }
 
 export function deleteProject(projectId: string) {
-  return request<void>(`/projects/${projectId}`, { method: "DELETE" });
+  return request<{ mode: string; freed_bytes: number; retained_bytes: number } | void>(`/projects/${projectId}`, { method: "DELETE" });
 }
 
 export function updateProjectAudio(projectId: string, baseRevision: number, audio: { voice_volume: number; music_volume: number; music_enabled: boolean }) {
@@ -347,10 +347,29 @@ export function getProjectYouTube(projectId: string, signal?: AbortSignal) {
   return request<import("./youtube").ProjectYouTube>(`/youtube/projects/${projectId}`, { cache: "no-store", signal });
 }
 
-export function uploadProjectToYouTube(projectId: string, baseRevision: number, forceNew = false) {
-  return request<{ upload: import("./youtube").YouTubeUpload; started: boolean }>(`/youtube/projects/${projectId}/uploads`, {
+export function uploadProjectToYouTube(projectId: string, baseRevision: number, options: import("./youtube").PublishOptions, region: string, language: string, forceNew = false) {
+  return request<{ upload: import("./youtube").YouTubeUpload; started: boolean; warnings: string[] }>(`/youtube/projects/${projectId}/uploads`, {
     method: "POST",
-    body: JSON.stringify({ base_revision: baseRevision, force_new: forceNew }),
+    body: JSON.stringify({ base_revision: baseRevision, options, region, language, force_new: forceNew }),
+  });
+}
+
+export function getPublishingDraft(projectId: string, region: string, language: string) {
+  return request<import("./youtube").PublishingDraft>(`/youtube/projects/${projectId}/draft?region=${encodeURIComponent(region)}&language=${encodeURIComponent(language)}`, { cache: "no-store" });
+}
+
+export function preflightYouTubeUpload(projectId: string, options: import("./youtube").PublishOptions, region: string, language: string, signal?: AbortSignal) {
+  return request<import("./youtube").Preflight>(`/youtube/projects/${projectId}/preflight`, {
+    method: "POST",
+    body: JSON.stringify({ options, region, language }),
+    signal,
+  });
+}
+
+export function uploadCustomThumbnail(projectId: string, dataBase64: string) {
+  return request<{ asset: string; thumbnails: import("./youtube").ThumbnailOption[] }>(`/youtube/projects/${projectId}/thumbnails`, {
+    method: "POST",
+    body: JSON.stringify({ data_base64: dataBase64 }),
   });
 }
 
@@ -358,11 +377,58 @@ export function retryYouTubeUpload(uploadId: string) {
   return request<{ upload: import("./youtube").YouTubeUpload }>(`/youtube/uploads/${uploadId}/retry`, { method: "POST" });
 }
 
-export function scheduleYouTubeUpload(uploadId: string, publishAt: string) {
+export function retryYouTubeThumbnail(uploadId: string) {
+  return request<{ upload: import("./youtube").YouTubeUpload }>(`/youtube/uploads/${uploadId}/thumbnail/retry`, { method: "POST" });
+}
+
+export function setYouTubeAudience(uploadId: string, madeForKids: boolean) {
+  return request<{ upload: import("./youtube").YouTubeUpload }>(`/youtube/uploads/${uploadId}/audience`, {
+    method: "POST",
+    body: JSON.stringify({ made_for_kids: madeForKids }),
+  });
+}
+
+export function scheduleYouTubeUpload(uploadId: string, schedule: import("./youtube").ScheduleChoice) {
   return request<{ upload: import("./youtube").YouTubeUpload }>(`/youtube/uploads/${uploadId}/schedule`, {
     method: "POST",
-    body: JSON.stringify({ publish_at: publishAt }),
+    body: JSON.stringify(schedule),
   });
+}
+
+export function resolveYouTubeSchedule(schedule: import("./youtube").ScheduleChoice, signal?: AbortSignal) {
+  return request<import("./youtube").ScheduleResolution>("/youtube/schedule/resolve", {
+    method: "POST",
+    body: JSON.stringify(schedule),
+    signal,
+  });
+}
+
+export function getYouTubeUploadDefaults() {
+  return request<{ defaults: import("./youtube").UploadDefaults; allowed_visibilities: import("./youtube").Visibility[] }>("/youtube/defaults", { cache: "no-store" });
+}
+
+export function saveYouTubeUploadDefaults(defaults: import("./youtube").UploadDefaults) {
+  return request<{ defaults: import("./youtube").UploadDefaults; allowed_visibilities: import("./youtube").Visibility[] }>("/youtube/defaults", {
+    method: "PUT",
+    body: JSON.stringify(defaults),
+  });
+}
+
+export function getProjectDeletePlan(projectId: string) {
+  return request<import("./youtube").DeletionPlan>(`/projects/${projectId}/delete-plan`, { cache: "no-store" });
+}
+
+/** Explicit destructive delete after the upload status could not be verified. */
+export function deleteProjectConfirmingUnverified(projectId: string) {
+  return request<{ mode: string; freed_bytes: number; retained_bytes: number }>(`/projects/${projectId}?confirm_unverified=true`, { method: "DELETE" });
+}
+
+export function listLearningArchive() {
+  return request<{ entries: import("./youtube").ArchiveEntry[] }>("/youtube/archive", { cache: "no-store" });
+}
+
+export function getLearningArchiveEntry(uploadId: string) {
+  return request<import("./youtube").ArchiveEntry & { performance: import("./youtube").PerformanceReport; fingerprint: Record<string, Record<string, unknown> | null> }>(`/youtube/archive/${uploadId}`, { cache: "no-store" });
 }
 
 export function syncYouTubeUpload(uploadId: string) {
@@ -374,4 +440,8 @@ export function refreshYouTubeAnalytics(uploadId: string) {
     `/youtube/uploads/${uploadId}/analytics/refresh`,
     { method: "POST" },
   );
+}
+
+export function listYouTubeCategories(region: string, language: string) {
+  return request<{ categories: Array<{ id: string; title: string }>; error: { code: string; message: string } | null }>(`/youtube/categories?region=${encodeURIComponent(region)}&language=${encodeURIComponent(language)}`, { cache: "no-store" });
 }

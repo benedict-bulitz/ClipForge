@@ -13,9 +13,9 @@ from youtube_support import (
     ACCESS_TOKEN,
     REFRESH_TOKEN,
     FakeYouTube,
-    add_export_revision,
     analytics_payload,
     exported_project,
+    publish_options,
     rendered_state,
     youtube_settings,
 )
@@ -43,6 +43,7 @@ from clipforge.youtube.provider import (
     YouTubeApiError,
     read_chunks,
 )
+from clipforge.youtube.publishing import ScheduleChoice
 from clipforge.youtube.routes import get_upload_dispatcher, get_youtube_provider
 
 NOW = datetime(2026, 9, 10, 12, 0, tzinfo=UTC)
@@ -83,9 +84,12 @@ def small_chunks(monkeypatch, size: int = 8192):
 
 def upload_now(db, project, settings, store, fake, **kwargs) -> YouTubeUpload:
     record = connection.active_connection(db)
+    kwargs.setdefault("options", publish_options())
     upload, target, should_run = uploads.request_upload(db, project, settings, channel_id=record.channel_id, **kwargs)
     if should_run:
         uploads.run_upload(db, upload.id, target.path, settings, store, fake)
+        if upload.youtube_video_id or db.get(YouTubeUpload, upload.id).youtube_video_id:
+            uploads.after_upload(db, db.get(YouTubeUpload, upload.id), settings, store, fake)
     db.refresh(upload)
     return upload
 
@@ -204,20 +208,20 @@ def test_insufficient_scope_is_reported_before_calling_google(db, settings, stor
 # ---------------------------------------------------------------------------
 
 
-def test_private_upload_uses_final_export_and_validated_metadata(db, settings, store, fake, monkeypatch):
+def test_private_upload_uses_the_final_video_and_the_chosen_metadata(db, settings, store, fake, monkeypatch):
     small_chunks(monkeypatch)
     connect(db, settings, store, fake)
     project = exported_project(db, settings)
     upload = upload_now(db, project, settings, store, fake)
-    assert upload.state == "uploaded"
+    assert upload.state == "processing" and upload.upload_status == "uploaded"
     assert upload.youtube_video_id == "vid00000001"
     assert upload.privacy_status == "private"
     assert upload.channel_id == "UC_fake_channel_01"
     assert (upload.project_id, upload.project_revision, upload.render_revision) == (project.id, 2, 1)
     assert upload.upload_session_uri is None
     body = next(payload for name, payload in fake.calls if name == "start_upload")
-    assert body["status"] == {"privacyStatus": "private"}  # never publishAt / public at upload
-    assert body["snippet"]["title"] == "Why are airplane windows round?"  # < > stripped
+    assert body["status"]["privacyStatus"] == "private" and "publishAt" not in body["status"]
+    assert body["snippet"]["title"] == "Why are airplane windows round?"
     assert body["snippet"]["tags"] == ["aviation", "shorts", "engineering"]
     assert "#aviation" in body["snippet"]["description"]
     assert body["snippet"]["defaultLanguage"] == "en"
@@ -232,12 +236,12 @@ def test_same_render_is_never_uploaded_twice(db, settings, store, fake):
     project = exported_project(db, settings)
     first = upload_now(db, project, settings, store, fake)
     with pytest.raises(uploads.UploadRefused) as refused:
-        uploads.request_upload(db, project, settings, channel_id=first.channel_id)
+        uploads.request_upload(db, project, settings, options=publish_options(), channel_id=first.channel_id)
     assert refused.value.code == "already_uploaded"
     assert refused.value.message == f"Already uploaded as {first.youtube_video_id}."
     # even an explicit force is refused while the video exists on YouTube
     with pytest.raises(uploads.UploadRefused):
-        uploads.request_upload(db, project, settings, channel_id=first.channel_id, force_new=True)
+        uploads.request_upload(db, project, settings, options=publish_options(), channel_id=first.channel_id, force_new=True)
     assert len(fake.sessions) == 1
     assert len(db.scalars(select(YouTubeUpload)).all()) == 1
 
@@ -256,9 +260,9 @@ def test_upload_api_reports_already_uploaded(db, settings, store, fake):
     app.dependency_overrides[get_upload_dispatcher] = lambda: dispatch
     try:
         client = TestClient(app)
-        started = client.post(f"/api/youtube/projects/{project.id}/uploads", json={"base_revision": 2})
+        started = client.post(f"/api/youtube/projects/{project.id}/uploads", json={"base_revision": 2, "options": publish_options().model_dump()})
         assert started.status_code == 202 and started.json()["started"] is True
-        again = client.post(f"/api/youtube/projects/{project.id}/uploads", json={"base_revision": 2})
+        again = client.post(f"/api/youtube/projects/{project.id}/uploads", json={"base_revision": 2, "options": publish_options().model_dump()})
         assert again.status_code == 409
         assert again.json()["detail"]["status"] == "already_uploaded"
         assert again.json()["detail"]["message"].startswith("Already uploaded as vid")
@@ -267,7 +271,7 @@ def test_upload_api_reports_already_uploaded(db, settings, store, fake):
         assert panel["current_render"]["uploadable"] is False
         assert panel["uploads"][0]["lifecycle"] == "private"
         assert panel["performance"]["status"] == "private"
-        stale = client.post(f"/api/youtube/projects/{project.id}/uploads", json={"base_revision": 1})
+        stale = client.post(f"/api/youtube/projects/{project.id}/uploads", json={"base_revision": 1, "options": publish_options().model_dump()})
         assert stale.status_code == 409
     finally:
         app.dependency_overrides.clear()
@@ -278,24 +282,25 @@ def test_new_revision_gets_its_own_mapping_and_never_overwrites_the_old(db, sett
     project = exported_project(db, settings, content=b"A" * 30_000)
     old = upload_now(db, project, settings, store, fake)
     old_snapshot = (old.id, old.youtube_video_id, old.render_revision, old.render_sha256)
-    # an edit + re-render without export: uploading is refused, not silently using the old file
-    state = {**rendered_state(12.0), "export": project.revisions[-1].state["export"]}  # renders keep the old export
-    state["render"] = {**state["render"], "revision": 3, "url": "/media/new/renders/v3/clipforge.mp4"}
+    # An edit + re-render is uploadable directly from ClipForge storage - no export.
     from clipforge.models import ProjectRevision
+    render_file = settings.render_root / project.id / "renders" / "v3" / "clipforge.mp4"
+    render_file.parent.mkdir(parents=True, exist_ok=True)
+    render_file.write_bytes(b"B" * 30_000)
+    state = {**rendered_state(12.0), "export": project.revisions[-1].state["export"]}  # renders keep the old export
+    state["render"] = {**state["render"], "revision": 3, "url": f"/media/{project.id}/renders/v3/clipforge.mp4"}
+    state["music"] = {"enabled": False}
     project.revisions.append(ProjectRevision(number=3, parent_revision=2, instruction="shorter hook", kind="user", state=state, changed_components=["script"]))
     project.current_revision = project.active_tip_revision = 3
     db.commit()
-    with pytest.raises(uploads.UploadRefused) as refused:
-        uploads.request_upload(db, project, settings, channel_id=old.channel_id)
-    assert refused.value.code == "export_outdated"
-    add_export_revision(db, project, settings, b"B" * 30_000, rendered_state(12.0))
     new = upload_now(db, project, settings, store, fake)
     assert new.id != old.id and new.youtube_video_id != old.youtube_video_id
-    assert new.render_revision == 4 and new.project_revision == 5
+    assert (new.render_revision, new.project_revision, new.source_kind) == (3, 3, "render")
+    assert bytes(fake.sessions[list(fake.sessions)[-1]]["data"]) == b"B" * 30_000
     db.refresh(old)
     assert (old.id, old.youtube_video_id, old.render_revision, old.render_sha256) == old_snapshot
     fingerprints = db.scalars(select(ProductionFingerprint)).all()
-    assert sorted(item.render_revision for item in fingerprints) == [1, 4]
+    assert sorted(item.render_revision for item in fingerprints) == [1, 3]
 
 
 def test_interrupted_upload_resumes_the_same_session_without_duplicates(db, settings, store, fake, monkeypatch):
@@ -308,7 +313,7 @@ def test_interrupted_upload_resumes_the_same_session_without_duplicates(db, sett
     assert upload.last_error_code == "network_timeout"
     assert upload.youtube_video_id is None
     assert upload.upload_session_uri and upload.bytes_uploaded == 8192
-    resumed, target, should_run = uploads.request_upload(db, project, settings, channel_id=upload.channel_id)
+    resumed, target, should_run = uploads.request_upload(db, project, settings, options=publish_options(), channel_id=upload.channel_id)
     assert resumed.id == upload.id and should_run
     uploads.run_upload(db, upload.id, target.path, settings, store, fake)
     db.refresh(upload)
@@ -324,7 +329,7 @@ def test_timeout_on_final_chunk_never_allows_a_silent_second_video(db, settings,
     upload = upload_now(db, project, settings, store, fake)
     assert upload.state == "failed" and upload.bytes_uploaded == upload.render_file_size
     fake.expire_sessions = True
-    _again, target, should_run = uploads.request_upload(db, project, settings, channel_id=upload.channel_id)
+    _again, target, should_run = uploads.request_upload(db, project, settings, options=publish_options(), channel_id=upload.channel_id)
     assert should_run
     uploads.run_upload(db, upload.id, target.path, settings, store, fake)
     db.refresh(upload)
@@ -335,7 +340,7 @@ def test_timeout_on_final_chunk_never_allows_a_silent_second_video(db, settings,
 def test_restart_marks_uploading_rows_interrupted(db, settings, store, fake):
     connect(db, settings, store, fake)
     project = exported_project(db, settings)
-    upload, _target, _run = uploads.request_upload(db, project, settings, channel_id="UC_fake_channel_01")
+    upload, _target, _run = uploads.request_upload(db, project, settings, options=publish_options(), channel_id="UC_fake_channel_01")
     assert uploads.claim_upload(db, upload.id)
     assert not uploads.claim_upload(db, upload.id)  # a double click cannot start a second run
     assert uploads.mark_interrupted_uploads(db) == 1
@@ -346,7 +351,7 @@ def test_restart_marks_uploading_rows_interrupted(db, settings, store, fake):
 def test_expired_session_after_final_bytes_requires_explicit_confirmation(db, settings, store, fake):
     connect(db, settings, store, fake)
     project = exported_project(db, settings)
-    upload, target, _run = uploads.request_upload(db, project, settings, channel_id="UC_fake_channel_01")
+    upload, target, _run = uploads.request_upload(db, project, settings, options=publish_options(), channel_id="UC_fake_channel_01")
     upload.upload_session_uri = "https://www.googleapis.com/upload/youtube/v3/videos?upload_id=lost"
     upload.bytes_uploaded = upload.render_file_size
     upload.state = "failed"
@@ -356,9 +361,9 @@ def test_expired_session_after_final_bytes_requires_explicit_confirmation(db, se
     assert upload.last_error_code == "session_expired_unknown_outcome"
     assert fake.sessions == {}
     with pytest.raises(uploads.UploadRefused) as refused:
-        uploads.request_upload(db, project, settings, channel_id="UC_fake_channel_01")
+        uploads.request_upload(db, project, settings, options=publish_options(), channel_id="UC_fake_channel_01")
     assert refused.value.code == "unknown_outcome"
-    fresh, target, should_run = uploads.request_upload(db, project, settings, channel_id="UC_fake_channel_01", force_new=True)
+    fresh, target, should_run = uploads.request_upload(db, project, settings, options=publish_options(), channel_id="UC_fake_channel_01", force_new=True)
     assert should_run and fresh.id != upload.id
 
 
@@ -381,7 +386,7 @@ def test_upload_failure_is_visible_and_project_state_untouched(db, settings, sto
 def test_wrong_channel_is_refused(db, settings, store, fake):
     connect(db, settings, store, fake)
     project = exported_project(db, settings)
-    upload, target, _run = uploads.request_upload(db, project, settings, channel_id="UC_fake_channel_01")
+    upload, target, _run = uploads.request_upload(db, project, settings, options=publish_options(), channel_id="UC_fake_channel_01")
     fake.channel = ChannelIdentity("UC_intruder", "Someone else")
     connect(db, settings, store, fake)
     uploads.run_upload(db, upload.id, target.path, settings, store, fake)
@@ -392,7 +397,7 @@ def test_wrong_channel_is_refused(db, settings, store, fake):
 def test_changed_export_file_is_not_uploaded_under_the_old_identity(db, settings, store, fake):
     connect(db, settings, store, fake)
     project = exported_project(db, settings)
-    upload, target, _run = uploads.request_upload(db, project, settings, channel_id="UC_fake_channel_01")
+    upload, target, _run = uploads.request_upload(db, project, settings, options=publish_options(), channel_id="UC_fake_channel_01")
     target.path.write_bytes(b"different" * 5000)
     uploads.run_upload(db, upload.id, target.path, settings, store, fake)
     db.refresh(upload)
@@ -422,8 +427,8 @@ def test_status_sync_processing_ready_rejected_and_deleted(db, settings, store, 
     assert upload.deleted_on_youtube and uploads.lifecycle(upload) == "deleted"
     # a deleted video may be re-uploaded, but only explicitly
     with pytest.raises(uploads.UploadRefused):
-        uploads.request_upload(db, project, settings, channel_id=upload.channel_id)
-    again, _target, should_run = uploads.request_upload(db, project, settings, channel_id=upload.channel_id, force_new=True)
+        uploads.request_upload(db, project, settings, options=publish_options(), channel_id=upload.channel_id)
+    again, _target, should_run = uploads.request_upload(db, project, settings, options=publish_options(), channel_id=upload.channel_id, force_new=True)
     assert should_run and again.id != upload.id
     db.refresh(upload)
     assert upload.youtube_video_id and upload.idempotency_key is None  # history kept
@@ -433,13 +438,15 @@ def test_schedule_uses_private_publish_at_and_preserves_status_fields(db, settin
     connect(db, settings, store, fake)
     project = exported_project(db, settings)
     upload = upload_now(db, project, settings, store, fake)
-    when = NOW + timedelta(days=2, hours=3)
-    uploads.schedule_publication(db, upload, when, settings, store, fake, now=NOW)
+    choice = ScheduleChoice(date="2026-09-12", time="17:00", timezone="Europe/Berlin")
+    uploads.schedule_publication(db, upload, choice, settings, store, fake, now=NOW)
     body = next(payload for name, payload in fake.calls if name == "update_video")
     assert body["status"]["privacyStatus"] == "private"
-    assert body["status"]["publishAt"] == "2026-09-12T15:00:00.000Z"
+    assert body["status"]["publishAt"] == "2026-09-12T15:00:00.000Z"  # CEST = UTC+2
     assert body["status"]["selfDeclaredMadeForKids"] is False and body["status"]["license"] == "youtube"
+    when = datetime(2026, 9, 12, 15, 0, tzinfo=UTC)
     assert upload.schedule_status == "scheduled" and uploads.aware(upload.publish_at) == when
+    assert (upload.schedule_local_time, upload.schedule_timezone) == ("2026-09-12T17:00", "Europe/Berlin")
     assert uploads.serialize_upload(upload)["publish_at"] == when
     assert upload.privacy_status == "private" and upload.published_at is None  # nothing published
     assert uploads.lifecycle(upload) == "scheduled"
@@ -450,16 +457,17 @@ def test_schedule_rejects_invalid_times_and_failures_stay_retryable(db, settings
     project = exported_project(db, settings)
     upload = upload_now(db, project, settings, store, fake)
     with pytest.raises(uploads.UploadRefused) as past:
-        uploads.schedule_publication(db, upload, NOW - timedelta(hours=1), settings, store, fake, now=NOW)
+        uploads.schedule_publication(db, upload, ScheduleChoice(date="2026-09-10", time="11:00", timezone="UTC"), settings, store, fake, now=NOW)
     assert past.value.code == "invalid_time"
     with pytest.raises(uploads.UploadRefused):
-        uploads.schedule_publication(db, upload, datetime(2026, 9, 12, 15, 0), settings, store, fake, now=NOW)  # noqa: DTZ001 - deliberately naive
+        uploads.schedule_publication(db, upload, ScheduleChoice(date="2026-09-12", time="15:00", timezone="Mars/Olympus"), settings, store, fake, now=NOW)
     fake.update_error = YouTubeApiError("bad_request", "The video's publish time is invalid.")
+    tomorrow = ScheduleChoice(date="2026-09-11", time="12:00", timezone="UTC")
     with pytest.raises(YouTubeApiError):
-        uploads.schedule_publication(db, upload, NOW + timedelta(days=1), settings, store, fake, now=NOW)
+        uploads.schedule_publication(db, upload, tomorrow, settings, store, fake, now=NOW)
     assert upload.schedule_status == "schedule_failed" and "publish time" in upload.schedule_error
     fake.update_error = None
-    uploads.schedule_publication(db, upload, NOW + timedelta(days=1), settings, store, fake, now=NOW)
+    uploads.schedule_publication(db, upload, tomorrow, settings, store, fake, now=NOW)
     assert upload.schedule_status == "scheduled" and upload.schedule_error is None
 
 
@@ -469,7 +477,7 @@ def test_published_video_cannot_be_rescheduled(db, settings, store, fake):
     published(db, upload, fake, settings, store)
     assert uploads.aware(upload.published_at) == datetime(2026, 9, 10, 11, 0, tzinfo=UTC)
     with pytest.raises(uploads.UploadRefused) as refused:
-        uploads.schedule_publication(db, upload, NOW + timedelta(days=1), settings, store, fake, now=NOW)
+        uploads.schedule_publication(db, upload, ScheduleChoice(date="2026-09-11", time="12:00", timezone="UTC"), settings, store, fake, now=NOW)
     assert refused.value.code == "already_published"
 
 

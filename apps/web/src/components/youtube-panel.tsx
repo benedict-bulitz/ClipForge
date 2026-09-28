@@ -7,47 +7,61 @@ import {
   ApiError,
   getProjectYouTube,
   refreshYouTubeAnalytics,
+  retryYouTubeThumbnail,
   retryYouTubeUpload,
   scheduleYouTubeUpload,
+  setYouTubeAudience,
   syncYouTubeUpload,
-  uploadProjectToYouTube,
 } from "@/lib/api";
 import type { Project } from "@/lib/types";
 import {
   PERFORMANCE_METRICS,
+  browserLocale,
   classificationLabel,
+  detectTimeZone,
   formatDateTime,
   formatDelta,
   formatMetric,
   formatRatio,
   formatSeconds,
   lifecycleLabel,
-  localDateTimeToIso,
   performanceHeadline,
   sceneTitle,
+  statusRows,
   visibleSceneRows,
   type PerformanceReport,
   type ProjectYouTube,
+  type ScheduleChoice,
+  type ScheduleResolution,
   type YouTubeUpload,
 } from "@/lib/youtube";
 import { cn } from "@/lib/utils";
 import { Button } from "./ui/button";
+import { PublishSheet } from "./youtube-publish-sheet";
+import { ScheduleFields } from "./youtube-schedule-fields";
 
 type Notice = { tone: "error" | "info" | "success"; text: string };
+
+const STUDIO_ONLY_HINT = "Chapters, comments, Shorts remixing, featured places, age restriction and monetization are set in YouTube Studio.";
 
 function errorText(reason: unknown, fallback: string): string {
   return reason instanceof ApiError || reason instanceof Error ? reason.message : fallback;
 }
 
-export function YouTubePanel({ project, disabled }: { project: Project; disabled: boolean }) {
+export function YouTubePanel({ project, disabled, publishOpen, onPublishOpenChange }: {
+  project: Project;
+  disabled: boolean;
+  publishOpen: boolean;
+  onPublishOpenChange: (open: boolean) => void;
+}) {
+  const locale = browserLocale();
   const [data, setData] = useState<ProjectYouTube | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [scheduling, setScheduling] = useState(false);
-  const [date, setDate] = useState("");
-  const [time, setTime] = useState("");
-  const [confirmReupload, setConfirmReupload] = useState(false);
+  const [schedule, setSchedule] = useState<ScheduleChoice>(() => ({ date: "", time: "", timezone: detectTimeZone() }));
+  const [resolution, setResolution] = useState<ScheduleResolution | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -67,13 +81,13 @@ export function YouTubePanel({ project, disabled }: { project: Project; disabled
   }, [project.id, project.current_revision]);
 
   const focus = data?.uploads.find((item) => item.id === data.focus_upload_id) ?? null;
-  const uploading = focus?.lifecycle === "uploading";
+  const polling = focus?.lifecycle === "uploading" || focus?.thumbnail.status === "pending";
 
   useEffect(() => {
-    if (!uploading) return;
+    if (!polling) return;
     const timer = window.setInterval(() => void load(), 2500);
     return () => window.clearInterval(timer);
-  }, [uploading, load]);
+  }, [polling, load]);
 
   async function run(action: string, work: () => Promise<unknown>, success?: string) {
     setBusy(action);
@@ -89,18 +103,6 @@ export function YouTubePanel({ project, disabled }: { project: Project; disabled
     }
   }
 
-  function schedule(upload: YouTubeUpload) {
-    const iso = localDateTimeToIso(date, time);
-    if (!iso) {
-      setNotice({ tone: "error", text: "Choose a date and a time." });
-      return;
-    }
-    void run("schedule", async () => {
-      await scheduleYouTubeUpload(upload.id, iso);
-      setScheduling(false);
-    }, "Publication scheduled. The video stays private until then.");
-  }
-
   if (!data) {
     return (
       <section className="workspace-card mt-8 p-5" aria-label="YouTube" aria-busy={!loadError}>
@@ -114,9 +116,12 @@ export function YouTubePanel({ project, disabled }: { project: Project; disabled
   const locked = disabled || busy !== null;
   const connected = connection.status === "connected";
   const others = data.uploads.filter((item) => item.id !== focus?.id && item.youtube_video_id);
+  const newRevision = !!focus?.youtube_video_id && current.uploadable && focus.render_revision !== current.render_revision;
+  const canUpload = connected && current.uploadable && (!focus || !focus.youtube_video_id || newRevision);
+  const uploadBlockedReason = !connected ? null : current.uploadable ? null : current.code === "already_uploaded" ? null : current.message;
 
   return (
-    <section className="workspace-card mt-8 p-5" aria-label="YouTube">
+    <section className="workspace-card mt-8 p-5" aria-label="YouTube" id="youtube-publishing">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <h2 className="font-semibold">YouTube</h2>
@@ -127,58 +132,45 @@ export function YouTubePanel({ project, disabled }: { project: Project; disabled
           </p>
         </div>
         {!connected && (
-          <Button asChild size="sm" variant="outline">
-            <Link href="/settings/integrations#youtube">{connection.status === "auth_expired" ? "Reconnect" : "Connect"}</Link>
+          <Button asChild size="sm" variant="accent">
+            <Link href="/settings/integrations#youtube">{connection.status === "auth_expired" ? "Reconnect YouTube" : "Connect YouTube"}</Link>
           </Button>
         )}
-        {connected && !focus && current.uploadable && (
-          <Button size="sm" variant="accent" disabled={locked} onClick={() => void run("upload", () => uploadProjectToYouTube(project.id, project.current_revision))}>
-            {busy === "upload" ? <LoaderCircle className="size-3.5 animate-spin" /> : <Upload className="size-3.5" />} Upload privately
+        {canUpload && (
+          <Button size="sm" variant="accent" disabled={locked} onClick={() => onPublishOpenChange(true)}>
+            <Upload className="size-3.5" /> {newRevision ? "Upload this revision" : "Upload to YouTube"}
           </Button>
         )}
       </div>
 
-      {connected && !current.uploadable && current.code !== "already_uploaded" && current.message && (
-        <p className="mt-3 text-xs text-[var(--muted-foreground)]">{current.message}</p>
-      )}
-      {connected && focus && current.uploadable && focus.render_revision !== current.render_revision && (
-        <div className="cf-subtle mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border px-3 py-2 text-xs">
-          <span>This revision (render v{current.render_revision}) is not on YouTube yet. Earlier revisions keep their own videos.</span>
-          <Button size="sm" variant="outline" disabled={locked} onClick={() => void run("upload", () => uploadProjectToYouTube(project.id, project.current_revision))}>
-            <Upload className="size-3.5" /> Upload privately
-          </Button>
-        </div>
-      )}
+      {uploadBlockedReason && <p className="mt-3 text-xs text-[var(--muted-foreground)]">{uploadBlockedReason}</p>}
+      {newRevision && <p className="mt-3 text-xs text-[var(--muted-foreground)]">This revision (render v{current.render_revision}) is not on YouTube yet. Earlier revisions keep their own videos.</p>}
 
-      {connected && current.code === "already_uploaded" && current.message && (
-        <p className="mt-3 text-xs text-[var(--muted-foreground)]">{current.message} — this exact render is not uploaded twice.</p>
+      {focus && (
+        <UploadCard
+          upload={focus}
+          locale={locale}
+          locked={locked}
+          busy={busy}
+          scheduling={scheduling}
+          schedule={schedule}
+          resolution={resolution}
+          onSchedule={setSchedule}
+          onResolved={setResolution}
+          onScheduleOpen={() => { setSchedule((value) => ({ ...value, timezone: focus.schedule.timezone ?? value.timezone })); setScheduling(true); }}
+          onScheduleCancel={() => setScheduling(false)}
+          onScheduleSave={() => void run("schedule", async () => { await scheduleYouTubeUpload(focus.id, schedule); setScheduling(false); }, "Schedule saved. The video stays private until then.")}
+          onSync={() => void run("sync", () => syncYouTubeUpload(focus.id))}
+          onRetry={() => void run("retry", () => retryYouTubeUpload(focus.id))}
+          onRetryThumbnail={() => void run("thumbnail", () => retryYouTubeThumbnail(focus.id), "Thumbnail applied.")}
+          onAudience={(value) => void run("audience", () => setYouTubeAudience(focus.id, value), "Audience answer saved on YouTube.")}
+          onRefreshAnalytics={() => void run("analytics", async () => {
+            const response = await refreshYouTubeAnalytics(focus.id);
+            if (response.result.status === "error" && response.result.error) throw new Error(response.result.error.message);
+          })}
+          onReupload={() => onPublishOpenChange(true)}
+        />
       )}
-
-      {focus && <UploadStatus
-        upload={focus}
-        locked={locked}
-        busy={busy}
-        scheduling={scheduling}
-        date={date}
-        time={time}
-        confirmReupload={confirmReupload}
-        onDate={setDate}
-        onTime={setTime}
-        onScheduleOpen={() => setScheduling(true)}
-        onScheduleCancel={() => setScheduling(false)}
-        onSchedule={() => schedule(focus)}
-        onSync={() => void run("sync", () => syncYouTubeUpload(focus.id))}
-        onRetry={() => void run("retry", () => retryYouTubeUpload(focus.id))}
-        onRefreshAnalytics={() => void run("analytics", async () => {
-          const response = await refreshYouTubeAnalytics(focus.id);
-          if (response.result.status === "error" && response.result.error) throw new Error(response.result.error.message);
-        })}
-        onReupload={() => {
-          if (!confirmReupload) { setConfirmReupload(true); return; }
-          setConfirmReupload(false);
-          void run("upload", () => uploadProjectToYouTube(project.id, project.current_revision, true));
-        }}
-      />}
 
       {notice && (
         <p role={notice.tone === "error" ? "alert" : "status"} className={cn("mt-3 rounded-xl px-3 py-2 text-xs", notice.tone === "error" ? "bg-red-50 text-red-800" : "bg-emerald-50 text-emerald-800")}>{notice.text}</p>
@@ -191,34 +183,45 @@ export function YouTubePanel({ project, disabled }: { project: Project; disabled
       )}
 
       <PerformanceSection report={data.performance} />
+
+      {publishOpen && (
+        <PublishSheet
+          project={project}
+          onClose={() => onPublishOpenChange(false)}
+          onUploaded={() => { onPublishOpenChange(false); setNotice({ tone: "success", text: "Upload started. You can keep working." }); void load(); }}
+        />
+      )}
     </section>
   );
 }
 
-function UploadStatus({ upload, locked, busy, scheduling, date, time, confirmReupload, onDate, onTime, onScheduleOpen, onScheduleCancel, onSchedule, onSync, onRetry, onRefreshAnalytics, onReupload }: {
-  upload: YouTubeUpload; locked: boolean; busy: string | null; scheduling: boolean; date: string; time: string; confirmReupload: boolean;
-  onDate: (value: string) => void; onTime: (value: string) => void; onScheduleOpen: () => void; onScheduleCancel: () => void; onSchedule: () => void;
-  onSync: () => void; onRetry: () => void; onRefreshAnalytics: () => void; onReupload: () => void;
+function UploadCard({ upload, locale, locked, busy, scheduling, schedule, resolution, onSchedule, onResolved, onScheduleOpen, onScheduleCancel, onScheduleSave, onSync, onRetry, onRetryThumbnail, onAudience, onRefreshAnalytics, onReupload }: {
+  upload: YouTubeUpload; locale: string; locked: boolean; busy: string | null; scheduling: boolean; schedule: ScheduleChoice; resolution: ScheduleResolution | null;
+  onSchedule: (value: ScheduleChoice) => void; onResolved: (value: ScheduleResolution | null) => void; onScheduleOpen: () => void; onScheduleCancel: () => void; onScheduleSave: () => void;
+  onSync: () => void; onRetry: () => void; onRetryThumbnail: () => void; onAudience: (value: boolean) => void; onRefreshAnalytics: () => void; onReupload: () => void;
 }) {
-  const link = upload.lifecycle === "published" ? upload.shorts_url : upload.studio_url;
-  const canSchedule = upload.lifecycle === "private" && !!upload.youtube_video_id && upload.state !== "failed";
+  const exists = !!upload.youtube_video_id && !upload.deleted_on_youtube;
+  const canChangeSchedule = exists && (upload.lifecycle === "private" || upload.lifecycle === "scheduled") && upload.state !== "failed";
   const retryable = upload.lifecycle === "failed" && !upload.youtube_video_id && upload.error?.code !== "session_expired_unknown_outcome";
+  const answered = (upload.audience.confirmed_by_youtube ?? upload.audience.made_for_kids) !== null;
+  const spin = (name: string) => (busy === name ? <LoaderCircle className="size-3.5 animate-spin" /> : null);
   return (
     <div className="cf-subtle mt-4 rounded-[.85rem] border p-3 text-xs">
-      <div className="flex flex-wrap items-center justify-between gap-2">
+      <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="min-w-0">
-          <p className="text-sm font-semibold">{lifecycleLabel(upload)}</p>
-          <p className="mono mt-0.5 text-[10px] text-[var(--muted-foreground)]">
-            {upload.youtube_video_id ? `Video ${upload.youtube_video_id}` : "No video yet"} · render v{upload.render_revision} · {upload.privacy_status}
-            {upload.content_type ? ` · ${upload.content_type}` : ""}
+          <p className="text-sm font-semibold">{exists ? "Uploaded to YouTube" : lifecycleLabel(upload)}</p>
+          <p className="mono mt-0.5 truncate text-[10px] text-[var(--muted-foreground)]">
+            {upload.youtube_video_id ? `Video ${upload.youtube_video_id}` : "No video yet"} · render v{upload.render_revision}{upload.content_type ? ` · ${upload.content_type}` : ""}
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-1">
-          {link && <a href={link} target="_blank" rel="noreferrer" className="interactive-text"><ExternalLink className="size-3.5" /> Open</a>}
-          {canSchedule && !scheduling && <button type="button" className="interactive-text" disabled={locked} onClick={onScheduleOpen}><CalendarClock className="size-3.5" /> Schedule</button>}
-          {upload.youtube_video_id && upload.lifecycle !== "published" && <button type="button" className="interactive-text" disabled={locked} onClick={onSync}>{busy === "sync" ? <LoaderCircle className="size-3.5 animate-spin" /> : <RefreshCw className="size-3.5" />} Refresh status</button>}
-          {upload.lifecycle === "published" && <button type="button" className="interactive-text" disabled={locked} onClick={onRefreshAnalytics}>{busy === "analytics" ? <LoaderCircle className="size-3.5 animate-spin" /> : <RefreshCw className="size-3.5" />} Refresh analytics</button>}
-          {retryable && <button type="button" className="interactive-text" disabled={locked} onClick={onRetry}>{busy === "retry" ? <LoaderCircle className="size-3.5 animate-spin" /> : <RefreshCw className="size-3.5" />} Retry upload</button>}
+          {exists && <a href={upload.lifecycle === "published" ? upload.shorts_url ?? "#" : upload.watch_url ?? "#"} target="_blank" rel="noreferrer" className="interactive-text"><ExternalLink className="size-3.5" /> Open on YouTube</a>}
+          {exists && <a href={upload.studio_url ?? "#"} target="_blank" rel="noreferrer" className="interactive-text"><ExternalLink className="size-3.5" /> Open in Studio</a>}
+          {exists && upload.thumbnail.status === "failed" && <button type="button" className="interactive-text" disabled={locked} onClick={onRetryThumbnail}>{spin("thumbnail") ?? <RefreshCw className="size-3.5" />} Retry thumbnail</button>}
+          {canChangeSchedule && !scheduling && <button type="button" className="interactive-text" disabled={locked} onClick={onScheduleOpen}><CalendarClock className="size-3.5" /> {upload.lifecycle === "scheduled" ? "Change schedule" : "Schedule"}</button>}
+          {exists && upload.lifecycle !== "published" && <button type="button" className="interactive-text" disabled={locked} onClick={onSync}>{spin("sync") ?? <RefreshCw className="size-3.5" />} Refresh status</button>}
+          {upload.lifecycle === "published" && <button type="button" className="interactive-text" disabled={locked} onClick={onRefreshAnalytics}>{spin("analytics") ?? <RefreshCw className="size-3.5" />} Refresh analytics</button>}
+          {retryable && <button type="button" className="interactive-text" disabled={locked} onClick={onRetry}>{spin("retry") ?? <RefreshCw className="size-3.5" />} Retry upload</button>}
         </div>
       </div>
 
@@ -227,36 +230,58 @@ function UploadStatus({ upload, locked, busy, scheduling, date, time, confirmReu
           <div className="h-full bg-[#ff6838] transition-all" style={{ width: `${Math.round(upload.progress * 100)}%` }} />
         </div>
       )}
-      {upload.lifecycle === "private" && <p className="mt-2 text-[var(--muted-foreground)]">Uploaded privately. Nothing is published until you schedule it.</p>}
-      {upload.lifecycle === "scheduled" && <p className="mt-2">Scheduled for <strong>{formatDateTime(upload.publish_at)}</strong>. It stays private until then.</p>}
-      {upload.lifecycle === "published" && <p className="mt-2 text-[var(--muted-foreground)]">Published {formatDateTime(upload.published_at)} · Last analytics sync: {formatDateTime(upload.last_analytics_sync_at)}</p>}
-      {upload.schedule_status === "schedule_failed" && upload.schedule_error && (
-        <p role="alert" className="mt-2 flex gap-1.5 text-red-800"><AlertTriangle className="mt-px size-3.5 shrink-0" /> Scheduling failed: {upload.schedule_error}</p>
+
+      <dl className="mt-3 grid gap-x-4 gap-y-1.5 sm:grid-cols-2">
+        {statusRows(upload, locale).map((row) => (
+          <div key={row.label} className="flex min-w-0 gap-2">
+            <dt className="w-20 shrink-0 text-[var(--muted-foreground)]">{row.label}</dt>
+            <dd className={cn("min-w-0 font-semibold", row.tone === "error" && "text-red-700", row.tone === "warn" && "text-amber-800", row.tone === "ok" && "text-emerald-700")}>{row.value}</dd>
+          </div>
+        ))}
+      </dl>
+
+      {upload.thumbnail.status === "failed" && upload.thumbnail.failure_reason && (
+        <p role="alert" className="mt-2 flex gap-1.5 text-red-800"><AlertTriangle className="mt-px size-3.5 shrink-0" /> Video uploaded successfully. Thumbnail could not be applied: {upload.thumbnail.failure_reason}</p>
       )}
+      {upload.visibility_restricted && <p className="mt-2 text-amber-900">YouTube kept this video private because the Google API project has not passed YouTube&apos;s audit yet.</p>}
       {upload.error && upload.lifecycle !== "published" && (
         <p role="alert" className="mt-2 flex gap-1.5 text-red-800"><AlertTriangle className="mt-px size-3.5 shrink-0" /> {upload.error.message}</p>
       )}
-      {upload.can_reupload && upload.is_active_mapping && (
-        <div className="mt-2 flex flex-wrap items-center gap-2">
-          <span className="text-[var(--muted-foreground)]">{confirmReupload ? "This creates a new YouTube video. Continue?" : "YouTube no longer has a usable copy of this render."}</span>
-          <Button size="sm" variant="outline" disabled={locked} onClick={onReupload}>{confirmReupload ? "Yes, upload a new copy" : "Upload again"}</Button>
+      {exists && !answered && (
+        <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-amber-950">
+          <p className="font-semibold">YouTube still needs the audience answer for this video.</p>
+          <div className="mt-2 flex flex-wrap gap-2">
+            <Button size="sm" variant="outline" disabled={locked} onClick={() => onAudience(false)}>{spin("audience")} No, it&apos;s not made for kids</Button>
+            <Button size="sm" variant="outline" disabled={locked} onClick={() => onAudience(true)}>Yes, it&apos;s made for kids</Button>
+          </div>
         </div>
       )}
-
-      {scheduling && canSchedule && (
-        <form className="mt-3 flex flex-wrap items-end gap-2" onSubmit={(event) => { event.preventDefault(); onSchedule(); }}>
-          <label className="text-[11px] font-semibold">Date<input type="date" value={date} onChange={(event) => onDate(event.target.value)} className="cf-input mt-1 text-xs" required /></label>
-          <label className="text-[11px] font-semibold">Time<input type="time" value={time} onChange={(event) => onTime(event.target.value)} className="cf-input mt-1 text-xs" required /></label>
-          <Button type="submit" size="sm" variant="accent" disabled={locked || !date || !time}>{busy === "schedule" ? <LoaderCircle className="size-3.5 animate-spin" /> : <CalendarClock className="size-3.5" />} Schedule publication</Button>
-          <Button type="button" size="sm" variant="ghost" onClick={onScheduleCancel}>Cancel</Button>
-          <p className="w-full text-[10px] text-[var(--muted-foreground)]">Your local time. YouTube keeps the video private and publishes it at exactly this time.</p>
+      {upload.can_reupload && upload.is_active_mapping && (
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <span className="text-[var(--muted-foreground)]">YouTube no longer has a usable copy of this render.</span>
+          <Button size="sm" variant="outline" disabled={locked} onClick={onReupload}>Upload again</Button>
+        </div>
+      )}
+      {scheduling && canChangeSchedule && (
+        <form className="mt-3 space-y-2" onSubmit={(event) => { event.preventDefault(); onScheduleSave(); }}>
+          <ScheduleFields value={schedule} onChange={onSchedule} locale={locale} onResolved={onResolved} />
+          <div className="flex justify-end gap-2">
+            <Button type="button" size="sm" variant="ghost" onClick={onScheduleCancel}>Cancel</Button>
+            <Button type="submit" size="sm" variant="accent" disabled={locked || resolution?.status !== "ok"}>{spin("schedule") ?? <CalendarClock className="size-3.5" />} Save schedule</Button>
+          </div>
         </form>
       )}
+      {exists && (
+        <p className="mt-3 border-t border-black/8 pt-2 text-[11px] text-[var(--muted-foreground)]">
+          <strong className="text-[var(--foreground)]">Additional YouTube Studio settings.</strong> {STUDIO_ONLY_HINT} <a href={upload.studio_url ?? "#"} target="_blank" rel="noreferrer" className="underline">Open in YouTube Studio</a>
+        </p>
+      )}
+      {upload.lifecycle === "published" && <p className="mt-2 text-[var(--muted-foreground)]">Published {formatDateTime(upload.published_at)} · Last analytics sync: {formatDateTime(upload.last_analytics_sync_at)}</p>}
     </div>
   );
 }
 
-function PerformanceSection({ report }: { report: PerformanceReport }) {
+export function PerformanceSection({ report }: { report: PerformanceReport }) {
   const metrics = report.latest_snapshot?.metrics ?? {};
   const scenes = visibleSceneRows(report.scene_retention);
   const opening = report.opening_retention;

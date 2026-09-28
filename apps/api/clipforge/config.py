@@ -56,7 +56,6 @@ class Settings(BaseSettings):
     youtube_oauth_client_id: str | None = None
     youtube_oauth_client_secret: str | None = None
     youtube_oauth_redirect_uri: str = "http://localhost:8000/api/youtube/oauth/callback"
-    youtube_upload_category_id: str = "27"
     youtube_baseline_min_sample: int = 5
     render_root: Path = Path("./projects")
     downloads_root: Path | None = None
