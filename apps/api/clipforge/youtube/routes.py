@@ -304,7 +304,10 @@ def publishing_draft_route(
     project = _project_or_404(db, project_id)
     state = effective_revision_state(project)
     defaults = publishing.load_defaults(db)
-    draft = publishing.options_with_defaults(publishing.default_metadata(state, project.title), defaults)
+    record = connection.active_connection(db)
+    preset = publishing.last_used_preset(db, record.channel_id if record else None)
+    applied = preset if publishing.preset_applies(db, preset) else None
+    draft = publishing.options_with_defaults(publishing.default_metadata(state, project.title), defaults, applied)
     choices = publishing.thumbnail_choices(state, project.id, settings)
     selected = publishing.default_thumbnail(choices)
     draft["thumbnail"] = {"source": selected["source"], "asset": selected["asset"]} if selected else None
@@ -319,6 +322,8 @@ def publishing_draft_route(
     return {
         "options": draft,
         "defaults": defaults.model_dump(),
+        # Where the reusable answers came from: "last_upload" | "settings".
+        "preset_source": "last_upload" if applied else "settings",
         "thumbnails": choices,
         "categories": categories or [],
         "category_error": category_error,

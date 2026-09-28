@@ -210,8 +210,8 @@ export function YouTubePanel({ project, disabled, publishOpen, onPublishOpenChan
       {publishOpen && (
         <PublishSheet
           project={project}
-          onClose={() => onPublishOpenChange(false)}
-          onUploaded={() => { onPublishOpenChange(false); setNotice({ tone: "success", text: "Upload started. You can keep working." }); void load(); }}
+          onClose={() => { onPublishOpenChange(false); void load(); }}
+          onUploaded={() => { onPublishOpenChange(false); void load(); }}
         />
       )}
     </section>

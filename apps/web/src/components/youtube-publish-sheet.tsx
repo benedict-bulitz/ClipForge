@@ -1,9 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, Check, ChevronDown, ImagePlus, LoaderCircle, Lock, Sparkles, Upload, X } from "lucide-react";
-import { ApiError, getPublishingDraft, mediaUrl, preflightYouTubeUpload, uploadCustomThumbnail, uploadProjectToYouTube } from "@/lib/api";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { AlertTriangle, Check, CheckCircle2, ChevronDown, ImagePlus, LoaderCircle, Lock, RotateCcw, Sparkles, Upload, X } from "lucide-react";
+import { ApiError, getProjectYouTube, getPublishingDraft, mediaUrl, preflightYouTubeUpload, retryYouTubeUpload, scheduleYouTubeUpload, uploadCustomThumbnail, uploadProjectToYouTube } from "@/lib/api";
 import type { Project } from "@/lib/types";
 import {
   attentionSummary,
@@ -13,6 +13,10 @@ import {
   formatScheduleConfirmation,
   parseTags,
   primaryActionLabel,
+  publishPhase,
+  PARTIAL_VISIBLE_MS,
+  STATUS_POLL_MS,
+  SUCCESS_VISIBLE_MS,
   regionFromLocale,
   tagsLength,
   textLength,
@@ -21,9 +25,11 @@ import {
   type PreflightIssue,
   type PublishOptions,
   type PublishingDraft,
+  type PublishPhase,
   type ScheduleResolution,
   type ThumbnailOption,
   type Visibility,
+  type YouTubeUpload,
 } from "@/lib/youtube";
 import { cn } from "@/lib/utils";
 import { Button } from "./ui/button";
@@ -68,6 +74,11 @@ function Toggle({ label, checked, onChange, hint }: { label: string; checked: bo
   );
 }
 
+/** One upload started from this sheet, followed until YouTube answers. */
+type Run = { id: string; wantsSchedule: boolean; upload: YouTubeUpload; videoSeenAt: number | null; checkedAt: number; pollErrors: number };
+
+const MAX_POLL_ERRORS = 5;
+
 export function PublishSheet({ project, onClose, onUploaded }: { project: Project; onClose: () => void; onUploaded: () => void }) {
   const locale = browserLocale();
   const region = regionFromLocale(locale);
@@ -82,6 +93,10 @@ export function PublishSheet({ project, onClose, onUploaded }: { project: Projec
   const [advanced, setAdvanced] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [run, setRun] = useState<Run | null>(null);
+  const done = useRef(onUploaded);
+  useEffect(() => { done.current = onUploaded; });
 
   useEffect(() => {
     let active = true;
@@ -91,7 +106,8 @@ export function PublishSheet({ project, onClose, onUploaded }: { project: Projec
         const timezone = next.defaults.timezone || detectTimeZone();
         setDraft(next);
         setThumbnails(next.thumbnails);
-        setOptions({ ...next.options, schedule: { date: "", time: "", timezone } });
+        // A time suggested from the last upload (always a future date), else empty.
+        setOptions({ ...next.options, schedule: next.options.schedule ?? { date: "", time: "", timezone } });
         setTagsText(next.options.tags.join(", "));
       })
       .catch((reason) => { if (active) setError(reason instanceof Error ? reason.message : "Publishing settings could not be loaded."); });
@@ -112,6 +128,44 @@ export function PublishSheet({ project, onClose, onUploaded }: { project: Projec
     return () => { controller.abort(); window.clearTimeout(timer); };
   }, [options, project.id, region, language]);
 
+  const phase: PublishPhase | null = useMemo(() => {
+    if (!run) return null;
+    if (run.pollErrors >= MAX_POLL_ERRORS) {
+      return { phase: "error", label: "Status unavailable", tone: "error", message: "ClipForge lost contact with the upload. It continues in the background — check the YouTube card after closing.", retry: null, close: false };
+    }
+    return publishPhase(run.upload, run.wantsSchedule, run.videoSeenAt, run.checkedAt);
+  }, [run]);
+  const inFlight = busy || phase?.tone === "busy";
+
+  // Follow the upload with the backend's record until YouTube has answered.
+  useEffect(() => {
+    if (!run || phase?.tone !== "busy") return;
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      getProjectYouTube(project.id, controller.signal)
+        .then((data) => {
+          const found = data.uploads.find((item) => item.id === run.id);
+          const now = Date.now();
+          setRun((current) => (current && current.id === run.id
+            ? { ...current, upload: found ?? current.upload, checkedAt: now, pollErrors: 0, videoSeenAt: current.videoSeenAt ?? (found?.youtube_video_id ? now : null) }
+            : current));
+        })
+        .catch(() => {
+          if (controller.signal.aborted) return;
+          setRun((current) => (current && current.id === run.id ? { ...current, checkedAt: Date.now(), pollErrors: current.pollErrors + 1 } : current));
+        });
+    }, STATUS_POLL_MS);
+    return () => { controller.abort(); window.clearTimeout(timer); };
+  }, [run, phase?.tone, project.id]);
+
+  // Success stays visible briefly (and is announced), then the sheet closes itself.
+  const closeAfter = phase?.close ? (phase.tone === "success" ? SUCCESS_VISIBLE_MS : PARTIAL_VISIBLE_MS) : null;
+  useEffect(() => {
+    if (closeAfter === null) return;
+    const timer = window.setTimeout(() => done.current(), closeAfter);
+    return () => window.clearTimeout(timer);
+  }, [closeAfter]);
+
   const update = (patch: Partial<PublishOptions>) => setOptions((current) => (current ? { ...current, ...patch } : current));
   const selectedThumb = useMemo(
     () => (options?.thumbnail?.source === "youtube_auto" ? null : thumbnails.find((item) => item.source === options?.thumbnail?.source && item.asset === options?.thumbnail?.asset) ?? null),
@@ -131,7 +185,8 @@ export function PublishSheet({ project, onClose, onUploaded }: { project: Projec
   const limits = draft.limits;
   const audited = draft.allowed_visibilities.includes("public");
   const suggestion = draft.synthetic_suggestion;
-  const blocked = issues.length > 0 || checking || busy;
+  const blocked = issues.length > 0 || checking || inFlight;
+  const locked = inFlight || !!phase?.close;
 
   async function addCustomThumbnail(file: File) {
     setError(null);
@@ -150,16 +205,42 @@ export function PublishSheet({ project, onClose, onUploaded }: { project: Projec
     }
   }
 
+  function follow(upload: YouTubeUpload, wantsSchedule: boolean) {
+    const now = Date.now();
+    setRun({ id: upload.id, wantsSchedule, upload, videoSeenAt: upload.youtube_video_id ? now : null, checkedAt: now, pollErrors: 0 });
+  }
+
+  // The sheet stays open: the button reports progress, then success or an inline error.
   async function submit() {
-    if (!options || blocked) return;
+    if (!options || blocked || locked) return;
     setBusy(true);
-    setError(null);
+    setSubmitError(null);
+    setRun(null);
+    const wantsSchedule = options.visibility === "schedule";
     try {
-      await uploadProjectToYouTube(project.id, project.current_revision, { ...options, schedule: options.visibility === "schedule" ? options.schedule : null }, region, language);
-      onUploaded();
+      const result = await uploadProjectToYouTube(project.id, project.current_revision, { ...options, schedule: wantsSchedule ? options.schedule : null }, region, language);
+      follow(result.upload, wantsSchedule);
     } catch (reason) {
-      if (reason instanceof ApiError) setError(reason.message);
-      else setError("The upload could not start.");
+      setSubmitError(`Upload failed. ${reason instanceof ApiError ? reason.message : "The upload could not start."}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function retry() {
+    if (!run || !phase?.retry || busy) return;
+    setBusy(true);
+    setSubmitError(null);
+    try {
+      if (phase.retry === "upload") {
+        follow((await retryYouTubeUpload(run.id)).upload, run.wantsSchedule);
+      } else if (options?.schedule) {
+        follow((await scheduleYouTubeUpload(run.id, options.schedule)).upload, true);
+      }
+    } catch (reason) {
+      const text = reason instanceof ApiError ? reason.message : "YouTube could not be reached.";
+      setSubmitError(phase.retry === "upload" ? `Upload failed. ${text}` : `Video uploaded, but scheduling failed. ${text}`);
+    } finally {
       setBusy(false);
     }
   }
@@ -178,6 +259,13 @@ export function PublishSheet({ project, onClose, onUploaded }: { project: Projec
   return (
     <Shell onClose={onClose}>
       <div className="min-h-0 flex-1 overflow-y-auto">
+        {draft.preset_source === "last_upload" && (
+          <p className="mx-5 mt-4 flex gap-1.5 rounded-lg bg-black/[.03] px-3 py-2 text-[11px] text-[var(--muted-foreground)] sm:mx-6">
+            <Check className="mt-0.5 size-3 shrink-0 text-[#ff6838]" />Settings from your last upload to this channel are pre-selected. Title, description, tags and thumbnail come from this project.
+          </p>
+        )}
+        {/* Settings stay as entered; they are only read-only while YouTube works. */}
+        <fieldset disabled={locked} className="m-0 min-w-0 border-0 p-0">
         <Section title="Video">
           <div className="grid gap-4 md:grid-cols-[210px_minmax(0,1fr)]">
             <div>
@@ -229,7 +317,7 @@ export function PublishSheet({ project, onClose, onUploaded }: { project: Projec
             <Choice name="made-for-kids" checked={options.made_for_kids === false} onChange={() => update({ made_for_kids: false })} label="No, it's not made for kids" />
             <Choice name="made-for-kids" checked={options.made_for_kids === true} onChange={() => update({ made_for_kids: true })} label="Yes, it's made for kids" description="Comments and some features are turned off." />
           </div>
-          {draft.defaults.made_for_kids !== null && <p className="mt-2 text-[11px] text-[var(--muted-foreground)]">Pre-selected from your upload defaults.</p>}
+          {options.made_for_kids !== null && draft.options.made_for_kids !== null && <p className="mt-2 text-[11px] text-[var(--muted-foreground)]">{draft.preset_source === "last_upload" ? "Pre-selected from your last upload." : "Pre-selected from your upload defaults."}</p>}
           <div className="mt-5">
             <p className="text-sm font-semibold">Realistic altered or synthetic content?</p>
             <p className="text-xs text-[var(--muted-foreground)]">Content that could be mistaken for a real person, place or event.</p>
@@ -297,28 +385,76 @@ export function PublishSheet({ project, onClose, onUploaded }: { project: Projec
             </div>
           )}
         </section>
+        </fieldset>
       </div>
 
       <footer className="border-t border-[var(--border)] bg-[var(--surface-elevated)] px-5 py-4 sm:px-6">
         <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-[11px] sm:grid-cols-3">
           {summary.map(([label, value]) => <div key={label} className="min-w-0"><dt className="text-[var(--muted-foreground)]">{label}</dt><dd className="truncate font-semibold" title={value}>{value}</dd></div>)}
         </dl>
-        {issues.length > 0 && (
+        {issues.length > 0 && !run && (
           <div role="alert" className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
             <p className="flex items-center gap-1.5 font-semibold"><AlertTriangle className="size-3.5" /> {attentionSummary(issues)}</p>
             <ul className="mt-1 list-disc pl-5">{issues.map((item) => <li key={`${item.field}:${item.message}`}>{item.message}</li>)}</ul>
           </div>
         )}
         {error && <p role="alert" className="mt-3 rounded-xl bg-red-50 px-3 py-2 text-xs text-red-800">{error}</p>}
+        <PublishFeedback phase={phase} submitError={submitError} />
         <div className="mt-3 flex items-center justify-end gap-2">
-          <Button variant="ghost" onClick={onClose} disabled={busy}>Cancel</Button>
-          <Button variant="accent" onClick={() => void submit()} disabled={blocked} aria-describedby="publish-blocked-reason">
-            {busy ? <LoaderCircle className="size-3.5 animate-spin" /> : <Upload className="size-3.5" />} {primaryActionLabel(options.visibility)}
-          </Button>
+          <Button variant="ghost" onClick={onClose} disabled={busy}>{run ? "Close" : "Cancel"}</Button>
+          <PrimaryAction
+            phase={busy && !run ? { phase: "uploading", label: "Uploading…", tone: "busy", message: null, retry: null, close: false } : busy && phase?.retry ? { ...phase, tone: "busy", label: phase.retry === "schedule" ? "Scheduling…" : "Uploading…" } : phase}
+            idleLabel={submitError && !run ? "Retry upload" : primaryActionLabel(options.visibility)}
+            disabled={blocked}
+            onSubmit={() => void submit()}
+            onRetry={() => void retry()}
+          />
         </div>
-        {blocked && !busy && <p id="publish-blocked-reason" className="mt-1 text-right text-[10px] text-[var(--muted-foreground)]">{checking ? "Checking settings…" : "Resolve the items above to upload."}</p>}
+        {inFlight && run && <p className="mt-1 text-right text-[10px] text-[var(--muted-foreground)]">You can close this — the upload continues in the background.</p>}
+        {blocked && !inFlight && !phase && <p id="publish-blocked-reason" className="mt-1 text-right text-[10px] text-[var(--muted-foreground)]">{checking ? "Checking settings…" : "Resolve the items above to upload."}</p>}
       </footer>
     </Shell>
+  );
+}
+
+const PHASE_TONE: Record<PublishPhase["tone"], string> = {
+  busy: "!opacity-90",
+  success: "!bg-emerald-600 !text-white !opacity-100",
+  warn: "!bg-amber-500 !text-white !opacity-100",
+  error: "",
+};
+
+/** The one primary button: Upload → Uploading… → Scheduling… → Uploaded ✓ / Scheduled ✓ (or Retry …). */
+function PrimaryAction({ phase, idleLabel, disabled, onSubmit, onRetry }: { phase: PublishPhase | null; idleLabel: string; disabled: boolean; onSubmit: () => void; onRetry: () => void }) {
+  if (!phase) {
+    return (
+      <Button variant="accent" onClick={onSubmit} disabled={disabled} aria-describedby="publish-blocked-reason">
+        <Upload className="size-3.5" /> {idleLabel}
+      </Button>
+    );
+  }
+  if (phase.retry && phase.tone !== "busy") {
+    return <Button variant="accent" onClick={onRetry}><RotateCcw className="size-3.5" /> {phase.label}</Button>;
+  }
+  const finished = phase.close;
+  return (
+    <Button variant="accent" disabled aria-disabled="true" aria-busy={phase.tone === "busy"} data-phase={phase.phase}
+      className={cn("transition-colors duration-300", PHASE_TONE[phase.tone])}>
+      {phase.tone === "busy" ? <LoaderCircle className="size-3.5 animate-spin" /> : finished ? <CheckCircle2 className="size-3.5" /> : <AlertTriangle className="size-3.5" />} {phase.label}
+    </Button>
+  );
+}
+
+/** Inline, screen-reader-announced outcome next to the button. */
+function PublishFeedback({ phase, submitError }: { phase: PublishPhase | null; submitError: string | null }) {
+  const problem = submitError ?? (phase && !phase.close && phase.tone !== "busy" ? phase.message : null);
+  const note = !submitError && phase?.close ? phase.message : null;
+  return (
+    <>
+      <p role="status" aria-live="polite" className="sr-only">{phase && !submitError ? [phase.label, phase.message].filter(Boolean).join(". ") : ""}</p>
+      {problem && <p role="alert" className="mt-3 rounded-xl bg-red-50 px-3 py-2 text-xs text-red-800">{problem}</p>}
+      {note && phase?.tone === "warn" && <p className="mt-3 rounded-xl bg-amber-50 px-3 py-2 text-xs text-amber-900">{note}</p>}
+    </>
   );
 }
 

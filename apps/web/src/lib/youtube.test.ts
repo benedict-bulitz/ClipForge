@@ -13,6 +13,9 @@ import {
   parseTags,
   performanceHeadline,
   primaryActionLabel,
+  publishPhase,
+  SUCCESS_VISIBLE_MS,
+  FINISH_GRACE_MS,
   regionFromLocale,
   sceneTitle,
   statusRows,
@@ -198,4 +201,83 @@ test("Upload to YouTube is the primary action and export is secondary", () => {
   assert.match(workspace, /Upload to YouTube/);
   assert.match(workspace, /Save local MP4/);
   assert.doesNotMatch(workspace, /"Export MP4"/);
+});
+
+// ---------------------------------------------------------------------------
+// Publishing sheet: upload -> scheduling -> success feedback
+// ---------------------------------------------------------------------------
+
+const T0 = Date.parse("2026-09-28T18:00:00Z");
+const fresh = (overrides: Partial<YouTubeUpload> = {}) => upload({ thumbnail: { status: "applied", source: "generated", asset: "youtube-cover-3", failure_reason: null, applied_at: "x" }, ...overrides });
+const uploading = fresh({ state: "uploading", lifecycle: "uploading", youtube_video_id: null, progress: 0.42, schedule_status: "none", current: current({ state: "uploading", last_checked_at: null, last_attempt_at: null }) });
+
+test("while the video uploads the button says Uploading… with progress and never closes", () => {
+  const phase = publishPhase(uploading, true, null, T0);
+  assert.deepEqual([phase.phase, phase.label, phase.tone, phase.close], ["uploading", "Uploading… 42%", "busy", false]);
+});
+
+test("after the bytes land a scheduled upload shows Scheduling… until YouTube answers", () => {
+  const waiting = fresh({ thumbnail: { ...fresh().thumbnail, status: "pending" }, current: current({ last_checked_at: null, last_attempt_at: null }) });
+  assert.equal(publishPhase(waiting, true, T0, T0 + 1000).label, "Scheduling…");
+  assert.equal(publishPhase(waiting, false, T0, T0 + 1000).label, "Finishing…");
+});
+
+test("success is green Scheduled ✓ / Uploaded ✓ and lets the sheet close after ~1.4 s", () => {
+  const scheduled = publishPhase(fresh(), true, T0, T0);
+  assert.deepEqual([scheduled.phase, scheduled.label, scheduled.tone, scheduled.close], ["success", "Scheduled ✓", "success", true]);
+  const privateUpload = fresh({ requested_visibility: "private", schedule_status: "none", current: current({ state: "private", label: "Private", remote: { ...current({}).remote, publish_at: null } }) });
+  assert.deepEqual([publishPhase(privateUpload, false, T0, T0).label, publishPhase(privateUpload, false, T0, T0).tone], ["Uploaded ✓", "success"]);
+  assert.ok(SUCCESS_VISIBLE_MS >= 1000 && SUCCESS_VISIBLE_MS <= 1500);
+});
+
+test("a failed upload keeps the sheet open with Retry upload", () => {
+  const failed = fresh({ state: "failed", lifecycle: "failed", youtube_video_id: null, error: { code: "quota_exceeded", message: "Quota exceeded." }, current: current({ state: "upload_failed", last_checked_at: null }) });
+  const phase = publishPhase(failed, true, null, T0);
+  assert.deepEqual([phase.phase, phase.label, phase.retry, phase.close], ["error", "Retry upload", "upload", false]);
+  assert.equal(phase.message, "Upload failed. Quota exceeded.");
+  const unknown = publishPhase({ ...failed, error: { code: "session_expired_unknown_outcome", message: "Check YouTube Studio." } }, false, null, T0);
+  assert.equal(unknown.retry, null); // never risk a duplicate video
+});
+
+test("a schedule failure is never shown as Scheduled ✓", () => {
+  const failed = publishPhase(fresh({ schedule_status: "schedule_failed", schedule_error: "Invalid publish time." }), true, T0, T0);
+  assert.deepEqual([failed.phase, failed.label, failed.retry, failed.close], ["partial", "Retry scheduling", "schedule", false]);
+  assert.equal(failed.message, "Video uploaded, but scheduling failed. Invalid publish time.");
+  const dropped = publishPhase(fresh({ current: current({ state: "private", label: "Private", remote: { ...current({}).remote, publish_at: null } }) }), true, T0, T0);
+  assert.equal(dropped.label, "Retry scheduling");
+  const unconfirmed = publishPhase(fresh({ current: current({ last_checked_at: null }) }), true, T0, T0 + FINISH_GRACE_MS + 1);
+  assert.notEqual(unconfirmed.label, "Scheduled ✓");
+  assert.equal(unconfirmed.tone, "warn");
+});
+
+test("a thumbnail failure is a partial success, not a total failure", () => {
+  const partial = publishPhase(upload(), false, T0, T0);
+  assert.deepEqual([partial.phase, partial.label, partial.tone, partial.close], ["partial", "Uploaded · thumbnail needs attention", "warn", true]);
+  assert.match(partial.message ?? "", /Video uploaded successfully/);
+  assert.equal(publishPhase(upload(), true, T0, T0).label, "Scheduled · thumbnail needs attention");
+});
+
+test("the sheet stays open while uploading and closes itself only after success", () => {
+  assert.doesNotMatch(sheet, /uploadProjectToYouTube\([^)]*\);\s*onUploaded\(\)/);
+  assert.match(sheet, /follow\(result\.upload, wantsSchedule\)/);
+  assert.match(sheet, /phase\?\.close \? \(phase\.tone === "success" \? SUCCESS_VISIBLE_MS : PARTIAL_VISIBLE_MS\)/);
+  assert.match(sheet, /window\.setTimeout\(\(\) => done\.current\(\), closeAfter\)/);
+  // no double submit: the handler bails while in flight and the button is disabled
+  assert.match(sheet, /if \(!options \|\| blocked \|\| locked\) return;/);
+  assert.match(sheet, /const blocked = issues\.length > 0 \|\| checking \|\| inFlight;/);
+  assert.match(sheet, /aria-busy=\{phase\.tone === "busy"\}/);
+  // green check success, announced to assistive technology
+  assert.match(sheet, /success: "!bg-emerald-600/);
+  assert.match(sheet, /<CheckCircle2/);
+  assert.match(sheet, /role="status" aria-live="polite"/);
+  assert.match(sheet, /Video uploaded, but scheduling failed/);
+  assert.match(sheet, /scheduleYouTubeUpload\(run\.id, options\.schedule\)/);
+  assert.match(sheet, /retryYouTubeUpload\(run\.id\)/);
+  assert.doesNotMatch(panel, /Upload started\. You can keep working/);
+});
+
+test("the sheet uses the suggested schedule and says where pre-selected settings came from", () => {
+  assert.match(sheet, /schedule: next\.options\.schedule \?\? \{ date: "", time: "", timezone \}/);
+  assert.match(sheet, /preset_source === "last_upload"/);
+  assert.match(sheet, /Title, description, tags and thumbnail come from this project\./);
 });

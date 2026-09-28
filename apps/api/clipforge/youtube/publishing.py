@@ -160,8 +160,30 @@ class UploadDefaults(BaseModel):
     api_project_audited: bool = False
 
 
+LAST_USED_KEY = "last_used_by_channel"
+SETTINGS_SAVED_KEY = "settings_saved_at"
+# Reusable answers only; title, description, tags, thumbnail and the exact
+# schedule date always come from the current project and are never stored here.
+PRESET_FIELDS = (
+    "made_for_kids",
+    "contains_synthetic_media",
+    "visibility",
+    "category_id",
+    "default_language",
+    "license",
+    "embeddable",
+    "public_stats_viewable",
+    "notify_subscribers",
+    "paid_product_placement",
+)
+
+
+def _defaults_record(db: Session) -> YouTubeUploadDefaults | None:
+    return db.get(YouTubeUploadDefaults, "primary")
+
+
 def load_defaults(db: Session) -> UploadDefaults:
-    record = db.get(YouTubeUploadDefaults, "primary")
+    record = _defaults_record(db)
     return UploadDefaults.model_validate(record.values if record else {})
 
 
@@ -170,14 +192,69 @@ def save_defaults(db: Session, defaults: UploadDefaults) -> UploadDefaults:
         raise ValueError("Unknown time zone.")
     if defaults.default_language and not _LANGUAGE.match(defaults.default_language):
         raise ValueError("Use a language code such as en or de.")
-    record = db.get(YouTubeUploadDefaults, "primary")
+    record = _defaults_record(db)
     if record is None:
         record = YouTubeUploadDefaults(slot="primary", values={})
         db.add(record)
-    record.values = defaults.model_dump()
+    kept = {LAST_USED_KEY: (record.values or {}).get(LAST_USED_KEY, {})}
+    record.values = {**defaults.model_dump(), **kept, SETTINGS_SAVED_KEY: datetime.now(UTC).isoformat()}
     record.updated_at = datetime.now(UTC)
     db.commit()
     return defaults
+
+
+def last_used_preset(db: Session, channel_id: str | None) -> dict[str, Any] | None:
+    if not channel_id:
+        return None
+    record = _defaults_record(db)
+    preset = ((record.values or {}).get(LAST_USED_KEY) or {}).get(channel_id) if record else None
+    return dict(preset) if isinstance(preset, dict) else None
+
+
+def record_last_used(db: Session, channel_id: str, options: dict[str, Any], *, schedule: dict[str, Any] | None = None, now: datetime | None = None) -> None:
+    """Remember the reusable settings of a *successful* upload for this channel.
+
+    Called only after YouTube accepted the upload (or a schedule change).
+    """
+    now = now or datetime.now(UTC)
+    record = _defaults_record(db)
+    if record is None:
+        record = YouTubeUploadDefaults(slot="primary", values={})
+        db.add(record)
+    values = dict(record.values or {})
+    presets = dict(values.get(LAST_USED_KEY) or {})
+    preset = {**(presets.get(channel_id) or {}), **{key: options.get(key) for key in PRESET_FIELDS if key in options}}
+    if schedule:
+        preset["timezone"] = schedule.get("timezone")
+        preset["schedule_time"] = schedule.get("time")  # time of day only, never the date
+    preset["recorded_at"] = now.isoformat()
+    presets[channel_id] = preset
+    values[LAST_USED_KEY] = presets
+    record.values = values
+    record.updated_at = now
+    db.commit()
+
+
+def preset_applies(db: Session, preset: dict[str, Any] | None) -> bool:
+    """The newer of "last successful upload" and "explicitly saved Settings" wins."""
+    if not preset:
+        return False
+    record = _defaults_record(db)
+    saved = (record.values or {}).get(SETTINGS_SAVED_KEY) if record else None
+    return not saved or str(preset.get("recorded_at") or "") > str(saved)
+
+
+def suggest_schedule(time_of_day: str | None, timezone: str | None, *, now: datetime | None = None) -> ScheduleChoice | None:
+    """Next valid future date for a preferred local time; None if not safely inferable."""
+    if not time_of_day or not timezone or not _TIME.match(time_of_day) or not valid_timezone(timezone):
+        return None
+    now = now or datetime.now(UTC)
+    today = now.astimezone(ZoneInfo(timezone)).date()
+    for offset in range(3):
+        candidate = ScheduleChoice(date=(today + timedelta(days=offset)).isoformat(), time=time_of_day, timezone=timezone)
+        if resolve_schedule(candidate, now=now).status == "ok":
+            return candidate
+    return None
 
 
 def allowed_visibilities(defaults: UploadDefaults) -> list[str]:
@@ -574,20 +651,44 @@ def insert_body(options: PublishOptions, resolution: ScheduleResolution | None) 
     return body
 
 
-def options_with_defaults(draft: dict[str, Any], defaults: UploadDefaults) -> dict[str, Any]:
-    """Initial form state: project metadata plus only the defaults the user saved."""
+def options_with_defaults(
+    draft: dict[str, Any],
+    defaults: UploadDefaults,
+    preset: dict[str, Any] | None = None,
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Initial form state.
+
+    Content (title, description, tags) comes only from ``draft`` - the current
+    project.  Reusable answers come from the last successful upload on this
+    channel when it is newer than the saved Settings, else from the Settings.
+    """
+    source = preset or {}
+
+    def pick(key: str) -> Any:
+        return source[key] if key in source and source[key] is not None else getattr(defaults, key, None)
+
+    visibility = pick("visibility")
+    if visibility not in allowed_visibilities(defaults):
+        visibility = "private"
+    language = pick("default_language") or draft.get("language")
+    schedule = None
+    if visibility == "schedule":
+        schedule = suggest_schedule(source.get("schedule_time"), source.get("timezone") or defaults.timezone, now=now)
     return {
         **draft,
-        "made_for_kids": defaults.made_for_kids,
-        "contains_synthetic_media": defaults.contains_synthetic_media,
-        "visibility": defaults.visibility if defaults.visibility in allowed_visibilities(defaults) else "private",
-        "category_id": defaults.category_id,
-        "default_language": defaults.default_language or draft.get("language"),
-        "default_audio_language": defaults.default_language or draft.get("language"),
-        "license": defaults.license or "youtube",
-        "embeddable": True if defaults.embeddable is None else defaults.embeddable,
-        "public_stats_viewable": True if defaults.public_stats_viewable is None else defaults.public_stats_viewable,
-        "notify_subscribers": True if defaults.notify_subscribers is None else defaults.notify_subscribers,
-        "paid_product_placement": False,
+        "made_for_kids": pick("made_for_kids"),
+        "contains_synthetic_media": pick("contains_synthetic_media"),
+        "visibility": visibility,
+        "schedule": schedule.model_dump() if schedule else None,
+        "category_id": pick("category_id"),
+        "default_language": language,
+        "default_audio_language": language,
+        "license": pick("license") or "youtube",
+        "embeddable": True if pick("embeddable") is None else pick("embeddable"),
+        "public_stats_viewable": True if pick("public_stats_viewable") is None else pick("public_stats_viewable"),
+        "notify_subscribers": True if pick("notify_subscribers") is None else pick("notify_subscribers"),
+        "paid_product_placement": bool(source.get("paid_product_placement") or False),
         "recording_date": None,
     }

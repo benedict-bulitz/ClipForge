@@ -339,6 +339,8 @@ export type PublishingDraft = {
   limits: { title: number; description_bytes: number; tags: number };
   catalog: { api_writable: CatalogEntry[]; studio_only: CatalogEntry[]; api_read_only: CatalogEntry[]; api_writable_not_exposed: CatalogEntry[] };
   render_status: ProjectYouTube["current_render"];
+  /** Where the pre-selected settings came from: this channel's last successful upload, or saved Settings. */
+  preset_source?: "last_upload" | "settings";
 };
 
 export type PreflightIssue = { field: string; message: string };
@@ -529,4 +531,72 @@ export function deleteDialogCopy(plan: DeletionPlan): { title: string; body: str
         confirm: "Delete permanently",
       };
   }
+}
+
+// ---------------------------------------------------------------------------
+// Publishing sheet progress (upload -> scheduling -> result)
+// ---------------------------------------------------------------------------
+
+export type PublishPhase = {
+  phase: "uploading" | "scheduling" | "finishing" | "success" | "partial" | "error";
+  /** Text of the primary button in this phase. */
+  label: string;
+  tone: "busy" | "success" | "warn" | "error";
+  message: string | null;
+  retry: "upload" | "schedule" | null;
+  /** The sheet may close on its own (after SUCCESS_VISIBLE_MS). */
+  close: boolean;
+};
+
+/** How long the green success state stays visible before the sheet closes. */
+export const SUCCESS_VISIBLE_MS = 1400;
+/** A partial success (e.g. thumbnail needs attention) stays longer so it can be read. */
+export const PARTIAL_VISIBLE_MS = 3500;
+/** How often the open sheet re-reads the upload while YouTube works. */
+export const STATUS_POLL_MS = 1500;
+/** After the video ID exists, wait this long for the thumbnail/status read-back. */
+export const FINISH_GRACE_MS = 20_000;
+
+/**
+ * The sheet's state for one upload, derived from the backend's record only:
+ * never "Scheduled ✓" unless YouTube confirmed the schedule.
+ */
+export function publishPhase(upload: YouTubeUpload, wantsSchedule: boolean, videoSeenAt: number | null, now: number): PublishPhase {
+  const current = upload.current;
+  if (upload.lifecycle === "uploading" || upload.state === "pending" || upload.state === "uploading") {
+    const pct = upload.progress !== null ? ` ${Math.round(upload.progress * 100)}%` : "";
+    return { phase: "uploading", label: `Uploading…${pct}`, tone: "busy", message: null, retry: null, close: false };
+  }
+  if (!upload.youtube_video_id) {
+    return { phase: "error", label: "Retry upload", tone: "error", message: `Upload failed. ${upload.error?.message ?? "YouTube did not accept the upload."}`, retry: upload.error?.code === "session_expired_unknown_outcome" ? null : "upload", close: false };
+  }
+  if (["rejected", "processing_failed", "deleted"].includes(current.state)) {
+    return { phase: "error", label: "Upload failed", tone: "error", message: `${current.label}. ${upload.error?.message ?? ""}`.trim(), retry: null, close: false };
+  }
+  const answered = !!(current.last_attempt_at || current.last_checked_at);
+  const settled = upload.thumbnail.status !== "pending" && (answered || (videoSeenAt !== null && now - videoSeenAt > FINISH_GRACE_MS));
+  if (!settled) {
+    return wantsSchedule
+      ? { phase: "scheduling", label: "Scheduling…", tone: "busy", message: null, retry: null, close: false }
+      : { phase: "finishing", label: "Finishing…", tone: "busy", message: null, retry: null, close: false };
+  }
+  const thumbnailFailed = upload.thumbnail.status === "failed";
+  if (wantsSchedule && upload.schedule_status === "schedule_failed") {
+    return { phase: "partial", label: "Retry scheduling", tone: "warn", message: `Video uploaded, but scheduling failed. ${upload.schedule_error ?? ""}`.trim(), retry: "schedule", close: false };
+  }
+  if (wantsSchedule) {
+    const confirmed = !!current.last_checked_at;
+    const scheduled = ["scheduled", "publish_pending"].includes(current.state) && !!current.remote.publish_at;
+    const live = current.state === "published" || current.state === "unlisted";
+    if (confirmed && !scheduled && !live) {
+      return { phase: "partial", label: "Retry scheduling", tone: "warn", message: "Video uploaded, but scheduling failed. YouTube did not keep the publication time.", retry: "schedule", close: false };
+    }
+    if (!confirmed) {
+      return { phase: "partial", label: "Uploaded ✓", tone: "warn", message: "Video uploaded. YouTube has not confirmed the schedule yet — check the status after the sheet closes.", retry: null, close: true };
+    }
+    if (thumbnailFailed) return { phase: "partial", label: "Scheduled · thumbnail needs attention", tone: "warn", message: `Thumbnail could not be applied: ${upload.thumbnail.failure_reason ?? "unknown reason"}`, retry: null, close: true };
+    return { phase: "success", label: "Scheduled ✓", tone: "success", message: "Scheduled on YouTube.", retry: null, close: true };
+  }
+  if (thumbnailFailed) return { phase: "partial", label: "Uploaded · thumbnail needs attention", tone: "warn", message: `Video uploaded successfully. Thumbnail could not be applied: ${upload.thumbnail.failure_reason ?? "unknown reason"}`, retry: null, close: true };
+  return { phase: "success", label: "Uploaded ✓", tone: "success", message: "Uploaded to YouTube.", retry: null, close: true };
 }

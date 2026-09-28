@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from sqlalchemy import select, update
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from ..config import Settings
@@ -38,6 +38,7 @@ from .publishing import (
     insert_body,
     load_defaults,
     prepare_thumbnail,
+    record_last_used,
     resolve_schedule,
     thumbnail_choices,
     validate_options,
@@ -349,6 +350,20 @@ def _record_video(db: Session, upload: YouTubeUpload, video: dict[str, Any]) -> 
     upload.last_error_message = None
     # Persist the video ID before anything else can fail.
     db.commit()
+    _remember_successful_settings(db, upload)
+
+
+def _remember_successful_settings(db: Session, upload: YouTubeUpload) -> None:
+    """YouTube accepted the upload: its reusable settings become the channel's preset."""
+    options = (upload.upload_settings or {}).get("options") or {}
+    if not options:
+        return
+    schedule = options.get("schedule") if options.get("visibility") == "schedule" else None
+    try:
+        record_last_used(db, upload.channel_id, options, schedule=schedule)
+    except SQLAlchemyError:  # a preset is a convenience; never fail a finished upload
+        db.rollback()
+        logger.warning("Could not store the last-used upload preset upload_id=%s", upload.id)
 
 
 def run_upload(
@@ -613,6 +628,10 @@ def schedule_publication(
     upload.schedule_error = None
     db.commit()
     db.refresh(upload)
+    try:
+        record_last_used(db, upload.channel_id, {"visibility": "schedule"}, schedule=choice.model_dump())
+    except SQLAlchemyError:  # convenience only
+        db.rollback()
     return upload
 
 
