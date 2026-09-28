@@ -273,7 +273,9 @@ def _project_or_404(db: Session, project_id: str):
 
 
 @router.get("/projects/{project_id}")
-def project_youtube_route(project_id: str, db: DbSession, settings: SettingsDep, store: StoreDep) -> dict:
+def project_youtube_route(project_id: str, db: DbSession, settings: SettingsDep, store: StoreDep, provider: ProviderDep) -> dict:
+    """Results-page state. YouTube is asked (freshness-gated) so a page open or a
+    poll never re-shows a stale local schedule as the current truth."""
     project = _project_or_404(db, project_id)
     record = connection.active_connection(db)
     rows = db.scalars(
@@ -282,6 +284,8 @@ def project_youtube_route(project_id: str, db: DbSession, settings: SettingsDep,
     current = _render_status(db, project, settings, record.channel_id if record else None)
     focus = next((item for item in rows if item.id == current.get("existing_upload_id")), None)
     focus = focus or next((item for item in rows if item.youtube_video_id and item.idempotency_key), None) or (rows[0] if rows else None)
+    if focus is not None and record is not None and focus.channel_id == record.channel_id:
+        uploads.reconcile_if_due(db, focus, settings, store, provider)
     return {
         "connection": connection.serialize_connection(connection.get_connection(db), settings, store),
         "current_render": current,

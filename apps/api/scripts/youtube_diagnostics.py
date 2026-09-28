@@ -24,7 +24,9 @@ from clipforge.database import SessionLocal
 from clipforge.models import Project, YouTubeUpload
 from clipforge.security.secrets import SecretStore
 from clipforge.youtube import analytics, connection, learning
+from clipforge.youtube import status as status_authority
 from clipforge.youtube.provider import GoogleYouTubeProvider, YouTubeApiError
+from clipforge.youtube.uploads import STATUS_PARTS
 
 
 def _pct(value) -> str:
@@ -45,8 +47,8 @@ def _print_upload(db, upload: YouTubeUpload, settings, *, live: bool) -> None:
     print(f"  channel_id:       {upload.channel_id}")
     print(f"  video_id:         {upload.youtube_video_id or '-'}")
     print(f"  state:            {upload.state} (uploadStatus={upload.upload_status or '-'}, processing={upload.processing_status or '-'})")
-    print(f"  privacy:          {upload.privacy_status}")
-    print(f"  publishAt:        {upload.publish_at or '-'} (schedule={upload.schedule_status})")
+    print(f"  privacy@upload:   {upload.privacy_status} (see REMOTE for the current state)")
+    print(f"  requested at:     {upload.publish_at or '-'} (schedule={upload.schedule_status})")
     print(f"  published_at:     {upload.published_at or '-'} ({upload.published_source or '-'})")
     print(f"  content type:     {upload.content_type or 'not confirmed by YouTube'}")
     print(f"  source:           {upload.source_kind or '-'} (uploaded directly from ClipForge storage)")
@@ -56,6 +58,23 @@ def _print_upload(db, upload: YouTubeUpload, settings, *, live: bool) -> None:
     print(f"  schedule:         {upload.schedule_local_time or '-'} {upload.schedule_timezone or ''} -> {upload.publish_at or '-'}")
     if upload.deleted_on_youtube:
         print("  !! deleted on YouTube")
+    current = status_authority.current_status(upload)
+    print("\nREQUESTED (history, never current truth):")
+    print(f"  privacy:          {upload.requested_visibility}")
+    print(f"  publishAt:        {upload.publish_at or '-'}")
+    print(f"  local time/zone:  {upload.schedule_local_time or '-'} {upload.schedule_timezone or ''}")
+    print("\nREMOTE (YouTube, current authority):")
+    print(f"  current state:    {current['label']}{' (stale: ' + str(current['stale_reason']) + ')' if current['stale'] else ''}")
+    print(f"  privacyStatus:    {upload.remote_privacy_status or '-'}")
+    print(f"  uploadStatus:     {upload.upload_status or '-'}")
+    print(f"  publishAt:        {upload.remote_publish_at or '-'}")
+    print(f"  publishedAt:      {upload.remote_published_at or '-'} (snippet; publication time only while public)")
+    print(f"  first seen public:{' ' + str(upload.first_observed_public_at) if upload.first_observed_public_at else ' -'}")
+    print(f"  last checked:     {upload.remote_status_checked_at or 'never'}")
+    if upload.remote_status_error_code:
+        print(f"  last refresh err: {upload.remote_status_error_code}: {upload.remote_status_error}")
+    print("\nLIVE STATS (videos.list):")
+    print(f"  views={_fmt(upload.remote_view_count)} likes={_fmt(upload.remote_like_count)} comments={_fmt(upload.remote_comment_count)}")
     if upload.last_error_code:
         print(f"  last error:       {upload.last_error_code}: {upload.last_error_message}")
     if upload.analytics_error_code:
@@ -63,6 +82,10 @@ def _print_upload(db, upload: YouTubeUpload, settings, *, live: bool) -> None:
     if live and upload.youtube_video_id:
         _live(db, upload, settings)
     report = learning.performance_report(db, upload, min_sample=settings.youtube_baseline_min_sample)
+    print("\nANALYTICS (processed, YouTube Analytics API):")
+    print(f"  state:            {report.get('analytics_state')}")
+    print(f"  last fetch:       {upload.last_analytics_sync_at or '-'} (last attempt {upload.last_analytics_attempt_at or '-'})")
+    print(f"  retention:        {'yes' if (report.get('retention') or {}).get('point_count') else 'no'}")
     print(f"\nPerformance status: {report['status']}")
     snapshots = report.get("snapshots") or []
     print(f"Snapshots stored: {len(snapshots)}")
@@ -115,12 +138,14 @@ def _live(db, upload: YouTubeUpload, settings) -> None:
     print("\nLive (read-only, not saved):")
     try:
         _connection, token = connection.access_token(db, settings, store, provider, capability="read")
-        items = provider.list_videos(token, [upload.youtube_video_id], "status,snippet,processingDetails")
+        items = provider.list_videos(token, [upload.youtube_video_id], STATUS_PARTS)
         if not items:
             print("  video not found on YouTube (deleted?)")
             return
         status = items[0].get("status") or {}
-        print(f"  privacy={status.get('privacyStatus')} uploadStatus={status.get('uploadStatus')} publishAt={status.get('publishAt')}")
+        stats = items[0].get("statistics") or {}
+        print(f"  privacy={status.get('privacyStatus')} uploadStatus={status.get('uploadStatus')} publishAt={status.get('publishAt')} publishedAt={(items[0].get('snippet') or {}).get('publishedAt')}")
+        print(f"  views={stats.get('viewCount')} likes={stats.get('likeCount')} comments={stats.get('commentCount')}")
         _connection, token = connection.access_token(db, settings, store, provider, capability="analytics")
         start = (upload.published_at or upload.created_at or datetime.now(UTC)) - timedelta(days=1)
         metrics, _raw = analytics.fetch_video_metrics(provider, token, upload.youtube_video_id, start.date(), datetime.now(UTC).date())

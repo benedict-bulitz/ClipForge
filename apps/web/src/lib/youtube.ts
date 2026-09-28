@@ -46,6 +46,8 @@ export type YouTubeUpload = {
   visibility_restricted: boolean;
   schedule: { status: string; publish_at: string | null; local_time: string | null; timezone: string | null; error: string | null };
   source_kind: string | null;
+  current: CurrentStatus;
+  next_status_check_in_seconds: number | null;
   progress: number | null;
   error: { code: string; message: string } | null;
   is_active_mapping: boolean;
@@ -56,6 +58,29 @@ export type YouTubeUpload = {
   shorts_url: string | null;
   studio_url: string | null;
 };
+
+export type CurrentState = "uploading" | "upload_failed" | "deleted" | "rejected" | "processing_failed" | "published" | "unlisted" | "scheduled" | "publish_pending" | "private";
+
+/** YouTube's reconciled current state (remote authority) plus the historical request. */
+export type CurrentStatus = {
+  state: CurrentState;
+  label: string;
+  processing: boolean;
+  stale: boolean;
+  stale_reason: "never_checked" | "refresh_failed" | "old" | null;
+  last_checked_at: string | null;
+  last_attempt_at: string | null;
+  refresh_error: { code: string; message: string } | null;
+  scheduled_for: string | null;
+  published_at: string | null;
+  published_time_source: string | null;
+  first_observed_public_at: string | null;
+  remote: { privacy_status: string | null; upload_status: string | null; processing_status: string | null; publish_at: string | null; published_at: string | null; rejection_reason: string | null; failure_reason: string | null };
+  live_stats: { views: number | null; likes: number | null; comments: number | null; checked_at: string; source: string } | null;
+  requested: { visibility: string; publish_at: string | null; local_time: string | null; timezone: string | null; history: Array<{ publish_at: string; local_time: string | null; timezone: string | null; replaced_at: string }> };
+};
+
+export type AnalyticsState = "not_published" | "processing" | "partial" | "available" | "failed" | "auth_error";
 
 export type MetricValue = { value: number | null; availability: "available" | "unavailable" | "no_data_yet"; reason: string | null; source: string; note?: string | null };
 
@@ -93,6 +118,7 @@ export type EvidenceRecord = {
 
 export type PerformanceReport = {
   status: "not_uploaded" | "uploading" | "private" | "scheduled" | "waiting_for_data" | "ready" | "failed" | "deleted";
+  analytics_state?: AnalyticsState;
   upload?: YouTubeUpload;
   last_analytics_sync_at?: string | null;
   analytics_error?: { code: string; message: string } | null;
@@ -151,24 +177,71 @@ export function performanceHeadline(report: PerformanceReport): string {
   switch (report.status) {
     case "not_uploaded": return "Not uploaded to YouTube";
     case "uploading": return "Uploading to YouTube…";
-    case "private": return "Uploaded privately — analytics will become useful after publication";
-    case "scheduled": return "Scheduled — analytics will become useful after publication";
-    case "waiting_for_data": return "Waiting for YouTube analytics";
     case "failed": return "The YouTube upload needs attention";
     case "deleted": return "This video no longer exists on YouTube";
-    case "ready": return "Performance";
+    default: break;
+  }
+  switch (report.analytics_state) {
+    case "not_published": return report.status === "scheduled" ? "Not published yet — detailed analytics start after YouTube publishes the video" : "Not published — detailed analytics start after publication";
+    case "processing": return "Detailed analytics · Processing on YouTube";
+    case "failed": return "Detailed analytics could not be loaded";
+    case "auth_error": return "Reconnect YouTube to load detailed analytics";
+    default: return report.status === "waiting_for_data" ? "Detailed analytics · Processing on YouTube" : "Performance";
   }
 }
 
-export function lifecycleLabel(upload: YouTubeUpload): string {
-  switch (upload.lifecycle) {
-    case "uploading": return upload.progress !== null ? `Uploading · ${Math.round(upload.progress * 100)}%` : "Uploading";
-    case "private": return upload.state === "processing" ? "Private on YouTube · processing" : "Private on YouTube";
-    case "scheduled": return "Scheduled";
-    case "published": return "Published";
-    case "failed": return "Upload failed";
-    case "deleted": return "Deleted on YouTube";
+/** Non-promissory: YouTube's docs give no guaranteed delay, so none is claimed. */
+export function analyticsReadiness(state: AnalyticsState | undefined): { title: string; body: string } | null {
+  switch (state) {
+    case "processing": return { title: "Processing on YouTube", body: "Retention and detailed watch metrics may take time to appear. Live views, likes and comments update sooner." };
+    case "partial": return { title: "Partly available", body: "Some detailed metrics or the retention curve are still processing on YouTube." };
+    case "failed": return { title: "Could not load", body: "YouTube Analytics did not answer. Try Refresh analytics later." };
+    case "auth_error": return { title: "Sign-in needed", body: "Reconnect YouTube in Settings to load detailed analytics." };
+    default: return null;
   }
+}
+
+export function relativeTime(iso: string, now: Date, locale: string): string {
+  const seconds = Math.round((new Date(iso).getTime() - now.getTime()) / 1000);
+  const format = new Intl.RelativeTimeFormat(locale, { numeric: "auto" });
+  const abs = Math.abs(seconds);
+  if (abs < 60) return format.format(seconds, "second");
+  if (abs < 3600) return format.format(Math.round(seconds / 60), "minute");
+  if (abs < 86400) return format.format(Math.round(seconds / 3600), "hour");
+  return format.format(Math.round(seconds / 86400), "day");
+}
+
+/** "28.09.2026 · 20:30" in the given zone (24 h where the locale uses it). */
+export function scheduleLine(iso: string, timezone: string, locale: string): string {
+  const date = new Intl.DateTimeFormat(locale, { day: "2-digit", month: "2-digit", year: "numeric", timeZone: timezone }).format(new Date(iso));
+  const time = new Intl.DateTimeFormat(locale, { hour: "2-digit", minute: "2-digit", timeZone: timezone, hourCycle: uses24HourClock(locale) ? "h23" : "h12" }).format(new Date(iso));
+  return `${date} · ${time}`;
+}
+
+export function clockTime(iso: string, locale: string, timezone?: string): string {
+  return new Intl.DateTimeFormat(locale, { hour: "2-digit", minute: "2-digit", timeZone: timezone, hourCycle: uses24HourClock(locale) ? "h23" : "h12" }).format(new Date(iso));
+}
+
+/** The dominant line: YouTube's current state, e.g. "Published · 17 minutes ago". */
+export function currentHeadline(current: CurrentStatus, now: Date, locale: string): string {
+  if ((current.state === "published" || current.state === "unlisted") && current.published_at) {
+    return `${current.label} · ${relativeTime(current.published_at, now, locale)}`;
+  }
+  return current.label;
+}
+
+/** "Last confirmed 8 minutes ago · Could not refresh YouTube status" when stale. */
+export function freshnessLine(current: CurrentStatus, now: Date, locale: string, timezone?: string): string | null {
+  if (!current.last_checked_at) return current.stale_reason === "never_checked" ? "Not checked with YouTube yet" : null;
+  const checked = `Last checked ${clockTime(current.last_checked_at, locale, timezone)}`;
+  if (current.stale_reason === "refresh_failed") return `Last confirmed ${relativeTime(current.last_checked_at, now, locale)} · Could not refresh YouTube status`;
+  if (current.stale_reason === "old") return `Last confirmed ${relativeTime(current.last_checked_at, now, locale)}`;
+  return checked;
+}
+
+export function lifecycleLabel(upload: YouTubeUpload): string {
+  if (upload.lifecycle === "uploading") return upload.progress !== null ? `Uploading · ${Math.round(upload.progress * 100)}%` : "Uploading";
+  return upload.current?.label ?? upload.lifecycle;
 }
 
 export function classificationLabel(label: string | undefined): string {
@@ -396,8 +469,13 @@ export function audienceLabel(value: boolean | null | undefined): string {
 }
 
 export function visibilityLabel(upload: YouTubeUpload): string {
-  if (upload.lifecycle === "scheduled") return "Scheduled";
-  return ({ private: "Private", public: "Public", unlisted: "Unlisted" } as Record<string, string>)[upload.privacy_status] ?? upload.privacy_status;
+  switch (upload.current.state) {
+    case "published": return "Public";
+    case "unlisted": return "Unlisted";
+    case "scheduled": return "Scheduled";
+    case "publish_pending": return "Private (scheduled time passed)";
+    default: return "Private";
+  }
 }
 
 export function videoStatusLabel(status: YouTubeUpload["video_status"]): string {
@@ -408,17 +486,22 @@ export function thumbnailStatusLabel(thumbnail: YouTubeUpload["thumbnail"]): str
   return { none: "–", pending: "Pending", applied: "Applied", failed: "Failed", not_requested: "YouTube's automatic frame" }[thumbnail.status];
 }
 
-/** Independent status rows; never one vague "Uploaded". */
+/** Independent status rows from YouTube's current state; never one vague "Uploaded". */
 export function statusRows(upload: YouTubeUpload, locale: string): Array<{ label: string; value: string; tone: "ok" | "warn" | "error" | "muted" }> {
-  const schedule = upload.schedule.publish_at && upload.schedule.timezone
-    ? `${formatScheduleConfirmation(upload.schedule.publish_at, upload.schedule.timezone, locale)} · ${upload.schedule.timezone}`
-    : upload.schedule.publish_at ? formatScheduleConfirmation(upload.schedule.publish_at, "UTC", locale) + " · UTC" : "Not scheduled";
+  const current = upload.current;
+  const zone = current.requested.timezone ?? "UTC";
+  const schedule = current.state === "published" || current.state === "unlisted"
+    ? current.published_at ? `Published ${scheduleLine(current.published_at, zone, locale)} · ${zone}` : "Published"
+    : current.scheduled_for ? `${scheduleLine(current.scheduled_for, zone, locale)} · ${zone}` : "Not scheduled";
   const audienceValue = upload.audience.confirmed_by_youtube ?? upload.audience.made_for_kids;
+  const video = current.state === "rejected" ? `Rejected${current.remote.rejection_reason ? ` (${current.remote.rejection_reason})` : ""}`
+    : current.state === "processing_failed" ? `Processing failed${current.remote.failure_reason ? ` (${current.remote.failure_reason})` : ""}`
+    : current.processing ? "Processing" : videoStatusLabel(upload.video_status);
   return [
-    { label: "Video", value: videoStatusLabel(upload.video_status), tone: upload.video_status === "failed" || upload.video_status === "deleted" ? "error" : upload.video_status === "ready" ? "ok" : "muted" },
+    { label: "Video", value: video, tone: ["rejected", "processing_failed", "deleted"].includes(current.state) || upload.video_status === "failed" ? "error" : upload.video_status === "ready" ? "ok" : "muted" },
     { label: "Thumbnail", value: thumbnailStatusLabel(upload.thumbnail), tone: upload.thumbnail.status === "failed" ? "error" : upload.thumbnail.status === "applied" ? "ok" : "muted" },
     { label: "Audience", value: audienceLabel(audienceValue), tone: audienceValue === null ? "warn" : "ok" },
-    { label: "Visibility", value: visibilityLabel(upload) + (upload.visibility_restricted ? " (kept private by YouTube)" : ""), tone: upload.visibility_restricted ? "warn" : "muted" },
+    { label: "Visibility", value: visibilityLabel(upload) + (upload.visibility_restricted ? " (kept private by YouTube)" : ""), tone: upload.visibility_restricted || current.state === "publish_pending" ? "warn" : current.state === "published" ? "ok" : "muted" },
     { label: "Schedule", value: upload.schedule.status === "schedule_failed" ? `Failed: ${upload.schedule.error ?? "unknown reason"}` : schedule, tone: upload.schedule.status === "schedule_failed" ? "error" : "muted" },
   ];
 }

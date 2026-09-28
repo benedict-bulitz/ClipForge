@@ -40,6 +40,19 @@ YOUTUBE_UPLOAD_V2_COLUMNS = (
     ("thumbnail_upload_status", "VARCHAR(16) NOT NULL DEFAULT 'none'"),
     ("thumbnail_failure_reason", "TEXT"),
     ("thumbnail_applied_at", "DATETIME"),
+    # V3 remote status reconciliation
+    ("remote_privacy_status", "VARCHAR(16)"),
+    ("remote_publish_at", "DATETIME"),
+    ("remote_published_at", "DATETIME"),
+    ("first_observed_public_at", "DATETIME"),
+    ("remote_view_count", "INTEGER"),
+    ("remote_like_count", "INTEGER"),
+    ("remote_comment_count", "INTEGER"),
+    ("remote_status_checked_at", "DATETIME"),
+    ("remote_status_attempted_at", "DATETIME"),
+    ("remote_status_error_code", "VARCHAR(48)"),
+    ("remote_status_error", "TEXT"),
+    ("last_analytics_attempt_at", "DATETIME"),
 )
 
 

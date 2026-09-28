@@ -348,7 +348,7 @@ def test_upload_and_schedule_sends_private_publish_at_and_persists_the_zone(db, 
     assert (row.schedule_local_time, row.schedule_timezone) == ("2026-09-28T20:30", "Europe/Berlin")
     assert uploads.aware(row.publish_at) == datetime(2026, 9, 28, 18, 30, tzinfo=UTC)
     assert uploads.serialize_upload(row)["schedule"]["timezone"] == "Europe/Berlin"
-    assert uploads.lifecycle(row) == "scheduled"
+    assert uploads.lifecycle(row, now=NOW) == "scheduled"
 
 
 def test_schedule_resolve_endpoint(db, settings, store, fake):
@@ -644,7 +644,7 @@ def test_v1_database_gets_the_new_columns_at_startup(tmp_path, monkeypatch):
     monkeypatch.setattr(database.settings, "database_url", f"sqlite:///{tmp_path / 'v1.db'}")
     database.ensure_runtime_schema()
     columns = {column["name"] for column in inspect(engine).get_columns("youtube_uploads")}
-    assert {"made_for_kids", "thumbnail_upload_status", "schedule_timezone", "upload_settings"} <= columns
+    assert {"made_for_kids", "thumbnail_upload_status", "schedule_timezone", "upload_settings", "remote_privacy_status", "remote_status_checked_at", "remote_view_count"} <= columns
 
 
 def test_suggested_defaults_are_clean_but_user_edits_are_validated_not_rewritten():

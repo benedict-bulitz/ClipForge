@@ -26,6 +26,7 @@ from ..exporter import ExportUnavailable, resolve_final_master
 from ..models import Project, YouTubeUpload
 from ..security.secrets import SecretStore
 from ..services import effective_revision_state
+from . import status as status_authority
 from .connection import access_token
 from .fingerprint import get_or_create_fingerprint
 from .provider import YouTubeApiError, YouTubeProvider, read_chunks
@@ -476,81 +477,65 @@ def mark_interrupted_uploads(db: Session) -> int:
 
 
 def apply_video_resource(upload: YouTubeUpload, item: dict[str, Any], *, now: datetime | None = None) -> None:
-    now = now or _now()
-    status = item.get("status") if isinstance(item.get("status"), dict) else {}
-    snippet = item.get("snippet") if isinstance(item.get("snippet"), dict) else {}
-    processing = item.get("processingDetails") if isinstance(item.get("processingDetails"), dict) else {}
-    upload.deleted_on_youtube = False
-    upload.upload_status = status.get("uploadStatus") or upload.upload_status
-    upload.processing_status = processing.get("processingStatus") or upload.processing_status
-    upload.privacy_status = str(status.get("privacyStatus") or upload.privacy_status)
-    publish_at = parse_google_time(status.get("publishAt"))
-    if publish_at is not None:
-        upload.publish_at = publish_at
-    upload_status = upload.upload_status
-    if upload_status == "processed":
-        upload.state = "ready"
-        upload.failure_reason = None
-    elif upload_status == "uploaded":
-        upload.state = "processing"
-    elif upload_status == "failed":
-        upload.state = "failed"
-        upload.failure_reason = status.get("failureReason")
-        upload.last_error_code = "processing_failed"
-        upload.last_error_message = f"YouTube could not process the video ({upload.failure_reason or 'unknown reason'})."
-    elif upload_status == "rejected":
-        upload.state = "failed"
-        upload.rejection_reason = status.get("rejectionReason")
-        upload.last_error_code = "rejected"
-        upload.last_error_message = f"YouTube rejected the video ({upload.rejection_reason or 'no reason given'})."
-    elif upload_status == "deleted":
-        upload.deleted_on_youtube = True
-    # Read back YouTube's stored audience answer: this is what Studio shows.
-    declared = status.get("selfDeclaredMadeForKids", status.get("madeForKids"))
-    if isinstance(declared, bool):
-        upload.made_for_kids_confirmed = declared
-    placement = item.get("paidProductPlacementDetails") if isinstance(item.get("paidProductPlacementDetails"), dict) else None
-    if placement is not None:
-        settings_record = dict(upload.upload_settings or {})
-        settings_record["paid_product_placement_confirmed"] = placement.get("hasPaidProductPlacement")
-        upload.upload_settings = settings_record
-    if upload.requested_visibility in {"public", "unlisted"} and upload.privacy_status == "private" and upload_status == "processed":
-        # Unaudited API projects: YouTube locks API uploads to private.
-        upload.visibility_restricted = True
-    if upload.privacy_status in {"public", "unlisted"}:
-        if upload.published_at is None:
-            scheduled = _utc(upload.publish_at)
-            if scheduled is not None and scheduled <= now:
-                upload.published_at, upload.published_source = scheduled, "scheduled_publish_at"
-            else:
-                upload.published_at = parse_google_time(snippet.get("publishedAt")) or now
-                upload.published_source = "youtube_snippet_published_at" if snippet.get("publishedAt") else "observed_at_sync"
-        if upload.schedule_status == "scheduled":
-            upload.schedule_status = "published"
+    """Kept for callers/tests: YouTube's answer is applied only by the status authority."""
+    status_authority.apply_remote_video(upload, item, now=now or _now())
+
+
+STATUS_PARTS = "status,snippet,processingDetails,statistics,paidProductPlacementDetails"
 
 
 def sync_status(
-    db: Session, upload: YouTubeUpload, settings: Settings, store: SecretStore, provider: YouTubeProvider
+    db: Session,
+    upload: YouTubeUpload,
+    settings: Settings,
+    store: SecretStore,
+    provider: YouTubeProvider,
+    *,
+    now: datetime | None = None,
 ) -> YouTubeUpload:
+    """The one reconciliation path: ask videos.list, persist YouTube's answer.
+
+    A failure is recorded (stale) and re-raised; the last confirmed remote
+    state is never changed by it.
+    """
     if not upload.youtube_video_id:
         raise UploadRefused("not_uploaded", "This upload has no YouTube video yet.", upload)
-    connection, token = access_token(db, settings, store, provider, capability="read")
-    if connection.channel_id != upload.channel_id:
-        raise YouTubeApiError("wrong_channel", "YouTube is connected to a different channel than this video belongs to.")
-    items = provider.list_videos(token, [upload.youtube_video_id], "status,snippet,processingDetails,paidProductPlacementDetails")
-    upload.last_status_sync_at = _now()
+    now = now or _now()
+    try:
+        connection, token = access_token(db, settings, store, provider, capability="read")
+        if connection.channel_id != upload.channel_id:
+            raise YouTubeApiError("wrong_channel", "YouTube is connected to a different channel than this video belongs to.")
+        items = provider.list_videos(token, [upload.youtube_video_id], STATUS_PARTS)
+    except YouTubeApiError as exc:
+        db.rollback()
+        status_authority.record_refresh_failure(upload, exc.code, exc.message, now=now)
+        db.commit()
+        raise
+    upload.last_status_sync_at = now
     if not items:
-        upload.deleted_on_youtube = True
-        upload.last_error_code = "deleted_on_youtube"
-        upload.last_error_message = "This video no longer exists on YouTube (deleted or removed)."
+        status_authority.apply_remote_missing(upload, now=now)
     else:
         if upload.last_error_code == "deleted_on_youtube":
             upload.last_error_code = None
             upload.last_error_message = None
-        apply_video_resource(upload, items[0])
+        status_authority.apply_remote_video(upload, items[0], now=now)
     db.commit()
     db.refresh(upload)
     return upload
+
+
+def reconcile_if_due(
+    db: Session, upload: YouTubeUpload, settings: Settings, store: SecretStore, provider: YouTubeProvider, *, now: datetime | None = None
+) -> bool:
+    """Page-open / poll reconciliation, gated by freshness. Never raises."""
+    now = now or _now()
+    if not status_authority.needs_reconcile(upload, now=now):
+        return False
+    try:
+        sync_status(db, upload, settings, store, provider, now=now)
+    except (YouTubeApiError, UploadRefused):
+        return False
+    return True
 
 
 def _status_update(
@@ -573,7 +558,7 @@ def _status_update(
         raise YouTubeApiError("deleted_on_youtube", "This video no longer exists on YouTube.")
     current = items[0].get("status") if isinstance(items[0].get("status"), dict) else {}
     if require_private and current.get("privacyStatus") != "private":
-        upload.privacy_status = str(current.get("privacyStatus") or upload.privacy_status)
+        upload.remote_privacy_status = str(current.get("privacyStatus") or upload.remote_privacy_status)
         raise YouTubeApiError("not_private", "YouTube schedules only private videos; this video is no longer private.")
     status = {name: current[name] for name in MUTABLE_STATUS_FIELDS if name in current}
     if "selfDeclaredMadeForKids" not in status and upload.made_for_kids is not None:
@@ -598,7 +583,7 @@ def schedule_publication(
     """Private + publishAt at the wall time the user chose in their time zone."""
     if not upload.youtube_video_id or upload.deleted_on_youtube:
         raise UploadRefused("not_uploaded", "Only a video that exists on YouTube can be scheduled.", upload)
-    if upload.published_at is not None or upload.privacy_status in {"public", "unlisted"}:
+    if upload.published_at is not None or status_authority.current_state(upload, now or _now()) in status_authority.LIVE_STATES:
         raise UploadRefused("already_published", "This video was already published; YouTube only schedules private, never-published videos.", upload)
     resolution = resolve_schedule(choice, now=now)
     if resolution.status != "ok" or resolution.publish_at is None:
@@ -613,10 +598,17 @@ def schedule_publication(
         upload.schedule_error = exc.message[:500]
         db.commit()
         raise
-    upload.publish_at = parse_google_time(status.get("publishAt")) or resolution.publish_at
+    record = dict(upload.upload_settings or {})
+    history = list(record.get("schedule_history") or [])
+    if upload.publish_at is not None:
+        history.append({"publish_at": google_time(upload.publish_at), "local_time": upload.schedule_local_time, "timezone": upload.schedule_timezone, "replaced_at": google_time(now or _now())})
+    record["schedule_history"] = history
+    upload.upload_settings = record
+    # The request (provenance) and YouTube's confirmation are stored separately.
+    upload.publish_at = resolution.publish_at
     upload.schedule_local_time = resolution.local_time
     upload.schedule_timezone = resolution.timezone
-    upload.privacy_status = "private"
+    upload.remote_publish_at = parse_google_time(status.get("publishAt")) or upload.remote_publish_at
     upload.schedule_status = "scheduled"
     upload.schedule_error = None
     db.commit()
@@ -718,19 +710,23 @@ def youtube_links(video_id: str | None) -> dict[str, str | None]:
     }
 
 
-def lifecycle(upload: YouTubeUpload) -> str:
-    """not a DB state: what the user should read about this video right now."""
-    if upload.deleted_on_youtube:
-        return "deleted"
-    if upload.state == "failed":
-        return "failed"
-    if upload.state in ACTIVE_STATES:
-        return "uploading"
-    if upload.published_at is not None or upload.privacy_status in {"public", "unlisted"}:
-        return "published"
-    if upload.schedule_status == "scheduled":
-        return "scheduled"
-    return "private"
+_LIFECYCLE = {
+    "uploading": "uploading",
+    "upload_failed": "failed",
+    "rejected": "failed",
+    "processing_failed": "failed",
+    "deleted": "deleted",
+    "published": "published",
+    "unlisted": "published",
+    "scheduled": "scheduled",
+    "publish_pending": "private",
+    "private": "private",
+}
+
+
+def lifecycle(upload: YouTubeUpload, *, now: datetime | None = None) -> str:
+    """Coarse bucket of the *current* (remote-driven) state; see status.current_state."""
+    return _LIFECYCLE[status_authority.current_state(upload, now or _now())]
 
 
 def video_status(upload: YouTubeUpload) -> str:
@@ -756,8 +752,10 @@ def serialize_upload(upload: YouTubeUpload) -> dict[str, Any]:
         "youtube_video_id": upload.youtube_video_id,
         "state": upload.state,
         "lifecycle": lifecycle(upload),
-        "privacy_status": upload.privacy_status,
-        "publish_at": aware(upload.publish_at),
+        "current": status_authority.current_status(upload),
+        "next_status_check_in_seconds": status_authority.poll_interval(upload),
+        "privacy_status": upload.remote_privacy_status or upload.privacy_status,
+        "publish_at": aware(upload.publish_at),  # requested (historical)
         "schedule_status": upload.schedule_status,
         "schedule_error": upload.schedule_error,
         "published_at": aware(upload.published_at),

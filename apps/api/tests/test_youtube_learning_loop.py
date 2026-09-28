@@ -449,7 +449,7 @@ def test_schedule_uses_private_publish_at_and_preserves_status_fields(db, settin
     assert (upload.schedule_local_time, upload.schedule_timezone) == ("2026-09-12T17:00", "Europe/Berlin")
     assert uploads.serialize_upload(upload)["publish_at"] == when
     assert upload.privacy_status == "private" and upload.published_at is None  # nothing published
-    assert uploads.lifecycle(upload) == "scheduled"
+    assert uploads.lifecycle(upload, now=NOW) == "scheduled"
 
 
 def test_schedule_rejects_invalid_times_and_failures_stay_retryable(db, settings, store, fake):
@@ -496,7 +496,7 @@ def test_private_video_gets_no_analytics_snapshot(db, settings, store, fake):
     connect(db, settings, store, fake)
     upload = upload_now(db, exported_project(db, settings), settings, store, fake)
     result = analytics.refresh_analytics(db, upload, settings, store, fake, now=NOW)
-    assert result == {"status": "not_published"}
+    assert result == {"status": "not_published", "current_state": "private"}
     assert db.scalars(select(YouTubeAnalyticsSnapshot)).all() == []
     assert learning.performance_report(db, upload, min_sample=5)["status"] == "private"
 

@@ -28,6 +28,7 @@ from ..models import (
 from ..security.secrets import SecretStore
 from .connection import access_token, active_connection
 from .provider import YouTubeApiError, YouTubeProvider
+from .status import current_state, needs_reconcile
 from .uploads import UploadRefused, sync_status
 
 SOURCE_API = "youtube_analytics_api"
@@ -69,7 +70,6 @@ API_UNAVAILABLE_METRICS = {
 # Studio-only values a user may import by hand, with their valid range.
 MANUAL_METRICS: dict[str, tuple[float, float]] = {"stayed_to_watch": (0.0, 100.0)}
 AGE_BUCKETS: tuple[tuple[str, float], ...] = (("1h", 1), ("6h", 6), ("24h", 24), ("72h", 72), ("7d", 168))
-STATUS_RECHECK = timedelta(hours=1)
 
 
 def _now() -> datetime:
@@ -234,14 +234,17 @@ def refresh_analytics(
     if not upload.youtube_video_id:
         raise UploadRefused("not_uploaded", "This upload has no YouTube video yet.", upload)
     try:
-        sync_status(db, upload, settings, store, provider)
+        # Eligibility comes from YouTube's confirmed state, never the requested schedule.
+        sync_status(db, upload, settings, store, provider, now=now)
     except YouTubeApiError as exc:
         _set_analytics_error(db, upload, exc)
         return {"status": "error", "error": {"code": exc.code, "message": exc.message}}
     if upload.deleted_on_youtube:
         return {"status": "deleted"}
     if upload.published_at is None:
-        return {"status": "not_published"}
+        return {"status": "not_published", "current_state": current_state(upload, now)}
+    upload.last_analytics_attempt_at = now
+    db.commit()
     age_hours = max(0.0, (now - _utc(upload.published_at)).total_seconds() / 3600)  # type: ignore[operator]
     history = _snapshots(db, upload.id)
     taken = {item.age_bucket for item in history if item.source == SOURCE_API and item.status != "error"}
@@ -338,10 +341,8 @@ def sync_due(
     ).all()
     results = []
     for upload in uploads:
-        if upload.published_at is None:
-            last = _utc(upload.last_status_sync_at)
-            if last is not None and now - last < STATUS_RECHECK:
-                continue
+        if upload.published_at is None and not needs_reconcile(upload, now=now):
+            continue  # not published yet and YouTube was asked recently
         try:
             outcome = refresh_analytics(db, upload, settings, store, provider, now=now, due_only=True)
         except UploadRefused as exc:

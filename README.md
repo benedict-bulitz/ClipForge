@@ -78,6 +78,13 @@ Private and Schedule until you mark the project as audited in the upload default
 thumbnails require a verified YouTube channel. Studio's "Stayed to watch" is not exposed by the
 API and is stored as unavailable; it can be imported manually with provenance.
 
+After upload, YouTube's own answer (`videos.list`) is the current truth: the Results page
+reconciles it when it opens (freshness-gated) and polls only around upload and publish time, with a
+bounded backoff. The requested schedule is kept as history; if YouTube cannot be reached, the last
+confirmed state is shown as stale and never reverted. Live views/likes/comments come from the Data
+API; detailed analytics (engaged views, watch time, retention) are processed by YouTube later and
+are shown as "Processing on YouTube" until they arrive.
+
 Read-only diagnostic (no secrets are printed; `--live` reads fresh data without saving it):
 
 ```bash

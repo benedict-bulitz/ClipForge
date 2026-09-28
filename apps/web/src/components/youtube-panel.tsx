@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { AlertTriangle, CalendarClock, ExternalLink, LoaderCircle, RefreshCw, Upload } from "lucide-react";
 import {
   ApiError,
@@ -17,8 +17,11 @@ import type { Project } from "@/lib/types";
 import {
   PERFORMANCE_METRICS,
   browserLocale,
+  analyticsReadiness,
   classificationLabel,
+  currentHeadline,
   detectTimeZone,
+  freshnessLine,
   formatDateTime,
   formatDelta,
   formatMetric,
@@ -27,6 +30,7 @@ import {
   lifecycleLabel,
   performanceHeadline,
   sceneTitle,
+  scheduleLine,
   statusRows,
   visibleSceneRows,
   type PerformanceReport,
@@ -42,6 +46,7 @@ import { ScheduleFields } from "./youtube-schedule-fields";
 
 type Notice = { tone: "error" | "info" | "success"; text: string };
 
+const MAX_STATUS_POLLS = 60;
 const STUDIO_ONLY_HINT = "Chapters, comments, Shorts remixing, featured places, age restriction and monetization are set in YouTube Studio.";
 
 function errorText(reason: unknown, fallback: string): string {
@@ -81,13 +86,30 @@ export function YouTubePanel({ project, disabled, publishOpen, onPublishOpenChan
   }, [project.id, project.current_revision]);
 
   const focus = data?.uploads.find((item) => item.id === data.focus_upload_id) ?? null;
-  const polling = focus?.lifecycle === "uploading" || focus?.thumbnail.status === "pending";
+  // The backend decides the cadence (tight only around upload / publish time)
+  // and gates every YouTube call by freshness; the page never polls forever.
+  const nextCheck = focus?.next_status_check_in_seconds ?? null;
+  const statusPolls = useRef(0);
+  const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
-    if (!polling) return;
-    const timer = window.setInterval(() => void load(), 2500);
+    statusPolls.current = 0;
+  }, [project.id]);
+
+  useEffect(() => {
+    if (nextCheck === null) return;
+    if (nextCheck > 5 && statusPolls.current >= MAX_STATUS_POLLS) return;
+    const timer = window.setTimeout(() => {
+      if (nextCheck > 5) statusPolls.current += 1;
+      void load();
+    }, nextCheck * 1000);
+    return () => window.clearTimeout(timer);
+  }, [nextCheck, data, load]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 30_000);
     return () => window.clearInterval(timer);
-  }, [polling, load]);
+  }, []);
 
   async function run(action: string, work: () => Promise<unknown>, success?: string) {
     setBusy(action);
@@ -150,6 +172,7 @@ export function YouTubePanel({ project, disabled, publishOpen, onPublishOpenChan
         <UploadCard
           upload={focus}
           locale={locale}
+          now={now}
           locked={locked}
           busy={busy}
           scheduling={scheduling}
@@ -159,7 +182,7 @@ export function YouTubePanel({ project, disabled, publishOpen, onPublishOpenChan
           onResolved={setResolution}
           onScheduleOpen={() => { setSchedule((value) => ({ ...value, timezone: focus.schedule.timezone ?? value.timezone })); setScheduling(true); }}
           onScheduleCancel={() => setScheduling(false)}
-          onScheduleSave={() => void run("schedule", async () => { await scheduleYouTubeUpload(focus.id, schedule); setScheduling(false); }, "Schedule saved. The video stays private until then.")}
+          onScheduleSave={() => void run("schedule", async () => { await scheduleYouTubeUpload(focus.id, schedule); setScheduling(false); }, "Schedule saved on YouTube.")}
           onSync={() => void run("sync", () => syncYouTubeUpload(focus.id))}
           onRetry={() => void run("retry", () => retryYouTubeUpload(focus.id))}
           onRetryThumbnail={() => void run("thumbnail", () => retryYouTubeThumbnail(focus.id), "Thumbnail applied.")}
@@ -195,35 +218,65 @@ export function YouTubePanel({ project, disabled, publishOpen, onPublishOpenChan
   );
 }
 
-function UploadCard({ upload, locale, locked, busy, scheduling, schedule, resolution, onSchedule, onResolved, onScheduleOpen, onScheduleCancel, onScheduleSave, onSync, onRetry, onRetryThumbnail, onAudience, onRefreshAnalytics, onReupload }: {
-  upload: YouTubeUpload; locale: string; locked: boolean; busy: string | null; scheduling: boolean; schedule: ScheduleChoice; resolution: ScheduleResolution | null;
+function UploadCard({ upload, locale, now, locked, busy, scheduling, schedule, resolution, onSchedule, onResolved, onScheduleOpen, onScheduleCancel, onScheduleSave, onSync, onRetry, onRetryThumbnail, onAudience, onRefreshAnalytics, onReupload }: {
+  upload: YouTubeUpload; locale: string; now: number; locked: boolean; busy: string | null; scheduling: boolean; schedule: ScheduleChoice; resolution: ScheduleResolution | null;
   onSchedule: (value: ScheduleChoice) => void; onResolved: (value: ScheduleResolution | null) => void; onScheduleOpen: () => void; onScheduleCancel: () => void; onScheduleSave: () => void;
   onSync: () => void; onRetry: () => void; onRetryThumbnail: () => void; onAudience: (value: boolean) => void; onRefreshAnalytics: () => void; onReupload: () => void;
 }) {
+  const current = upload.current;
+  const live = current.state === "published" || current.state === "unlisted";
   const exists = !!upload.youtube_video_id && !upload.deleted_on_youtube;
-  const canChangeSchedule = exists && (upload.lifecycle === "private" || upload.lifecycle === "scheduled") && upload.state !== "failed";
-  const retryable = upload.lifecycle === "failed" && !upload.youtube_video_id && upload.error?.code !== "session_expired_unknown_outcome";
+  const canChangeSchedule = exists && ["private", "scheduled", "publish_pending"].includes(current.state);
+  const retryable = current.state === "upload_failed" && upload.error?.code !== "session_expired_unknown_outcome";
   const answered = (upload.audience.confirmed_by_youtube ?? upload.audience.made_for_kids) !== null;
   const spin = (name: string) => (busy === name ? <LoaderCircle className="size-3.5 animate-spin" /> : null);
+  const zone = current.requested.timezone ?? "UTC";
+  const nowDate = new Date(now);
+  const freshness = exists ? freshnessLine(current, nowDate, locale) : null;
   return (
     <div className="cf-subtle mt-4 rounded-[.85rem] border p-3 text-xs">
       <div className="flex flex-wrap items-start justify-between gap-2">
-        <div className="min-w-0">
-          <p className="text-sm font-semibold">{exists ? "Uploaded to YouTube" : lifecycleLabel(upload)}</p>
+        <div className="min-w-0" aria-live="polite">
+          <p className={cn("text-lg font-semibold tracking-[-.02em]", live && "text-emerald-700", current.state === "publish_pending" && "text-amber-800", ["rejected", "processing_failed", "deleted", "upload_failed"].includes(current.state) && "text-red-700")}>
+            {current.state === "uploading" ? lifecycleLabel(upload) : currentHeadline(current, nowDate, locale)}
+          </p>
+          {current.state === "scheduled" && current.scheduled_for && (
+            <p className="mt-0.5 text-sm font-semibold">{scheduleLine(current.scheduled_for, zone, locale)} <span className="font-normal text-[var(--muted-foreground)]">· {zone}</span></p>
+          )}
+          {freshness && <p className={cn("mt-0.5", current.stale ? "text-amber-800" : "text-[var(--muted-foreground)]")}>{freshness}</p>}
           <p className="mono mt-0.5 truncate text-[10px] text-[var(--muted-foreground)]">
             {upload.youtube_video_id ? `Video ${upload.youtube_video_id}` : "No video yet"} · render v{upload.render_revision}{upload.content_type ? ` · ${upload.content_type}` : ""}
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-1">
-          {exists && <a href={upload.lifecycle === "published" ? upload.shorts_url ?? "#" : upload.watch_url ?? "#"} target="_blank" rel="noreferrer" className="interactive-text"><ExternalLink className="size-3.5" /> Open on YouTube</a>}
+          {exists && <button type="button" className="interactive-text" disabled={locked} onClick={onSync}>{spin("sync") ?? <RefreshCw className="size-3.5" />} Refresh YouTube status</button>}
+          {exists && <a href={live ? upload.shorts_url ?? "#" : upload.watch_url ?? "#"} target="_blank" rel="noreferrer" className="interactive-text"><ExternalLink className="size-3.5" /> Open on YouTube</a>}
           {exists && <a href={upload.studio_url ?? "#"} target="_blank" rel="noreferrer" className="interactive-text"><ExternalLink className="size-3.5" /> Open in Studio</a>}
           {exists && upload.thumbnail.status === "failed" && <button type="button" className="interactive-text" disabled={locked} onClick={onRetryThumbnail}>{spin("thumbnail") ?? <RefreshCw className="size-3.5" />} Retry thumbnail</button>}
-          {canChangeSchedule && !scheduling && <button type="button" className="interactive-text" disabled={locked} onClick={onScheduleOpen}><CalendarClock className="size-3.5" /> {upload.lifecycle === "scheduled" ? "Change schedule" : "Schedule"}</button>}
-          {exists && upload.lifecycle !== "published" && <button type="button" className="interactive-text" disabled={locked} onClick={onSync}>{spin("sync") ?? <RefreshCw className="size-3.5" />} Refresh status</button>}
-          {upload.lifecycle === "published" && <button type="button" className="interactive-text" disabled={locked} onClick={onRefreshAnalytics}>{spin("analytics") ?? <RefreshCw className="size-3.5" />} Refresh analytics</button>}
+          {canChangeSchedule && !scheduling && <button type="button" className="interactive-text" disabled={locked} onClick={onScheduleOpen}><CalendarClock className="size-3.5" /> {current.state === "private" ? "Schedule" : "Change schedule"}</button>}
+          {live && <button type="button" className="interactive-text" disabled={locked} onClick={onRefreshAnalytics}>{spin("analytics") ?? <RefreshCw className="size-3.5" />} Refresh analytics</button>}
           {retryable && <button type="button" className="interactive-text" disabled={locked} onClick={onRetry}>{spin("retry") ?? <RefreshCw className="size-3.5" />} Retry upload</button>}
         </div>
       </div>
+
+      {current.state === "publish_pending" && (
+        <p role="status" className="mt-2 rounded-lg bg-amber-50 px-3 py-2 text-amber-950">YouTube still reports this video as private although the scheduled time has passed. ClipForge checks again for a while; you can also refresh or open YouTube Studio.</p>
+      )}
+      {current.refresh_error && current.stale && <p className="mt-2 text-amber-800">Could not refresh YouTube status: {current.refresh_error.message}</p>}
+
+      {live && current.live_stats && (
+        <div className="mt-3" aria-label="Live stats">
+          <p className="text-[10px] font-bold uppercase tracking-[.08em] text-[var(--muted-foreground)]">Live stats</p>
+          <dl className="mt-1 grid grid-cols-3 gap-2">
+            {([["Views", current.live_stats.views], ["Likes", current.live_stats.likes], ["Comments", current.live_stats.comments]] as const).map(([label, value]) => (
+              <div key={label} className="rounded-lg border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-2">
+                <dt className="text-[10px] text-[var(--muted-foreground)]">{label}</dt>
+                <dd className="text-base font-semibold">{value === null ? "hidden" : value.toLocaleString(locale)}</dd>
+              </div>
+            ))}
+          </dl>
+        </div>
+      )}
 
       {upload.lifecycle === "uploading" && upload.progress !== null && (
         <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-black/10" role="progressbar" aria-valuenow={Math.round(upload.progress * 100)} aria-valuemin={0} aria-valuemax={100}>
@@ -276,7 +329,17 @@ function UploadCard({ upload, locale, locked, busy, scheduling, schedule, resolu
           <strong className="text-[var(--foreground)]">Additional YouTube Studio settings.</strong> {STUDIO_ONLY_HINT} <a href={upload.studio_url ?? "#"} target="_blank" rel="noreferrer" className="underline">Open in YouTube Studio</a>
         </p>
       )}
-      {upload.lifecycle === "published" && <p className="mt-2 text-[var(--muted-foreground)]">Published {formatDateTime(upload.published_at)} · Last analytics sync: {formatDateTime(upload.last_analytics_sync_at)}</p>}
+      {live && <p className="mt-2 text-[var(--muted-foreground)]">Last analytics sync: {formatDateTime(upload.last_analytics_sync_at)}</p>}
+      {(current.requested.publish_at || current.requested.history.length > 0) && (
+        <details className="mt-2 text-[11px] text-[var(--muted-foreground)]">
+          <summary className="cursor-pointer">Requested schedule (history)</summary>
+          <ul className="mt-1 space-y-0.5">
+            {current.requested.publish_at && <li>Requested: {scheduleLine(current.requested.publish_at, zone, locale)} · {zone}</li>}
+            {current.requested.history.map((item) => <li key={item.replaced_at}>Earlier request: {scheduleLine(item.publish_at, item.timezone ?? "UTC", locale)} · {item.timezone ?? "UTC"}</li>)}
+            {current.published_at && current.published_time_source && <li>Published per YouTube: {scheduleLine(current.published_at, zone, locale)} ({current.published_time_source === "youtube_snippet_published_at" ? "YouTube publication time" : "first seen public by ClipForge"})</li>}
+          </ul>
+        </details>
+      )}
     </div>
   );
 }
@@ -288,7 +351,16 @@ export function PerformanceSection({ report }: { report: PerformanceReport }) {
   return (
     <div className="mt-5 border-t border-black/8 pt-4" aria-label="Performance">
       <h3 className="text-sm font-semibold">Performance</h3>
-      {report.status !== "ready" && <p className="mt-1 text-xs text-[var(--muted-foreground)]">{performanceHeadline(report)}</p>}
+      {report.status !== "ready" && !analyticsReadiness(report.analytics_state) && <p className="mt-1 text-xs text-[var(--muted-foreground)]">{performanceHeadline(report)}</p>}
+      {(() => {
+        const readiness = analyticsReadiness(report.analytics_state);
+        return readiness && report.analytics_state !== "available" ? (
+          <div className="mt-2 rounded-xl border border-[var(--border)] px-3 py-2 text-xs" aria-label="Detailed analytics">
+            <p className="font-semibold">Detailed analytics · {readiness.title}</p>
+            <p className="mt-0.5 text-[var(--muted-foreground)]">{readiness.body}</p>
+          </div>
+        ) : null;
+      })()}
       {report.analytics_error && <p role="alert" className="mt-2 text-xs text-red-800">Analytics: {report.analytics_error.message}</p>}
       {report.status === "ready" && (
         <>

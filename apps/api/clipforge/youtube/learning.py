@@ -25,6 +25,7 @@ from ..models import (
     YouTubeRetentionPoint,
     YouTubeUpload,
 )
+from . import status as status_authority
 from .analytics import SOURCE_API, SOURCE_MANUAL
 from .uploads import aware, lifecycle, serialize_upload
 
@@ -473,13 +474,18 @@ def performance_report(db: Session, upload: YouTubeUpload, *, min_sample: int) -
             for item in snapshot.metrics
         ],
     }
-    if state in {"deleted", "failed", "uploading"}:
+    # Processed-analytics readiness, driven by YouTube's confirmed state.
+    report["analytics_state"] = status_authority.analytics_state(
+        upload, latest_status=latest.status if latest else None, retention_ok=retention is not None,
+    )
+    has_data = latest is not None or retention is not None
+    if state in {"failed", "uploading"} or (state == "deleted" and not has_data):
         report["status"] = state
         return report
     if upload.published_at is None:
         report["status"] = "scheduled" if state == "scheduled" else "private"
         return report
-    if latest is None and retention is None:
+    if not has_data:
         report["status"] = "waiting_for_data"
         return report
     report["status"] = "ready"

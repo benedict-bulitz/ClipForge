@@ -48,6 +48,7 @@ class FakeYouTube:
     expire_sessions: bool = False
     update_error: YouTubeApiError | None = None
     thumbnail_error: YouTubeApiError | None = None
+    list_error: YouTubeApiError | None = None
     thumbnails_set: list[tuple[str, int, str]] = field(default_factory=list)
     categories: list[dict[str, Any]] = field(default_factory=lambda: [
         {"id": "27", "snippet": {"title": "Education", "assignable": True}},
@@ -128,6 +129,8 @@ class FakeYouTube:
     # Videos ------------------------------------------------------------
     def list_videos(self, access_token: str, video_ids: list[str], parts: str) -> list[dict[str, Any]]:
         self.calls.append(("list_videos", video_ids))
+        if self.list_error:
+            raise self.list_error
         return [self.videos[item] for item in video_ids if item in self.videos]
 
     def update_video(self, access_token: str, body: dict[str, Any], parts: str) -> dict[str, Any]:

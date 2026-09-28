@@ -197,6 +197,7 @@ class YouTubeUpload(Base):
     youtube_video_id: Mapped[str | None] = mapped_column(String(32), nullable=True, unique=True)
     state: Mapped[str] = mapped_column(String(16), nullable=False, default="pending", index=True)
     privacy_status: Mapped[str] = mapped_column(String(16), nullable=False, default="private")
+    # The *requested* publication time (immutable provenance, never YouTube's answer).
     publish_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     schedule_status: Mapped[str] = mapped_column(String(24), nullable=False, default="none")
     schedule_error: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -241,6 +242,22 @@ class YouTubeUpload(Base):
     thumbnail_upload_status: Mapped[str] = mapped_column(String(16), nullable=False, default="none")
     thumbnail_failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     thumbnail_applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # V3 remote state: what YouTube last reported (current authority).
+    # ``privacy_status``/``publish_at`` above are the values at upload time /
+    # the requested schedule (provenance); ``upload_status``,
+    # ``processing_status`` and the reasons are YouTube's own values.
+    remote_privacy_status: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    remote_publish_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    remote_published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    first_observed_public_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    remote_view_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    remote_like_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    remote_comment_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    remote_status_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    remote_status_attempted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    remote_status_error_code: Mapped[str | None] = mapped_column(String(48), nullable=True)
+    remote_status_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_analytics_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     uploaded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_status_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_analytics_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
