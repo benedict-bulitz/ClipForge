@@ -38,6 +38,35 @@ For PostgreSQL, Redis, and the worker:
 docker compose up --build
 ```
 
+## YouTube Learning Loop
+
+ClipForge can upload a finished export to your own YouTube channel **privately**, schedule it
+only when you choose a date and time, and read back real YouTube Analytics (including the raw
+audience-retention curve) mapped onto the rendered scenes. It never publishes automatically and
+never changes generation rules from performance data.
+
+1. In Google Cloud, enable **YouTube Data API v3** and **YouTube Analytics API**, configure the
+   OAuth consent screen (add yourself as a test user while in testing) and create an OAuth client.
+   Register `http://localhost:8000/api/youtube/oauth/callback` as its redirect URI.
+2. Add the client in **Settings → Integrations → YouTube** (or `YOUTUBE_OAUTH_CLIENT_ID` /
+   `YOUTUBE_OAUTH_CLIENT_SECRET` in `.env`) and press **Connect**. Requested scopes:
+   `youtube` (upload, status and `publishAt` scheduling) and `yt-analytics.readonly`.
+3. Export a project, then use **Upload privately** in its YouTube section.
+
+Note: YouTube restricts videos uploaded through unverified API projects (created after
+28 July 2020) to private viewing until the project passes YouTube's API audit, so scheduled
+publication only takes effect for an audited project. Studio's "Stayed to watch" is not exposed
+by the API and is stored as unavailable; it can be imported manually with provenance.
+
+Read-only diagnostic (no secrets are printed; `--live` reads fresh data without saving it):
+
+```bash
+cd apps/api && PYTHONPATH=. ../../.venv/bin/python scripts/youtube_diagnostics.py <project_id>
+```
+
+Due analytics snapshots (~1 h, 6 h, 24 h, 72 h, 7 d after publication) are taken by
+**Refresh analytics** or `POST /api/youtube/analytics/sync-due`, which is safe to call from cron.
+
 ## Verify
 
 ```bash

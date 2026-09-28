@@ -321,3 +321,57 @@ export function importEnvironmentKeys() {
 export function mediaUrl(path: string | null) {
   return path ? `${API_ORIGIN}${path}` : null;
 }
+
+// YouTube Learning Loop ------------------------------------------------------
+
+export function getYouTubeConnection() {
+  return request<import("./youtube").YouTubeConnection>("/youtube/connection", { cache: "no-store" });
+}
+
+export function saveYouTubeClient(clientId: string, clientSecret: string | null) {
+  return request<import("./youtube").YouTubeConnection>("/youtube/client", {
+    method: "PUT",
+    body: JSON.stringify({ client_id: clientId, client_secret: clientSecret || null }),
+  });
+}
+
+export function startYouTubeAuthorization() {
+  return request<{ authorization_url: string }>("/youtube/connection/authorize", { method: "POST" });
+}
+
+export function disconnectYouTube() {
+  return request<import("./youtube").YouTubeConnection>("/youtube/connection", { method: "DELETE" });
+}
+
+export function getProjectYouTube(projectId: string, signal?: AbortSignal) {
+  return request<import("./youtube").ProjectYouTube>(`/youtube/projects/${projectId}`, { cache: "no-store", signal });
+}
+
+export function uploadProjectToYouTube(projectId: string, baseRevision: number, forceNew = false) {
+  return request<{ upload: import("./youtube").YouTubeUpload; started: boolean }>(`/youtube/projects/${projectId}/uploads`, {
+    method: "POST",
+    body: JSON.stringify({ base_revision: baseRevision, force_new: forceNew }),
+  });
+}
+
+export function retryYouTubeUpload(uploadId: string) {
+  return request<{ upload: import("./youtube").YouTubeUpload }>(`/youtube/uploads/${uploadId}/retry`, { method: "POST" });
+}
+
+export function scheduleYouTubeUpload(uploadId: string, publishAt: string) {
+  return request<{ upload: import("./youtube").YouTubeUpload }>(`/youtube/uploads/${uploadId}/schedule`, {
+    method: "POST",
+    body: JSON.stringify({ publish_at: publishAt }),
+  });
+}
+
+export function syncYouTubeUpload(uploadId: string) {
+  return request<{ upload: import("./youtube").YouTubeUpload }>(`/youtube/uploads/${uploadId}/sync`, { method: "POST" });
+}
+
+export function refreshYouTubeAnalytics(uploadId: string) {
+  return request<{ result: { status: string; error?: { code: string; message: string } }; performance: import("./youtube").PerformanceReport }>(
+    `/youtube/uploads/${uploadId}/analytics/refresh`,
+    { method: "POST" },
+  );
+}

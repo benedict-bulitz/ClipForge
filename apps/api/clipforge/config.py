@@ -50,6 +50,14 @@ class Settings(BaseSettings):
     # Optional stronger vision critic; "none" keeps V1 local/free only.
     final_critic_vision_provider: str = "none"
     shortform_max_duration: int = 180
+    # YouTube Learning Loop: OAuth client (keyring overrides the environment),
+    # the local callback registered with that client, and the minimum number
+    # of comparable ClipForge Shorts before any "above/below normal" claim.
+    youtube_oauth_client_id: str | None = None
+    youtube_oauth_client_secret: str | None = None
+    youtube_oauth_redirect_uri: str = "http://localhost:8000/api/youtube/oauth/callback"
+    youtube_upload_category_id: str = "27"
+    youtube_baseline_min_sample: int = 5
     render_root: Path = Path("./projects")
     downloads_root: Path | None = None
 
@@ -69,6 +77,8 @@ SECRET_SETTING_FIELDS: dict[SecretName, str] = {
     "OPENAI_API_KEY": "openai_api_key",
     "BRAVE_SEARCH_API_KEY": "brave_search_api_key",
     "PEXELS_API_KEY": "pexels_api_key",
+    "YOUTUBE_OAUTH_CLIENT_ID": "youtube_oauth_client_id",
+    "YOUTUBE_OAUTH_CLIENT_SECRET": "youtube_oauth_client_secret",
 }
 
 

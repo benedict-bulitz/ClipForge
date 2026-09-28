@@ -3,11 +3,23 @@ from typing import Literal, Protocol, TypedDict, cast
 import keyring
 from keyring.errors import PasswordDeleteError
 
-SecretName = Literal["OPENAI_API_KEY", "BRAVE_SEARCH_API_KEY", "PEXELS_API_KEY"]
+SecretName = Literal[
+    "OPENAI_API_KEY",
+    "BRAVE_SEARCH_API_KEY",
+    "PEXELS_API_KEY",
+    "YOUTUBE_OAUTH_CLIENT_ID",
+    "YOUTUBE_OAUTH_CLIENT_SECRET",
+    "YOUTUBE_REFRESH_TOKEN",
+]
 SUPPORTED_SECRET_NAMES: tuple[SecretName, ...] = (
     "OPENAI_API_KEY",
     "BRAVE_SEARCH_API_KEY",
     "PEXELS_API_KEY",
+    # YouTube OAuth client and the connected channel's refresh token live only
+    # in the OS keyring; the refresh token is never copied into Settings.
+    "YOUTUBE_OAUTH_CLIENT_ID",
+    "YOUTUBE_OAUTH_CLIENT_SECRET",
+    "YOUTUBE_REFRESH_TOKEN",
 )
 
 

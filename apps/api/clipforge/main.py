@@ -96,6 +96,8 @@ from .voice_preview import (
     enforce_preview_rate_limit,
     generate_voice_preview,
 )
+from .youtube.routes import router as youtube_router
+from .youtube.uploads import mark_interrupted_uploads
 
 
 @asynccontextmanager
@@ -104,6 +106,7 @@ async def lifespan(_app: FastAPI):
     ensure_runtime_schema()
     with SessionLocal() as db:
         mark_interrupted_generation_jobs(db)
+        mark_interrupted_uploads(db)
     schedule_next_generation(settings)
     yield
 
@@ -122,6 +125,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.include_router(integrations_router)
+app.include_router(youtube_router)
 
 
 @app.get("/api/health", response_model=HealthRead)

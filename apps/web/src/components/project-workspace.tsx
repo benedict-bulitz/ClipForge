@@ -57,6 +57,7 @@ import { tripleHookSummary, type TripleHookSummary } from "@/lib/triple-hook";
 import { Brand } from "./brand";
 import { Button } from "./ui/button";
 import { ThemeToggle } from "./theme-toggle";
+import { YouTubePanel } from "./youtube-panel";
 import { cn } from "@/lib/utils";
 
 type Tab = "overview" | "script" | "scenes" | "sources";
@@ -495,6 +496,7 @@ export function ProjectWorkspace({
             </div>
 
             <SocialMetadata key={`social:${project.id}:${project.current_revision}`} project={project} busy={socialBusy} onChange={onProjectChange} setBusy={setSocialBusy} />
+            {state.render.url && <YouTubePanel project={project} disabled={!!busy || sending || socialBusy} />}
             <ThumbnailControls key={`thumbnail:${project.id}:${project.current_revision}`} project={project} disabled={!!busy || sending} onChange={onProjectChange} />
 
             <div className="mt-8 border-b border-black/10">
