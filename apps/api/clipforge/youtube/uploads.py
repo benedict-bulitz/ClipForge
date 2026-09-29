@@ -26,6 +26,7 @@ from ..exporter import ExportUnavailable, resolve_final_master
 from ..models import Project, YouTubeUpload
 from ..security.secrets import SecretStore
 from ..services import effective_revision_state
+from . import schedule as schedule_authority
 from . import status as status_authority
 from .connection import access_token
 from .fingerprint import get_or_create_fingerprint
@@ -196,8 +197,11 @@ def _apply_options(upload: YouTubeUpload, options: PublishOptions, body: dict[st
         upload.schedule_local_time = resolution.local_time
         upload.schedule_timezone = resolution.timezone
         upload.schedule_status = "scheduled"
+        upload.schedule_source = "auto" if options.schedule_source == "auto" else "manual"
+        upload.schedule_slot_time = options.schedule.time if options.schedule_source == "auto" and options.schedule else None
     else:
         upload.publish_at, upload.schedule_local_time, upload.schedule_timezone, upload.schedule_status = None, None, None, "none"
+        upload.schedule_source, upload.schedule_slot_time = None, None
 
 
 def preflight(
@@ -332,6 +336,18 @@ def _fail(db: Session, upload: YouTubeUpload, code: str, message: str, *, keep_s
     if not keep_session:
         upload.upload_session_uri = None
     db.commit()
+    if not upload.youtube_video_id:
+        # A failed upload holds no slot; a retry claims it again.
+        _schedule_hook(db, upload, lambda: schedule_authority.release_for_upload(db, upload.id, f"upload_failed:{code}"))
+
+
+def _schedule_hook(db: Session, upload: YouTubeUpload, action: Callable[[], Any]) -> None:
+    """Slot bookkeeping must never fail an upload or a status sync."""
+    try:
+        action()
+    except SQLAlchemyError:
+        db.rollback()
+        logger.warning("Could not update the slot reservation upload_id=%s", upload.id)
 
 
 def _record_video(db: Session, upload: YouTubeUpload, video: dict[str, Any]) -> None:
@@ -351,6 +367,8 @@ def _record_video(db: Session, upload: YouTubeUpload, video: dict[str, Any]) -> 
     # Persist the video ID before anything else can fail.
     db.commit()
     _remember_successful_settings(db, upload)
+    # YouTube's answer confirms (publishAt returned) or releases the slot claim.
+    _schedule_hook(db, upload, lambda: schedule_authority.on_video_recorded(db, upload, video))
 
 
 def _remember_successful_settings(db: Session, upload: YouTubeUpload) -> None:
@@ -535,6 +553,10 @@ def sync_status(
             upload.last_error_message = None
         status_authority.apply_remote_video(upload, items[0], now=now)
     db.commit()
+    if not items:
+        _schedule_hook(db, upload, lambda: schedule_authority.release_for_upload(db, upload.id, "deleted_on_youtube"))
+    else:
+        _schedule_hook(db, upload, lambda: schedule_authority.on_video_recorded(db, upload, items[0], now=now))
     db.refresh(upload)
     return upload
 
@@ -612,6 +634,7 @@ def schedule_publication(
         upload.schedule_status = "schedule_failed"
         upload.schedule_error = exc.message[:500]
         db.commit()
+        _schedule_hook(db, upload, lambda: schedule_authority.release_for_upload(db, upload.id, "schedule_failed"))
         raise
     record = dict(upload.upload_settings or {})
     history = list(record.get("schedule_history") or [])
@@ -626,13 +649,30 @@ def schedule_publication(
     upload.remote_publish_at = parse_google_time(status.get("publishAt")) or upload.remote_publish_at
     upload.schedule_status = "scheduled"
     upload.schedule_error = None
+    upload.schedule_source, upload.schedule_slot_time = "manual", None
     db.commit()
     db.refresh(upload)
+    _schedule_hook(db, upload, lambda: _record_manual_schedule(db, upload, resolution, choice, status, now=now))
     try:
         record_last_used(db, upload.channel_id, {"visibility": "schedule"}, schedule=choice.model_dump())
     except SQLAlchemyError:  # convenience only
         db.rollback()
     return upload
+
+
+def _record_manual_schedule(db: Session, upload: YouTubeUpload, resolution: ScheduleResolution, choice: ScheduleChoice, status: dict[str, Any], *, now: datetime | None) -> None:
+    """A (re)schedule YouTube accepted: its slot is confirmed; the old claim is gone."""
+    schedule_authority.release_for_upload(db, upload.id, "rescheduled")
+    confirmed = parse_google_time(status.get("publishAt")) or resolution.publish_at
+    if confirmed is None:
+        return
+    reservation = schedule_authority.reserve(
+        db, upload.channel_id, publish_at=confirmed, local_time=resolution.local_time or choice.time,
+        timezone=choice.timezone, source="manual", project_id=upload.project_id, now=now,
+    )
+    schedule_authority.attach_upload(db, reservation, upload)
+    schedule_authority.confirm_for_upload(db, upload, confirmed, now=now)
+    schedule_authority.record_video(db, upload.channel_id, {"id": upload.youtube_video_id, "status": {**status, "privacyStatus": "private", "publishAt": google_time(confirmed)}, "snippet": {"title": upload.title}}, now=now)
 
 
 def set_audience(

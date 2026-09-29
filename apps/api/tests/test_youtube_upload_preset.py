@@ -12,6 +12,7 @@ from youtube_support import FakeYouTube, publish_options, youtube_settings
 
 from clipforge.models import ProjectRevision
 from clipforge.youtube import connection, publishing, uploads
+from clipforge.youtube import schedule as schedule_authority
 from clipforge.youtube.provider import ChannelIdentity, YouTubeApiError
 from clipforge.youtube.publishing import ScheduleChoice, UploadDefaults
 
@@ -83,6 +84,10 @@ def test_successful_upload_stores_only_reusable_settings(db, settings, store, fa
 
 def test_next_project_gets_the_preset_but_its_own_content(db, settings, store, fake):
     first_upload(db, settings, store, fake)
+    # Smart Schedule off: the last-used time of day is the schedule source
+    # (with it on, the planner wins - see test_youtube_smart_schedule).
+    schedule_authority.ensure_schedule(db, "UC_fake_channel_01").enabled = False
+    db.commit()
     second_project(db, settings)
     draft = api_client(db, settings, store, fake).get(f"/api/youtube/projects/{OTHER}/draft").json()
     options = draft["options"]
@@ -112,7 +117,9 @@ def test_preset_is_scoped_by_channel(db, settings, store, fake):
     second_project(db, settings)
     draft = api_client(db, settings, store, fake).get(f"/api/youtube/projects/{OTHER}/draft").json()
     assert draft["preset_source"] == "settings"
-    assert draft["options"]["made_for_kids"] is None and draft["options"]["visibility"] == "private"
+    assert draft["options"]["made_for_kids"] is None
+    # No preset or saved visibility on this channel: Smart Schedule's default workflow.
+    assert (draft["options"]["visibility"], draft["options"]["schedule_source"]) == ("schedule", "auto")
     assert publishing.last_used_preset(db, "UC_channel_B") is None
 
 

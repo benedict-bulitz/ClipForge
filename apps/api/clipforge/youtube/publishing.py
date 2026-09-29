@@ -131,6 +131,9 @@ class PublishOptions(BaseModel):
     contains_synthetic_media: bool | None = None
     visibility: Visibility = "private"
     schedule: ScheduleChoice | None = None
+    # "auto": the Smart Slot Planner's slot (double-booking checked and
+    # reserved before upload); "manual": the user's own time, respected as is.
+    schedule_source: Literal["auto", "manual"] | None = None
     category_id: str | None = Field(default=None, max_length=8)
     default_language: str | None = Field(default=None, max_length=20)
     default_audio_language: str | None = Field(default=None, max_length=20)
@@ -656,6 +659,8 @@ def options_with_defaults(
     defaults: UploadDefaults,
     preset: dict[str, Any] | None = None,
     *,
+    smart_enabled: bool = False,
+    smart: ScheduleChoice | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
     """Initial form state.
@@ -663,6 +668,12 @@ def options_with_defaults(
     Content (title, description, tags) comes only from ``draft`` - the current
     project.  Reusable answers come from the last successful upload on this
     channel when it is newer than the saved Settings, else from the Settings.
+
+    Schedule date/time priority (the per-video manual override happens in
+    the sheet and always wins): Smart Slot Planner when enabled > the
+    last-used time of day > nothing.  An enabled Smart Schedule is never
+    overridden by an old last-used time; while it cannot verify YouTube's
+    schedule (``smart`` is None) no time is invented for it.
     """
     source = preset or {}
 
@@ -670,18 +681,26 @@ def options_with_defaults(
         return source[key] if key in source and source[key] is not None else getattr(defaults, key, None)
 
     visibility = pick("visibility")
+    if visibility is None and smart_enabled:
+        visibility = "schedule"  # automatic scheduling is the default workflow
     if visibility not in allowed_visibilities(defaults):
         visibility = "private"
     language = pick("default_language") or draft.get("language")
     schedule = None
+    schedule_source = None
     if visibility == "schedule":
-        schedule = suggest_schedule(source.get("schedule_time"), source.get("timezone") or defaults.timezone, now=now)
+        if smart_enabled:
+            schedule, schedule_source = smart, ("auto" if smart else None)
+        else:
+            schedule = suggest_schedule(source.get("schedule_time"), source.get("timezone") or defaults.timezone, now=now)
+            schedule_source = "manual" if schedule else None
     return {
         **draft,
         "made_for_kids": pick("made_for_kids"),
         "contains_synthetic_media": pick("contains_synthetic_media"),
         "visibility": visibility,
         "schedule": schedule.model_dump() if schedule else None,
+        "schedule_source": schedule_source,
         "category_id": pick("category_id"),
         "default_language": language,
         "default_audio_language": language,

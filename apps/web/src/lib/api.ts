@@ -45,6 +45,8 @@ export class ApiError extends Error {
     message: string,
     readonly statusCode: number,
     readonly code?: string,
+    /** The structured error body (e.g. the next free slot after "slot_taken"). */
+    readonly detail?: Record<string, unknown>,
   ) {
     super(message);
     this.name = "ApiError";
@@ -73,6 +75,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
           : "ClipForge could not complete the request.",
         response.status,
         typeof structured.status === "string" ? structured.status : undefined,
+        detail as Record<string, unknown>,
       );
     }
     throw new ApiError("ClipForge could not complete the request.", response.status);
@@ -347,15 +350,38 @@ export function getProjectYouTube(projectId: string, signal?: AbortSignal) {
   return request<import("./youtube").ProjectYouTube>(`/youtube/projects/${projectId}`, { cache: "no-store", signal });
 }
 
-export function uploadProjectToYouTube(projectId: string, baseRevision: number, options: import("./youtube").PublishOptions, region: string, language: string, forceNew = false) {
+export function uploadProjectToYouTube(projectId: string, baseRevision: number, options: import("./youtube").PublishOptions, region: string, language: string, forceNew = false, allowCachedSchedule = false) {
   return request<{ upload: import("./youtube").YouTubeUpload; started: boolean; warnings: string[] }>(`/youtube/projects/${projectId}/uploads`, {
     method: "POST",
-    body: JSON.stringify({ base_revision: baseRevision, options, region, language, force_new: forceNew }),
+    body: JSON.stringify({ base_revision: baseRevision, options, region, language, force_new: forceNew, allow_cached_schedule: allowCachedSchedule }),
   });
 }
 
-export function getPublishingDraft(projectId: string, region: string, language: string) {
-  return request<import("./youtube").PublishingDraft>(`/youtube/projects/${projectId}/draft?region=${encodeURIComponent(region)}&language=${encodeURIComponent(language)}`, { cache: "no-store" });
+export function getPublishingDraft(projectId: string, region: string, language: string, timezone?: string) {
+  const zone = timezone ? `&timezone=${encodeURIComponent(timezone)}` : "";
+  return request<import("./youtube").PublishingDraft>(`/youtube/projects/${projectId}/draft?region=${encodeURIComponent(region)}&language=${encodeURIComponent(language)}${zone}`, { cache: "no-store" });
+}
+
+// Smart Slot Planner ----------------------------------------------------------
+
+export function getYouTubeSchedule(timezone?: string) {
+  return request<import("./youtube-schedule").ScheduleOverview>(`/youtube/schedule${timezone ? `?timezone=${encodeURIComponent(timezone)}` : ""}`, { cache: "no-store" });
+}
+
+export function saveYouTubeSchedule(update: import("./youtube-schedule").ScheduleUpdate) {
+  return request<import("./youtube-schedule").ScheduleOverview>("/youtube/schedule", { method: "PUT", body: JSON.stringify(update) });
+}
+
+export function refreshYouTubeSchedule() {
+  return request<import("./youtube-schedule").ScheduleOverview>("/youtube/schedule/refresh", { method: "POST" });
+}
+
+export function getNextYouTubeSlot(refresh = true) {
+  return request<import("./youtube-schedule").SmartScheduleState>(`/youtube/schedule/next?refresh=${refresh ? "true" : "false"}`, { cache: "no-store" });
+}
+
+export function applyLearnedYouTubeSchedule() {
+  return request<import("./youtube-schedule").ScheduleOverview>("/youtube/schedule/learned/apply", { method: "POST" });
 }
 
 export function preflightYouTubeUpload(projectId: string, options: import("./youtube").PublishOptions, region: string, language: string, signal?: AbortSignal) {

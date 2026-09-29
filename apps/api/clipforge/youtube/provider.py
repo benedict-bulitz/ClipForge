@@ -10,6 +10,12 @@ YouTube Analytics API v2, Google OAuth 2.0 for installed/local apps):
 * Upload: resumable ``upload/youtube/v3/videos?uploadType=resumable``.
 * Status/schedule: ``youtube/v3/videos`` list/update (``part=status``);
   ``publishAt`` is only honoured on a private video that was never published.
+* Channel schedule (Smart Slot Planner): the uploads playlist from
+  ``channels?part=contentDetails&mine=true``
+  (``contentDetails.relatedPlaylists.uploads``), paged with
+  ``playlistItems?part=contentDetails`` (``maxResults`` <= 50,
+  ``nextPageToken``), then ``videos.list`` by id in batches of <= 50.
+  ``search.list`` (100 quota units per call) is never used.
 * Analytics: ``youtubeanalytics.googleapis.com/v2/reports``.
 
 Secrets never leave this module in a log line or an error message: errors
@@ -52,6 +58,7 @@ CAPABILITY_SCOPES: dict[str, tuple[str, ...]] = {
 }
 
 UPLOAD_CHUNK_BYTES = 8 * 1024 * 1024  # a multiple of 256 KiB, as the API requires
+PAGE_SIZE = 50  # playlistItems.list maxResults maximum; also the videos.list id batch limit
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +124,10 @@ class YouTubeProvider(Protocol):
     def revoke(self, token: str) -> None: ...
 
     def get_my_channel(self, access_token: str) -> ChannelIdentity: ...
+
+    def get_uploads_playlist_id(self, access_token: str) -> str: ...
+
+    def list_playlist_items(self, access_token: str, playlist_id: str, page_token: str | None = None) -> tuple[list[dict[str, Any]], str | None]: ...
 
     def start_resumable_upload(self, access_token: str, body: dict[str, Any], size: int, content_type: str, *, notify_subscribers: bool = True) -> str: ...
 
@@ -287,6 +298,31 @@ class GoogleYouTubeProvider:
             raise YouTubeApiError("no_channel", "This Google account has no YouTube channel.")
         item = items[0]
         return ChannelIdentity(channel_id=str(item.get("id")), title=str((item.get("snippet") or {}).get("title") or ""))
+
+    def get_uploads_playlist_id(self, access_token: str) -> str:
+        response = self._send(
+            "GET", f"{DATA_API}/channels", context="channel schedule",
+            params={"part": "contentDetails", "mine": "true"}, headers=self._auth(access_token),
+        )
+        if response.status_code != 200:
+            raise _google_error(response, context="channel schedule")
+        items = response.json().get("items") or []
+        uploads = ((items[0].get("contentDetails") or {}).get("relatedPlaylists") or {}).get("uploads") if items else None
+        if not uploads:
+            raise YouTubeApiError("no_channel", "YouTube returned no uploads playlist for this channel.")
+        return str(uploads)
+
+    def list_playlist_items(self, access_token: str, playlist_id: str, page_token: str | None = None) -> tuple[list[dict[str, Any]], str | None]:
+        params = {"part": "contentDetails", "playlistId": playlist_id, "maxResults": str(PAGE_SIZE)}
+        if page_token:
+            params["pageToken"] = page_token
+        response = self._send(
+            "GET", f"{DATA_API}/playlistItems", context="channel schedule", params=params, headers=self._auth(access_token),
+        )
+        if response.status_code != 200:
+            raise _google_error(response, context="channel schedule")
+        payload = response.json()
+        return list(payload.get("items") or []), (payload.get("nextPageToken") or None)
 
     def start_resumable_upload(self, access_token: str, body: dict[str, Any], size: int, content_type: str, *, notify_subscribers: bool = True) -> str:
         headers = {

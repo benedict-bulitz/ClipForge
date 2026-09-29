@@ -2,14 +2,15 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, Check, CheckCircle2, ChevronDown, ImagePlus, LoaderCircle, Lock, RotateCcw, Sparkles, Upload, X } from "lucide-react";
-import { ApiError, getProjectYouTube, getPublishingDraft, mediaUrl, preflightYouTubeUpload, retryYouTubeUpload, scheduleYouTubeUpload, uploadCustomThumbnail, uploadProjectToYouTube } from "@/lib/api";
+import { AlertTriangle, CalendarClock, Check, CheckCircle2, ChevronDown, ImagePlus, LoaderCircle, Lock, RefreshCw, RotateCcw, Sparkles, Upload, X } from "lucide-react";
+import { ApiError, getNextYouTubeSlot, getProjectYouTube, getPublishingDraft, mediaUrl, preflightYouTubeUpload, retryYouTubeUpload, scheduleYouTubeUpload, uploadCustomThumbnail, uploadProjectToYouTube } from "@/lib/api";
 import type { Project } from "@/lib/types";
 import {
   attentionSummary,
   audienceLabel,
   browserLocale,
   detectTimeZone,
+  formatLocalDate,
   formatScheduleConfirmation,
   parseTags,
   primaryActionLabel,
@@ -31,6 +32,17 @@ import {
   type Visibility,
   type YouTubeUpload,
 } from "@/lib/youtube";
+import {
+  dayContextLine,
+  freshnessLabel,
+  isManualOverride,
+  readRecommendation,
+  recommendationLabel,
+  slotTakenMessage,
+  zoneLine,
+  type SlotRecommendation,
+  type SmartScheduleState,
+} from "@/lib/youtube-schedule";
 import { cn } from "@/lib/utils";
 import { Button } from "./ui/button";
 import { ScheduleFields } from "./youtube-schedule-fields";
@@ -95,18 +107,25 @@ export function PublishSheet({ project, onClose, onUploaded }: { project: Projec
   const [error, setError] = useState<string | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [run, setRun] = useState<Run | null>(null);
+  // Smart Slot Planner: YouTube's real schedule decides the pre-selected slot.
+  const [smart, setSmart] = useState<SmartScheduleState | null>(null);
+  const [useCachedSchedule, setUseCachedSchedule] = useState(false);
+  const [showTimeFields, setShowTimeFields] = useState(false);
+  const [slotNotice, setSlotNotice] = useState<string | null>(null);
+  const [checkingSlots, setCheckingSlots] = useState(false);
   const done = useRef(onUploaded);
   useEffect(() => { done.current = onUploaded; });
 
   useEffect(() => {
     let active = true;
-    getPublishingDraft(project.id, region, language)
+    getPublishingDraft(project.id, region, language, detectTimeZone())
       .then((next) => {
         if (!active) return;
-        const timezone = next.defaults.timezone || detectTimeZone();
+        const timezone = next.smart_schedule?.schedule?.timezone || next.defaults.timezone || detectTimeZone();
         setDraft(next);
+        setSmart(next.smart_schedule ?? null);
         setThumbnails(next.thumbnails);
-        // A time suggested from the last upload (always a future date), else empty.
+        // The next free slot (verified with YouTube), a time from the last upload, or empty.
         setOptions({ ...next.options, schedule: next.options.schedule ?? { date: "", time: "", timezone } });
         setTagsText(next.options.tags.join(", "));
       })
@@ -167,6 +186,11 @@ export function PublishSheet({ project, onClose, onUploaded }: { project: Projec
   }, [closeAfter]);
 
   const update = (patch: Partial<PublishOptions>) => setOptions((current) => (current ? { ...current, ...patch } : current));
+  /** Pre-select a planner slot; "auto" makes the backend re-check and reserve it before upload. */
+  const applySlot = (slot: SlotRecommendation, cached = false) => {
+    setUseCachedSchedule(cached);
+    update({ visibility: "schedule", schedule: { ...slot.choice }, schedule_source: "auto" });
+  };
   const selectedThumb = useMemo(
     () => (options?.thumbnail?.source === "youtube_auto" ? null : thumbnails.find((item) => item.source === options?.thumbnail?.source && item.asset === options?.thumbnail?.asset) ?? null),
     [options?.thumbnail, thumbnails],
@@ -217,11 +241,34 @@ export function PublishSheet({ project, onClose, onUploaded }: { project: Projec
     setSubmitError(null);
     setRun(null);
     const wantsSchedule = options.visibility === "schedule";
+    const auto = wantsSchedule && options.schedule_source === "auto";
+    setSlotNotice(null);
     try {
-      const result = await uploadProjectToYouTube(project.id, project.current_revision, { ...options, schedule: wantsSchedule ? options.schedule : null }, region, language);
+      const result = await uploadProjectToYouTube(
+        project.id, project.current_revision,
+        { ...options, schedule: wantsSchedule ? options.schedule : null, schedule_source: wantsSchedule ? options.schedule_source ?? "manual" : null },
+        region, language, false, auto && useCachedSchedule,
+      );
       follow(result.upload, wantsSchedule);
     } catch (reason) {
-      setSubmitError(`Upload failed. ${reason instanceof ApiError ? reason.message : "The upload could not start."}`);
+      if (reason instanceof ApiError && (reason.code === "slot_taken" || reason.code === "slot_missed")) {
+        // Never schedule blindly: show the recalculated slot; the user uploads again.
+        const next = readRecommendation(reason.detail);
+        if (next) {
+          applySlot(next, useCachedSchedule);
+          setSmart((current) => (current ? { ...current, recommendation: current.status === "verified" ? next : current.recommendation, cached_recommendation: current.status === "verified" ? current.cached_recommendation : next } : current));
+        } else {
+          update({ schedule_source: "manual" });
+          setShowTimeFields(true);
+        }
+        setSlotNotice(slotTakenMessage(reason.message, next, new Date(), locale));
+      } else if (reason instanceof ApiError && reason.code === "schedule_unverified") {
+        const cached = readRecommendation(reason.detail, "cached_recommendation");
+        setSmart((current) => (current ? { ...current, status: cached ? "stale_cache" : "unverified", recommendation: null, cached_recommendation: cached, freshness: (reason.detail?.freshness as SmartScheduleState["freshness"]) ?? current.freshness } : current));
+        setSlotNotice("Could not verify YouTube schedule. Retry, use the cached schedule, or choose a time manually.");
+      } else {
+        setSubmitError(`Upload failed. ${reason instanceof ApiError ? reason.message : "The upload could not start."}`);
+      }
     } finally {
       setBusy(false);
     }
@@ -251,7 +298,7 @@ export function PublishSheet({ project, onClose, onUploaded }: { project: Projec
     ["Audience", audienceLabel(options.made_for_kids)],
     ["Visibility", VISIBILITY_COPY[options.visibility].label],
     ["Schedule", options.visibility === "schedule" && resolution?.status === "ok" && resolution.publish_at && options.schedule
-      ? `${formatScheduleConfirmation(resolution.publish_at, options.schedule.timezone, locale)} · ${zoneLabel(options.schedule.timezone, resolution)}`
+      ? `${formatScheduleConfirmation(resolution.publish_at, options.schedule.timezone, locale)} · ${zoneLabel(options.schedule.timezone, resolution)}${options.schedule_source === "auto" ? " · next free slot" : ""}`
       : options.visibility === "schedule" ? "Choose a date and time" : "—"],
     ["Altered or synthetic content", options.contains_synthetic_media === null ? "Not answered" : options.contains_synthetic_media ? "Yes" : "No"],
   ];
@@ -339,8 +386,46 @@ export function PublishSheet({ project, onClose, onUploaded }: { project: Projec
             <p className="mt-2 flex gap-1.5 text-[11px] text-[var(--muted-foreground)]"><Lock className="mt-0.5 size-3 shrink-0" />Public and Unlisted are unavailable: YouTube keeps uploads from unverified Google API projects private. {options.visibility === "schedule" && "A scheduled time takes effect once the project passes YouTube's audit."}</p>
           )}
           {options.visibility === "schedule" && options.schedule && (
-            <div className="mt-4">
-              <ScheduleFields value={options.schedule} onChange={(schedule) => update({ schedule })} locale={locale} onResolved={setResolution} />
+            <div className="mt-4 space-y-3">
+              {smart && smart.enabled && smart.status !== "not_connected" && (
+                <SmartSlot
+                  smart={smart}
+                  schedule={options.schedule}
+                  source={options.schedule_source ?? null}
+                  cached={useCachedSchedule}
+                  checking={checkingSlots}
+                  notice={slotNotice}
+                  locale={locale}
+                  onApply={applySlot}
+                  onManual={() => { update({ schedule_source: "manual" }); setShowTimeFields(true); }}
+                  onRetry={() => {
+                    setCheckingSlots(true);
+                    setSlotNotice(null);
+                    getNextYouTubeSlot(true)
+                      .then((next) => {
+                        setSmart(next);
+                        // Only an automatic selection follows the planner; a manual time stays.
+                        if (next.recommendation && options.schedule_source !== "manual") applySlot(next.recommendation);
+                      })
+                      .catch(() => setSlotNotice("Could not verify YouTube schedule."))
+                      .finally(() => setCheckingSlots(false));
+                  }}
+                />
+              )}
+              {(showTimeFields || options.schedule_source !== "auto" || !smart?.enabled) ? (
+                <ScheduleFields
+                  value={options.schedule}
+                  // A manual edit is respected for this upload and never snapped back.
+                  onChange={(schedule) => update({ schedule, schedule_source: "manual" })}
+                  locale={locale}
+                  onResolved={setResolution}
+                />
+              ) : (
+                <>
+                  <ScheduleFields value={options.schedule} onChange={() => undefined} locale={locale} onResolved={setResolution} hidden />
+                  <button type="button" className="interactive-text text-[11px]" onClick={() => setShowTimeFields(true)}><CalendarClock className="size-3" /> Change date or time</button>
+                </>
+              )}
             </div>
           )}
         </Section>
@@ -414,6 +499,68 @@ export function PublishSheet({ project, onClose, onUploaded }: { project: Projec
         {blocked && !inFlight && !phase && <p id="publish-blocked-reason" className="mt-1 text-right text-[10px] text-[var(--muted-foreground)]">{checking ? "Checking settings…" : "Resolve the items above to upload."}</p>}
       </footer>
     </Shell>
+  );
+}
+
+/**
+ * "Schedule automatically": the next free slot from the channel's real YouTube
+ * schedule, why it was chosen, and how fresh that knowledge is. Transparent:
+ * the actual date and time are always shown; staleness is never hidden.
+ */
+function SmartSlot({ smart, schedule, source, cached, checking, notice, locale, onApply, onManual, onRetry }: {
+  smart: SmartScheduleState;
+  schedule: { date: string; time: string; timezone: string };
+  source: "auto" | "manual" | null;
+  cached: boolean;
+  checking: boolean;
+  notice: string | null;
+  locale: string;
+  onApply: (slot: SlotRecommendation, cached?: boolean) => void;
+  onManual: () => void;
+  onRetry: () => void;
+}) {
+  const now = new Date();
+  const recommended = smart.recommendation ?? null;
+  const fallback = smart.cached_recommendation ?? null;
+  const shown = recommended ?? (cached ? fallback : null);
+  const manual = source === "manual" || (shown !== null && isManualOverride(schedule, shown));
+  const unverified = smart.status === "unverified" || smart.status === "stale_cache";
+  return (
+    <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-2.5 text-xs" aria-label="Recommended schedule" data-smart-status={smart.status}>
+      <div className="flex items-start justify-between gap-2">
+        <p className="flex items-center gap-1.5 font-semibold"><CalendarClock className="size-3.5 text-[#ff6838]" /> {manual ? "Your time" : "Schedule automatically"}</p>
+        <button type="button" className="interactive-text text-[11px]" onClick={onRetry} disabled={checking}>{checking ? <LoaderCircle className="size-3 animate-spin" /> : <RefreshCw className="size-3" />} {unverified ? "Retry" : "Refresh schedule"}</button>
+      </div>
+      {shown && !manual && (
+        <>
+          <p className="mt-1">Recommended: <strong className="text-sm" data-testid="recommended-slot">{recommendationLabel(shown, now, locale)}</strong> <span className="text-[var(--muted-foreground)]">({formatLocalDate(shown.local_date, locale)})</span></p>
+          <p className="text-[11px] text-[var(--muted-foreground)]">{zoneLine(shown.timezone, shown.abbreviation)}</p>
+          <p className="mt-1 text-[11px]">Why: {shown.reason}</p>
+          <p className="mt-0.5 text-[11px] text-[var(--muted-foreground)]">{dayContextLine(shown, now, locale)}</p>
+        </>
+      )}
+      {manual && (
+        <p className="mt-1 text-[11px] text-[var(--muted-foreground)]">
+          Your chosen time is used for this upload.
+          {shown && <> Next available slot: {recommendationLabel(shown, now, locale)}. <button type="button" className="underline" onClick={() => onApply(shown, !recommended)}>Use it</button></>}
+        </p>
+      )}
+      {unverified && !cached && (
+        <div role="alert" className="mt-2 rounded-lg bg-amber-50 px-2.5 py-2 text-[11px] text-amber-900">
+          <p className="flex items-center gap-1.5 font-semibold"><AlertTriangle className="size-3" /> Could not verify YouTube schedule.</p>
+          <p className="mt-0.5">{smart.freshness?.error?.message ?? "YouTube did not answer."} ClipForge will not assume a slot is free.</p>
+          <div className="mt-1.5 flex flex-wrap gap-3">
+            <button type="button" className="underline" onClick={onRetry} disabled={checking}>Retry</button>
+            {fallback && <button type="button" className="underline" onClick={() => onApply(fallback, true)}>Use cached schedule ({freshnessLabel(smart.freshness, true).replace("Based on schedule checked ", "checked ")})</button>}
+            <button type="button" className="underline" onClick={onManual}>Choose time manually</button>
+          </div>
+        </div>
+      )}
+      {cached && shown && !manual && <p className="mt-1 text-[11px] font-semibold text-amber-800">{freshnessLabel(smart.freshness, true)} — YouTube was not re-checked.</p>}
+      {!unverified && smart.freshness && <p className="mt-1 text-[10px] text-[var(--muted-foreground)]">{freshnessLabel(smart.freshness)}</p>}
+      {smart.horizon_full && <p className="mt-1 text-[11px] text-amber-800">Every slot in your schedule is taken for the next {smart.schedule?.horizon_days ?? 30} days — choose a time manually.</p>}
+      {notice && <p role="status" className="mt-2 rounded-lg bg-amber-50 px-2.5 py-1.5 text-[11px] font-semibold text-amber-900">{notice}</p>}
+    </div>
   );
 }
 

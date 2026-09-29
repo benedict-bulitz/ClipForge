@@ -258,6 +258,10 @@ class YouTubeUpload(Base):
     remote_status_error_code: Mapped[str | None] = mapped_column(String(48), nullable=True)
     remote_status_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_analytics_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Smart Slot Planner provenance: "auto" (the planner's slot) | "manual"
+    # (the user's own time) | None (not scheduled); the preferred slot it filled.
+    schedule_source: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    schedule_slot_time: Mapped[str | None] = mapped_column(String(5), nullable=True)
     uploaded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_status_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_analytics_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -397,3 +401,128 @@ class YouTubeLearningArchive(Base):
     bytes_freed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     retained_bytes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     archived_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+# ---------------------------------------------------------------------------
+# YouTube Smart Slot Planner
+#
+# One publishing-schedule authority per channel (cadence, zone, preferred
+# slots), one bounded cache of what YouTube itself reports as scheduled or
+# published (``youtube_schedule_entries``) and short-lived slot reservations
+# that keep two concurrent ClipForge uploads from claiming the same slot.
+# ---------------------------------------------------------------------------
+
+
+class YouTubePublishingSchedule(Base):
+    """The channel's publishing cadence; a channel setting, never per project."""
+
+    __tablename__ = "youtube_publishing_schedules"
+
+    channel_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    timezone: Mapped[str] = mapped_column(String(64), nullable=False, default="UTC")
+    videos_per_day: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    # seed (starter preset) | manual (user-edited) | learned (user-approved proposal)
+    mode: Mapped[str] = mapped_column(String(16), nullable=False, default="seed")
+    # When on, the planner's slot is pre-selected in the publishing sheet.
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    occupancy_tolerance_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=60)
+    min_lead_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=15)
+    horizon_days: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
+    learned_sample_size: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    learned_applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Remote schedule sync state (the cache itself is youtube_schedule_entries).
+    uploads_playlist_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    remote_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    remote_sync_attempted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    remote_sync_complete: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    remote_sync_error_code: Mapped[str | None] = mapped_column(String(48), nullable=True)
+    remote_sync_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
+
+
+class YouTubeScheduleSlot(Base):
+    """One preferred local wall-clock slot; ``weekday`` NULL = every day.
+
+    Weekday-specific rows (0 = Monday) override the every-day rows for that
+    day, so per-weekday schedules need no schema change later.
+    """
+
+    __tablename__ = "youtube_schedule_slots"
+    __table_args__ = (
+        Index("ix_youtube_schedule_slots_channel_weekday", "channel_id", "weekday"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    channel_id: Mapped[str] = mapped_column(
+        ForeignKey("youtube_publishing_schedules.channel_id", ondelete="CASCADE"), nullable=False
+    )
+    weekday: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    local_time: Mapped[str] = mapped_column(String(5), nullable=False)
+    # seed | manual | learned
+    source: Mapped[str] = mapped_column(String(16), nullable=False, default="seed")
+
+
+class YouTubeScheduleEntry(Base):
+    """A video YouTube reports as scheduled or published (bounded cache).
+
+    Filled only from the channel's uploads playlist + videos.list, so videos
+    scheduled in YouTube Studio or by other tools count exactly like ClipForge's.
+    """
+
+    __tablename__ = "youtube_schedule_entries"
+    __table_args__ = (
+        UniqueConstraint("channel_id", "video_id", name="uq_youtube_schedule_entry_video"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    channel_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    video_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    # scheduled (private + publishAt) | published (public)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    privacy_status: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    upload_status: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    publish_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # The instant this video occupies on the channel's calendar.
+    occupies_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    title: Mapped[str] = mapped_column(String(120), nullable=False, default="")
+    source: Mapped[str] = mapped_column(String(16), nullable=False, default="youtube")
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
+
+
+class YouTubeSlotReservation(Base):
+    """A ClipForge upload's claim on a slot until YouTube confirms (or refuses) it.
+
+    ``active_key`` ("<channel>:<UTC instant>") is unique while an automatic
+    reservation is reserved/confirmed, so two uploads cannot both claim it;
+    it is cleared on release.
+    """
+
+    __tablename__ = "youtube_slot_reservations"
+    __table_args__ = (
+        Index("ix_youtube_slot_reservations_channel_slot", "channel_id", "slot_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    channel_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    slot_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    local_time: Mapped[str] = mapped_column(String(16), nullable=False)
+    timezone: Mapped[str] = mapped_column(String(64), nullable=False)
+    # auto | manual
+    source: Mapped[str] = mapped_column(String(16), nullable=False, default="auto")
+    # reserved | confirmed | released
+    state: Mapped[str] = mapped_column(String(16), nullable=False, default="reserved", index=True)
+    active_key: Mapped[str | None] = mapped_column(String(120), nullable=True, unique=True)
+    upload_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    project_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    video_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    release_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )

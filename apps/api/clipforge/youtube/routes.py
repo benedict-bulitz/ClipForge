@@ -22,7 +22,8 @@ from ..integrations import get_secret_store
 from ..models import YouTubeUpload
 from ..security.secrets import SecretStore
 from ..services import RevisionConflict, effective_revision_state, get_project
-from . import analytics, connection, learning, lifecycle, publishing, uploads
+from . import analytics, connection, learning, lifecycle, publishing, schedule_learning, uploads
+from . import schedule as schedule_authority
 from .provider import GoogleYouTubeProvider, YouTubeApiError, YouTubeProvider
 
 logger = logging.getLogger(__name__)
@@ -98,6 +99,11 @@ ERROR_STATUS = {
     "render_missing": status.HTTP_409_CONFLICT,
     "preflight_failed": 422,
     "thumbnail_not_allowed": status.HTTP_403_FORBIDDEN,
+    "slot_taken": status.HTTP_409_CONFLICT,
+    "slot_missed": status.HTTP_409_CONFLICT,
+    "schedule_unverified": status.HTTP_409_CONFLICT,
+    "invalid_schedule": 422,
+    "learned_unavailable": status.HTTP_409_CONFLICT,
 }
 
 
@@ -117,6 +123,10 @@ def _refused(exc: uploads.UploadRefused) -> HTTPException:
     if exc.issues:
         extra["issues"] = exc.issues
     return _error(exc.code, exc.message, **extra)
+
+
+def _slot_unavailable(exc: schedule_authority.SlotUnavailable) -> HTTPException:
+    return _error(exc.code, exc.message, **jsonable_encoder(exc.detail))
 
 
 def _upload_or_404(db: Session, upload_id: str) -> YouTubeUpload:
@@ -205,6 +215,8 @@ class UploadCreate(BaseModel):
     region: str = Field(default="US", min_length=2, max_length=2)
     language: str = Field(default="en", max_length=20)
     force_new: bool = False
+    # The user chose "Use cached schedule" after YouTube could not be re-checked.
+    allow_cached_schedule: bool = False
 
 
 class PreflightCreate(BaseModel):
@@ -298,16 +310,30 @@ def project_youtube_route(project_id: str, db: DbSession, settings: SettingsDep,
 @router.get("/projects/{project_id}/draft")
 def publishing_draft_route(
     project_id: str, db: DbSession, settings: SettingsDep, store: StoreDep, provider: ProviderDep,
-    region: str = "US", language: str = "en",
+    region: str = "US", language: str = "en", timezone: str | None = None,
 ) -> dict:
-    """Everything the publishing sheet needs, with only user-saved defaults applied."""
+    """Everything the publishing sheet needs, with only user-saved defaults applied.
+
+    With Smart Schedule on, YouTube's real schedule is re-checked when the
+    cache is stale and the next free preferred slot is pre-selected; it is
+    only pre-selected when YouTube was verified (never guessed).
+    """
     project = _project_or_404(db, project_id)
     state = effective_revision_state(project)
     defaults = publishing.load_defaults(db)
     record = connection.active_connection(db)
     preset = publishing.last_used_preset(db, record.channel_id if record else None)
     applied = preset if publishing.preset_applies(db, preset) else None
-    draft = publishing.options_with_defaults(publishing.default_metadata(state, project.title), defaults, applied)
+    smart = None
+    if record is not None:
+        hint = timezone if timezone and publishing.valid_timezone(timezone) else ((applied or {}).get("timezone") or defaults.timezone)
+        smart = schedule_authority.smart_state(db, settings, store, provider, record.channel_id, timezone_hint=hint)
+    recommended = (smart or {}).get("recommendation")
+    draft = publishing.options_with_defaults(
+        publishing.default_metadata(state, project.title), defaults, applied,
+        smart_enabled=bool(smart and smart["enabled"]),
+        smart=publishing.ScheduleChoice(**recommended["choice"]) if recommended else None,
+    )
     choices = publishing.thumbnail_choices(state, project.id, settings)
     selected = publishing.default_thumbnail(choices)
     draft["thumbnail"] = {"source": selected["source"], "asset": selected["asset"]} if selected else None
@@ -324,6 +350,7 @@ def publishing_draft_route(
         "defaults": defaults.model_dump(),
         # Where the reusable answers came from: "last_upload" | "settings".
         "preset_source": "last_upload" if applied else "settings",
+        "smart_schedule": smart or {"status": "not_connected", "enabled": False},
         "thumbnails": choices,
         "categories": categories or [],
         "category_error": category_error,
@@ -398,15 +425,43 @@ def create_upload_route(
     if record is None:
         raise _error("not_connected", "Connect a YouTube channel first.")
     categories, _error_detail = _categories(db, settings, store, provider, payload.region, payload.language)
+    options = payload.options
+    reservation = None
+    if options.visibility == "schedule" and options.schedule is not None:
+        issues, resolution, _source = uploads.preflight(db, project, settings, options, categories=categories)
+        if issues:
+            raise _error("preflight_failed", f"{len(issues)} item{'s' if len(issues) != 1 else ''} need{'s' if len(issues) == 1 else ''} attention.", issues=issues)
+        try:
+            if options.schedule_source == "auto":
+                # Fresh double-booking check + exclusive claim before YouTube is asked.
+                reservation = schedule_authority.claim_auto_slot(
+                    db, settings, store, provider, channel_id=record.channel_id, choice=options.schedule,
+                    project_id=project.id, allow_cached=payload.allow_cached_schedule,
+                )
+            elif resolution is not None and resolution.publish_at is not None:
+                # The user's own time is respected as is; it still marks the slot in flight.
+                reservation = schedule_authority.reserve(
+                    db, record.channel_id, publish_at=resolution.publish_at, local_time=resolution.local_time or options.schedule.time,
+                    timezone=options.schedule.timezone, source="manual", project_id=project.id,
+                )
+        except schedule_authority.SlotUnavailable as exc:
+            raise _slot_unavailable(exc) from exc
     try:
         upload, source, should_run = uploads.request_upload(
-            db, project, settings, channel_id=record.channel_id, options=payload.options,
+            db, project, settings, channel_id=record.channel_id, options=options,
             categories=categories, force_new=payload.force_new,
         )
     except uploads.UploadRefused as exc:
+        schedule_authority.release_reservation(db, reservation, f"refused:{exc.code}")
         raise _refused(exc) from exc
     except RevisionConflict as exc:
+        schedule_authority.release_reservation(db, reservation, "revision_conflict")
         raise _error("revision_conflict", str(exc)) from exc
+    if reservation is not None:
+        if should_run:
+            schedule_authority.attach_upload(db, reservation, upload)
+        else:
+            schedule_authority.release_reservation(db, reservation, "duplicate_request")
     if should_run:
         dispatch(upload.id, source.path)
         db.refresh(upload)
@@ -414,7 +469,7 @@ def create_upload_route(
 
 
 @router.post("/uploads/{upload_id}/retry", status_code=status.HTTP_202_ACCEPTED)
-def retry_upload_route(upload_id: str, db: DbSession, settings: SettingsDep, dispatch: DispatcherDep) -> dict:
+def retry_upload_route(upload_id: str, db: DbSession, settings: SettingsDep, store: StoreDep, provider: ProviderDep, dispatch: DispatcherDep) -> dict:
     upload = _upload_or_404(db, upload_id)
     if upload.youtube_video_id:
         raise _error("already_uploaded", f"Already uploaded as {upload.youtube_video_id}.")
@@ -427,6 +482,18 @@ def retry_upload_route(upload_id: str, db: DbSession, settings: SettingsDep, dis
         source = uploads.resolve_upload_source(project, settings)
     except uploads.UploadRefused as exc:
         raise _refused(exc) from exc
+    options = publishing.PublishOptions.model_validate((upload.upload_settings or {}).get("options") or {"title": upload.title})
+    if options.visibility == "schedule" and options.schedule is not None and options.schedule_source == "auto":
+        # The failed attempt released its slot; claim it again or say it is gone.
+        try:
+            reservation = schedule_authority.claim_auto_slot(
+                db, settings, store, provider, channel_id=upload.channel_id, choice=options.schedule, project_id=upload.project_id,
+            )
+        except schedule_authority.SlotUnavailable as exc:
+            if exc.code == "slot_taken":
+                exc.message = "That slot was just taken. Open Upload to YouTube again to use the next free slot."
+            raise _slot_unavailable(exc) from exc
+        schedule_authority.attach_upload(db, reservation, upload)
     dispatch(upload.id, source.path)
     db.refresh(upload)
     return {"upload": uploads.serialize_upload(upload), "started": True}
@@ -519,6 +586,69 @@ def learning_route(db: DbSession, settings: SettingsDep) -> dict:
         "baseline": learning.channel_baseline(db, record.channel_id, min_sample=settings.youtube_baseline_min_sample),
         "table": learning.learning_table(db, record.channel_id),
     }
+
+
+# ---------------------------------------------------------------------------
+# Publishing schedule (Smart Slot Planner)
+# ---------------------------------------------------------------------------
+
+
+def _schedule_channel(db: Session) -> str:
+    record = connection.active_connection(db)
+    if record is None:
+        raise _error("not_connected", "Connect a YouTube channel first.")
+    return record.channel_id
+
+
+def _schedule_payload(db: Session, settings: Settings, store: SecretStore, provider: YouTubeProvider, *, timezone: str | None = None, refresh: bool = True, force: bool = False) -> dict:
+    channel_id = _schedule_channel(db)
+    state = schedule_authority.smart_state(db, settings, store, provider, channel_id, timezone_hint=timezone, refresh=refresh, force=force, days=7)
+    record = schedule_authority.ensure_schedule(db, channel_id)
+    return {**state, "learning": schedule_learning.analyze(db, record)}
+
+
+@router.get("/schedule")
+def get_schedule_route(db: DbSession, settings: SettingsDep, store: StoreDep, provider: ProviderDep, timezone: str | None = None) -> dict:
+    """Cadence, upcoming overview (YouTube re-checked when stale) and learning status."""
+    return _schedule_payload(db, settings, store, provider, timezone=timezone)
+
+
+@router.put("/schedule")
+def save_schedule_route(payload: schedule_authority.ScheduleUpdate, db: DbSession, settings: SettingsDep, store: StoreDep, provider: ProviderDep) -> dict:
+    channel_id = _schedule_channel(db)
+    try:
+        schedule_authority.save_schedule(db, channel_id, payload)
+    except schedule_authority.ScheduleInvalid as exc:
+        raise _error("invalid_schedule", str(exc), errors=exc.errors) from exc
+    return _schedule_payload(db, settings, store, provider, refresh=False)
+
+
+@router.post("/schedule/refresh")
+def refresh_schedule_route(db: DbSession, settings: SettingsDep, store: StoreDep, provider: ProviderDep) -> dict:
+    """Explicit "Refresh schedule": always asks YouTube (errors are reported, not hidden)."""
+    return _schedule_payload(db, settings, store, provider, force=True)
+
+
+@router.get("/schedule/next")
+def next_slot_route(db: DbSession, settings: SettingsDep, store: StoreDep, provider: ProviderDep, refresh: bool = True) -> dict:
+    """The sheet's recalculation after "That slot was just taken" / Retry."""
+    channel_id = _schedule_channel(db)
+    return schedule_authority.smart_state(db, settings, store, provider, channel_id, refresh=refresh)
+
+
+@router.post("/schedule/learned/apply")
+def apply_learned_schedule_route(db: DbSession, settings: SettingsDep, store: StoreDep, provider: ProviderDep) -> dict:
+    """The user's explicit approval of a learned proposal (never automatic)."""
+    channel_id = _schedule_channel(db)
+    record = schedule_authority.ensure_schedule(db, channel_id)
+    analysis = schedule_learning.analyze(db, record)
+    if not analysis["available"] or not analysis["suggested"]:
+        raise _error("learned_unavailable", analysis.get("reason") or "Not enough channel data for a learned schedule yet.")
+    try:
+        schedule_authority.apply_learned_slots(db, record, analysis["suggested"], int(analysis["based_on"]))
+    except schedule_authority.ScheduleInvalid as exc:
+        raise _error("invalid_schedule", str(exc), errors=exc.errors) from exc
+    return _schedule_payload(db, settings, store, provider, refresh=False)
 
 
 @router.get("/archive")

@@ -7,6 +7,7 @@ import type { YouTubeConnection } from "@/lib/youtube";
 import { cn } from "@/lib/utils";
 import Link from "next/link";
 import { Button } from "./ui/button";
+import { YouTubePublishingSchedule } from "./youtube-publishing-schedule";
 import { YouTubeUploadDefaults } from "./youtube-upload-defaults";
 
 type Notice = { tone: "success" | "error" | "info"; text: string };
@@ -158,6 +159,8 @@ export function YouTubeConnectionCard() {
           )}
         </div>
       )}
+
+      {connected && <YouTubePublishingSchedule />}
 
       {connection && <YouTubeUploadDefaults connected={connected} />}
 

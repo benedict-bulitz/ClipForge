@@ -49,6 +49,8 @@ class FakeYouTube:
     update_error: YouTubeApiError | None = None
     thumbnail_error: YouTubeApiError | None = None
     list_error: YouTubeApiError | None = None
+    playlist_error: YouTubeApiError | None = None
+    playlist_page_size: int = 50
     thumbnails_set: list[tuple[str, int, str]] = field(default_factory=list)
     categories: list[dict[str, Any]] = field(default_factory=lambda: [
         {"id": "27", "snippet": {"title": "Education", "assignable": True}},
@@ -81,6 +83,33 @@ class FakeYouTube:
 
     def get_my_channel(self, access_token: str) -> ChannelIdentity:
         return self.channel
+
+    # Channel schedule (uploads playlist, newest upload first) ------------
+    def get_uploads_playlist_id(self, access_token: str) -> str:
+        self.calls.append(("uploads_playlist", None))
+        if self.playlist_error:
+            raise self.playlist_error
+        return "UU" + self.channel.channel_id[2:]
+
+    def list_playlist_items(self, access_token: str, playlist_id: str, page_token: str | None = None) -> tuple[list[dict[str, Any]], str | None]:
+        self.calls.append(("playlist_items", page_token))
+        if self.playlist_error:
+            raise self.playlist_error
+        assert playlist_id == "UU" + self.channel.channel_id[2:]
+        ordered = list(reversed(list(self.videos.values())))
+        start = int(page_token or 0)
+        page = ordered[start:start + self.playlist_page_size]
+        items = [{"contentDetails": {"videoId": video["id"], "videoPublishedAt": video["snippet"].get("uploadedAt") or video["snippet"].get("publishedAt")}} for video in page]
+        following = start + self.playlist_page_size
+        return items, (str(following) if following < len(ordered) else None)
+
+    def add_studio_video(self, video_id: str, *, privacy: str = "private", publish_at: str | None = None, published_at: str = "2026-09-01T10:00:00Z", upload_status: str = "processed", title: str = "Made in YouTube Studio") -> dict[str, Any]:
+        """A video scheduled or published outside ClipForge (YouTube Studio, another tool)."""
+        status: dict[str, Any] = {"privacyStatus": privacy, "uploadStatus": upload_status}
+        if publish_at:
+            status["publishAt"] = publish_at
+        self.videos[video_id] = {"id": video_id, "snippet": {"title": title, "publishedAt": published_at}, "status": status}
+        return self.videos[video_id]
 
     # Upload ------------------------------------------------------------
     def start_resumable_upload(self, access_token: str, body: dict[str, Any], size: int, content_type: str, *, notify_subscribers: bool = True) -> str:
@@ -129,6 +158,7 @@ class FakeYouTube:
     # Videos ------------------------------------------------------------
     def list_videos(self, access_token: str, video_ids: list[str], parts: str) -> list[dict[str, Any]]:
         self.calls.append(("list_videos", video_ids))
+        assert len(video_ids) <= 50, "videos.list accepts at most 50 ids"
         if self.list_error:
             raise self.list_error
         return [self.videos[item] for item in video_ids if item in self.videos]

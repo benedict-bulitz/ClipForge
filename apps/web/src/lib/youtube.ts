@@ -298,6 +298,8 @@ export type PublishOptions = {
   contains_synthetic_media: boolean | null;
   visibility: Visibility;
   schedule: ScheduleChoice | null;
+  /** "auto" = the Smart Slot Planner's slot; "manual" = the user's own time (never snapped back). */
+  schedule_source?: "auto" | "manual" | null;
   category_id: string | null;
   default_language: string | null;
   default_audio_language: string | null;
@@ -341,6 +343,8 @@ export type PublishingDraft = {
   render_status: ProjectYouTube["current_render"];
   /** Where the pre-selected settings came from: this channel's last successful upload, or saved Settings. */
   preset_source?: "last_upload" | "settings";
+  /** Smart Slot Planner state for this channel (the next free slot, freshness, today's slots). */
+  smart_schedule?: import("./youtube-schedule").SmartScheduleState;
 };
 
 export type PreflightIssue = { field: string; message: string };

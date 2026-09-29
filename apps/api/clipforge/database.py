@@ -53,6 +53,9 @@ YOUTUBE_UPLOAD_V2_COLUMNS = (
     ("remote_status_error_code", "VARCHAR(48)"),
     ("remote_status_error", "TEXT"),
     ("last_analytics_attempt_at", "DATETIME"),
+    # Smart Slot Planner provenance
+    ("schedule_source", "VARCHAR(16)"),
+    ("schedule_slot_time", "VARCHAR(5)"),
 )
 
 
