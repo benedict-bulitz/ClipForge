@@ -243,6 +243,13 @@ export function readRecommendation(detail: Record<string, unknown> | undefined, 
   return value && typeof value === "object" && "choice" in value ? (value as SlotRecommendation) : null;
 }
 
+/** "Could not load publishing schedule." plus the server's reason when it gave one. */
+export function scheduleLoadError(serverMessage: string | null | undefined): string {
+  const base = "Could not load publishing schedule.";
+  const detail = (serverMessage ?? "").trim();
+  return detail && detail !== base ? `${base} ${detail}` : base;
+}
+
 export function learningStatusText(learning: ScheduleLearning): string {
   if (learning.available) return `Suggested from channel data · based on ${learning.based_on ?? learning.eligible_count} eligible Shorts`;
   return learning.reason ?? `Learned schedule becomes available after ${learning.min_eligible} published Shorts with analytics (${learning.eligible_count} so far).`;

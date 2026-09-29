@@ -20,12 +20,14 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from threading import Lock
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.exc import StaleDataError
 
 from ..config import Settings
 from ..models import (
@@ -81,6 +83,10 @@ def _parse(value: Any) -> datetime | None:
 def _iso(value: datetime | None) -> str | None:
     value = _utc(value)
     return value.strftime("%Y-%m-%dT%H:%M:%SZ") if value else None
+
+
+class ScheduleSyncConflict(RuntimeError):
+    """Another writer updated the same cache rows first; its result stands."""
 
 
 class SlotUnavailable(RuntimeError):
@@ -415,7 +421,14 @@ def sync_remote(
     schedule.remote_sync_complete = complete
     schedule.remote_sync_error_code = None
     schedule.remote_sync_error = None
-    db.commit()
+    try:
+        db.commit()
+    except (IntegrityError, StaleDataError) as exc:
+        # A concurrent writer (another process, or an upload recording its
+        # video) inserted/removed the same rows first: keep its result.
+        db.rollback()
+        logger.info("Schedule cache refresh lost a write race channel_id=%s", channel_id)
+        raise ScheduleSyncConflict(str(exc)) from None
     return SyncResult(pages=pages, videos=videos_read, entries=len(seen), complete=complete, removed=removed)
 
 
@@ -435,24 +448,49 @@ def freshness(schedule: YouTubePublishingSchedule, *, now: datetime | None = Non
     }
 
 
+_SYNC_LOCKS: dict[str, Lock] = {}
+_SYNC_LOCKS_GUARD = Lock()
+
+
+def _sync_lock(channel_id: str) -> Lock:
+    with _SYNC_LOCKS_GUARD:
+        return _SYNC_LOCKS.setdefault(channel_id, Lock())
+
+
+def _refresh_due(schedule: YouTubePublishingSchedule, *, now: datetime, max_age: timedelta, force: bool) -> bool:
+    synced = _utc(schedule.remote_synced_at)
+    attempted = _utc(schedule.remote_sync_attempted_at)
+    if force:
+        return True
+    if synced is not None and now - synced <= max_age:
+        return False
+    # A failure moments ago: do not retry on every page load.
+    return not (attempted is not None and now - attempted < MIN_SYNC_GAP and (synced is None or attempted > synced))
+
+
 def refresh_if_due(
     db: Session, settings: Settings, store: SecretStore, provider: YouTubeProvider, channel_id: str,
     *, max_age: timedelta = FRESH_FOR, force: bool = False, now: datetime | None = None,
 ) -> dict[str, Any]:
-    """Refresh a stale cache (never raises); returns freshness + whether it is verified now."""
+    """Refresh a stale cache (never raises); returns freshness + whether it is verified now.
+
+    Single-flight per channel: concurrent requests (the Settings page mounts
+    twice in development; the sheet and Settings can load together) never
+    sync in parallel.  A request that waited re-reads the schedule and uses
+    the refresh that just finished instead of asking YouTube again.
+    """
     now = now or _now()
     schedule = ensure_schedule(db, channel_id)
-    synced = _utc(schedule.remote_synced_at)
-    attempted = _utc(schedule.remote_sync_attempted_at)
-    due = force or synced is None or now - synced > max_age
-    if due and not force and attempted is not None and now - attempted < MIN_SYNC_GAP and (synced is None or attempted > synced):
-        due = False  # a failure moments ago; do not retry on every page load
-    if due:
-        try:
-            sync_remote(db, settings, store, provider, channel_id, now=now)
-        except YouTubeApiError:
-            pass  # recorded on the schedule; freshness() reports it
-        db.refresh(schedule)
+    if _refresh_due(schedule, now=now, max_age=max_age, force=force):
+        with _sync_lock(channel_id):
+            db.commit()  # end this session's read snapshot; see what a concurrent refresh wrote
+            schedule = ensure_schedule(db, channel_id)
+            if _refresh_due(schedule, now=now, max_age=max_age, force=force):
+                try:
+                    sync_remote(db, settings, store, provider, channel_id, now=now)
+                except (YouTubeApiError, ScheduleSyncConflict):
+                    pass  # a YouTube failure is recorded on the schedule; freshness() reports it
+                db.refresh(schedule)
     state = freshness(schedule, now=now)
     synced = _utc(schedule.remote_synced_at)
     state["verified"] = state["error"] is None and synced is not None and now - synced <= max(max_age, CONFLICT_CHECK_MAX_AGE)

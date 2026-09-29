@@ -1,6 +1,6 @@
 from collections.abc import Generator
 
-from sqlalchemy import create_engine, event, inspect
+from sqlalchemy import Engine, create_engine, event, inspect
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from .config import get_settings
@@ -59,11 +59,24 @@ YOUTUBE_UPLOAD_V2_COLUMNS = (
 )
 
 
-def ensure_runtime_schema() -> None:
+def prepare_schema(bind: Engine | None = None) -> None:
+    """The startup schema path: create missing tables, then upgrade existing ones.
+
+    ``create_all`` adds tables that do not exist yet (e.g. the Smart Slot
+    Planner tables on a database from before it); ``ensure_runtime_schema``
+    adds columns to tables that already existed.
+    """
+    target = bind or engine
+    Base.metadata.create_all(bind=target)
+    ensure_runtime_schema(target)
+
+
+def ensure_runtime_schema(bind: Engine | None = None) -> None:
     """Add protections to databases first created through metadata.create_all()."""
-    if not settings.database_url.startswith("sqlite"):
+    target = bind or engine
+    if target.dialect.name != "sqlite":
         return
-    with engine.begin() as connection:
+    with target.begin() as connection:
         inspector = inspect(connection)
         project_columns = {column["name"] for column in inspector.get_columns("projects")}
         revision_columns = {

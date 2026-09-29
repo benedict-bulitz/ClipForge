@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .config import Settings, get_settings
-from .database import Base, SessionLocal, engine, ensure_runtime_schema, get_db
+from .database import SessionLocal, get_db, prepare_schema
 from .editor_agent import (
     list_chat_messages,
     run_editor_turn,
@@ -107,8 +107,7 @@ from .youtube.uploads import mark_interrupted_uploads
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    Base.metadata.create_all(bind=engine)
-    ensure_runtime_schema()
+    prepare_schema()
     with SessionLocal() as db:
         mark_interrupted_generation_jobs(db)
         mark_interrupted_uploads(db)

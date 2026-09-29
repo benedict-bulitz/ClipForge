@@ -11,6 +11,7 @@ import {
   freshnessLabel,
   isOccupied,
   learningStatusText,
+  scheduleLoadError,
   recommendationLabel,
   scheduleModeHint,
   scheduleModeLabel,
@@ -55,6 +56,8 @@ export function YouTubePublishingSchedule() {
   const [busy, setBusy] = useState<"save" | "refresh" | "learned" | null>(null);
   const [notice, setNotice] = useState<{ tone: "ok" | "error"; text: string } | null>(null);
   const [now, setNow] = useState(() => new Date());
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
 
   function accept(next: ScheduleOverview) {
     setOverview(next);
@@ -67,17 +70,29 @@ export function YouTubePublishingSchedule() {
     getYouTubeSchedule(detectTimeZone())
       .then((next) => {
         if (!active) return;
+        setLoadError(null);
         setOverview(next);
         setDraft(toUpdate(next));
         setNow(new Date());
       })
-      .catch(() => { if (active) setNotice({ tone: "error", text: "The publishing schedule could not be loaded." }); });
+      .catch((reason) => {
+        // A first-use channel gets a default schedule from the backend; only a real failure lands here.
+        if (active) setLoadError(scheduleLoadError(reason instanceof ApiError ? reason.message : null));
+      });
     return () => { active = false; };
-  }, []);
+  }, [attempt]);
 
   const zones = useMemo(() => timeZones(draft?.timezone ?? detectTimeZone()), [draft?.timezone]);
   if (!overview || !draft || !overview.schedule) {
-    return <p className="mt-4 text-xs text-[var(--muted-foreground)]">{notice?.text ?? "Loading publishing schedule…"}</p>;
+    if (loadError) {
+      return (
+        <div role="alert" className="mt-4 flex flex-wrap items-center justify-between gap-2 rounded-[15px] border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+          <span className="flex items-center gap-1.5"><AlertTriangle className="size-3.5 shrink-0" />{loadError}</span>
+          <Button size="sm" variant="outline" onClick={() => { setLoadError(null); setAttempt((value) => value + 1); }}><RefreshCw className="size-3.5" /> Retry</Button>
+        </div>
+      );
+    }
+    return <p className="mt-4 text-xs text-[var(--muted-foreground)]">Loading publishing schedule…</p>;
   }
   const schedule = overview.schedule;
   const presets = schedule.seed_presets;

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readFileSync } from "node:fs";
+import { safeLocale } from "./youtube.ts";
 import {
   dayContextLine,
   dayLabel,
@@ -10,6 +11,7 @@ import {
   learningStatusText,
   readRecommendation,
   recommendationLabel,
+  scheduleLoadError,
   scheduleModeLabel,
   slotStatusLabel,
   slotTakenMessage,
@@ -160,4 +162,23 @@ test("calendar days are computed in the schedule's zone", () => {
   assert.equal(dayLabel("2026-09-29", BERLIN, lateUtc, "en-GB"), "Today");
   assert.equal(dayLabel("2026-09-30", BERLIN, lateUtc, "en-GB"), "Tomorrow");
   assert.equal(dayLabel("2026-10-02", BERLIN, lateUtc, "en-GB"), "Fri, 02/10/2026");
+});
+
+test("a genuine load failure shows a retryable error; first use is not an error", () => {
+  assert.equal(scheduleLoadError(null), "Could not load publishing schedule.");
+  assert.equal(scheduleLoadError("Could not load publishing schedule."), "Could not load publishing schedule.");
+  assert.equal(scheduleLoadError("Connect a YouTube channel first."), "Could not load publishing schedule. Connect a YouTube channel first.");
+  assert.match(settingsView, /setAttempt\(\(value\) => value \+ 1\)/); // Retry re-requests
+  assert.match(settingsView, /\[attempt\]\);/);
+  assert.match(settingsView, /> Retry<\/Button>/);
+  assert.doesNotMatch(settingsView, /The publishing schedule could not be loaded/);
+});
+
+test("an invalid browser locale tag never crashes the schedule (real: en-US@posix)", () => {
+  assert.equal(safeLocale("en-US@posix"), "en-US");
+  assert.equal(safeLocale("de_DE.UTF-8"), "de-DE");
+  assert.equal(safeLocale("de-DE"), "de-DE");
+  assert.equal(safeLocale(""), "en-US");
+  assert.equal(safeLocale("!!"), "en-US");
+  assert.equal(dayLabel("2026-10-02", BERLIN, NOW, safeLocale("en-US@posix")), "Fri, 10/02/2026");
 });

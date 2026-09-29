@@ -392,8 +392,23 @@ export function detectTimeZone(): string {
   }
 }
 
+/** A locale tag Intl accepts; browsers may report POSIX tags such as "en-US@posix". */
+export function safeLocale(tag: string | null | undefined): string {
+  if (!tag) return "en-US";
+  try {
+    return Intl.getCanonicalLocales(tag)[0] ?? "en-US";
+  } catch {
+    const base = tag.split(/[@.]/)[0].replace("_", "-");
+    try {
+      return Intl.getCanonicalLocales(base)[0] ?? "en-US";
+    } catch {
+      return "en-US";
+    }
+  }
+}
+
 export function browserLocale(): string {
-  return typeof navigator !== "undefined" && navigator.language ? navigator.language : "en-US";
+  return safeLocale(typeof navigator !== "undefined" ? navigator.language : null);
 }
 
 /** "de-DE" -> "DE" (YouTube category region); falls back to US. */

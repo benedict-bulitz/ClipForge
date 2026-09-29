@@ -14,6 +14,7 @@ from fastapi.responses import RedirectResponse
 from keyring.errors import KeyringError
 from pydantic import BaseModel, Field, SecretStr
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from ..config import Settings, get_settings, refresh_settings
@@ -104,6 +105,7 @@ ERROR_STATUS = {
     "schedule_unverified": status.HTTP_409_CONFLICT,
     "invalid_schedule": 422,
     "learned_unavailable": status.HTTP_409_CONFLICT,
+    "schedule_unavailable": status.HTTP_503_SERVICE_UNAVAILABLE,
 }
 
 
@@ -327,7 +329,13 @@ def publishing_draft_route(
     smart = None
     if record is not None:
         hint = timezone if timezone and publishing.valid_timezone(timezone) else ((applied or {}).get("timezone") or defaults.timezone)
-        smart = schedule_authority.smart_state(db, settings, store, provider, record.channel_id, timezone_hint=hint)
+        try:
+            smart = schedule_authority.smart_state(db, settings, store, provider, record.channel_id, timezone_hint=hint)
+        except SQLAlchemyError:
+            # The sheet still opens; it just cannot claim to know a free slot.
+            db.rollback()
+            logger.exception("Publishing schedule unavailable for the draft")
+            smart = {"status": "unverified", "enabled": True, "recommendation": None, "cached_recommendation": None}
     recommended = (smart or {}).get("recommendation")
     draft = publishing.options_with_defaults(
         publishing.default_metadata(state, project.title), defaults, applied,
@@ -600,11 +608,21 @@ def _schedule_channel(db: Session) -> str:
     return record.channel_id
 
 
+def _schedule_unavailable(db: Session) -> HTTPException:
+    """A genuine load failure: a structured, CORS-readable error instead of a bare 500."""
+    db.rollback()
+    logger.exception("Publishing schedule could not be loaded")
+    return _error("schedule_unavailable", "Could not load publishing schedule.")
+
+
 def _schedule_payload(db: Session, settings: Settings, store: SecretStore, provider: YouTubeProvider, *, timezone: str | None = None, refresh: bool = True, force: bool = False) -> dict:
     channel_id = _schedule_channel(db)
-    state = schedule_authority.smart_state(db, settings, store, provider, channel_id, timezone_hint=timezone, refresh=refresh, force=force, days=7)
-    record = schedule_authority.ensure_schedule(db, channel_id)
-    return {**state, "learning": schedule_learning.analyze(db, record)}
+    try:
+        state = schedule_authority.smart_state(db, settings, store, provider, channel_id, timezone_hint=timezone, refresh=refresh, force=force, days=7)
+        record = schedule_authority.ensure_schedule(db, channel_id)
+        return {**state, "learning": schedule_learning.analyze(db, record)}
+    except SQLAlchemyError as exc:
+        raise _schedule_unavailable(db) from exc
 
 
 @router.get("/schedule")
@@ -633,7 +651,10 @@ def refresh_schedule_route(db: DbSession, settings: SettingsDep, store: StoreDep
 def next_slot_route(db: DbSession, settings: SettingsDep, store: StoreDep, provider: ProviderDep, refresh: bool = True) -> dict:
     """The sheet's recalculation after "That slot was just taken" / Retry."""
     channel_id = _schedule_channel(db)
-    return schedule_authority.smart_state(db, settings, store, provider, channel_id, refresh=refresh)
+    try:
+        return schedule_authority.smart_state(db, settings, store, provider, channel_id, refresh=refresh)
+    except SQLAlchemyError as exc:
+        raise _schedule_unavailable(db) from exc
 
 
 @router.post("/schedule/learned/apply")
