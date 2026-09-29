@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
-import { AlertTriangle, ArrowLeft, Clapperboard, ExternalLink, FolderOpen, LoaderCircle, RefreshCw } from "lucide-react";
+import { AlertTriangle, ArrowLeft, CalendarClock, Clapperboard, ExternalLink, FolderOpen, LoaderCircle, RefreshCw } from "lucide-react";
 import { ApiError, getVideo, refreshYouTubeAnalytics, syncYouTubeUpload } from "@/lib/api";
 import {
   browserLocale,
@@ -18,10 +18,12 @@ import {
   analyticsStateLabel,
   associationPairs,
   curveTicks,
+  dateLine,
   detailedMetric,
   formatClock,
-  formatCount,
   humanize,
+  liveStatValue,
+  liveStatsNote,
   projectHref,
   retentionPolyline,
   sceneChange,
@@ -31,7 +33,7 @@ import { cn } from "@/lib/utils";
 import { Brand } from "./brand";
 import { Button } from "./ui/button";
 import { ThemeToggle } from "./theme-toggle";
-import { StateChip, VideoThumbnail } from "./video-library";
+import { StateChip, VideoThumbnail, scheduledTime } from "./video-library";
 
 const CURVE_WIDTH = 600;
 const CURVE_HEIGHT = 160;
@@ -188,6 +190,7 @@ export function VideoDetailPage({ videoId }: { videoId: string }) {
   const opening = performance.opening_retention;
   const evidence = performance.evidence ?? [];
   const connected = video.channel.title !== null;
+  const scheduled = video.state === "scheduled" && !!video.scheduled_for;
 
   return (
     <main className="theme-app min-h-screen bg-[var(--background)]">
@@ -198,10 +201,15 @@ export function VideoDetailPage({ videoId }: { videoId: string }) {
           <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-center gap-2"><StateChip video={video} />{video.content_type && <span className="text-[11px] text-[var(--muted-foreground)]">{humanize(video.content_type.toLowerCase())}</span>}</div>
             <h1 className="mt-2 break-words text-2xl font-semibold tracking-[-.04em]">{video.title}</h1>
+            <p className={cn("mt-1 flex items-center gap-1.5 text-sm", scheduled ? "font-semibold text-sky-800 dark:text-sky-300" : "font-medium")} aria-label="Date">
+              {scheduled && <CalendarClock className="size-4 shrink-0" />}
+              {dateLine(video, (iso) => formatDateTime(iso), (iso) => scheduledTime(iso, video.schedule_timezone))}
+            </p>
             <p className="mt-1 text-xs text-[var(--muted-foreground)]">
-              <span className="mono">{video.youtube_video_id}</span> · {video.channel.title ?? video.channel.id}
+              {video.channel.title ?? video.channel.id}
               {video.duration_seconds !== null ? ` · ${formatClock(video.duration_seconds)}` : ""}
             </p>
+            <p className="mono mt-0.5 text-[10px] text-[var(--muted-foreground)]" title="YouTube video ID">YouTube ID {video.youtube_video_id}</p>
             {video.project.available ? (
               <p className="mt-1 text-xs font-semibold text-emerald-700 dark:text-emerald-300">Project available</p>
             ) : (
@@ -209,8 +217,17 @@ export function VideoDetailPage({ videoId }: { videoId: string }) {
             )}
             <div className="mt-3 flex flex-wrap gap-2 text-xs">
               {project && <Button asChild variant="outline" size="sm"><Link href={project}><FolderOpen className="size-3.5" /> Open project</Link></Button>}
-              {video.watch_url && <Button asChild variant="outline" size="sm"><a href={video.shorts_url ?? video.watch_url} target="_blank" rel="noreferrer"><ExternalLink className="size-3.5" /> Open on YouTube</a></Button>}
-              {video.studio_url && <Button asChild variant="outline" size="sm"><a href={video.studio_url} target="_blank" rel="noreferrer"><ExternalLink className="size-3.5" /> Open in YouTube Studio</a></Button>}
+              {video.youtube_actions.available ? (
+                <>
+                  {video.watch_url && <Button asChild variant="outline" size="sm"><a href={video.shorts_url ?? video.watch_url} target="_blank" rel="noreferrer"><ExternalLink className="size-3.5" /> Open on YouTube</a></Button>}
+                  {video.studio_url && <Button asChild variant="outline" size="sm"><a href={video.studio_url} target="_blank" rel="noreferrer"><ExternalLink className="size-3.5" /> Open in YouTube Studio</a></Button>}
+                </>
+              ) : (
+                <>
+                  <Button variant="outline" size="sm" disabled aria-describedby="youtube-actions-reason"><ExternalLink className="size-3.5" /> Open on YouTube</Button>
+                  <Button variant="outline" size="sm" disabled aria-describedby="youtube-actions-reason"><ExternalLink className="size-3.5" /> Open in YouTube Studio</Button>
+                </>
+              )}
               <Button variant="ghost" size="sm" onClick={() => void run("status")} disabled={busy !== null || !connected} title={connected ? undefined : "Connect this video's channel in Settings to refresh"}>
                 {busy === "status" ? <LoaderCircle className="size-3.5 animate-spin" /> : <RefreshCw className="size-3.5" />} Refresh status
               </Button>
@@ -218,6 +235,7 @@ export function VideoDetailPage({ videoId }: { videoId: string }) {
                 {busy === "analytics" ? <LoaderCircle className="size-3.5 animate-spin" /> : <RefreshCw className="size-3.5" />} Refresh analytics
               </Button>
             </div>
+            {!video.youtube_actions.available && <p id="youtube-actions-reason" className="mt-2 text-xs text-[var(--muted-foreground)]">{video.youtube_actions.reason}</p>}
             {notice && <p role={notice.tone === "error" ? "alert" : "status"} className={cn("mt-2 text-xs", notice.tone === "error" ? "text-red-800 dark:text-red-300" : "text-[var(--muted-foreground)]")}>{notice.text}</p>}
           </div>
         </div>
@@ -231,19 +249,21 @@ export function VideoDetailPage({ videoId }: { videoId: string }) {
             )}
             <Facts rows={[
               ["Current YouTube state", current.label],
-              ["Scheduled time", current.scheduled_for ? formatDateTime(current.scheduled_for) : "—"],
+              ["Scheduled time", current.scheduled_for ? scheduledTime(current.scheduled_for, video.schedule_timezone) : "—"],
               ["Published time", current.published_at ? formatDateTime(current.published_at) : "—"],
               ["Last remote status check", freshness ?? "—"],
             ]} />
           </Section>
 
           <Section title="Live stats" source="YouTube Data API">
-            {current.live_stats ? (
+            {video.live_stats_state === "available" && video.live_stats ? (
               <>
-                <Tiles rows={[["Views", formatCount(current.live_stats.views)], ["Likes", formatCount(current.live_stats.likes)], ["Comments", formatCount(current.live_stats.comments)]]} />
-                <p className="mt-2 text-[10px] text-[var(--muted-foreground)]">As of {formatDateTime(current.live_stats.checked_at)}</p>
+                <Tiles rows={[["Views", liveStatValue(video, "views")], ["Likes", liveStatValue(video, "likes")], ["Comments", liveStatValue(video, "comments")]]} />
+                <p className="mt-2 text-[10px] text-[var(--muted-foreground)]">{current.state === "deleted" ? "Last known values · " : ""}As of {formatDateTime(video.live_stats.checked_at)}</p>
               </>
-            ) : <p className="text-xs text-[var(--muted-foreground)]">— Not reported by YouTube yet.</p>}
+            ) : video.live_stats_state === "not_published" ? (
+              <p className="text-xs text-[var(--muted-foreground)]"><span className="font-semibold text-[var(--foreground)]">{liveStatsNote("not_published")}.</span> YouTube reports no audience numbers before the video is public.</p>
+            ) : <p className="text-xs text-[var(--muted-foreground)]">— {liveStatsNote("not_reported")}.</p>}
           </Section>
         </div>
 

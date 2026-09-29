@@ -12,6 +12,8 @@ import {
   formatPercent,
   formatViewDuration,
   libraryQuery,
+  liveStatValue,
+  liveStatsNote,
   parseLibraryFilters,
   projectHref,
   projectLabel,
@@ -24,7 +26,7 @@ import {
   type LibraryVideo,
   type RetentionPoint,
 } from "./videos.ts";
-import type { SceneRetention } from "./youtube.ts";
+import { scheduleLine, type SceneRetention } from "./youtube.ts";
 
 const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8");
 const library = read("../components/video-library.tsx");
@@ -41,11 +43,12 @@ const connectionCard = read("../components/youtube-connection-card.tsx");
 const video = (overrides: Partial<LibraryVideo> = {}): LibraryVideo => ({
   id: "u1", youtube_video_id: "vid00000001", title: "Why are airplane windows round?", prompt: "Why are airplane windows round?", topic: null,
   channel: { id: "UC1", title: "Knowledge Lab" }, state: "published", state_label: "Published", processing: false, stale: false, stale_reason: null,
-  last_checked_at: "2026-09-10T12:00:00Z", scheduled_for: null, requested_publish_at: null, published_at: "2026-09-10T11:00:00Z",
+  last_checked_at: "2026-09-10T12:00:00Z", scheduled_for: null, requested_publish_at: null, schedule_timezone: null, published_at: "2026-09-10T11:00:00Z",
   uploaded_at: "2026-09-09T10:00:00Z", sort_date: "2026-09-10T11:00:00Z", content_type: "SHORTS", duration_seconds: 10, format: "explanation", scene_count: 4,
   project: { id: "p1", available: true, title: "Why?", archived_at: null }, thumbnail_url: "/media/video-library/u1.webp",
-  live_stats: { views: 900, likes: 40, comments: 3, checked_at: "2026-09-10T12:00:00Z", source: "youtube_data_api_videos_list" },
+  live_stats: { views: 900, likes: 40, comments: 3, checked_at: "2026-09-10T12:00:00Z", source: "youtube_data_api_videos_list" }, live_stats_state: "available",
   analytics: { state: "available", fetched_at: "2026-09-10T12:00:00Z", views: 5400, engagedViews: 2100, averageViewDuration: 7.4, averageViewPercentage: 74, likes: 120, comments: 9 },
+  youtube_actions: { available: true, reason: null },
   watch_url: "https://www.youtube.com/watch?v=vid00000001", shorts_url: "https://www.youtube.com/shorts/vid00000001", studio_url: "https://studio.youtube.com/video/vid00000001/edit",
   ...overrides,
 });
@@ -146,7 +149,7 @@ test("statuses and date lines", () => {
 
 test("the card identifies a video by its YouTube title, ID, channel, prompt and preview", () => {
   assert.match(library, /\{video\.title\}/);
-  assert.match(library, /<span className="mono">\{video\.youtube_video_id\}<\/span>/);
+  assert.match(library, /ID \{video\.youtube_video_id\}/);
   assert.match(library, /video\.channel\.title/);
   assert.match(library, /Prompt: \{video\.topic \?\? video\.prompt\}/);
   assert.match(library, /aria-label="No preview"/); // placeholder for archives without an image
@@ -171,7 +174,7 @@ test("the summary is short and truthful", () => {
 test("detail keeps live stats and detailed analytics apart", () => {
   assert.match(detail, /<Section title="Live stats" source="YouTube Data API">/);
   assert.match(detail, /<Section title="Detailed analytics" source="YouTube Analytics API">/);
-  assert.match(detail, /current\.live_stats/);
+  assert.match(detail, /video\.live_stats_state === "available" && video\.live_stats/);
   assert.match(detail, /DETAILED_METRICS\.map/);
   assert.equal(detailedMetric("averageViewPercentage", { value: 74, availability: "available", reason: null, source: "youtube_analytics_api" }, "available"), "74.0%");
   assert.equal(detailedMetric("averageViewDuration", { value: 7.4, availability: "available", reason: null, source: "youtube_analytics_api" }, "available"), "7.4 s");
@@ -231,4 +234,70 @@ test("scene retention rows read like 'Scene 1 · Hook 0:00–0:03 100% → 73% �
   assert.match(detail, /\{sceneTitle\(scene\)\}/);
   assert.match(detail, /\{formatClock\(scene\.start\)\}–\{formatClock\(scene\.end\)\}/);
   assert.doesNotMatch(detail, /["'>]\s*bad\s*["'<]/i); // no scene is labelled "bad"
+});
+
+// ---------------------------------------------------------------------------
+// Real-world polish: remote deletion, placeholder counters, date/ID hierarchy
+// ---------------------------------------------------------------------------
+
+test("a remotely deleted video keeps Open project but has no working YouTube/Studio links", () => {
+  const reason = "This video no longer exists on YouTube (deleted or removed), so its YouTube and Studio pages cannot open.";
+  const deleted = video({ state: "deleted", state_label: "Deleted", youtube_actions: { available: false, reason }, watch_url: null, shorts_url: null, studio_url: null });
+  // remote deletion is independent of the project
+  assert.equal(projectHref(deleted), "/projects/p1");
+  assert.equal(projectLabel(deleted), "Project available");
+  // index: disabled actions with the reason, never a live link
+  assert.match(library, /if \(!video\.youtube_actions\.available\) \{/);
+  assert.match(library, /aria-disabled="true" title=\{video\.youtube_actions\.reason \?\? undefined\}/);
+  assert.match(library, /Removed from YouTube/);
+  assert.match(library, /<YouTubeLinks video=\{video\} \/>/);
+  // detail: same rule, disabled buttons explained by a visible reason
+  assert.match(detail, /\{video\.youtube_actions\.available \? \(/);
+  assert.match(detail, /<Button variant="outline" size="sm" disabled aria-describedby="youtube-actions-reason"><ExternalLink className="size-3\.5" \/> Open on YouTube<\/Button>/);
+  assert.match(detail, /<Button variant="outline" size="sm" disabled aria-describedby="youtube-actions-reason"><ExternalLink className="size-3\.5" \/> Open in YouTube Studio<\/Button>/);
+  assert.match(detail, /id="youtube-actions-reason"[^>]*>\{video\.youtube_actions\.reason\}/);
+  // Open project is still decided by the project alone
+  assert.match(detail, /\{project && <Button asChild variant="outline" size="sm"><Link href=\{project\}>/);
+});
+
+test("placeholder counters of a never-public video are not shown as 0; a real 0 stays 0", () => {
+  const scheduled = video({ state: "scheduled", state_label: "Scheduled", published_at: null, scheduled_for: "2030-01-01T18:00:00Z", live_stats: null, live_stats_state: "not_published" });
+  assert.equal(liveStatValue(scheduled, "views"), "—");
+  assert.equal(liveStatValue(scheduled, "likes"), "—");
+  assert.equal(liveStatValue(scheduled, "comments"), "—");
+  assert.equal(liveStatsNote("not_published"), "Starts after publication");
+  // even if a payload carried counters, a not-published state never renders them
+  assert.equal(liveStatValue({ live_stats: { views: 0, likes: 0, comments: 0, checked_at: "x", source: "y" }, live_stats_state: "not_published" }, "views"), "—");
+  const zero = video({ live_stats: { views: 0, likes: 0, comments: 0, checked_at: "2026-09-10T12:00:00Z", source: "youtube_data_api_videos_list" }, live_stats_state: "available" });
+  assert.equal(liveStatValue(zero, "views"), "0");
+  assert.equal(liveStatValue(zero, "comments"), "0");
+  assert.equal(liveStatValue(video({ live_stats: null, live_stats_state: "not_reported" }), "views"), "—");
+  assert.equal(liveStatsNote("not_reported"), "Not reported by YouTube yet");
+  assert.equal(liveStatsNote("available"), null);
+  // index and detail both go through the same helper; neither reads raw counters directly
+  assert.match(library, /liveStatValue\(video, "views"\)/);
+  assert.match(detail, /liveStatValue\(video, "views"\)/);
+  assert.doesNotMatch(library, /formatCount\(video\.live_stats/);
+  assert.doesNotMatch(detail, /current\.live_stats/);
+  assert.match(detail, /YouTube reports no audience numbers before the video is public/);
+});
+
+test("scheduled videos show the exact date/time in their zone; the video ID is secondary", () => {
+  const scheduled = video({ state: "scheduled", published_at: null, scheduled_for: "2030-01-01T18:00:00Z", schedule_timezone: "Europe/Berlin" });
+  const line = dateLine(scheduled, (iso) => iso.slice(0, 10), (iso) => `${scheduleLine(iso, "Europe/Berlin", "de-DE")} · Europe/Berlin`);
+  assert.equal(line, "Scheduled for 01.01.2030 · 19:00 · Europe/Berlin");
+  // the existing schedule formatting is reused, in the schedule's own zone
+  assert.match(library, /export function scheduledTime\(iso: string, timezone: string \| null\): string \{/);
+  assert.match(library, /scheduleLine\(iso, zone, browserLocale\(\)\)/);
+  assert.match(library, /dateLine\(video, shortDate, \(iso\) => scheduledTime\(iso, video\.schedule_timezone\)\)/);
+  assert.match(detail, /dateLine\(video, \(iso\) => formatDateTime\(iso\), \(iso\) => scheduledTime\(iso, video\.schedule_timezone\)\)/);
+  assert.match(detail, /\["Scheduled time", current\.scheduled_for \? scheduledTime\(current\.scheduled_for, video\.schedule_timezone\)/);
+  // the date line is prominent (text-xs / text-sm, semibold when scheduled) ...
+  assert.match(library, /scheduled \? "font-semibold text-sky-800 dark:text-sky-300" : "font-medium"\)\} aria-label="Date"/);
+  assert.match(detail, /"mt-1 flex items-center gap-1\.5 text-sm", scheduled \? "font-semibold/);
+  // ... while the ID stays visible as small, muted metadata below it
+  assert.match(library, /<span className="mono text-\[10px\] text-\[var\(--muted-foreground\)\]" title="YouTube video ID">ID \{video\.youtube_video_id\}<\/span>/);
+  assert.match(detail, /<p className="mono mt-0\.5 text-\[10px\] text-\[var\(--muted-foreground\)\]" title="YouTube video ID">YouTube ID \{video\.youtube_video_id\}<\/p>/);
+  assert.ok(library.indexOf('aria-label="Date"') < library.indexOf('title="YouTube video ID"'));
+  assert.ok(detail.indexOf('aria-label="Date"') < detail.indexOf('title="YouTube video ID"'));
 });

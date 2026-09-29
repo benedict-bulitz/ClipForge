@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ArrowLeft, Clapperboard, ExternalLink, Film, LoaderCircle, RefreshCw, Search, Settings } from "lucide-react";
+import { ArrowLeft, CalendarClock, Clapperboard, ExternalLink, Film, LoaderCircle, RefreshCw, Search, Settings } from "lucide-react";
 import { ApiError, listVideos, mediaUrl, refreshRecentVideos } from "@/lib/api";
 import {
   ANALYTICS_OPTIONS,
@@ -19,6 +19,8 @@ import {
   formatPercent,
   formatViewDuration,
   libraryQuery,
+  liveStatValue,
+  liveStatsNote,
   projectHref,
   projectLabel,
   sameFilters,
@@ -28,6 +30,7 @@ import {
   type LibraryVideo,
   type VideoLibraryPage,
 } from "@/lib/videos";
+import { browserLocale, detectTimeZone, scheduleLine } from "@/lib/youtube";
 import { cn } from "@/lib/utils";
 import { Brand } from "./brand";
 import { Button } from "./ui/button";
@@ -74,10 +77,39 @@ export function VideoThumbnail({ video, className }: { video: Pick<LibraryVideo,
   );
 }
 
+/** The exact schedule in the zone it was chosen in (existing schedule formatting). */
+export function scheduledTime(iso: string, timezone: string | null): string {
+  const zone = timezone ?? detectTimeZone();
+  return `${scheduleLine(iso, zone, browserLocale())} · ${zone}`;
+}
+
+/** YouTube/Studio actions: links while the remote video exists, disabled with a reason otherwise. */
+function YouTubeLinks({ video }: { video: LibraryVideo }) {
+  if (!video.youtube_actions.available) {
+    return (
+      <>
+        <span className="text-[10px] text-[var(--muted-foreground)]">Removed from YouTube</span>
+        {["YouTube", "Studio"].map((label) => (
+          <span key={label} role="link" aria-disabled="true" title={video.youtube_actions.reason ?? undefined} className="interactive-text cursor-not-allowed opacity-40"><ExternalLink className="size-3" /> {label}</span>
+        ))}
+      </>
+    );
+  }
+  return (
+    <>
+      {video.watch_url && <a href={video.shorts_url ?? video.watch_url} target="_blank" rel="noreferrer" className="interactive-text"><ExternalLink className="size-3" /> YouTube</a>}
+      {video.studio_url && <a href={video.studio_url} target="_blank" rel="noreferrer" className="interactive-text"><ExternalLink className="size-3" /> Studio</a>}
+    </>
+  );
+}
+
 function VideoRow({ video }: { video: LibraryVideo }) {
   const href = `/videos/${video.id}`;
   const project = projectHref(video);
   const state = video.analytics.state;
+  const scheduled = video.state === "scheduled" && video.scheduled_for;
+  const liveNote = liveStatsNote(video.live_stats_state);
+  const statsNote = video.live_stats_state === "not_published" && state === "not_published" ? "Stats start after publication" : `Analytics: ${analyticsStateLabel(state)}`;
   return (
     <li className="workspace-card flex gap-3 p-3 sm:gap-4" data-video-id={video.youtube_video_id}>
       <Link href={href} aria-hidden tabIndex={-1}><VideoThumbnail video={video} className="w-14 sm:w-16" /></Link>
@@ -85,34 +117,34 @@ function VideoRow({ video }: { video: LibraryVideo }) {
         <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-1">
           <div className="min-w-0">
             <Link href={href} className="line-clamp-2 break-words font-semibold hover:underline">{video.title}</Link>
-            <p className="mt-0.5 truncate text-[11px] text-[var(--muted-foreground)]">
-              <span className="mono">{video.youtube_video_id}</span>
-              {video.channel.title ? ` · ${video.channel.title}` : ` · ${video.channel.id}`}
-              {video.duration_seconds !== null ? ` · ${formatClock(video.duration_seconds)}` : ""}
+            <p className={cn("mt-0.5 flex items-center gap-1 text-xs", scheduled ? "font-semibold text-sky-800 dark:text-sky-300" : "font-medium")} aria-label="Date">
+              {scheduled && <CalendarClock className="size-3.5 shrink-0" />}
+              {dateLine(video, shortDate, (iso) => scheduledTime(iso, video.schedule_timezone))}
             </p>
-            {(video.topic || video.prompt) && <p className="mt-0.5 truncate text-[11px] text-[var(--muted-foreground)]" title={video.prompt ?? undefined}>Prompt: {video.topic ?? video.prompt}</p>}
+            <p className="mt-0.5 truncate text-[11px] text-[var(--muted-foreground)]">
+              {video.channel.title ?? video.channel.id}
+              {video.duration_seconds !== null ? ` · ${formatClock(video.duration_seconds)}` : ""}
+              {(video.topic || video.prompt) && <span title={video.prompt ?? undefined}> · Prompt: {video.topic ?? video.prompt}</span>}
+            </p>
           </div>
-          <div className="flex flex-col items-end gap-1 text-right">
-            <StateChip video={video} />
-            <span className="text-[11px] text-[var(--muted-foreground)]">{dateLine(video, shortDate)}</span>
-          </div>
+          <StateChip video={video} />
         </div>
         <dl className="mt-2 grid grid-cols-3 gap-x-3 gap-y-1 text-[11px] sm:grid-cols-6" aria-label="Performance summary">
-          <div title="YouTube Data API (live)"><dt className="text-[var(--muted-foreground)]">Views</dt><dd className="font-semibold">{formatCount(video.live_stats?.views)}</dd></div>
-          <div title="YouTube Data API (live)"><dt className="text-[var(--muted-foreground)]">Likes</dt><dd className="font-semibold">{formatCount(video.live_stats?.likes)}</dd></div>
-          <div title="YouTube Data API (live)"><dt className="text-[var(--muted-foreground)]">Comments</dt><dd className="font-semibold">{formatCount(video.live_stats?.comments)}</dd></div>
+          <div title={liveNote ?? "YouTube Data API (live)"}><dt className="text-[var(--muted-foreground)]">Views</dt><dd className="font-semibold">{liveStatValue(video, "views")}</dd></div>
+          <div title={liveNote ?? "YouTube Data API (live)"}><dt className="text-[var(--muted-foreground)]">Likes</dt><dd className="font-semibold">{liveStatValue(video, "likes")}</dd></div>
+          <div title={liveNote ?? "YouTube Data API (live)"}><dt className="text-[var(--muted-foreground)]">Comments</dt><dd className="font-semibold">{liveStatValue(video, "comments")}</dd></div>
           <div title="YouTube Analytics API"><dt className="text-[var(--muted-foreground)]">Engaged</dt><dd className="font-semibold">{analyticsValue(video.analytics.engagedViews, state, (value) => formatCount(value))}</dd></div>
           <div title="YouTube Analytics API"><dt className="text-[var(--muted-foreground)]">Avg view</dt><dd className="font-semibold">{analyticsValue(video.analytics.averageViewDuration, state, formatViewDuration)}</dd></div>
           <div title="YouTube Analytics API"><dt className="text-[var(--muted-foreground)]">Avg view %</dt><dd className="font-semibold">{analyticsValue(video.analytics.averageViewPercentage, state, formatPercent)}</dd></div>
         </dl>
         <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px]">
           <span className={cn("font-semibold", video.project.available ? "text-emerald-700 dark:text-emerald-300" : "text-[var(--muted-foreground)]")}>{projectLabel(video)}</span>
-          <span className="text-[var(--muted-foreground)]">Analytics: {analyticsStateLabel(state)}</span>
+          <span className="text-[var(--muted-foreground)]">{statsNote}</span>
           {video.stale && <span className="text-amber-700 dark:text-amber-300">Status may be outdated</span>}
+          <span className="mono text-[10px] text-[var(--muted-foreground)]" title="YouTube video ID">ID {video.youtube_video_id}</span>
           <span className="ml-auto flex items-center gap-1">
             {project && <Link href={project} className="interactive-text">Open project</Link>}
-            {video.watch_url && <a href={video.shorts_url ?? video.watch_url} target="_blank" rel="noreferrer" className="interactive-text"><ExternalLink className="size-3" /> YouTube</a>}
-            {video.studio_url && <a href={video.studio_url} target="_blank" rel="noreferrer" className="interactive-text"><ExternalLink className="size-3" /> Studio</a>}
+            <YouTubeLinks video={video} />
           </span>
         </div>
       </div>

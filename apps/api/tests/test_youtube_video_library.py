@@ -199,6 +199,72 @@ def test_deleted_on_youtube_with_learning_data_still_appears(db, settings, store
     assert client.get(f"/api/videos/{row.id}").json()["performance"]["status"] == "ready"
 
 
+def test_remote_deleted_video_with_existing_project_has_no_dead_youtube_links(db, settings, store, fake):
+    """Remote deletion and project deletion are independent: the project stays openable,
+    the YouTube/Studio actions are withdrawn with a reason."""
+    connect(db, settings, store, fake)
+    row = _published_with_analytics(db, settings, store, fake, build_project(db, settings))
+    del fake.videos[row.youtube_video_id]
+    uploads.sync_status(db, row, settings, store, fake)
+    assert db.get(Project, PID) is not None
+    client = api_client(db, settings, store, fake)
+    item = library_page(client)["items"][0]
+    assert item["state"] == "deleted" and item["project"]["available"] is True
+    assert item["youtube_actions"] == {"available": False, "reason": library.REMOTE_DELETED_REASON}
+    assert item["watch_url"] is None and item["shorts_url"] is None and item["studio_url"] is None
+    detail = client.get(f"/api/videos/{row.id}").json()["video"]
+    assert detail["project"]["available"] is True and detail["youtube_actions"]["available"] is False
+    assert detail["watch_url"] is None and detail["studio_url"] is None
+    # the remote deletion does not remove the learning record or the project link
+    assert detail["project"]["id"] == PID
+
+
+def test_live_video_keeps_youtube_actions_even_after_project_deletion(db, settings, store, fake):
+    connect(db, settings, store, fake)
+    row = _published_with_analytics(db, settings, store, fake, build_project(db, settings))
+    lifecycle.delete_project_lifecycle(db, PID, settings, store, fake)
+    item = library_page(api_client(db, settings, store, fake))["items"][0]
+    assert item["project"]["available"] is False and item["youtube_actions"]["available"] is True
+    assert item["studio_url"] == f"https://studio.youtube.com/video/{row.youtube_video_id}/edit"
+
+
+def test_scheduled_video_placeholder_counters_are_not_shown_as_zero(db, settings, store, fake):
+    connect(db, settings, store, fake)
+    _project, scheduled = project_with_upload(db, settings, store, fake, OTHER, title="Scheduled", content=b"S" * 20_000)
+    fake.videos[scheduled.youtube_video_id]["status"].update(publishAt="2030-01-01T18:00:00Z", uploadStatus="processed")
+    scheduled.schedule_timezone = "Europe/Berlin"
+    db.commit()
+    set_live_stats(db, scheduled, fake, settings, store, views=0, likes=0, comments=0)
+    assert scheduled.remote_view_count == 0  # what videos.list returned for the private video
+    client = api_client(db, settings, store, fake)
+    item = library_page(client)["items"][0]
+    assert item["state"] == "scheduled" and item["live_stats"] is None and item["live_stats_state"] == "not_published"
+    assert item["scheduled_for"].startswith("2030-01-01T18:00:00") and item["schedule_timezone"] == "Europe/Berlin"
+    detail = client.get(f"/api/videos/{scheduled.id}").json()["video"]
+    assert detail["live_stats"] is None and detail["live_stats_state"] == "not_published"
+
+
+def test_published_video_keeps_a_real_zero(db, settings, store, fake):
+    connect(db, settings, store, fake)
+    row = upload(db, build_project(db, settings), settings, store, fake)
+    fake.publish(row.youtube_video_id, "2026-09-10T11:00:00Z")
+    set_live_stats(db, row, fake, settings, store, views=0, likes=0, comments=0)
+    client = api_client(db, settings, store, fake)
+    item = library_page(client)["items"][0]
+    assert item["live_stats_state"] == "available"
+    assert (item["live_stats"]["views"], item["live_stats"]["likes"], item["live_stats"]["comments"]) == (0, 0, 0)
+    assert client.get(f"/api/videos/{row.id}").json()["video"]["live_stats"]["views"] == 0
+
+
+def test_published_video_without_statistics_is_not_reported(db, settings, store, fake):
+    connect(db, settings, store, fake)
+    row = upload(db, build_project(db, settings), settings, store, fake)
+    fake.publish(row.youtube_video_id, "2026-09-10T11:00:00Z")
+    uploads.sync_status(db, row, settings, store, fake)
+    item = library_page(api_client(db, settings, store, fake))["items"][0]
+    assert item["live_stats"] is None and item["live_stats_state"] == "not_reported"
+
+
 def test_index_never_calls_youtube(db, settings, store, fake):
     three_videos(db, settings, store, fake)
     client = api_client(db, settings, store, fake)
@@ -247,7 +313,8 @@ def test_sorting(db, settings, store, fake):
     # Newest publication/upload first: published at 2026-09-10 11:00, then uploads.
     assert order("newest") == [published.id, scheduled.id, private.id]
     assert order("oldest") == [private.id, scheduled.id, published.id]
-    assert order("views") == [published.id, private.id, scheduled.id]
+    # Only videos that have been public rank by live views; never-public counters do not.
+    assert order("views") == [published.id, scheduled.id, private.id]
     # Only videos with the metric are ranked; the rest follow newest first.
     assert order("average_view_percentage") == [published.id, scheduled.id, private.id]
     assert order("average_view_duration") == [published.id, scheduled.id, private.id]

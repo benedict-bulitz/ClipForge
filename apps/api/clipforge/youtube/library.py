@@ -121,6 +121,29 @@ def library_state(upload: YouTubeUpload, now: datetime) -> str:
     return "private"  # private, or still private after the scheduled time
 
 
+def has_been_public(upload: YouTubeUpload, now: datetime) -> bool:
+    """Whether YouTube ever showed this video to an audience (public/unlisted).
+
+    Before that, ``videos.list`` statistics are placeholder counters of a
+    private video, not audience numbers, so the library does not show them.
+    """
+    return (
+        upload.published_at is not None
+        or upload.first_observed_public_at is not None
+        or status_authority.current_state(upload, now) in status_authority.LIVE_STATES
+    )
+
+
+REMOTE_DELETED_REASON = "This video no longer exists on YouTube (deleted or removed), so its YouTube and Studio pages cannot open."
+
+
+def _youtube_actions(upload: YouTubeUpload, state: str) -> dict[str, Any]:
+    """Watch/Studio links only while the remote video exists (independent of the project)."""
+    if state == "deleted":
+        return {"available": False, "reason": REMOTE_DELETED_REASON, "watch_url": None, "shorts_url": None, "studio_url": None}
+    return {"available": True, "reason": None, **youtube_links(upload.youtube_video_id)}
+
+
 def _status_bucket(state: str) -> str:
     return "rejected" if state == "processing_failed" else state
 
@@ -415,9 +438,10 @@ def _metric(summary: _Summary | None, name: str) -> float | None:
     return (summary.metrics or {}).get(name) if summary else None
 
 
-def _sort_value(sort: str, upload: YouTubeUpload, summary: _Summary | None) -> float | None:
+def _sort_value(sort: str, upload: YouTubeUpload, summary: _Summary | None, now: datetime) -> float | None:
     if sort == "views":
-        return float(upload.remote_view_count) if upload.remote_view_count is not None else None
+        # Live views count once the video has been public; placeholders before do not rank.
+        return float(upload.remote_view_count) if has_been_public(upload, now) and upload.remote_view_count is not None else None
     if sort == "average_view_percentage":
         return _metric(summary, "averageViewPercentage")
     if sort == "average_view_duration":
@@ -425,16 +449,16 @@ def _sort_value(sort: str, upload: YouTubeUpload, summary: _Summary | None) -> f
     return None
 
 
-def _order(rows: list[tuple[YouTubeUpload, _Summary | None]], sort: str) -> list[tuple[YouTubeUpload, _Summary | None]]:
+def _order(rows: list[tuple[YouTubeUpload, _Summary | None]], sort: str, now: datetime) -> list[tuple[YouTubeUpload, _Summary | None]]:
     newest = sorted(rows, key=lambda row: (_sort_date(row[0]), row[0].id), reverse=True)
     if sort == "oldest":
         return list(reversed(newest))
     if sort == "newest":
         return newest
     # Metric sorts: only videos that have the value are ranked; the rest follow, newest first.
-    ranked = [row for row in newest if _sort_value(sort, *row) is not None]
-    missing = [row for row in newest if _sort_value(sort, *row) is None]
-    ranked.sort(key=lambda row: _sort_value(sort, *row) or 0.0, reverse=True)
+    ranked = [row for row in newest if _sort_value(sort, *row, now) is not None]
+    missing = [row for row in newest if _sort_value(sort, *row, now) is None]
+    ranked.sort(key=lambda row: _sort_value(sort, *row, now) or 0.0, reverse=True)
     return ranked + missing
 
 
@@ -475,6 +499,9 @@ def serialize_video(
     analytics_state = _analytics_state(upload, summary, now)
     project_title, project_prompt = project if project else (None, None)
     metrics = (summary.metrics or {}) if summary else {}
+    public = has_been_public(upload, now)
+    live_stats = current["live_stats"] if public else None
+    actions = _youtube_actions(upload, state)
     return {
         "id": upload.id,
         "youtube_video_id": upload.youtube_video_id,
@@ -490,6 +517,8 @@ def serialize_video(
         "last_checked_at": current["last_checked_at"],
         "scheduled_for": current["scheduled_for"],
         "requested_publish_at": aware(upload.publish_at),
+        # The zone the schedule was chosen in (None for times set outside ClipForge).
+        "schedule_timezone": upload.schedule_timezone,
         "published_at": current["published_at"],
         "uploaded_at": aware(upload.uploaded_at) or aware(upload.created_at),
         "sort_date": _sort_date(upload),
@@ -505,14 +534,21 @@ def serialize_video(
         },
         "thumbnail_url": thumbnail_url(upload, settings),
         # YouTube Data API (videos.list statistics), persisted by the status authority.
-        "live_stats": current["live_stats"],
+        # not_published: never public, counters are not audience numbers yet;
+        # not_reported: public but no statistics stored; available: YouTube's values
+        # (a returned 0 is a real 0).  After a remote deletion the last values remain.
+        "live_stats": live_stats,
+        "live_stats_state": "not_published" if not public else "available" if live_stats else "not_reported",
         # YouTube Analytics API, latest snapshot with data.
         "analytics": {
             "state": analytics_state,
             "fetched_at": aware(summary.fetched_at) if summary and summary.fetched_at else None,
             **{name: metrics.get(name) for name in SUMMARY_METRICS},
         },
-        **youtube_links(upload.youtube_video_id),
+        "youtube_actions": {"available": actions["available"], "reason": actions["reason"]},
+        "watch_url": actions["watch_url"],
+        "shorts_url": actions["shorts_url"],
+        "studio_url": actions["studio_url"],
     }
 
 
@@ -566,7 +602,7 @@ def list_videos(
         selected = [upload for upload in selected if _status_bucket(library_state(upload, now)) == status]
     if analytics in {"available", "processing"}:
         selected = [upload for upload in selected if _analytics_bucket(_analytics_state(upload, summaries.get(upload.id), now)) == analytics]
-    ordered = _order([(upload, summaries.get(upload.id)) for upload in selected], sort if sort in SORTS else "newest")
+    ordered = _order([(upload, summaries.get(upload.id)) for upload in selected], sort if sort in SORTS else "newest", now)
     page_ids = [upload.id for upload, _summary in ordered[offset:offset + limit]]
 
     # The page only: full rows (current status needs the schedule history), preview
@@ -712,6 +748,8 @@ def publishing_context(upload: YouTubeUpload) -> dict[str, Any]:
     return {
         "requested_visibility": upload.requested_visibility,
         "requested_publish_at": aware(upload.publish_at),
+        # The zone the schedule was chosen in (None for times set outside ClipForge).
+        "schedule_timezone": upload.schedule_timezone,
         "schedule_source": source,
         "provenance": "Smart Scheduler slot" if source == "auto" else "Chosen manually" if source == "manual" else "Not scheduled",
         "smart_scheduler_selected": source == "auto",

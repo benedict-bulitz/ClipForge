@@ -23,6 +23,8 @@ export type LibraryVideo = {
   last_checked_at: string | null;
   scheduled_for: string | null;
   requested_publish_at: string | null;
+  /** The zone the schedule was chosen in; null for times set outside ClipForge. */
+  schedule_timezone: string | null;
   published_at: string | null;
   uploaded_at: string | null;
   sort_date: string;
@@ -32,8 +34,9 @@ export type LibraryVideo = {
   scene_count: number | null;
   project: { id: string; available: boolean; title: string | null; archived_at: string | null };
   thumbnail_url: string | null;
-  /** YouTube Data API (videos.list statistics). */
+  /** YouTube Data API (videos.list statistics); null until the video has been public. */
   live_stats: CurrentStatus["live_stats"];
+  live_stats_state: LiveStatsState;
   /** YouTube Analytics API, latest snapshot with data. */
   analytics: {
     state: AnalyticsState;
@@ -45,10 +48,18 @@ export type LibraryVideo = {
     likes: number | null;
     comments: number | null;
   };
+  /** Whether the remote video exists; independent of the ClipForge project. */
+  youtube_actions: { available: boolean; reason: string | null };
   watch_url: string | null;
   shorts_url: string | null;
   studio_url: string | null;
 };
+
+/**
+ * not_published: never public - YouTube's counters are placeholders, not audience numbers;
+ * not_reported: public, but no statistics stored yet; available: YouTube's values (0 is a real 0).
+ */
+export type LiveStatsState = "not_published" | "not_reported" | "available";
 
 export type StatusFilter = "all" | "published" | "unlisted" | "scheduled" | "private" | "processing" | "deleted" | "rejected";
 export type ProjectFilter = "all" | "available" | "archived";
@@ -234,11 +245,25 @@ export function stateTone(state: LibraryState): "ok" | "info" | "muted" | "warn"
   }
 }
 
-/** "Published 12 Sep 2026" / "Scheduled for …" / "Uploaded …" - the card's one date line. */
-export function dateLine(video: LibraryVideo, format: (iso: string) => string): string {
+/**
+ * "Published 12 Sep 2026" / "Scheduled for 01.01.2030 · 19:00 · Europe/Berlin" /
+ * "Uploaded …" - the card's date line; the exact scheduled time uses ``scheduled``.
+ */
+export function dateLine(video: LibraryVideo, format: (iso: string) => string, scheduled: (iso: string) => string = format): string {
   if (video.published_at && (video.state === "published" || video.state === "unlisted" || video.state === "deleted")) return `Published ${format(video.published_at)}`;
-  if (video.scheduled_for) return `Scheduled for ${format(video.scheduled_for)}`;
+  if (video.scheduled_for) return `Scheduled for ${scheduled(video.scheduled_for)}`;
   return video.uploaded_at ? `Uploaded ${format(video.uploaded_at)}` : "—";
+}
+
+/** A live statistic, or "—" when YouTube has no audience number for it yet (never a placeholder 0). */
+export function liveStatValue(video: Pick<LibraryVideo, "live_stats" | "live_stats_state">, key: "views" | "likes" | "comments"): string {
+  return video.live_stats_state === "available" && video.live_stats ? formatCount(video.live_stats[key]) : "—";
+}
+
+export function liveStatsNote(state: LiveStatsState): string | null {
+  if (state === "not_published") return "Starts after publication";
+  if (state === "not_reported") return "Not reported by YouTube yet";
+  return null;
 }
 
 /** The Open project link only exists while the project does (never a 404 link). */
