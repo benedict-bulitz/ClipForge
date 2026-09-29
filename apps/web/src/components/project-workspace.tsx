@@ -9,6 +9,7 @@ import {
   Check,
   ChevronUp,
   CircleDot,
+  Clapperboard,
   Download,
   ExternalLink,
   Film,
@@ -417,6 +418,9 @@ export function ProjectWorkspace({
               <span className="hidden sm:inline">Render video</span>
             </Button>
           )}
+          <Button asChild variant="ghost" size="icon">
+            <Link href="/videos" aria-label="Videos" title="Videos"><Clapperboard className="size-4" /></Link>
+          </Button>
           <Button asChild variant="ghost" size="icon">
             <Link href="/settings/integrations" aria-label="Settings"><Settings className="size-4" /></Link>
           </Button>

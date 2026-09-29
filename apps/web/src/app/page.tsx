@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowRight, ChevronDown, Clock3, CornerDownLeft, ListVideo, LoaderCircle, Plus, Settings, Trash2 } from "lucide-react";
+import { ArrowRight, ChevronDown, Clapperboard, Clock3, CornerDownLeft, ListVideo, LoaderCircle, Plus, Settings, Trash2 } from "lucide-react";
 import { ApiError, clearGenerationQueue, deleteAllProjects, getBulkProjectDeletePlan, getGenerationJob, getProject, listGenerationJobs, listProjectOverview, removeQueuedGenerationJob, startGeneration } from "@/lib/api";
 import { createGenerationWatcher, generationTimeLabel, POLL_TIMEOUT_MS, withTimeout, type GenerationWatcher } from "@/lib/generation-poll";
 import type { BulkProjectDeletePlan, GenerationJob, ProjectOverview } from "@/lib/types";
@@ -245,6 +245,9 @@ export default function Home() {
         <div className="flex items-center gap-2">
           <span className="hidden text-sm text-[#77776d] sm:block">Your idea. Fully directed.</span>
           <ThemeToggle />
+          <Button asChild variant="ghost" size="sm">
+            <Link href="/videos"><Clapperboard className="size-3.5" /> <span className="hidden sm:inline">Videos</span></Link>
+          </Button>
           <Button asChild variant="ghost" size="sm">
             <Link href="/settings/integrations"><Settings className="size-3.5" /> <span className="hidden sm:inline">Settings</span></Link>
           </Button>

@@ -56,6 +56,8 @@ YOUTUBE_UPLOAD_V2_COLUMNS = (
     # Smart Slot Planner provenance
     ("schedule_source", "VARCHAR(16)"),
     ("schedule_slot_time", "VARCHAR(5)"),
+    # Video Library
+    ("library_thumbnail", "VARCHAR(120)"),
 )
 
 

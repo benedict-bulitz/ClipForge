@@ -41,6 +41,7 @@ from ..services import (
     get_project,
     project_local_storage_bytes,
 )
+from . import library
 from .connection import access_token, active_connection
 from .provider import YouTubeApiError, YouTubeProvider
 from .uploads import ACTIVE_STATES, UploadRefused, _record_video, serialize_upload, sync_status
@@ -120,8 +121,9 @@ def _verify(db: Session, uploads: list[YouTubeUpload], settings: Settings, store
     return "offline" if offline else "live"
 
 
-def _retained_bytes(db: Session, uploads: list[YouTubeUpload]) -> int:
-    """Approximate size of the kept learning record (JSON of the kept rows)."""
+def _retained_bytes(db: Session, uploads: list[YouTubeUpload], settings: Settings) -> int:
+    """Approximate size of the kept learning record (JSON of the kept rows + the
+    Video Library preview, at most THUMBNAIL_MAX_BYTES before it exists)."""
     total = 0
     for upload in uploads:
         total += len(json.dumps(serialize_upload(upload), default=str))
@@ -131,6 +133,8 @@ def _retained_bytes(db: Session, uploads: list[YouTubeUpload]) -> int:
         snapshots = db.scalars(select(YouTubeAnalyticsSnapshot).where(YouTubeAnalyticsSnapshot.upload_id == upload.id)).all()
         for snapshot in snapshots:
             total += len(json.dumps(snapshot.raw_responses, default=str)) + 200 * (len(snapshot.metrics) + len(snapshot.retention_points))
+        preview = library.thumbnail_path(upload, settings)
+        total += preview.stat().st_size if preview is not None else library.THUMBNAIL_MAX_BYTES
     return total
 
 
@@ -172,17 +176,19 @@ def plan_deletion(
         title=project.title,
         mode=mode,
         reclaimable_bytes=reclaimable,
-        retained_bytes=_retained_bytes(db, kept) if kept else 0,
+        retained_bytes=_retained_bytes(db, kept, settings) if kept else 0,
         verification=verification,
         uploads=[{**serialize_upload(upload), "classification": kind} for upload, kind in classified],
         messages=messages,
     )
 
 
-def _delete_youtube_rows(db: Session, uploads: list[YouTubeUpload], *, keep_fingerprints: set[str]) -> None:
+def _delete_youtube_rows(db: Session, uploads: list[YouTubeUpload], *, keep_fingerprints: set[str], settings: Settings) -> None:
     ids = [upload.id for upload in uploads]
     if not ids:
         return
+    for upload in uploads:
+        library.remove_library_thumbnail(upload, settings)
     snapshot_ids = list(db.scalars(select(YouTubeAnalyticsSnapshot.id).where(YouTubeAnalyticsSnapshot.upload_id.in_(ids))).all())
     if snapshot_ids:
         db.execute(delete(YouTubeMetricValue).where(YouTubeMetricValue.snapshot_id.in_(snapshot_ids)))
@@ -215,13 +221,18 @@ def delete_project_lifecycle(
     topic = None
     if project.revisions:
         topic = str(((project.revisions[-1].state or {}).get("intent") or {}).get("topic") or "") or None
+    if plan.mode == "archive":
+        # The Video Library keeps a small preview; the covers themselves are purged below.
+        for upload in db.scalars(select(YouTubeUpload).where(YouTubeUpload.project_id == project_id)).all():
+            if classify_upload(db, upload) in {SUCCEEDED, UNKNOWN}:
+                library.ensure_library_thumbnail(db, upload, settings, force=True)
     result = delete_project(db, project_id, settings)  # local files + project rows
     uploads = list(db.scalars(select(YouTubeUpload).where(YouTubeUpload.project_id == project_id)).all())
     archive_id = None
     if plan.mode == "archive":
         kept = [upload for upload in uploads if classify_upload(db, upload) in {SUCCEEDED, UNKNOWN}]
         dropped = [upload for upload in uploads if upload not in kept]
-        _delete_youtube_rows(db, dropped, keep_fingerprints={upload.fingerprint_id for upload in kept if upload.fingerprint_id})
+        _delete_youtube_rows(db, dropped, keep_fingerprints={upload.fingerprint_id for upload in kept if upload.fingerprint_id}, settings=settings)
         archive = db.scalar(select(YouTubeLearningArchive).where(YouTubeLearningArchive.project_id == project_id))
         if archive is None:
             archive = YouTubeLearningArchive(project_id=project_id)
@@ -233,7 +244,7 @@ def delete_project_lifecycle(
         db.commit()
         archive_id = archive.id
     else:
-        _delete_youtube_rows(db, uploads, keep_fingerprints=set())
+        _delete_youtube_rows(db, uploads, keep_fingerprints=set(), settings=settings)
         db.commit()
     return {
         "mode": "archive" if plan.mode == "archive" else "full",

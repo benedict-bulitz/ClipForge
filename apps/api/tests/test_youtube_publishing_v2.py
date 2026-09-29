@@ -644,7 +644,7 @@ def test_v1_database_gets_the_new_columns_at_startup(tmp_path, monkeypatch):
     monkeypatch.setattr(database.settings, "database_url", f"sqlite:///{tmp_path / 'v1.db'}")
     database.ensure_runtime_schema()
     columns = {column["name"] for column in inspect(engine).get_columns("youtube_uploads")}
-    assert {"made_for_kids", "thumbnail_upload_status", "schedule_timezone", "upload_settings", "remote_privacy_status", "remote_status_checked_at", "remote_view_count"} <= columns
+    assert {"made_for_kids", "thumbnail_upload_status", "schedule_timezone", "upload_settings", "remote_privacy_status", "remote_status_checked_at", "remote_view_count", "library_thumbnail"} <= columns
 
 
 def test_suggested_defaults_are_clean_but_user_edits_are_validated_not_rewritten():

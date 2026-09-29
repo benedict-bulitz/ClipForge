@@ -163,6 +163,7 @@ def plan_project_deletion(db: Session, project_id: str, settings: Settings) -> P
         database_records=record_counts,
         excluded_shared_locations=(
             settings.render_root.resolve() / "voice-previews",
+            settings.render_root.resolve() / "video-library",
             settings.resolved_downloads_root,
             Path(__file__).resolve().parents[1] / "music-library" / "cache",
         ),

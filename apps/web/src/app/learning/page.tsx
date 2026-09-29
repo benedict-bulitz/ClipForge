@@ -1,11 +1,6 @@
-import type { Metadata } from "next";
-import { LearningHistory } from "@/components/learning-history";
+import { redirect } from "next/navigation";
 
-export const metadata: Metadata = {
-  title: "Learning History — ClipForge",
-  description: "Performance records of uploaded videos whose local project was deleted.",
-};
-
+/** Learning History is part of the Video Library now: archived videos, one destination. */
 export default function LearningPage() {
-  return <LearningHistory />;
+  redirect("/videos?project=archived");
 }

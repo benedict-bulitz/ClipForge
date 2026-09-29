@@ -372,17 +372,6 @@ export type DeletionPlan = {
   messages: string[];
 };
 
-export type ArchiveEntry = {
-  upload_id: string;
-  project_id: string;
-  title: string;
-  topic: string | null;
-  archived_at: string | null;
-  editable: false;
-  upload: YouTubeUpload;
-  summary: { views: number | null; engagedViews: number | null; averageViewPercentage: number | null; fetched_at: string | null };
-};
-
 /** The browser/system IANA zone, e.g. "Europe/Berlin". */
 export function detectTimeZone(): string {
   try {
@@ -532,7 +521,7 @@ export function deleteDialogCopy(plan: DeletionPlan): { title: string; body: str
     case "archive":
       return {
         title: "Delete local project?",
-        body: "This video is already linked to YouTube. ClipForge will delete the local video and media files but keep the compact performance/analytics record so future videos can learn from it.",
+        body: "This video is already linked to YouTube. ClipForge will delete the local video and media files but keep the compact performance/analytics record so future videos can learn from it. The video stays in Videos.",
         confirm: "Delete local project",
       };
     case "unverified":

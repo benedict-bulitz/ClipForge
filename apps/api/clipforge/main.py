@@ -100,7 +100,7 @@ from .voice_preview import (
 )
 from .youtube import lifecycle
 from .youtube.provider import YouTubeProvider
-from .youtube.routes import get_youtube_provider
+from .youtube.routes import get_youtube_provider, videos_router
 from .youtube.routes import router as youtube_router
 from .youtube.uploads import mark_interrupted_uploads
 
@@ -135,6 +135,7 @@ app.add_middleware(
 )
 app.include_router(integrations_router)
 app.include_router(youtube_router)
+app.include_router(videos_router)
 
 
 @app.get("/api/health", response_model=HealthRead)

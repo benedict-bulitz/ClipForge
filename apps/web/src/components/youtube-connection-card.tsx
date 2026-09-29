@@ -165,7 +165,7 @@ export function YouTubeConnectionCard() {
       {connection && <YouTubeUploadDefaults connected={connected} />}
 
       <p className="mt-4 text-[11px] text-[var(--muted-foreground)]">
-        Deleted projects that were uploaded keep a compact analytics record: <Link href="/learning" className="underline">Learning History</Link>
+        Uploaded videos stay in <Link href="/videos" className="underline">Videos</Link> — also after their project is deleted (a compact analytics record is kept).
       </p>
 
       {notice && (

@@ -8,7 +8,7 @@ from threading import Thread
 from typing import Annotated, Any
 from urllib.parse import urlencode
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import RedirectResponse
 from keyring.errors import KeyringError
@@ -23,7 +23,16 @@ from ..integrations import get_secret_store
 from ..models import YouTubeUpload
 from ..security.secrets import SecretStore
 from ..services import RevisionConflict, effective_revision_state, get_project
-from . import analytics, connection, learning, lifecycle, publishing, schedule_learning, uploads
+from . import (
+    analytics,
+    connection,
+    learning,
+    library,
+    lifecycle,
+    publishing,
+    schedule_learning,
+    uploads,
+)
 from . import schedule as schedule_authority
 from .provider import GoogleYouTubeProvider, YouTubeApiError, YouTubeProvider
 
@@ -709,7 +718,11 @@ def apply_learned_schedule_route(db: DbSession, settings: SettingsDep, store: St
 
 @router.get("/archive")
 def archive_route(db: DbSession, settings: SettingsDep) -> dict:
-    """Learning History: uploaded videos whose local project was deleted (read-only)."""
+    """Read-only list of uploaded videos whose local project was deleted.
+
+    Kept for API compatibility; the user-facing destination is the Video
+    Library (``/api/videos?project=archived``), which reads the same records.
+    """
     return {
         "entries": [
             lifecycle.serialize_archive_entry(db, upload, archive, min_sample=settings.youtube_baseline_min_sample)
@@ -730,3 +743,67 @@ def archive_entry_route(upload_id: str, db: DbSession, settings: SettingsDep) ->
         "performance": learning.performance_report(db, upload, min_sample=settings.youtube_baseline_min_sample),
         "fingerprint": {key: fingerprint.get(key) for key in ("content", "hook", "visual", "pacing", "quality", "audio")},
     }
+
+
+# ---------------------------------------------------------------------------
+# Video Library (project-independent; persisted state only on the index)
+# ---------------------------------------------------------------------------
+
+videos_router = APIRouter(prefix="/api/videos", tags=["videos"])
+
+
+@videos_router.get("")
+def list_videos_route(
+    db: DbSession,
+    settings: SettingsDep,
+    status_filter: Annotated[str, Query(alias="status")] = "all",
+    project: str = "all",
+    analytics_filter: Annotated[str, Query(alias="analytics")] = "all",
+    q: Annotated[str, Query(max_length=200)] = "",
+    sort: str = "newest",
+    limit: Annotated[int, Query(ge=1, le=library.MAX_PAGE_SIZE)] = library.DEFAULT_PAGE_SIZE,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> dict:
+    """Every successfully uploaded video. Never asks YouTube: it reads the
+    persisted status/statistics and a summary of the latest analytics."""
+    return jsonable_encoder(library.list_videos(
+        db, settings, status=status_filter, project=project, analytics=analytics_filter,
+        query=q, sort=sort, limit=limit, offset=offset,
+    ))
+
+
+@videos_router.post("/refresh-recent")
+def refresh_recent_videos_route(db: DbSession, settings: SettingsDep, store: StoreDep, provider: ProviderDep) -> dict:
+    """Explicit "Refresh recent videos": the existing status + due-analytics sync
+    for the newest videos on the connected channel only (bounded)."""
+    record = connection.active_connection(db)
+    if record is None:
+        raise _error("not_connected", "Connect a YouTube channel first.")
+    results = []
+    for upload in library.recent_videos(db, record.channel_id):
+        try:
+            outcome = analytics.refresh_analytics(db, upload, settings, store, provider, due_only=True)
+        except uploads.UploadRefused as exc:
+            outcome = {"status": "skipped", "reason": exc.code}
+        results.append({"upload_id": upload.id, "video_id": upload.youtube_video_id, **outcome})
+        if outcome.get("status") == "error" and (outcome.get("error") or {}).get("code") in {"auth_expired", "quota_exceeded", "not_connected", "insufficient_scope"}:
+            break  # further calls would fail the same way
+    errors = [item for item in results if item.get("status") == "error"]
+    return {
+        "checked": len(results),
+        "errors": len(errors),
+        "error": errors[0].get("error") if errors else None,
+        "results": results,
+    }
+
+
+@videos_router.get("/{identifier}")
+def video_detail_route(identifier: str, db: DbSession, settings: SettingsDep, store: StoreDep, provider: ProviderDep) -> dict:
+    """One library video (by upload id or YouTube video id); works after project deletion."""
+    upload = library.find_video(db, identifier)
+    if upload is None:
+        raise HTTPException(status_code=404, detail="Video not found")
+    record = connection.active_connection(db)
+    if record is not None and record.channel_id == upload.channel_id:
+        uploads.reconcile_if_due(db, upload, settings, store, provider)  # freshness-gated, never raises
+    return jsonable_encoder(library.video_detail(db, upload, settings))

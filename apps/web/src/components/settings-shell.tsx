@@ -2,6 +2,7 @@ import Link from "next/link";
 import {
   ArrowLeft,
   Boxes,
+  Clapperboard,
   Database,
   PlugZap,
   Settings2,
@@ -28,6 +29,9 @@ export function SettingsShell({ children }: { children: React.ReactNode }) {
           </Link>
           <div className="flex items-center gap-2">
             <ThemeToggle />
+            <Button asChild variant="ghost" size="sm">
+              <Link href="/videos"><Clapperboard className="size-3.5" /> Videos</Link>
+            </Button>
             <Button asChild variant="ghost" size="sm">
               <Link href="/"><ArrowLeft className="size-3.5" /> Back to studio</Link>
             </Button>

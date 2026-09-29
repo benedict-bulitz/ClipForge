@@ -449,12 +449,19 @@ export function deleteProjectConfirmingUnverified(projectId: string) {
   return request<{ mode: string; freed_bytes: number; retained_bytes: number }>(`/projects/${projectId}?confirm_unverified=true`, { method: "DELETE" });
 }
 
-export function listLearningArchive() {
-  return request<{ entries: import("./youtube").ArchiveEntry[] }>("/youtube/archive", { cache: "no-store" });
+// Video Library ---------------------------------------------------------------
+
+export function listVideos(query: string, signal?: AbortSignal) {
+  return request<import("./videos").VideoLibraryPage>(`/videos${query}`, { cache: "no-store", signal });
 }
 
-export function getLearningArchiveEntry(uploadId: string) {
-  return request<import("./youtube").ArchiveEntry & { performance: import("./youtube").PerformanceReport; fingerprint: Record<string, Record<string, unknown> | null> }>(`/youtube/archive/${uploadId}`, { cache: "no-store" });
+export function getVideo(id: string, signal?: AbortSignal) {
+  return request<import("./videos").VideoDetail>(`/videos/${encodeURIComponent(id)}`, { cache: "no-store", signal });
+}
+
+/** The existing status + due-analytics sync for the newest videos only (bounded). */
+export function refreshRecentVideos() {
+  return request<{ checked: number; errors: number; error: { code: string; message: string } | null }>("/videos/refresh-recent", { method: "POST" });
 }
 
 export function syncYouTubeUpload(uploadId: string) {

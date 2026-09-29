@@ -262,6 +262,9 @@ class YouTubeUpload(Base):
     # (the user's own time) | None (not scheduled); the preferred slot it filled.
     schedule_source: Mapped[str | None] = mapped_column(String(16), nullable=True)
     schedule_slot_time: Mapped[str | None] = mapped_column(String(5), nullable=True)
+    # Video Library: file name of the small retained preview (render_root /
+    # "video-library"); it outlives the project's own media.
+    library_thumbnail: Mapped[str | None] = mapped_column(String(120), nullable=True)
     uploaded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_status_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_analytics_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
