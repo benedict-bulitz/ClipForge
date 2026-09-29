@@ -199,3 +199,38 @@ def test_queue_listing_uses_same_stable_tie_break_as_worker_claim(db):
     expected = sorted([first.id, second.id])
     assert [item["id"] for item in list_generation_jobs(db)] == expected
     assert claim_next_generation_job(db).id == expected[0]
+
+
+def test_overview_hides_technical_placeholders_but_keeps_meaningful_failed_projects(db):
+    """Jobs from before request_payload existed ({}) never became projects; failed
+    requests that carry a prompt, and every real Project row, stay visible."""
+    legacy = GenerationJob(project_id="legacy-1", request_hash="x" * 64, request_payload={}, status="failed", failure_category="interrupted")
+    blank = GenerationJob(project_id="legacy-2", request_hash="y" * 64, request_payload={"prompt": "  "}, status="failed")
+    failed, _ = create_generation_job(db, request("Warum bin ich nach einem Mittagsschlaf manchmal müde?"))
+    failed.status, failed.failure_category = "failed", "provider_error"
+    db.add_all([legacy, blank])
+    db.add(Project(id="real-1", original_prompt="Why do cats purr?", title="Why cats purr", status="rendered", current_revision=1, active_tip_revision=1))
+    db.commit()
+
+    overview = list_project_overview(db)
+
+    by_id = {item["id"]: item for item in overview}
+    assert set(by_id) == {failed.project_id, "real-1"}
+    assert by_id[failed.project_id]["title"] == "Warum bin ich nach einem Mittagsschlaf manchmal müde?"
+    assert by_id[failed.project_id]["status"] == "failed"
+    assert not [item for item in overview if item["title"] == "Untitled project"]
+
+
+def test_legacy_placeholder_is_what_the_worker_fails_without_a_project(db):
+    """The placeholder rule matches reality: a job without request data cannot run."""
+    from clipforge.generation import run_generation_job
+
+    job = GenerationJob(project_id="legacy-3", request_hash="z" * 64, request_payload={}, status="running")
+    db.add(job)
+    db.commit()
+    factory = sessionmaker(bind=db.get_bind())
+    run_generation_job(job.id, Settings(_env_file=None), session_factory=factory)
+    db.expire_all()
+    assert db.get(GenerationJob, job.id).status == "failed"
+    assert db.get(Project, "legacy-3") is None
+    assert all(item["id"] != "legacy-3" for item in list_project_overview(db))

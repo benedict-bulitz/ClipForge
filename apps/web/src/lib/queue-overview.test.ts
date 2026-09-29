@@ -59,7 +59,7 @@ test("queue toggle, stable keys, and expandable complete history are wired", () 
   assert.match(home, /running\.map/);
   assert.match(home, /waiting\.map/);
   assert.match(home, /Recent Projects/);
-  assert.match(home, /setRecentOpen/);
+  assert.doesNotMatch(home, /setRecentOpen|recentOpen/); // no longer an accordion
   assert.match(home, /history\.map/);
   assert.match(home, /href=\{`\/projects\/\$\{project\.id\}`\}/);
   assert.doesNotMatch(home, /slice\(0, 4\)/);

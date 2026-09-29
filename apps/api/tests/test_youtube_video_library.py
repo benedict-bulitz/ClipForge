@@ -566,3 +566,22 @@ def test_video_library_has_one_schema_addition_and_no_second_store():
     tables = set(Base.metadata.tables)
     assert not [name for name in tables if "library" in name or "video_summ" in name]
     assert "library_thumbnail" in YouTubeUpload.__table__.columns
+
+
+def test_bulk_delete_keeps_uploaded_videos_in_the_library(db, settings, store, fake):
+    """"Alle Projekte löschen" goes through the same lifecycle: heavy media go, videos stay."""
+    connect(db, settings, store, fake)
+    row = _published_with_analytics(db, settings, store, fake, build_project(db, settings))
+    build_project(db, settings, project_id=OTHER, content=b"N" * 20_000)  # never uploaded
+    client = api_client(db, settings, store, fake)
+    assert client.get("/api/projects/delete-plan").json()["projects_keeping_learning_record"] == 1
+    result = client.delete("/api/projects").json()
+    assert result["deleted_projects"] == 2 and result["archived_projects"] == 1
+    assert db.scalars(select(Project)).all() == []
+    assert not (settings.render_root / PID).exists()
+    page = library_page(client)
+    assert [item["id"] for item in page["items"]] == [row.id]
+    item = page["items"][0]
+    assert item["project"]["available"] is False and item["thumbnail_url"]
+    detail = client.get(f"/api/videos/{row.id}").json()
+    assert detail["performance"]["status"] == "ready" and detail["retention_curve"]

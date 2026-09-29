@@ -154,9 +154,27 @@ def list_projects(db: DbSession) -> list[dict]:
     return [serialize_project(project) for project in projects]
 
 
+def _history_prompt(job: GenerationJob) -> str | None:
+    """The job's request prompt, or ``None`` when the job has no usable request data.
+
+    Only jobs created before ``request_payload`` existed have none (the column
+    defaults to ``{}``); the worker fails those with "Generation request data is
+    unavailable" before any project exists, so they never became user projects.
+    Same rule as ``ProjectCreate.prompt`` (normalized, at least 3 characters).
+    """
+    prompt = (job.request_payload or {}).get("prompt")
+    text = " ".join(prompt.split()) if isinstance(prompt, str) else ""
+    return text if len(text) >= 3 else None
+
+
 @app.get("/api/projects/overview")
 def list_project_overview(db: DbSession) -> list[dict]:
-    """Lightweight, complete history, including jobs awaiting their first revision."""
+    """Lightweight, complete history, including jobs awaiting their first revision.
+
+    Every Project row is listed (whatever its status). A job without a Project
+    row is listed with its prompt - also when it failed early - unless it has
+    no usable request data (a technical placeholder, see ``_history_prompt``).
+    """
     projects = db.scalars(select(Project).order_by(Project.created_at.desc())).all()
     jobs = db.scalars(select(GenerationJob).order_by(GenerationJob.created_at.desc())).all()
     latest_jobs = {}
@@ -176,15 +194,18 @@ def list_project_overview(db: DbSession) -> list[dict]:
     project_ids = {project.id for project in projects}
     for job in jobs:
         if job.project_id not in project_ids:
+            project_ids.add(job.project_id)  # older jobs of the same id never override the latest
+            prompt = _history_prompt(job)
+            if prompt is None:
+                continue
             result.append({
                 "id": job.project_id,
-                "title": str((job.request_payload or {}).get("prompt") or "Untitled project"),
+                "title": prompt,
                 "status": job.status,
                 "current_revision": None,
                 "created_at": job.created_at,
                 "updated_at": job.updated_at,
             })
-            project_ids.add(job.project_id)
     return sorted(result, key=lambda item: (item["created_at"], item["id"]), reverse=True)
 
 

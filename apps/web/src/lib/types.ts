@@ -106,6 +106,8 @@ export type BulkProjectDeletePlan = {
   total_files: number;
   total_directories: number;
   shared_cache_excluded: boolean;
+  /** Uploaded projects whose video stays in Videos (compact learning/analytics record). */
+  projects_keeping_learning_record?: number;
 };
 
 export type BulkProjectDeleteResult = {

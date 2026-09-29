@@ -11,3 +11,11 @@ export function visibleProjectHistory(projects: ProjectOverview[], jobs: Generat
   const activeIds = new Set(activeQueueJobs(jobs).map((job) => job.project_id));
   return projects.filter((project) => !activeIds.has(project.id));
 }
+
+/**
+ * Entries bulk deletion can remove: those with a Project row (a revision).
+ * Early-failed requests without a project are listed but are not projects yet.
+ */
+export function deletableProjectCount(history: ProjectOverview[]): number {
+  return history.filter((project) => project.current_revision !== null).length;
+}

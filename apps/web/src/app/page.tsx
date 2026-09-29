@@ -7,7 +7,8 @@ import { ArrowRight, ChevronDown, Clapperboard, Clock3, CornerDownLeft, ListVide
 import { ApiError, clearGenerationQueue, deleteAllProjects, getBulkProjectDeletePlan, getGenerationJob, getProject, listGenerationJobs, listProjectOverview, removeQueuedGenerationJob, startGeneration } from "@/lib/api";
 import { createGenerationWatcher, generationTimeLabel, POLL_TIMEOUT_MS, withTimeout, type GenerationWatcher } from "@/lib/generation-poll";
 import type { BulkProjectDeletePlan, GenerationJob, ProjectOverview } from "@/lib/types";
-import { activeQueueJobs, visibleProjectHistory } from "@/lib/queue-overview";
+import { activeQueueJobs, deletableProjectCount, visibleProjectHistory } from "@/lib/queue-overview";
+import { createHomePoller, type HomePoller } from "@/lib/home-poll";
 import { splitQuestions, submitQuestionsInOrder } from "@/lib/multi-question";
 import { AdvancedOptions } from "@/components/advanced-options";
 import { Brand } from "@/components/brand";
@@ -39,8 +40,8 @@ export default function Home() {
   const [queue, setQueue] = useState<GenerationJob[]>([]);
   const [queueOpen, setQueueOpen] = useState(false);
   const [queueAction, setQueueAction] = useState<string | null>(null);
-  const [recentOpen, setRecentOpen] = useState(false);
-  const refreshSequence = useRef(0);
+  const [projectsLoaded, setProjectsLoaded] = useState(false);
+  const poller = useRef<HomePoller | null>(null);
   const mounted = useRef(false);
   const startedWatcher = useRef<GenerationWatcher | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -48,35 +49,32 @@ export default function Home() {
   const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
   const [bulkDeletePhrase, setBulkDeletePhrase] = useState("");
   const [bulkDeleting, setBulkDeleting] = useState(false);
+  /** Jobs + history now; the poller then keeps the right cadence (see home-poll.ts). */
   async function refresh() {
-    const sequence = ++refreshSequence.current;
-    try {
-      // Bounded: a hung request must never stop the poll loop on stale progress.
-      const [projects, jobs] = await Promise.all([
-        withTimeout((signal) => listProjectOverview(signal), POLL_TIMEOUT_MS),
-        withTimeout((signal) => listGenerationJobs(signal), POLL_TIMEOUT_MS),
-      ]);
-      if (!mounted.current || sequence !== refreshSequence.current) return;
-      setRecent(projects);
-      setQueue(jobs);
-    } catch {
-      // Keep the last known state until the next refresh.
-    }
+    await poller.current?.refreshAll();
   }
 
   useEffect(() => {
     mounted.current = true;
-    let timer: number | undefined;
-    let stopped = false;
-    async function poll() {
-      await refresh();
-      if (!stopped) timer = window.setTimeout(() => void poll(), 2500);
-    }
-    void poll();
+    // The one polling authority for this page. Strict Mode's mount/unmount/mount
+    // stops the first instance before the second starts: one timer at a time.
+    const instance = createHomePoller({
+      // Bounded: a hung request must never stop the cadence on stale progress.
+      loadJobs: () => withTimeout((signal) => listGenerationJobs(signal), POLL_TIMEOUT_MS),
+      loadProjects: () => withTimeout((signal) => listProjectOverview(signal), POLL_TIMEOUT_MS),
+      onJobs: (jobs) => { if (mounted.current) setQueue(jobs); },
+      onProjects: (projects) => {
+        if (!mounted.current) return;
+        setRecent(projects);
+        setProjectsLoaded(true);
+      },
+    });
+    poller.current = instance;
+    instance.start();
     return () => {
-      stopped = true;
+      instance.stop();
+      if (poller.current === instance) poller.current = null;
       mounted.current = false;
-      if (timer !== undefined) window.clearTimeout(timer);
       startedWatcher.current?.stop();
       startedWatcher.current = null;
     };
@@ -226,6 +224,8 @@ export default function Home() {
       setBulkDeleteOpen(false);
       setBulkDeletePlan(null);
       router.replace("/");
+      // What remains (e.g. early-failed requests without a project) comes from the API.
+      await refresh();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Projekte konnten nicht gelöscht werden.");
     } finally {
@@ -235,6 +235,7 @@ export default function Home() {
 
   const activeJobs = activeQueueJobs(queue);
   const history = visibleProjectHistory(recent, queue);
+  const deletableProjects = deletableProjectCount(history);
   const detectedQuestions = multipleQuestions ? splitQuestions(prompt) : [];
 
   return (
@@ -310,22 +311,32 @@ export default function Home() {
           ))}
         </div>
 
-        {recent.length > 0 && (
-          <div className="mt-14 w-full max-w-[780px] text-left">
-            <div className="mb-3 flex items-center justify-between gap-2 px-1 text-[11px] font-bold uppercase tracking-[.12em] text-[#85857c]">
-              <button type="button" aria-expanded={recentOpen} aria-controls="recent-projects-panel" onClick={() => setRecentOpen((open) => !open)} className="flex items-center gap-2"><Clock3 className="size-3.5" /> Recent Projects ({history.length}) <ChevronDown className={`size-3.5 transition-transform ${recentOpen ? "rotate-180" : ""}`} /></button>
-              <button onClick={() => void openBulkDelete()} className="flex items-center gap-1 text-red-700 hover:text-red-800"><Trash2 className="size-3.5" /> Alle Projekte löschen</button>
-            </div>
-            {recentOpen && <div id="recent-projects-panel" className="grid max-h-[38rem] gap-2 overflow-y-auto sm:grid-cols-2">
+        <section className="mt-14 w-full max-w-[780px] text-left" aria-labelledby="recent-projects-title">
+          {/* text-[11px] on the row: a global `button { font: inherit }` rule overrides the button's own size. */}
+          <div className="mb-3 flex min-h-8 items-center justify-between gap-2 px-1 text-[11px]">
+            <h2 id="recent-projects-title" className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-[.12em] text-[#85857c]"><Clock3 className="size-3.5" /> Recent Projects{history.length > 0 ? ` (${history.length})` : ""}</h2>
+            {deletableProjects > 0 && (
+              <button type="button" onClick={() => void openBulkDelete()} className="inline-flex items-center gap-1.5 rounded-full border border-transparent px-2.5 py-1 text-[11px] font-semibold text-[var(--muted-foreground)] transition-colors duration-150 hover:border-red-200 hover:bg-red-50 hover:text-red-700 focus-visible:border-red-300 focus-visible:text-red-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500/30 dark:hover:border-red-500/30 dark:hover:bg-red-500/10 dark:hover:text-red-300">
+                <Trash2 className="size-3.5" /> Alle Projekte löschen
+              </button>
+            )}
+          </div>
+          {history.length > 0 ? (
+            <div id="recent-projects-list" className="grid gap-2 sm:grid-cols-2">
               {history.map((project) => (
                 <Link key={project.id} href={`/projects/${project.id}`} className="cf-surface group rounded-[18px] border p-4 transition-[transform,background-color,border-color,box-shadow] duration-150 ease-[cubic-bezier(.23,1,.32,1)] active:scale-[.99] hover:bg-[var(--surface-hover)] hover:shadow-sm">
                   <p className="truncate text-sm font-semibold">{project.title}</p>
                   <p className="mono mt-2 text-[9px] uppercase tracking-[.1em] text-[#929289]">{project.current_revision ? `v${project.current_revision} · ` : ""}{project.status.replaceAll("_", " ")}</p>
                 </Link>
               ))}
-            </div>}
-          </div>
-        )}
+            </div>
+          ) : projectsLoaded ? (
+            <div className="px-1 py-2">
+              <p className="text-sm font-semibold">Noch keine Projekte</p>
+              <p className="mt-0.5 text-xs text-[var(--muted-foreground)]">Deine erstellten Videos erscheinen hier.</p>
+            </div>
+          ) : null}
+        </section>
       </section>
       {bulkDeleteOpen && bulkDeletePlan && (
         <div className="fixed inset-0 z-50 grid place-items-center bg-black/45 p-4" role="dialog" aria-modal="true" aria-labelledby="bulk-delete-title">
@@ -333,6 +344,7 @@ export default function Home() {
             <h2 id="bulk-delete-title" className="text-lg font-semibold">Alle Projekte wirklich löschen?</h2>
             <p className="mt-2 text-sm leading-6 text-[var(--muted-foreground)]">Alle projektlokalen Videos, Audio-Dateien, Medienableitungen und Projektdaten werden dauerhaft gelöscht. Wiederverwendbare Caches bleiben erhalten.</p>
             <p className="mt-4 rounded-xl bg-black/[.04] px-3 py-2 text-sm font-semibold">{bulkDeletePlan.project_count} Projekte · ca. {formatBytes(bulkDeletePlan.total_bytes)}</p>
+            {(bulkDeletePlan.projects_keeping_learning_record ?? 0) > 0 && <p className="mt-2 text-xs text-[var(--muted-foreground)]">{bulkDeletePlan.projects_keeping_learning_record} auf YouTube hochgeladene{bulkDeletePlan.projects_keeping_learning_record === 1 ? "s Video bleibt" : " Videos bleiben"} in <Link href="/videos" className="underline">Videos</Link> erhalten (kompakte Analyse- und Lerndaten). YouTube-Videos werden nie gelöscht.</p>}
             <label className="mt-5 block text-sm font-medium">Zum Bestätigen <span className="font-bold">LÖSCHEN</span> eingeben
               <input aria-label="Type LÖSCHEN to confirm deletion" value={bulkDeletePhrase} onChange={(event) => setBulkDeletePhrase(event.target.value)} className="mt-2 w-full rounded-xl border bg-transparent px-3 py-2 outline-none focus:border-[#ff6838]" autoComplete="off" />
             </label>
