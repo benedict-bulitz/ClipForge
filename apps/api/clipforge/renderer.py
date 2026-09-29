@@ -22,6 +22,7 @@ from openai import (
 )
 from PIL import Image, UnidentifiedImageError
 
+from . import still_image
 from .alignment import (
     align_narration,
     alignment_readiness,
@@ -1141,6 +1142,7 @@ def _create_visual_segment(
     geometry = focal_crop((center_x, center_y), _source_size(source, scene.get("media") or {}), (width, height))
     origin_x, origin_y = (geometry[0], geometry[1]) if geometry else (center_x, center_y)
     focal = (geometry[2], geometry[3]) if geometry else None
+    still: Path | None = None
     if kind == "video":
         # Integer crop origins stay fixed for the whole clip so source motion is
         # preserved without sub-pixel re-rounding wobble.
@@ -1183,7 +1185,13 @@ def _create_visual_segment(
             f"d={frames}:s={output_w}x{output_h}:fps={fps},"
             f"scale={width}:{height}:flags=lanczos,format=yuv420p"
         )
-        inputs, base_filter = ["-loop", "1", "-i", str(source)], zoom_filter
+        try:
+            # FFmpeg picks the demuxer from content: a GIF saved as .jpg has no
+            # ``-loop`` option.  Stills reach it only as matching JPEG/PNG files.
+            still = still_image.ffmpeg_input(source, temp)
+        except still_image.StillImageError as exc:
+            raise RenderUnavailable(f"Scene {index + 1} media is not a usable image ({exc}). Replace this scene's media.") from exc
+        inputs, base_filter = still_image.ffmpeg_still_args(still), zoom_filter
     overlay_paths = _render_scene_overlays(state, scene, index, temp, width, height, focal[1] if focal is not None else center_y)
     if overlay_paths:
         # Base visual + transparent information overlays, composited per scene;
@@ -1194,7 +1202,7 @@ def _create_visual_segment(
             graph += f";[{last}][{position}:v]overlay=0:0:format=auto[ov{position}]"
             last = f"ov{position}"
         graph += f";[{last}]format=yuv420p[vout]"
-        overlay_inputs = [arg for path in overlay_paths for arg in ("-loop", "1", "-i", str(path))]
+        overlay_inputs = [arg for path in overlay_paths for arg in still_image.ffmpeg_still_args(path)]
         command = [*base, *inputs, *overlay_inputs, "-filter_complex", graph, "-map", "[vout]"]
     else:
         command = [*base, *inputs, "-vf", base_filter]
@@ -1213,7 +1221,9 @@ def _create_visual_segment(
         ]
     )
     segment = scene.setdefault("render_segment", {})
-    cached = _segment_cache_path(cache_dir, command, source, overlay_paths)
+    # The cache key names the scene's own media file, not a converted copy in this render's temp dir.
+    keyed = [str(source) if part == str(still) else part for part in command] if still is not None else command
+    cached = _segment_cache_path(cache_dir, keyed, source, overlay_paths)
     segment["cache_file"] = str(cached) if cached is not None else None
     if cached is not None and cached.is_file() and cached.stat().st_size > 0:
         segment["cache"] = "hit"

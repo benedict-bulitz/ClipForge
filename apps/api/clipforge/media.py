@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 
 import httpx
 
+from . import still_image
 from .config import Settings
 from .progress import ProgressCallback, report_progress
 from .visual_verifier import (
@@ -1805,6 +1806,21 @@ def _accumulate_search_totals(totals: dict[str, int], provenance: dict[str, Any]
     totals["early_stop_count"] += int(bool(provenance.get("early_stop")))
 
 
+def normalize_cached_photo(path: Path) -> Path:
+    """Photos are cached as ``photo-<id>.jpg``: make the content a real JPEG.
+
+    Providers do not always serve JPEG (Wikimedia's bitmap search includes
+    GIF, PNG, TIFF and WebP); FFmpeg reads the content, not the name.  An
+    identified image that cannot be decoded is removed so the next candidate
+    is used.
+    """
+    try:
+        return still_image.normalize_download(path)
+    except still_image.StillImageError as exc:
+        path.unlink(missing_ok=True)
+        raise MediaProviderError("provider_error", f"The provider returned a file that is not a usable image ({exc}).") from exc
+
+
 def _cache_candidate(
     candidate: MediaCandidate,
     relevance: dict[str, Any],
@@ -1820,6 +1836,8 @@ def _cache_candidate(
     if downloader is None:
         raise MediaProviderError("provider_error", "No downloader is available for this candidate.")
     downloaded = downloader.download(candidate, destination)
+    if candidate.kind == "photo":
+        normalize_cached_photo(downloaded)
     relative = downloaded.relative_to(render_root.resolve()).as_posix()
     return {
         "identity": candidate.identity,

@@ -23,6 +23,7 @@ from .media import (
     is_real_media_allowed,
     is_scene_asset_allowed,
     media_relevance,
+    normalize_cached_photo,
     protected_candidate_terms,
     real_media_quality_gate,
     verify_media_shortlist,
@@ -269,6 +270,8 @@ def apply_scene_media_candidate(
         downloaded = downloader.download(candidate, destination)
         if not downloaded.is_file() or downloaded.stat().st_size <= 0:
             raise MediaProviderError("provider_error", "The selected media could not be cached.")
+        if candidate.kind == "photo":
+            normalize_cached_photo(downloaded)
     except (MediaProviderError, OSError) as exc:
         raise CandidateError(str(exc)) from exc
     relative = downloaded.relative_to(settings.render_root.resolve()).as_posix()
