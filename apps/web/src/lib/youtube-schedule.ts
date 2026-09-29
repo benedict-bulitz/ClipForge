@@ -250,6 +250,45 @@ export function scheduleLoadError(serverMessage: string | null | undefined): str
   return detail && detail !== base ? `${base} ${detail}` : base;
 }
 
+/** A manual time colliding with the calendar (from preflight or the upload's fresh check). */
+export type ScheduleConflict = {
+  reason: "occupied" | "day_full";
+  message: string;
+  occupant: { kind: string; at: string; source: string } | null;
+  recommendation: SlotRecommendation | null;
+};
+
+export type ScheduleSelection = { schedule: ScheduleChoice | null; schedule_source?: "auto" | "manual" | null };
+
+/** Any edit of date, hour, minute or zone makes this upload's time the user's own. */
+export function editSchedule<T extends ScheduleSelection>(options: T, schedule: ScheduleChoice): T {
+  return { ...options, schedule, schedule_source: "manual" };
+}
+
+/** Only the explicit "Use recommended slot" puts the planner's slot back. */
+export function applyRecommendedSlot<T extends ScheduleSelection>(options: T, slot: SlotRecommendation): T {
+  return { ...options, schedule: { ...slot.choice }, schedule_source: "auto" };
+}
+
+/**
+ * A refreshed recommendation (Refresh schedule, retry, re-render) follows
+ * only an automatic selection; a manual time is never overwritten.
+ */
+export function followRecommendation<T extends ScheduleSelection>(options: T, slot: SlotRecommendation | null | undefined): T {
+  if (!slot || options.schedule_source === "manual") return options;
+  return applyRecommendedSlot(options, slot);
+}
+
+/** "Keep anyway" applies to exactly the time it was given for. */
+export function scheduleKey(schedule: ScheduleChoice | null | undefined): string {
+  return schedule ? `${schedule.date}T${schedule.time}@${schedule.timezone}` : "";
+}
+
+export function readConflict(detail: Record<string, unknown> | undefined): ScheduleConflict | null {
+  const value = detail?.conflict;
+  return value && typeof value === "object" && "reason" in value ? (value as ScheduleConflict) : null;
+}
+
 export function learningStatusText(learning: ScheduleLearning): string {
   if (learning.available) return `Suggested from channel data · based on ${learning.based_on ?? learning.eligible_count} eligible Shorts`;
   return learning.reason ?? `Learned schedule becomes available after ${learning.min_eligible} published Shorts with analytics (${learning.eligible_count} so far).`;

@@ -507,8 +507,10 @@ def test_smart_schedule_beats_the_last_used_time_but_not_a_manual_override(db, s
     # The user's own time is respected as is - even next to an existing video.
     recommended = draft["options"]["schedule"]
     fake.add_studio_video("studio", publish_at=draft["smart_schedule"]["recommendation"]["publish_at"])
+    client.post("/api/youtube/schedule/refresh")
     manual = publish_options(visibility="schedule", schedule={**recommended, "time": "20:10"}, schedule_source="manual").model_dump()
-    response = post_upload(client, PID, manual)
+    assert post_upload(client, PID, manual).json()["detail"]["status"] == "schedule_conflict"  # warned first
+    response = post_upload(client, PID, manual, accept_schedule_conflict=True)  # "Keep anyway"
     assert response.status_code == 202
     row = db.get(YouTubeUpload, response.json()["upload"]["id"])
     assert (row.schedule_source, row.schedule_slot_time, row.schedule_local_time[-5:]) == ("manual", None, "20:10")
@@ -656,3 +658,120 @@ def test_schedule_settings_api_roundtrip(db, settings, store, fake):
     good = client.put("/api/youtube/schedule", json={"videos_per_day": 3, "timezone": BERLIN, "slots": ["12:00", "16:30", "21:00"]}).json()
     assert (good["schedule"]["mode"], good["schedule"]["slots"]) == ("manual", ["12:00", "16:30", "21:00"])
     assert client.get("/api/youtube/schedule").json()["schedule"]["slots"] == ["12:00", "16:30", "21:00"]
+
+
+# ---------------------------------------------------------------------------
+# Manual date/time override: prefill, never lock; conflicts warned, never rewritten
+# ---------------------------------------------------------------------------
+
+
+def shifted(choice: dict, minutes: int) -> dict:
+    hour, minute = map(int, choice["time"].split(":"))
+    total = hour * 60 + minute + minutes
+    return {**choice, "time": f"{total // 60:02d}:{total % 60:02d}"}
+
+
+def manual(choice: dict) -> dict:
+    return publish_options(visibility="schedule", schedule=choice, schedule_source="manual").model_dump()
+
+
+def free_morning() -> dict:
+    """10:00 in two days: 150 min from the nearest 3/day slot, always in the future."""
+    day = (datetime.now(ZoneInfo(BERLIN)) + timedelta(days=2)).date().isoformat()
+    return {"date": day, "time": "10:00", "timezone": BERLIN}
+
+
+def preflight(client, options: dict) -> dict:
+    return client.post(f"/api/youtube/projects/{PID}/preflight", json={"options": options}).json()
+
+
+def test_recommendation_prefills_date_and_time_as_an_editable_auto_choice(db, settings, store, fake):
+    connect(db, settings, store, fake)
+    configure(db, 3)
+    build_project(db, settings)
+    draft = api_client(db, settings, store, fake).get(f"/api/youtube/projects/{PID}/draft").json()
+    recommendation = draft["smart_schedule"]["recommendation"]
+    assert draft["options"]["schedule"] == recommendation["choice"]  # date + time + zone prefilled
+    assert draft["options"]["schedule_source"] == "auto"
+    assert set(recommendation["choice"]) == {"date", "time", "timezone"}
+
+
+def test_manual_time_conflict_is_warned_and_needs_keep_anyway(db, settings, store, fake):
+    connect(db, settings, store, fake)
+    configure(db, 3)
+    build_project(db, settings)
+    client = api_client(db, settings, store, fake, dispatch=lambda *_: None)
+    first = client.get("/api/youtube/schedule/next").json()["recommendation"]
+    fake.add_studio_video("studio", publish_at=first["publish_at"])
+    client.post("/api/youtube/schedule/refresh")
+    before = client.get("/api/youtube/schedule").json()["schedule"]
+    chosen = shifted(first["choice"], 20)  # 20 minutes after the Studio video
+    checked = preflight(client, manual(chosen))
+    # A warning, not a blocking issue; the user's time is left exactly as chosen.
+    assert checked["issues"] == [] and checked["schedule"]["local_time"] == f"{chosen['date']}T{chosen['time']}"
+    conflict = checked["schedule_conflict"]
+    assert (conflict["reason"], conflict["message"]) == ("occupied", "Selected time conflicts with another scheduled video.")
+    assert conflict["recommendation"]["publish_at"] != first["publish_at"]  # "Use next recommended slot"
+    refused = post_upload(client, PID, manual(chosen))
+    assert refused.status_code == 409 and refused.json()["detail"]["status"] == "schedule_conflict"
+    assert refused.json()["detail"]["conflict"]["recommendation"]["choice"] == conflict["recommendation"]["choice"]
+    kept = post_upload(client, PID, manual(chosen), accept_schedule_conflict=True)
+    assert kept.status_code == 202
+    row = db.get(YouTubeUpload, kept.json()["upload"]["id"])
+    assert (row.schedule_source, row.schedule_slot_time, row.schedule_local_time) == ("manual", None, f"{chosen['date']}T{chosen['time']}")
+    assert row.upload_settings["options"]["schedule"] == chosen  # the exact choice persists
+    after = client.get("/api/youtube/schedule").json()["schedule"]
+    assert after == before  # per-upload only: the channel's Smart Schedule is unchanged
+
+
+def test_manual_time_on_a_full_day_is_warned(db, settings, store, fake):
+    connect(db, settings, store, fake)
+    configure(db, 1)
+    build_project(db, settings)
+    client = api_client(db, settings, store, fake)
+    tomorrow = (datetime.now(ZoneInfo(BERLIN)) + timedelta(days=1)).date().isoformat()
+    fake.add_studio_video("morning", publish_at=z(at(f"{tomorrow}T09:00")))
+    client.post("/api/youtube/schedule/refresh")
+    conflict = preflight(client, manual({"date": tomorrow, "time": "20:00", "timezone": BERLIN}))["schedule_conflict"]
+    assert conflict["reason"] == "day_full" and "1-video/day target" in conflict["message"]
+
+
+def test_free_manual_time_has_no_warning_and_uploads_directly(db, settings, store, fake):
+    connect(db, settings, store, fake)
+    configure(db, 3)
+    build_project(db, settings)
+    client = api_client(db, settings, store, fake, dispatch=lambda *_: None)
+    chosen = free_morning()  # away from every slot and video
+    assert preflight(client, manual(chosen))["schedule_conflict"] is None
+    response = post_upload(client, PID, manual(chosen))
+    assert response.status_code == 202
+    assert db.get(YouTubeUpload, response.json()["upload"]["id"]).schedule_source == "manual"
+
+
+def test_manual_time_inside_the_lead_time_is_an_inline_error_never_moved(db, settings, store, fake):
+    connect(db, settings, store, fake)
+    build_project(db, settings)
+    client = api_client(db, settings, store, fake)
+    soon = datetime.now(ZoneInfo(BERLIN)) + timedelta(minutes=5)
+    chosen = {"date": soon.date().isoformat(), "time": soon.strftime("%H:%M"), "timezone": BERLIN}
+    checked = preflight(client, manual(chosen))
+    assert {"field": "schedule", "message": "Choose a time at least 15 minutes from now."} in checked["issues"]
+    assert checked["schedule"]["status"] == "past" and checked["schedule_conflict"] is None
+    refused = post_upload(client, PID, manual(chosen))
+    assert refused.status_code == 422 and refused.json()["detail"]["status"] == "preflight_failed"
+
+
+def test_auto_and_manual_provenance_on_the_upload_record(db, settings, store, fake):
+    connect(db, settings, store, fake)
+    configure(db, 3)
+    build_project(db, settings)
+    build_project(db, settings, project_id=PID_B, content=b"\x02" * 30_000)
+    client = api_client(db, settings, store, fake, dispatch=lambda *_: None)
+    recommendation = client.get("/api/youtube/schedule/next").json()["recommendation"]
+    auto = post_upload(client, PID, auto_options(recommendation["choice"]))
+    row = db.get(YouTubeUpload, auto.json()["upload"]["id"])
+    assert (row.schedule_source, row.schedule_slot_time) == ("auto", recommendation["local_time"])
+    # The same wall time chosen by hand stays "manual": provenance follows the user's action.
+    by_hand = post_upload(client, PID_B, manual(free_morning()))
+    other = db.get(YouTubeUpload, by_hand.json()["upload"]["id"])
+    assert (other.schedule_source, other.schedule_slot_time) == ("manual", None)

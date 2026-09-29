@@ -264,7 +264,7 @@ test("the sheet stays open while uploading and closes itself only after success"
   assert.match(sheet, /window\.setTimeout\(\(\) => done\.current\(\), closeAfter\)/);
   // no double submit: the handler bails while in flight and the button is disabled
   assert.match(sheet, /if \(!options \|\| blocked \|\| locked\) return;/);
-  assert.match(sheet, /const blocked = issues\.length > 0 \|\| checking \|\| inFlight;/);
+  assert.match(sheet, /const blocked = issues\.length > 0 \|\| checking \|\| inFlight \|\| unresolvedConflict;/);
   assert.match(sheet, /aria-busy=\{phase\.tone === "busy"\}/);
   // green check success, announced to assistive technology
   assert.match(sheet, /success: "!bg-emerald-600/);

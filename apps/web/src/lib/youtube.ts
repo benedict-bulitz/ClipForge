@@ -359,7 +359,7 @@ export type ScheduleResolution = {
   utc_offset: string | null;
 };
 
-export type Preflight = { issues: PreflightIssue[]; schedule: ScheduleResolution | null; ready: boolean };
+export type Preflight = { issues: PreflightIssue[]; schedule: ScheduleResolution | null; schedule_conflict?: import("./youtube-schedule").ScheduleConflict | null; ready: boolean };
 
 export type DeletionPlan = {
   project_id: string;

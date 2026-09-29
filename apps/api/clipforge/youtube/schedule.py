@@ -752,6 +752,44 @@ def smart_state(
     }
 
 
+MANUAL_CONFLICT_MESSAGES = {
+    planner.PUBLISHED: "Selected time conflicts with a video already published around then.",
+    planner.SCHEDULED: "Selected time conflicts with another scheduled video.",
+    planner.RESERVED: "Selected time conflicts with another ClipForge upload in progress.",
+}
+
+
+def manual_conflict(db: Session, schedule: YouTubePublishingSchedule, publish_at: datetime, *, now: datetime | None = None) -> dict[str, Any] | None:
+    """Would the user's own time collide with the channel's calendar?  A warning, never a rewrite.
+
+    The same occupancy rule as the planner (tolerance, daily target), but the
+    lead time is YouTube's own 15-minute minimum - enforced as a hard error by
+    ``resolve_schedule`` - not the channel's longer lead for automatic picks.
+    """
+    now = now or _now()
+    config = planner_config(db, schedule)
+    items = occupants(db, schedule, now=now)
+    manual = planner.PlannerConfig(config.timezone, config.videos_per_day, config.slots, tolerance=config.tolerance, min_lead=timedelta(0), horizon_days=config.horizon_days)
+    verdict = planner.check_instant(manual, items, publish_at, now=now)
+    if verdict in {"free", "missed"}:
+        return None
+    instant = _utc(publish_at)
+    nearest = min(items, key=lambda item: abs(_utc(item.at) - instant)) if items else None  # type: ignore[operator]
+    if verdict == "occupied" and nearest is not None:
+        message = MANUAL_CONFLICT_MESSAGES.get(nearest.kind, MANUAL_CONFLICT_MESSAGES[planner.SCHEDULED])
+        occupant = {"kind": nearest.kind, "at": _iso(nearest.at), "source": nearest.source}
+    else:
+        count = config.videos_per_day
+        message = f"That day already has {count} video{'s' if count != 1 else ''} - your {count}-video{'s' if count != 1 else ''}/day target."
+        occupant = None
+    return {
+        "reason": verdict,
+        "message": message,
+        "occupant": occupant,
+        "recommendation": serialize_recommendation(planner.next_free_slot(config, items, now=now)),
+    }
+
+
 def claim_auto_slot(
     db: Session, settings: Settings, store: SecretStore, provider: YouTubeProvider, *,
     channel_id: str, choice: ScheduleChoice, project_id: str | None, allow_cached: bool = False, now: datetime | None = None,

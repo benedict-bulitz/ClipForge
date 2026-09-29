@@ -30,13 +30,11 @@ export function timeZones(current: string): string[] {
  * Date, time and an explicit IANA time zone. The backend resolves the exact
  * instant with the tz database (DST-safe) and the result is shown in words.
  */
-export function ScheduleFields({ value, onChange, locale, onResolved, hidden = false }: {
+export function ScheduleFields({ value, onChange, locale, onResolved }: {
   value: ScheduleChoice;
   onChange: (value: ScheduleChoice) => void;
   locale: string;
   onResolved?: (resolution: ScheduleResolution | null) => void;
-  /** Show only the resolved confirmation (the inputs stay one click away). */
-  hidden?: boolean;
 }) {
   const [resolution, setResolution] = useState<ScheduleResolution | null>(null);
   const zones = useMemo(() => timeZones(value.timezone), [value.timezone]);
@@ -60,7 +58,7 @@ export function ScheduleFields({ value, onChange, locale, onResolved, hidden = f
   const ok = shown?.status === "ok" && shown.publish_at;
   return (
     <div className="space-y-3">
-      {!hidden && <div className="grid gap-2 sm:grid-cols-[1fr_1fr_1.6fr]">
+      <div className="grid gap-2 sm:grid-cols-[1fr_1fr_1.6fr]">
         <label className="text-[11px] font-semibold">Date
           <input type="date" required value={value.date} onChange={(event) => onChange({ ...value, date: event.target.value })} className="cf-input mt-1 text-sm" aria-describedby="schedule-date-hint" />
           <span id="schedule-date-hint" className="mt-0.5 block text-[10px] font-normal text-[var(--muted-foreground)]">{value.date ? formatLocalDate(value.date, locale) : "Choose a day"}</span>
@@ -86,7 +84,7 @@ export function ScheduleFields({ value, onChange, locale, onResolved, hidden = f
           </select>
           <span className="mt-0.5 block text-[10px] font-normal text-[var(--muted-foreground)]">{zoneLabel(value.timezone, ok ? shown : null)}</span>
         </label>
-      </div>}
+      </div>
       {value.date && value.time && (
         <div role="status" className={cn("rounded-xl border px-3 py-2 text-xs", ok ? "border-emerald-200 bg-emerald-50 text-emerald-900" : "border-amber-200 bg-amber-50 text-amber-900")}>
           {ok ? (

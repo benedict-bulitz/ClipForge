@@ -350,10 +350,10 @@ export function getProjectYouTube(projectId: string, signal?: AbortSignal) {
   return request<import("./youtube").ProjectYouTube>(`/youtube/projects/${projectId}`, { cache: "no-store", signal });
 }
 
-export function uploadProjectToYouTube(projectId: string, baseRevision: number, options: import("./youtube").PublishOptions, region: string, language: string, forceNew = false, allowCachedSchedule = false) {
+export function uploadProjectToYouTube(projectId: string, baseRevision: number, options: import("./youtube").PublishOptions, region: string, language: string, forceNew = false, allowCachedSchedule = false, acceptScheduleConflict = false) {
   return request<{ upload: import("./youtube").YouTubeUpload; started: boolean; warnings: string[] }>(`/youtube/projects/${projectId}/uploads`, {
     method: "POST",
-    body: JSON.stringify({ base_revision: baseRevision, options, region, language, force_new: forceNew, allow_cached_schedule: allowCachedSchedule }),
+    body: JSON.stringify({ base_revision: baseRevision, options, region, language, force_new: forceNew, allow_cached_schedule: allowCachedSchedule, accept_schedule_conflict: acceptScheduleConflict }),
   });
 }
 

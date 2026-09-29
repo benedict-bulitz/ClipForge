@@ -33,13 +33,19 @@ import {
   type YouTubeUpload,
 } from "@/lib/youtube";
 import {
+  applyRecommendedSlot,
   dayContextLine,
+  editSchedule,
+  followRecommendation,
   freshnessLabel,
   isManualOverride,
+  readConflict,
   readRecommendation,
   recommendationLabel,
+  scheduleKey,
   slotTakenMessage,
   zoneLine,
+  type ScheduleConflict,
   type SlotRecommendation,
   type SmartScheduleState,
 } from "@/lib/youtube-schedule";
@@ -110,7 +116,9 @@ export function PublishSheet({ project, onClose, onUploaded }: { project: Projec
   // Smart Slot Planner: YouTube's real schedule decides the pre-selected slot.
   const [smart, setSmart] = useState<SmartScheduleState | null>(null);
   const [useCachedSchedule, setUseCachedSchedule] = useState(false);
-  const [showTimeFields, setShowTimeFields] = useState(false);
+  // A manual time that collides with the channel's calendar: warned, never rewritten.
+  const [conflict, setConflict] = useState<ScheduleConflict | null>(null);
+  const [keptConflictFor, setKeptConflictFor] = useState<string | null>(null);
   const [slotNotice, setSlotNotice] = useState<string | null>(null);
   const [checkingSlots, setCheckingSlots] = useState(false);
   const done = useRef(onUploaded);
@@ -141,7 +149,7 @@ export function PublishSheet({ project, onClose, onUploaded }: { project: Projec
     const timer = window.setTimeout(() => {
       setChecking(true);
       preflightYouTubeUpload(project.id, payload, region, language, controller.signal)
-        .then((result) => { setIssues(result.issues); setChecking(false); })
+        .then((result) => { setIssues(result.issues); setConflict(result.schedule_conflict ?? null); setChecking(false); })
         .catch(() => { if (!controller.signal.aborted) setChecking(false); });
     }, 300);
     return () => { controller.abort(); window.clearTimeout(timer); };
@@ -189,7 +197,7 @@ export function PublishSheet({ project, onClose, onUploaded }: { project: Projec
   /** Pre-select a planner slot; "auto" makes the backend re-check and reserve it before upload. */
   const applySlot = (slot: SlotRecommendation, cached = false) => {
     setUseCachedSchedule(cached);
-    update({ visibility: "schedule", schedule: { ...slot.choice }, schedule_source: "auto" });
+    setOptions((current) => (current ? { ...applyRecommendedSlot(current, slot), visibility: "schedule" } : current));
   };
   const selectedThumb = useMemo(
     () => (options?.thumbnail?.source === "youtube_auto" ? null : thumbnails.find((item) => item.source === options?.thumbnail?.source && item.asset === options?.thumbnail?.asset) ?? null),
@@ -209,7 +217,8 @@ export function PublishSheet({ project, onClose, onUploaded }: { project: Projec
   const limits = draft.limits;
   const audited = draft.allowed_visibilities.includes("public");
   const suggestion = draft.synthetic_suggestion;
-  const blocked = issues.length > 0 || checking || inFlight;
+  const unresolvedConflict = options.visibility === "schedule" && options.schedule_source !== "auto" && !!conflict && keptConflictFor !== scheduleKey(options.schedule);
+  const blocked = issues.length > 0 || checking || inFlight || unresolvedConflict;
   const locked = inFlight || !!phase?.close;
 
   async function addCustomThumbnail(file: File) {
@@ -242,12 +251,13 @@ export function PublishSheet({ project, onClose, onUploaded }: { project: Projec
     setRun(null);
     const wantsSchedule = options.visibility === "schedule";
     const auto = wantsSchedule && options.schedule_source === "auto";
+    const keepConflict = wantsSchedule && !auto && keptConflictFor === scheduleKey(options.schedule);
     setSlotNotice(null);
     try {
       const result = await uploadProjectToYouTube(
         project.id, project.current_revision,
         { ...options, schedule: wantsSchedule ? options.schedule : null, schedule_source: wantsSchedule ? options.schedule_source ?? "manual" : null },
-        region, language, false, auto && useCachedSchedule,
+        region, language, false, auto && useCachedSchedule, keepConflict,
       );
       follow(result.upload, wantsSchedule);
     } catch (reason) {
@@ -259,9 +269,11 @@ export function PublishSheet({ project, onClose, onUploaded }: { project: Projec
           setSmart((current) => (current ? { ...current, recommendation: current.status === "verified" ? next : current.recommendation, cached_recommendation: current.status === "verified" ? current.cached_recommendation : next } : current));
         } else {
           update({ schedule_source: "manual" });
-          setShowTimeFields(true);
         }
         setSlotNotice(slotTakenMessage(reason.message, next, new Date(), locale));
+      } else if (reason instanceof ApiError && reason.code === "schedule_conflict") {
+        // YouTube's fresh schedule shows a collision the cached preflight did not: ask, never rewrite.
+        setConflict(readConflict(reason.detail) ?? { reason: "occupied", message: reason.message, occupant: null, recommendation: null });
       } else if (reason instanceof ApiError && reason.code === "schedule_unverified") {
         const cached = readRecommendation(reason.detail, "cached_recommendation");
         setSmart((current) => (current ? { ...current, status: cached ? "stale_cache" : "unverified", recommendation: null, cached_recommendation: cached, freshness: (reason.detail?.freshness as SmartScheduleState["freshness"]) ?? current.freshness } : current));
@@ -397,7 +409,7 @@ export function PublishSheet({ project, onClose, onUploaded }: { project: Projec
                   notice={slotNotice}
                   locale={locale}
                   onApply={applySlot}
-                  onManual={() => { update({ schedule_source: "manual" }); setShowTimeFields(true); }}
+                  onManual={() => update({ schedule_source: "manual" })}
                   onRetry={() => {
                     setCheckingSlots(true);
                     setSlotNotice(null);
@@ -405,26 +417,30 @@ export function PublishSheet({ project, onClose, onUploaded }: { project: Projec
                       .then((next) => {
                         setSmart(next);
                         // Only an automatic selection follows the planner; a manual time stays.
-                        if (next.recommendation && options.schedule_source !== "manual") applySlot(next.recommendation);
+                        setOptions((current) => (current ? followRecommendation(current, next.recommendation) : current));
                       })
                       .catch(() => setSlotNotice("Could not verify YouTube schedule."))
                       .finally(() => setCheckingSlots(false));
                   }}
                 />
               )}
-              {(showTimeFields || options.schedule_source !== "auto" || !smart?.enabled) ? (
-                <ScheduleFields
-                  value={options.schedule}
-                  // A manual edit is respected for this upload and never snapped back.
-                  onChange={(schedule) => update({ schedule, schedule_source: "manual" })}
+              {/* Core publishing controls: always visible and editable. The
+                  recommendation only prefills them; any edit is the user's own
+                  time for this upload and is never snapped back. */}
+              <ScheduleFields
+                value={options.schedule}
+                onChange={(schedule) => setOptions((current) => (current ? editSchedule(current, schedule) : current))}
+                locale={locale}
+                onResolved={setResolution}
+              />
+              {conflict && options.schedule_source !== "auto" && (
+                <ConflictWarning
+                  conflict={conflict}
+                  kept={keptConflictFor === scheduleKey(options.schedule)}
                   locale={locale}
-                  onResolved={setResolution}
+                  onKeep={() => setKeptConflictFor(scheduleKey(options.schedule))}
+                  onUseNext={(slot) => { setConflict(null); applySlot(slot); }}
                 />
-              ) : (
-                <>
-                  <ScheduleFields value={options.schedule} onChange={() => undefined} locale={locale} onResolved={setResolution} hidden />
-                  <button type="button" className="interactive-text text-[11px]" onClick={() => setShowTimeFields(true)}><CalendarClock className="size-3" /> Change date or time</button>
-                </>
               )}
             </div>
           )}
@@ -496,7 +512,7 @@ export function PublishSheet({ project, onClose, onUploaded }: { project: Projec
           />
         </div>
         {inFlight && run && <p className="mt-1 text-right text-[10px] text-[var(--muted-foreground)]">You can close this — the upload continues in the background.</p>}
-        {blocked && !inFlight && !phase && <p id="publish-blocked-reason" className="mt-1 text-right text-[10px] text-[var(--muted-foreground)]">{checking ? "Checking settings…" : "Resolve the items above to upload."}</p>}
+        {blocked && !inFlight && !phase && <p id="publish-blocked-reason" className="mt-1 text-right text-[10px] text-[var(--muted-foreground)]">{checking ? "Checking settings…" : unresolvedConflict ? "Keep your time anyway or choose another one." : "Resolve the items above to upload."}</p>}
       </footer>
     </Shell>
   );
@@ -528,22 +544,21 @@ function SmartSlot({ smart, schedule, source, cached, checking, notice, locale, 
   return (
     <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-2.5 text-xs" aria-label="Recommended schedule" data-smart-status={smart.status}>
       <div className="flex items-start justify-between gap-2">
-        <p className="flex items-center gap-1.5 font-semibold"><CalendarClock className="size-3.5 text-[#ff6838]" /> {manual ? "Your time" : "Schedule automatically"}</p>
+        <p className="flex items-center gap-1.5 font-semibold"><CalendarClock className="size-3.5 text-[#ff6838]" /> {manual ? "Manual time for this upload" : "Recommended slot"}</p>
         <button type="button" className="interactive-text text-[11px]" onClick={onRetry} disabled={checking}>{checking ? <LoaderCircle className="size-3 animate-spin" /> : <RefreshCw className="size-3" />} {unverified ? "Retry" : "Refresh schedule"}</button>
       </div>
       {shown && !manual && (
         <>
-          <p className="mt-1">Recommended: <strong className="text-sm" data-testid="recommended-slot">{recommendationLabel(shown, now, locale)}</strong> <span className="text-[var(--muted-foreground)]">({formatLocalDate(shown.local_date, locale)})</span></p>
-          <p className="text-[11px] text-[var(--muted-foreground)]">{zoneLine(shown.timezone, shown.abbreviation)}</p>
-          <p className="mt-1 text-[11px]">Why: {shown.reason}</p>
+          <p className="mt-1"><strong className="text-sm" data-testid="recommended-slot">{recommendationLabel(shown, now, locale)}</strong> <span className="text-[var(--muted-foreground)]">({formatLocalDate(shown.local_date, locale)} · {zoneLine(shown.timezone, shown.abbreviation)})</span></p>
+          <p className="mt-1 text-[11px]">Reason: {shown.reason}</p>
           <p className="mt-0.5 text-[11px] text-[var(--muted-foreground)]">{dayContextLine(shown, now, locale)}</p>
         </>
       )}
       {manual && (
-        <p className="mt-1 text-[11px] text-[var(--muted-foreground)]">
-          Your chosen time is used for this upload.
-          {shown && <> Next available slot: {recommendationLabel(shown, now, locale)}. <button type="button" className="underline" onClick={() => onApply(shown, !recommended)}>Use it</button></>}
-        </p>
+        <div className="mt-1 flex flex-wrap items-center justify-between gap-2 text-[11px] text-[var(--muted-foreground)]">
+          <span>Your date and time are used for this upload only; your Smart Schedule is unchanged.{shown && <> Recommended: {recommendationLabel(shown, now, locale)}.</>}</span>
+          {shown && <button type="button" className="interactive-text text-[11px]" onClick={() => onApply(shown, !recommended)}><RotateCcw className="size-3" /> Use recommended slot</button>}
+        </div>
       )}
       {unverified && !cached && (
         <div role="alert" className="mt-2 rounded-lg bg-amber-50 px-2.5 py-2 text-[11px] text-amber-900">
@@ -560,6 +575,30 @@ function SmartSlot({ smart, schedule, source, cached, checking, notice, locale, 
       {!unverified && smart.freshness && <p className="mt-1 text-[10px] text-[var(--muted-foreground)]">{freshnessLabel(smart.freshness)}</p>}
       {smart.horizon_full && <p className="mt-1 text-[11px] text-amber-800">Every slot in your schedule is taken for the next {smart.schedule?.horizon_days ?? 30} days — choose a time manually.</p>}
       {notice && <p role="status" className="mt-2 rounded-lg bg-amber-50 px-2.5 py-1.5 text-[11px] font-semibold text-amber-900">{notice}</p>}
+    </div>
+  );
+}
+
+/** "Selected time conflicts with another scheduled video." - the user decides. */
+function ConflictWarning({ conflict, kept, locale, onKeep, onUseNext }: {
+  conflict: ScheduleConflict;
+  kept: boolean;
+  locale: string;
+  onKeep: () => void;
+  onUseNext: (slot: SlotRecommendation) => void;
+}) {
+  const next = conflict.recommendation;
+  return (
+    <div role="alert" data-conflict={conflict.reason} className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-900">
+      <p className="flex items-center gap-1.5 font-semibold"><AlertTriangle className="size-3" /> {conflict.message}</p>
+      {kept ? (
+        <p className="mt-0.5">Keeping your time anyway.</p>
+      ) : (
+        <div className="mt-1.5 flex flex-wrap gap-3">
+          <button type="button" className="underline" onClick={onKeep}>Keep anyway</button>
+          {next && <button type="button" className="underline" onClick={() => onUseNext(next)}>Use next recommended slot ({recommendationLabel(next, new Date(), locale)})</button>}
+        </div>
+      )}
     </div>
   );
 }

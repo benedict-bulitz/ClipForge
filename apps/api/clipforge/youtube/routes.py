@@ -106,6 +106,7 @@ ERROR_STATUS = {
     "invalid_schedule": 422,
     "learned_unavailable": status.HTTP_409_CONFLICT,
     "schedule_unavailable": status.HTTP_503_SERVICE_UNAVAILABLE,
+    "schedule_conflict": status.HTTP_409_CONFLICT,
 }
 
 
@@ -219,6 +220,8 @@ class UploadCreate(BaseModel):
     force_new: bool = False
     # The user chose "Use cached schedule" after YouTube could not be re-checked.
     allow_cached_schedule: bool = False
+    # The user chose "Keep anyway" for a manual time that collides with the calendar.
+    accept_schedule_conflict: bool = False
 
 
 class PreflightCreate(BaseModel):
@@ -376,7 +379,35 @@ def preflight_route(project_id: str, payload: PreflightCreate, db: DbSession, se
     project = _project_or_404(db, project_id)
     categories, _error = _categories(db, settings, store, provider, payload.region, payload.language)
     issues, resolution, _source = uploads.preflight(db, project, settings, payload.options, categories=categories)
-    return {"issues": issues, "schedule": resolution.as_dict() if resolution else None, "ready": not issues}
+    return {
+        "issues": issues,
+        "schedule": resolution.as_dict() if resolution else None,
+        "schedule_conflict": _manual_conflict(db, payload.options, resolution),
+        "ready": not issues,
+    }
+
+
+def _manual_conflict(db: Session, options: publishing.PublishOptions, resolution, *, fresh: tuple[Settings, SecretStore, YouTubeProvider] | None = None) -> dict | None:
+    """Conflict warning for a user-chosen time (automatic slots are checked when claimed).
+
+    The preflight runs while typing, so it reads the cached schedule only;
+    the upload passes ``fresh`` to re-read YouTube when the cache is old.
+    """
+    if options.visibility != "schedule" or options.schedule_source == "auto" or resolution is None or resolution.status != "ok":
+        return None
+    record = connection.active_connection(db)
+    if record is None:
+        return None
+    try:
+        if fresh is not None:
+            settings, store, provider = fresh
+            schedule_authority.refresh_if_due(db, settings, store, provider, record.channel_id, max_age=schedule_authority.CONFLICT_CHECK_MAX_AGE)
+        schedule = schedule_authority.ensure_schedule(db, record.channel_id)
+        return schedule_authority.manual_conflict(db, schedule, resolution.publish_at)
+    except SQLAlchemyError:
+        db.rollback()
+        logger.exception("Manual schedule conflict check failed")
+        return None
 
 
 @router.post("/projects/{project_id}/thumbnails")
@@ -447,7 +478,11 @@ def create_upload_route(
                     project_id=project.id, allow_cached=payload.allow_cached_schedule,
                 )
             elif resolution is not None and resolution.publish_at is not None:
-                # The user's own time is respected as is; it still marks the slot in flight.
+                # The user's own time is kept as is - but never scheduled into a
+                # collision without the user's explicit "Keep anyway".
+                conflict = _manual_conflict(db, options, resolution, fresh=(settings, store, provider))
+                if conflict is not None and not payload.accept_schedule_conflict:
+                    raise _error("schedule_conflict", conflict["message"], conflict=jsonable_encoder(conflict))
                 reservation = schedule_authority.reserve(
                     db, record.channel_id, publish_at=resolution.publish_at, local_time=resolution.local_time or options.schedule.time,
                     timezone=options.schedule.timezone, source="manual", project_id=project.id,

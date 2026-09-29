@@ -3,7 +3,12 @@ import test from "node:test";
 import { readFileSync } from "node:fs";
 import { safeLocale } from "./youtube.ts";
 import {
+  applyRecommendedSlot,
   dayContextLine,
+  editSchedule,
+  followRecommendation,
+  readConflict,
+  scheduleKey,
   dayLabel,
   formatNormalized,
   freshnessLabel,
@@ -19,6 +24,7 @@ import {
   validateSlotDraft,
   zonedToday,
   type ScheduleFreshness,
+  type ScheduleSelection,
   type ScheduleLearning,
   type SlotRecommendation,
 } from "./youtube-schedule.ts";
@@ -27,6 +33,7 @@ const sheet = readFileSync(new URL("../components/youtube-publish-sheet.tsx", im
 const settingsView = readFileSync(new URL("../components/youtube-publishing-schedule.tsx", import.meta.url), "utf8");
 const card = readFileSync(new URL("../components/youtube-connection-card.tsx", import.meta.url), "utf8");
 const helpers = readFileSync(new URL("./youtube-schedule.ts", import.meta.url), "utf8");
+const fields = readFileSync(new URL("../components/youtube-schedule-fields.tsx", import.meta.url), "utf8");
 
 // The backend's seed presets exactly as GET /api/youtube/schedule returns them.
 const PRESETS: Record<string, string[]> = {
@@ -42,6 +49,9 @@ const BERLIN = "Europe/Berlin";
 const slot = (local_time: string, status: SlotRecommendation["day"][number]["status"], position: number) => ({
   local_time, status, position, publish_at: null, abbreviation: "CEST", utc_offset: "UTC+02:00", occupant: null, message: null,
 });
+
+/** An upload's schedule state before anything was chosen (plus an unrelated field). */
+const blank = (): ScheduleSelection & { title: string } => ({ schedule: null, schedule_source: null, title: "t" });
 
 const recommendation = (overrides: Partial<SlotRecommendation> = {}): SlotRecommendation => ({
   choice: { date: "2026-09-28", time: "21:30", timezone: BERLIN },
@@ -85,23 +95,94 @@ test("custom slot edits are validated and saved through the API", () => {
   assert.match(card, /\{connected && <YouTubePublishingSchedule \/>\}/);
 });
 
-test("upload sheet pre-selects the next free slot from the planner", () => {
+test("the recommendation prefills date and time as the default choice", () => {
   assert.equal(recommendationLabel(recommendation(), NOW, "de-DE"), "Today · 21:30");
   assert.equal(recommendationLabel(recommendation({ local_date: "2026-09-29", local_time: "17:00" }), NOW, "de-DE"), "Tomorrow · 17:00");
   assert.equal(dayContextLine(recommendation(), NOW, "de-DE"), "Today: 12:30 occupied · 17:00 occupied · 21:30 selected");
+  assert.deepEqual(applyRecommendedSlot(blank(), recommendation()), { schedule: { date: "2026-09-28", time: "21:30", timezone: BERLIN }, schedule_source: "auto", title: "t" });
   assert.match(sheet, /getPublishingDraft\(project\.id, region, language, detectTimeZone\(\)\)/);
   assert.match(sheet, /schedule: next\.options\.schedule \?\?/);
-  assert.match(sheet, /Why: \{shown\.reason\}/);
-  assert.match(sheet, /Recommended: /);
+  assert.match(sheet, /Reason: \{shown\.reason\}/);
+  assert.match(sheet, /"Recommended slot"/);
 });
 
-test("a manual time is respected and never snapped back", () => {
-  assert.equal(isManualOverride({ date: "2026-09-28", time: "21:30", timezone: BERLIN }, recommendation()), false);
-  assert.equal(isManualOverride({ date: "2026-09-28", time: "20:45", timezone: BERLIN }, recommendation()), true);
-  assert.equal(isManualOverride(null, recommendation()), false);
-  // Editing the fields marks the upload manual; the planner is only applied on an explicit action.
-  assert.match(sheet, /onChange=\{\(schedule\) => update\(\{ schedule, schedule_source: "manual" \}\)\}/);
-  assert.match(sheet, /if \(next\.recommendation && options\.schedule_source !== "manual"\) applySlot/);
+test("date, time and time zone controls are always visible when scheduling", () => {
+  // No toggle, no hidden mode: the fields render whenever Visibility = Schedule.
+  assert.doesNotMatch(sheet, /showTimeFields|Change date or time|<ScheduleFields[^>]*\bhidden\b/);
+  const scheduling = sheet.slice(sheet.indexOf('{options.visibility === "schedule" && options.schedule && ('), sheet.indexOf("</Section>", sheet.indexOf('{options.visibility === "schedule" && options.schedule && (')));
+  assert.match(scheduling, /<ScheduleFields\s+value=\{options\.schedule\}/);
+  assert.doesNotMatch(scheduling, /Advanced/);
+  for (const label of ['aria-label="Hour"', 'aria-label="Minute"', 'type="date"', "Time zone", "zoneLabel(value.timezone"]) {
+    assert.ok(fields.includes(label), label);
+  }
+});
+
+test("changing the date or the time makes it a manual override", () => {
+  const auto = applyRecommendedSlot(blank(), recommendation());
+  const newDate = editSchedule(auto, { ...auto.schedule!, date: "2026-09-30" });
+  assert.deepEqual([newDate.schedule_source, newDate.schedule!.date, newDate.schedule!.time, newDate.title], ["manual", "2026-09-30", "21:30", "t"]);
+  const newHour = editSchedule(auto, { ...auto.schedule!, time: "19:30" });
+  const newMinute = editSchedule(auto, { ...auto.schedule!, time: "21:45" });
+  assert.deepEqual([newHour.schedule_source, newHour.schedule!.time], ["manual", "19:30"]);
+  assert.deepEqual([newMinute.schedule_source, newMinute.schedule!.time], ["manual", "21:45"]);
+  assert.equal(isManualOverride(newHour.schedule, recommendation()), true);
+  assert.match(sheet, /onChange=\{\(schedule\) => setOptions\(\(current\) => \(current \? editSchedule\(current, schedule\) : current\)\)\}/);
+});
+
+test("re-renders and schedule refreshes never restore the recommendation over a manual time", () => {
+  const manual = editSchedule(applyRecommendedSlot(blank(), recommendation()), { date: "2026-09-30", time: "08:15", timezone: BERLIN });
+  const newer = recommendation({ choice: { date: "2026-09-29", time: "12:30", timezone: BERLIN }, local_date: "2026-09-29", local_time: "12:30" });
+  assert.deepEqual(followRecommendation(manual, newer), manual); // refresh with a new slot
+  assert.deepEqual(followRecommendation(manual, recommendation()), manual); // same slot again
+  assert.deepEqual(followRecommendation(manual, null), manual);
+  // An automatic selection does follow a refreshed recommendation.
+  const auto = applyRecommendedSlot(blank(), recommendation());
+  assert.deepEqual(followRecommendation(auto, newer).schedule, newer.choice);
+  // The sheet only ever applies a refresh through followRecommendation, and the draft is loaded once.
+  assert.match(sheet, /setOptions\(\(current\) => \(current \? followRecommendation\(current, next\.recommendation\) : current\)\)/);
+  assert.match(sheet, /\}, \[project\.id, region, language\]\);/);
+});
+
+test('"Use recommended slot" restores the recommendation explicitly', () => {
+  const manual = editSchedule(applyRecommendedSlot(blank(), recommendation()), { date: "2026-09-30", time: "08:15", timezone: BERLIN });
+  const restored = applyRecommendedSlot(manual, recommendation());
+  assert.deepEqual(restored, { schedule: recommendation().choice, schedule_source: "auto", title: "t" });
+  assert.match(sheet, /Use recommended slot/);
+  assert.match(sheet, /onClick=\{\(\) => onApply\(shown, !recommended\)\}/);
+});
+
+test("the manual choice is sent unchanged through preflight and upload", () => {
+  // The preflight payload is the options as they are; nothing rewrites the schedule on the way.
+  assert.match(sheet, /const payload = \{ \.\.\.options, schedule: options\.visibility === "schedule" \? options\.schedule : null \};/);
+  assert.match(sheet, /schedule: wantsSchedule \? options\.schedule : null, schedule_source: wantsSchedule \? options\.schedule_source \?\? "manual" : null/);
+});
+
+test("a conflicting manual time is warned with Keep anyway / Use next recommended slot", () => {
+  const conflict = readConflict({ conflict: { reason: "occupied", message: "Selected time conflicts with another scheduled video.", occupant: null, recommendation: recommendation() } });
+  assert.equal(conflict?.message, "Selected time conflicts with another scheduled video.");
+  assert.equal(readConflict({}), null);
+  // "Keep anyway" applies only to the exact time it was given for.
+  assert.equal(scheduleKey({ date: "2026-09-30", time: "08:15", timezone: BERLIN }), "2026-09-30T08:15@Europe/Berlin");
+  assert.notEqual(scheduleKey({ date: "2026-09-30", time: "08:20", timezone: BERLIN }), scheduleKey({ date: "2026-09-30", time: "08:15", timezone: BERLIN }));
+  for (const text of ["Keep anyway", "Use next recommended slot", 'reason.code === "schedule_conflict"', "result.schedule_conflict"]) {
+    assert.ok(sheet.includes(text), text);
+  }
+  assert.match(sheet, /keptConflictFor === scheduleKey\(options\.schedule\)/);
+  assert.match(sheet, /auto && useCachedSchedule, keepConflict/);
+  // Never silently replaced: only the explicit button applies the next slot.
+  assert.match(sheet, /onUseNext=\{\(slot\) => \{ setConflict\(null\); applySlot\(slot\); \}\}/);
+});
+
+test("a manual time inside the lead time is an inline error, never moved", () => {
+  // The backend's "past" resolution is shown inline next to the fields and blocks the upload.
+  assert.ok(fields.includes("shown?.message"));
+  assert.match(sheet, /const blocked = issues\.length > 0/);
+  assert.doesNotMatch(sheet, /MIN_SCHEDULE_LEAD|addMinutes/);
+});
+
+test("a manual override never edits the channel's Smart Schedule", () => {
+  assert.doesNotMatch(sheet, /saveYouTubeSchedule|applyLearnedYouTubeSchedule/);
+  assert.match(sheet, /your Smart Schedule is unchanged/);
 });
 
 test("an occupied slot causes a recalculation with the next free slot", () => {
