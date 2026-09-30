@@ -21,9 +21,12 @@ export type TopicSuggestion = {
 };
 
 export type TopicSuggestionsResponse = {
-  status: "ok" | "exhausted" | "unavailable";
+  /** ok: all requested | partial: fewer passed the quality floor | exhausted: none did |
+   *  unavailable: discovery failed | discovering: a refresh is running, ask again shortly. */
+  status: "ok" | "partial" | "exhausted" | "unavailable" | "discovering";
   message: string | null;
   candidates: { candidate_id: string; question: string; rationale?: string; confidence?: string }[];
+  retry_after_seconds?: number;
 };
 
 export type TopicSuggestionsRequest = {
@@ -39,7 +42,8 @@ export type TopicGenerationSource = {
   topic_candidate_id: string;
 };
 
-export type SuggestionStatus = "idle" | "loading" | "ready" | "unavailable";
+/** loading: discovery in progress | ready: at least one chip | empty: nothing cleared the quality floor. */
+export type SuggestionStatus = "idle" | "loading" | "ready" | "empty" | "unavailable";
 
 export type SuggestionState = {
   visible: (TopicSuggestion | null)[];
@@ -59,6 +63,10 @@ export const TOPIC_SUGGESTIONS_KEY = "clipforge-topic-suggestions";
 /** Bumped with the backend score version (ti-score-v2) so chips ranked by an older version are dropped once. */
 export const TOPIC_SUGGESTIONS_VERSION = 2;
 export const DISCOVERY_UNAVAILABLE = "Topic discovery is temporarily unavailable.";
+export const NO_STRONG_SUGGESTIONS = "Gerade keine starken Themenvorschläge. Gib eine eigene Frage ein oder versuche es später erneut.";
+/** While the backend reports a running discovery, ask again at most this often/long. */
+export const DISCOVERY_POLL_LIMIT = 40;
+export const DEFAULT_DISCOVERY_RETRY_MS = 3000;
 
 export function emptySuggestions(): SuggestionState {
   return { visible: Array.from({ length: VISIBLE_COUNT }, () => null), reserve: [], recent: [], status: "idle", message: null };
@@ -99,7 +107,8 @@ export function mergeSuggestions(state: SuggestionState, candidates: TopicSugges
     }
   }
   const reserve = [...state.reserve, ...fresh].slice(0, RESERVE_TARGET);
-  return { ...state, visible, reserve, recent: remember(state.recent, shownNow), status: "ready", message: null };
+  const any = visible.some(Boolean);
+  return { ...state, visible, reserve, recent: remember(state.recent, shownNow), status: any ? "ready" : "empty", message: any ? null : state.message };
 }
 
 /** Click: that slot alone gets the next reserve candidate (instantly); the others stay. */
@@ -177,11 +186,17 @@ export function topicGenerationSource(topic: TopicSuggestion | null, prompt: str
 
 export type SuggestionStorage = { load: () => string | null; save: (value: string) => void };
 
+export type SuggestionTimers = {
+  setTimeout: (callback: () => void, ms: number) => unknown;
+  clearTimeout: (handle: unknown) => void;
+};
+
 export type TopicSuggestionsOptions = {
   load: (request: TopicSuggestionsRequest) => Promise<TopicSuggestionsResponse>;
   onChange: (state: SuggestionState) => void;
   storage?: SuggestionStorage;
   now?: () => number;
+  timers?: SuggestionTimers;
 };
 
 export type TopicSuggestions = {
@@ -218,6 +233,12 @@ export function browserSuggestionStorage(): SuggestionStorage {
 export function createTopicSuggestions(options: TopicSuggestionsOptions): TopicSuggestions {
   const now = options.now ?? (() => Date.now());
   const storage = options.storage;
+  const timers: SuggestionTimers = options.timers ?? {
+    setTimeout: (callback, ms) => globalThis.setTimeout(callback, ms),
+    clearTimeout: (handle) => globalThis.clearTimeout(handle as ReturnType<typeof setTimeout>),
+  };
+  let retryHandle: unknown = null;
+  let discoveryPolls = 0;
   let state = emptySuggestions();
   let running = false;
   let inFlight: Promise<void> | null = null;
@@ -238,16 +259,36 @@ export function createTopicSuggestions(options: TopicSuggestionsOptions): TopicS
     if (!request && !picked.length && !dismissed.length) return;
     pendingPicked = [];
     pendingDismissed = [];
-    if (!shownSuggestions(state).length) update({ ...state, status: "loading" });
+    if (!shownSuggestions(state).length) update({ ...state, status: "loading", message: null });
     try {
       const exclude = request?.exclude ?? [...new Set([...shownSuggestions(state).map((item) => item.candidate_id), ...state.recent])];
       const response = await options.load({ count: request?.count ?? 1, exclude, picked, dismissed });
       if (!running) return;
+      if (response.status === "discovering") {
+        // A refresh is running on the server: keep a real loading state and ask again (bounded).
+        discoveryPolls += 1;
+        if (discoveryPolls > DISCOVERY_POLL_LIMIT) {
+          discoveryPolls = 0;
+          if (!state.visible.some(Boolean)) update({ ...state, status: "unavailable", message: DISCOVERY_UNAVAILABLE });
+          return;
+        }
+        if (!state.visible.some(Boolean)) update({ ...state, status: "loading", message: null });
+        const delay = Math.max(500, (response.retry_after_seconds ?? DEFAULT_DISCOVERY_RETRY_MS / 1000) * 1000);
+        if (retryHandle === null) {
+          retryHandle = timers.setTimeout(() => {
+            retryHandle = null;
+            void refill();
+          }, delay);
+        }
+        return;
+      }
+      discoveryPolls = 0;
       if (response.status === "unavailable" && !response.candidates.length) {
         update({ ...state, status: state.visible.some(Boolean) ? state.status : "unavailable", message: response.message || DISCOVERY_UNAVAILABLE });
         return;
       }
-      update(mergeSuggestions(state, response.candidates, now()));
+      const merged = mergeSuggestions(state, response.candidates, now());
+      update(merged.status === "empty" ? { ...merged, message: NO_STRONG_SUGGESTIONS } : merged);
     } catch {
       pendingPicked = [...picked, ...pendingPicked];
       pendingDismissed = [...dismissed, ...pendingDismissed];
@@ -282,6 +323,8 @@ export function createTopicSuggestions(options: TopicSuggestionsOptions): TopicS
     },
     stop() {
       running = false;
+      if (retryHandle !== null) timers.clearTimeout(retryHandle);
+      retryHandle = null;
     },
     pick(index) {
       const result = pickSuggestion(state, index);

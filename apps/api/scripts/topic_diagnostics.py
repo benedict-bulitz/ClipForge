@@ -4,6 +4,7 @@ Prints the top candidates with their sources, every score component, penalties,
 the mass-audience quality gate, final score and rejection reasons.  Nothing is
 written and no external call is made.
 
+    PYTHONPATH=. python scripts/topic_diagnostics.py --status       # which state Home is in, and why
     PYTHONPATH=. python scripts/topic_diagnostics.py                # latest pool, top 20
     PYTHONPATH=. python scripts/topic_diagnostics.py --shown 9      # what Home was served, in order
     PYTHONPATH=. python scripts/topic_diagnostics.py --rescore      # + score with the current version
@@ -52,15 +53,66 @@ def _print_view(label: str, view: dict) -> None:
         print(f"    {'':9} {' | '.join(extras)}")
 
 
+DIAGNOSES = {
+    "discovery_running": "A discovery refresh is running right now; Home shows a loading note and asks again.",
+    "warmup_failed": "The startup warm-up failed before any pool existed (see warmup.error).",
+    "no_pool_yet": "No discovery has run yet; the first Home visit starts one.",
+    "provider_failure": "Every discovery source failed (see sources); Home says discovery is unavailable.",
+    "stale_pool_other_version": "The latest pool was scored by an older score version; the next request re-discovers.",
+    "pool_expired_refreshes_on_next_request": "The pool is older than its TTL; the next request refreshes it.",
+    "quality_floor_rejected_all": "Discovery worked, but no candidate cleared the quality floor (see rejection reasons).",
+    "no_usable_candidates": "Discovery worked, but every candidate was rejected for other reasons.",
+    "fewer_than_three_candidates": "Fewer than 3 candidates cleared the floor; Home shows only those plus a note.",
+    "ok": "Enough candidates are available.",
+}
+
+
+def print_status(settings) -> None:
+    with SessionLocal() as db:
+        report = service.discovery_status(db, settings)
+    print(f"diagnosis: {report['diagnosis']} - {DIAGNOSES.get(report['diagnosis'], '')}")
+    print(f"score version: {report['current_score_version']} | discovery running: {report['discovery_running']}")
+    warmup = report["warmup"]
+    print(f"warm-up (this process only): {warmup['state']} result={warmup['result']} error={warmup['error']}")
+    print(f"config: {report['config']}")
+    run = report["run"] or {}
+    print(f"latest pool: version={run.get('score_version')} status={run.get('status')} fresh={run.get('fresh')} "
+          f"expires={run.get('expires_at')} quota_units={run.get('youtube_quota_units')}")
+    for source in run.get("sources") or []:
+        print(f"  source {source['name']:28} {source['status']:8} items={source.get('items')} calls={source.get('calls')} "
+              f"units={source.get('quota_units')} {source.get('error') or ''}")
+    pool = report["pool"] or {}
+    print(f"pool: raw_topics={pool.get('raw_topics')} evaluated={pool.get('evaluated')} accepted={pool.get('accepted')} "
+          f"available={pool.get('available')} rejected={pool.get('rejected')} statuses={pool.get('statuses')}")
+    print(f"rejection reasons: {pool.get('rejection_reasons')}")
+    print("accepted:")
+    for item in pool.get("accepted_candidates") or []:
+        print(f"  {item['final_score']:.3f} [{item['status']}] {item['question']}")
+    print("rejected:")
+    for item in pool.get("rejected_candidates") or []:
+        print(f"  {item['final_score']:.3f} {item['question'] or item['topic']}  <- {', '.join(item['reasons'])}")
+    print("caches:")
+    for cache in report["caches"]:
+        print(f"  {cache['provider']:28} fresh={cache['fresh']} fetched={cache['fetched_at']} expires={cache['expires_at']}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--limit", type=int, default=20)
     parser.add_argument("--shown", type=int, metavar="N", help="the first N candidates served to Home, in order")
     parser.add_argument("--rescore", action="store_true", help="also score with the current scoring version")
+    parser.add_argument("--status", action="store_true", help="diagnosis, sources, pool, rejections, caches")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
     prepare_schema()
     settings = get_settings()
+    if args.status:
+        if args.json:
+            with SessionLocal() as db:
+                print(json.dumps(service.discovery_status(db, settings), default=str, ensure_ascii=False, indent=2))
+        else:
+            print_status(settings)
+        return
     with SessionLocal() as db:
         report = service.diagnostics(
             db, settings, limit=args.shown or args.limit, shown=bool(args.shown), rescore=args.rescore,

@@ -140,6 +140,21 @@ If every discovery source fails and no chips are cached, Home says "Topic discov
 unavailable." and the manual prompt keeps working; if only some fail, the remaining sources are used with lower
 confidence. `GET /api/topic-intelligence/status` shows pool and cache freshness.
 
+If Home shows no chips, it says why: "Themenvorschläge werden gesucht…" while discovery runs, only
+the questions that cleared the quality floor plus a note when there are fewer than three (the floor is
+never lowered to fill slots), or "Topic discovery is temporarily unavailable." when every source
+failed. To see which state applies:
+
+```bash
+curl -s http://localhost:8000/api/topic-intelligence/status | python3 -m json.tool   # includes the live warm-up state
+cd apps/api && PYTHONPATH=. ../../.venv/bin/python scripts/topic_diagnostics.py --status
+```
+
+`diagnosis` is one of `discovery_running`, `warmup_failed`, `no_pool_yet`, `provider_failure`,
+`stale_pool_other_version`, `pool_expired_refreshes_on_next_request`, `quality_floor_rejected_all`,
+`no_usable_candidates`, `fewer_than_three_candidates` or `ok`, next to per-source status, pool size,
+accepted/rejected candidates with rejection reasons, the score version and cache freshness.
+
 Tuning diagnostics (developer only, read-only, no external calls):
 
 ```bash

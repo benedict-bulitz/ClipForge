@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -79,6 +80,13 @@ UNAVAILABLE_MESSAGE = "Topic discovery is temporarily unavailable."
 EXHAUSTED_MESSAGE = "No further topic candidates right now. Try again later or enter your own question."
 _FLIGHT = threading.Lock()
 logger = logging.getLogger(__name__)
+DISCOVERY_RETRY_SECONDS = 3
+# A pool that is short only because of the quality floor is not re-discovered on
+# every chip refill (each refresh may cost a question-rewriting call).
+MIN_REFRESH_INTERVAL = timedelta(minutes=10)
+BROADENING_REPORT = "broadening_pass"
+# Last startup warm-up (idle | running | done | failed), for diagnostics.
+WARMUP: dict[str, Any] = {"state": "idle", "started_at": None, "finished_at": None, "result": None, "error": None}
 
 
 class TopicHandoffError(ValueError):
@@ -425,6 +433,8 @@ def discover(
         probe_report.calls = meter.calls - calls_before
         probe_report.quota_units = meter.quota_units - units_before
     reports.append(probe_report)
+    if broaden_from is not None:
+        reports.append(SourceReport(BROADENING_REPORT, "ok", items=len(batch)))
     for candidate in candidates:
         issues, flags = extras[candidate.candidate_id]
         score_candidate(candidate, weights=weights, version=version, now=now, issues=issues, flags=flags, degraded_sources=degraded)
@@ -637,42 +647,69 @@ def suggestions(
     now = now or _now()
     count = max(1, min(MAX_SUGGESTIONS, int(count)))
     excluded = set(exclude or []) | set(picked or []) | set(dismissed or [])
-    with _FLIGHT:
-        _mark(db, list(picked or []), "picked", now)
-        _mark(db, list(dismissed or []), "skipped", now)
-        version = resolve_weights(settings)[1]
-        run = current_run(db, now, version)
-        fresh = run is None
-        if run is None:
-            run = discover(db, settings, deps, now=now)
-            if run.status == "unavailable":
-                return {**_unavailable(run), "candidates": []}
-        records = _available_records(db, run, excluded)
-        if len(records) < count and not fresh:
-            # Pool expired-in-place or used up: a normal refresh first.
-            refreshed = discover(db, settings, deps, now=now)
-            if refreshed.status != "unavailable":
-                run = refreshed
-                records = _available_records(db, run, excluded)
-        if len(records) < count:
-            # Too few candidates clear the quality floor: evaluate the next raw
-            # topics once, rather than serving weak filler.
-            broadened = discover(db, settings, deps, now=now, broaden_from=run)
-            if broadened.status != "unavailable":
-                run = broadened
-                records = _available_records(db, run, excluded)
-        records = records[:count]
-        for record in records:
-            if record.status == "pooled":
-                record.status = "proposed"  # displayed (visible chip or reserve)
-                record.proposed_at = now
-        db.commit()
+    _mark(db, list(picked or []), "picked", now)
+    _mark(db, list(dismissed or []), "skipped", now)
+    # Never make Home wait behind a discovery that is already running (e.g. the
+    # startup warm-up): say so, and let the client ask again shortly.
+    if not _FLIGHT.acquire(blocking=False):
         return {
-            "status": "ok" if records else "exhausted",
-            "message": None if records else EXHAUSTED_MESSAGE,
-            "candidates": [serialize_candidate(record) for record in records],
-            "pool": _pool_info(db, run),
+            "status": "discovering",
+            "message": "Topic discovery is running.",
+            "candidates": [],
+            "retry_after_seconds": DISCOVERY_RETRY_SECONDS,
+            "pool": None,
+            "summary": None,
         }
+    try:
+        return _suggestions_locked(db, settings, deps, count=count, excluded=excluded, now=now)
+    finally:
+        _FLIGHT.release()
+
+
+def _suggestions_locked(
+    db: Session, settings: Settings, deps: DiscoveryDeps, *, count: int, excluded: set[str], now: datetime,
+) -> dict[str, Any]:
+    version = resolve_weights(settings)[1]
+    run = current_run(db, now, version)
+    fresh = run is None
+    if run is None:
+        run = discover(db, settings, deps, now=now)
+        if run.status == "unavailable":
+            return {**_unavailable(run), "candidates": [], "summary": pool_summary(db, run)}
+    records = _available_records(db, run, excluded)
+    old_enough = (_utc(run.started_at) or now) <= now - MIN_REFRESH_INTERVAL
+    if len(records) < count and not fresh and old_enough:
+        # Pool used up by picks/refreshes: a normal refresh first.
+        refreshed = discover(db, settings, deps, now=now)
+        if refreshed.status != "unavailable":
+            run = refreshed
+            records = _available_records(db, run, excluded)
+    if len(records) < count and not was_broadened(run):
+        # Too few candidates clear the quality floor: evaluate the next raw
+        # topics once per pool, rather than serving weak filler.
+        broadened = discover(db, settings, deps, now=now, broaden_from=run)
+        if broadened.status != "unavailable":
+            run = broadened
+            records = _available_records(db, run, excluded)
+    records = records[:count]
+    for record in records:
+        if record.status == "pooled":
+            record.status = "proposed"  # displayed (visible chip or reserve)
+            record.proposed_at = now
+    db.commit()
+    status = "ok" if len(records) >= count else "partial" if records else "exhausted"
+    return {
+        "status": status,
+        "message": None if records else EXHAUSTED_MESSAGE,
+        "candidates": [serialize_candidate(record) for record in records],
+        "pool": _pool_info(db, run),
+        # Why fewer than requested: how many were evaluated and why they were rejected.
+        "summary": pool_summary(db, run),
+    }
+
+
+def was_broadened(run: TopicDiscoveryRun) -> bool:
+    return any(isinstance(item, dict) and item.get("name") == BROADENING_REPORT for item in run.sources or [])
 
 
 def warm_pool(session_factory: Any, settings: Settings, deps_factory: Any, *, now: datetime | None = None) -> str | None:
@@ -685,15 +722,24 @@ def warm_pool(session_factory: Any, settings: Settings, deps_factory: Any, *, no
             return discover(db, settings, deps_factory(db), now=now).status
 
 
+def run_warmup(session_factory: Any, settings: Settings, deps_factory: Any) -> None:
+    """The warm-up itself, with its state recorded in ``WARMUP`` for diagnostics."""
+    WARMUP.update(state="running", started_at=_now().isoformat(), finished_at=None, result=None, error=None)
+    try:
+        result = warm_pool(session_factory, settings, deps_factory)
+        WARMUP.update(state="done", result=result or "pool_already_fresh")
+    except Exception as exc:  # discovery must never affect the app
+        WARMUP.update(state="failed", error=f"{type(exc).__name__}: {str(exc)[:200]}")
+        logger.exception("Topic Intelligence warm-up failed")
+    finally:
+        WARMUP["finished_at"] = _now().isoformat()
+
+
 def warm_pool_in_background(session_factory: Any, settings: Settings, deps_factory: Any) -> threading.Thread:
     """Topic research runs beside the app; video generation never waits for it."""
-    def work() -> None:
-        try:
-            warm_pool(session_factory, settings, deps_factory)
-        except Exception:  # discovery must never affect the app
-            logger.exception("Topic Intelligence warm-up failed")
-
-    thread = threading.Thread(target=work, name="topic-intelligence-warmup", daemon=True)
+    thread = threading.Thread(
+        target=run_warmup, args=(session_factory, settings, deps_factory), name="topic-intelligence-warmup", daemon=True,
+    )
     thread.start()
     return thread
 
@@ -808,12 +854,83 @@ def diagnostics(
     }
 
 
-def discovery_status(db: Session, *, now: datetime | None = None) -> dict[str, Any]:
-    """Internal freshness view: latest run and cache entries per provider."""
+def pool_summary(db: Session, run: TopicDiscoveryRun | None) -> dict[str, Any] | None:
+    """Accepted vs. rejected candidates of one pool, with rejection reasons counted."""
+    if run is None:
+        return None
+    accepted: list[dict[str, Any]] = []
+    rejected: list[dict[str, Any]] = []
+    statuses: Counter[str] = Counter()
+    reasons: Counter[str] = Counter()
+    for candidate_id in run.ranked_candidate_ids or []:
+        record = db.get(TopicCandidateRecord, candidate_id)
+        if record is None:
+            continue
+        statuses[record.status] += 1
+        if record.rejection_reasons:
+            reasons.update(record.rejection_reasons)
+            rejected.append({"question": record.question, "topic": record.topic, "final_score": record.final_score, "reasons": list(record.rejection_reasons)})
+        else:
+            accepted.append({"question": record.question, "final_score": record.final_score, "status": record.status})
+    return {
+        "score_version": run.score_version,
+        "raw_topics": run.raw_topic_count,
+        "evaluated": len(accepted) + len(rejected),
+        "accepted": len(accepted),
+        "available": sum(1 for item in accepted if item["status"] in {"pooled", "proposed"}),
+        "rejected": len(rejected),
+        "rejection_reasons": dict(reasons.most_common()),
+        "statuses": dict(statuses),
+        "accepted_candidates": accepted[:20],
+        "rejected_candidates": rejected[:20],
+    }
+
+
+def diagnose(db: Session, settings: Settings, *, now: datetime | None = None) -> str:
+    """Which state Home suggestions are in, as one explicit code."""
+    now = now or _now()
+    version = resolve_weights(settings)[1]
+    run = db.scalar(select(TopicDiscoveryRun).order_by(TopicDiscoveryRun.sequence.desc()).limit(1))
+    if _FLIGHT.locked():
+        return "discovery_running"
+    if WARMUP["state"] == "failed" and run is None:
+        return "warmup_failed"
+    if run is None:
+        return "no_pool_yet"
+    if run.status == "unavailable":
+        return "provider_failure"
+    if run.score_version != version:
+        return "stale_pool_other_version"
+    if current_run(db, now, version) is None:
+        return "pool_expired_refreshes_on_next_request"
+    summary = pool_summary(db, run) or {}
+    if not summary.get("available"):
+        if (summary.get("rejection_reasons") or {}).get("below_quality_floor"):
+            return "quality_floor_rejected_all"
+        return "no_usable_candidates"
+    if summary["available"] < 3:
+        return "fewer_than_three_candidates"
+    return "ok"
+
+
+def discovery_status(db: Session, settings: Settings | None = None, *, now: datetime | None = None) -> dict[str, Any]:
+    """Internal state of Topic Intelligence: diagnosis, sources, pool, rejections, caches."""
     now = now or _now()
     run = db.scalar(select(TopicDiscoveryRun).order_by(TopicDiscoveryRun.sequence.desc()).limit(1))
     caches = db.scalars(select(TopicSourceCache).order_by(TopicSourceCache.provider)).all()
+    report_settings = settings
     return {
+        "diagnosis": diagnose(db, report_settings, now=now) if report_settings is not None else None,
+        "current_score_version": resolve_weights(report_settings)[1] if report_settings is not None else None,
+        "discovery_running": _FLIGHT.locked(),
+        "warmup": dict(WARMUP),
+        "config": None if report_settings is None else {
+            "ai_mode": report_settings.clipforge_ai_mode,
+            "question_rewriting": "llm" if report_settings.clipforge_ai_mode == "openai" and report_settings.openai_api_key else "template",
+            "brave_configured": bool(report_settings.brave_search_api_key),
+            "youtube_connected": active_connection(db) is not None,
+        },
+        "pool": pool_summary(db, run),
         "run": None if run is None else {
             **_pool_info(db, run),
             "score_version": run.score_version,

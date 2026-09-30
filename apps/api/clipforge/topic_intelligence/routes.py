@@ -61,6 +61,6 @@ def diagnostics_route(db: DbSession, config: SettingsDep, limit: int = 20, shown
 
 
 @router.get("/status")
-def topic_status_route(db: DbSession) -> dict:
-    """Internal freshness: latest discovery run and provider cache ages."""
-    return service.discovery_status(db)
+def topic_status_route(db: DbSession, config: SettingsDep) -> dict:
+    """Internal state: diagnosis code, sources, pool (accepted/rejected + reasons), caches."""
+    return service.discovery_status(db, config)

@@ -392,26 +392,40 @@ export default function Home() {
   );
 }
 
-/** Three live German topic suggestions; they change only on a click or "Neue Vorschläge". */
+/**
+ * Three live German topic suggestions; they change only on a click or "Neue Vorschläge".
+ * Only real questions are rendered - never anonymous blank pills - and every other
+ * state (loading, fewer strong candidates, none, discovery failure) is stated in words.
+ */
 function TopicSuggestionChips({ state, onUse, onRefreshAll }: { state: SuggestionState; onUse: (index: number) => void; onRefreshAll: () => void }) {
-  const hasAny = state.visible.some(Boolean);
-  if (!hasAny && state.status === "unavailable") {
-    return <p className="mt-9 text-xs text-[var(--muted-foreground)]" role="status">{state.message}</p>;
-  }
+  const count = state.visible.filter(Boolean).length;
+  const loading = state.status === "loading" || state.status === "idle";
+  const note = count === 0
+    ? (loading ? "Themenvorschläge werden gesucht…" : state.message)
+    : count < state.visible.length
+      ? (loading ? "Weitere Vorschläge werden gesucht…" : `Gerade ${count === 1 ? "nur ein starker Vorschlag" : `nur ${count} starke Vorschläge`}.`)
+      : null;
   return (
     <div className="mt-9 flex w-full max-w-[780px] flex-col items-center gap-2">
-      <div className="flex flex-wrap justify-center gap-2" aria-label="Themenvorschläge" aria-live="polite">
-        {state.visible.map((item, index) => item ? (
-          <button key={item.candidate_id} type="button" title={item.rationale || undefined} onClick={() => onUse(index)} className="topic-suggestion cf-surface rounded-full border px-4 py-2 text-xs font-medium text-[var(--muted-foreground)] transition-[transform,background-color,border-color,color] duration-150 ease-[cubic-bezier(.23,1,.32,1)] active:scale-[.97] hover:bg-[var(--surface-hover)] hover:text-[var(--foreground)]">
-            {item.question}
-          </button>
-        ) : (
-          <span key={`slot-${index}`} aria-hidden className="topic-suggestion-slot cf-surface h-[34px] w-48 animate-pulse rounded-full border opacity-60" />
-        ))}
-      </div>
-      <button type="button" onClick={onRefreshAll} disabled={!hasAny && state.status === "loading"} className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-semibold text-[var(--muted-foreground)] hover:bg-[var(--surface-hover)] hover:text-[var(--foreground)] disabled:opacity-50">
-        <RefreshCw className="size-3" /> Neue Vorschläge
-      </button>
+      {count > 0 && (
+        <div className="flex flex-wrap justify-center gap-2" aria-label="Themenvorschläge">
+          {state.visible.map((item, index) => item && (
+            <button key={item.candidate_id} type="button" title={item.rationale || undefined} onClick={() => onUse(index)} className="topic-suggestion cf-surface rounded-full border px-4 py-2 text-xs font-medium text-[var(--muted-foreground)] transition-[transform,background-color,border-color,color] duration-150 ease-[cubic-bezier(.23,1,.32,1)] active:scale-[.97] hover:bg-[var(--surface-hover)] hover:text-[var(--foreground)]">
+              {item.question}
+            </button>
+          ))}
+        </div>
+      )}
+      {note && (
+        <p className="topic-suggestion-status flex items-center gap-1.5 text-xs text-[var(--muted-foreground)]" role="status" aria-live="polite">
+          {loading && <LoaderCircle className="size-3 animate-spin" aria-hidden />} {note}
+        </p>
+      )}
+      {!(count === 0 && loading) && (
+        <button type="button" onClick={onRefreshAll} className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-semibold text-[var(--muted-foreground)] hover:bg-[var(--surface-hover)] hover:text-[var(--foreground)]">
+          <RefreshCw className="size-3" /> Neue Vorschläge
+        </button>
+      )}
     </div>
   );
 }

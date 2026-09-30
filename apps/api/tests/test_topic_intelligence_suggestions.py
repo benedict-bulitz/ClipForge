@@ -126,7 +126,7 @@ def test_discovery_failure_returns_unavailable_without_candidates(db):
 def test_exhausted_pool_refreshes_once_then_reports_exhausted(db):
     first = chips(db, count=12)
     runs = db.scalar(select(func.count()).select_from(TopicDiscoveryRun))
-    result = chips(db, count=3, dismissed=ids(first)[:12], now=NOW + timedelta(minutes=1))
+    result = chips(db, count=3, dismissed=ids(first)[:12], now=NOW + timedelta(minutes=11))
     # One normal refresh, plus at most one broadening pass - bounded, never a loop.
     assert runs + 1 <= db.scalar(select(func.count()).select_from(TopicDiscoveryRun)) <= runs + 2
     assert not set(ids(result)) & set(ids(first))
@@ -194,3 +194,16 @@ def test_generation_is_never_held_up_by_running_discovery(tmp_path, monkeypatch)
     finally:
         release.set()
         worker.join(10)
+
+
+def test_a_short_pool_is_not_rediscovered_on_every_refill(db):
+    wiki = FakeWiki(ARTICLES[:2])  # only two usable topics exist
+    first = chips(db, wiki=wiki, count=9)
+    runs = db.scalar(select(func.count()).select_from(TopicDiscoveryRun))
+    calls = len(wiki.calls)
+    for minute in (1, 2, 3):
+        again = chips(db, wiki=wiki, count=3, exclude=ids(first), now=NOW + timedelta(minutes=minute))
+        assert again["status"] == "exhausted" and again["summary"]["evaluated"] >= 1
+    assert db.scalar(select(func.count()).select_from(TopicDiscoveryRun)) == runs  # no refresh, no second broadening
+    assert len(wiki.calls) == calls
+    assert service.was_broadened(db.scalar(select(TopicDiscoveryRun).order_by(TopicDiscoveryRun.sequence.desc())))

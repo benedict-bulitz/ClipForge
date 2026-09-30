@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
+  DISCOVERY_POLL_LIMIT,
   DISCOVERY_UNAVAILABLE,
+  NO_STRONG_SUGGESTIONS,
   RESERVE_TARGET,
   RESERVE_TTL_MS,
   createTopicSuggestions,
@@ -200,7 +202,7 @@ test("discovery failure shows a clear note and never delays or blocks generation
   // Generate never awaits topic discovery.
   const generate = home.slice(home.indexOf("async function generate()"), home.indexOf("async function removeFromQueue"));
   assert.doesNotMatch(generate, /loadTopicSuggestions|refill|suggestionsRef/);
-  assert.match(home, /\{state\.message\}/);
+  assert.match(home, /: state\.message\)/);
 });
 
 test("manual textarea flow is unchanged; a chip question keeps its provenance", () => {
@@ -221,4 +223,86 @@ test("the separate Generate Next Video proposal UI is removed", () => {
     assert.ok(!api.includes(text), text);
   }
   assert.match(api, /"\/topic-intelligence\/suggestions"/);
+});
+
+
+function manualTimers() {
+  const pending: { callback: () => void; ms: number }[] = [];
+  return {
+    timers: {
+      setTimeout: (callback: () => void, ms: number) => { pending.push({ callback, ms }); return pending.length; },
+      clearTimeout: () => { pending.length = 0; },
+    },
+    pending,
+    async fire() {
+      const next = pending.shift();
+      next?.callback();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    },
+  };
+}
+
+async function controllerWith(responses: TopicSuggestionsResponse[], timers = manualTimers()) {
+  const requests: TopicSuggestionsRequest[] = [];
+  const controller = createTopicSuggestions({
+    load: async (request) => { requests.push(request); return responses[Math.min(requests.length - 1, responses.length - 1)]; },
+    onChange: () => {},
+    storage: memoryStorage(),
+    now: () => 1,
+    timers: timers.timers,
+  });
+  controller.start();
+  await new Promise((resolve) => setTimeout(resolve, 0)); // let start()'s own refill finish
+  return { controller, requests, timers };
+}
+
+test("nothing clearing the quality floor is an explicit empty state, never 3 blank pills", async () => {
+  const { controller } = await controllerWith([{ status: "exhausted", message: "No further topic candidates right now.", candidates: [] }]);
+  assert.equal(controller.state.status, "empty");
+  assert.equal(controller.state.message, NO_STRONG_SUGGESTIONS);
+  assert.deepEqual(visibleIds(controller.state), [null, null, null]);
+  const chips = home.slice(home.indexOf("function TopicSuggestionChips"), home.indexOf("function bulkDeleteSummary"));
+  assert.doesNotMatch(chips, /topic-suggestion-slot|animate-pulse/); // no anonymous placeholder pills
+  assert.match(chips, /item && \(/); // only real questions are rendered
+  assert.match(chips, /role="status"/);
+});
+
+test("fewer strong candidates: show the valid ones and say so (the floor is never lowered)", async () => {
+  const { controller } = await controllerWith([{ status: "partial", message: null, candidates: [candidate(0), candidate(1)] }]);
+  assert.equal(controller.state.status, "ready");
+  assert.deepEqual(visibleIds(controller.state), ["tc_0", "tc_1", null]);
+  assert.match(home, /nur \$\{count\} starke Vorschläge/);
+});
+
+test("a running discovery shows a real loading state and is polled, bounded", async () => {
+  const discovering: TopicSuggestionsResponse = { status: "discovering", message: "Topic discovery is running.", candidates: [], retry_after_seconds: 2 };
+  const ready: TopicSuggestionsResponse = { status: "ok", message: null, candidates: [candidate(0), candidate(1), candidate(2)] };
+  const { controller, requests, timers } = await controllerWith([discovering, ready]);
+  assert.equal(controller.state.status, "loading");
+  assert.equal(timers.pending[0].ms, 2000);
+  await timers.fire();
+  assert.equal(requests.length, 2);
+  assert.deepEqual(visibleIds(controller.state), ["tc_0", "tc_1", "tc_2"]);
+  assert.match(home, /Themenvorschläge werden gesucht…/);
+});
+
+test("a discovery that never finishes ends as unavailable instead of loading forever", async () => {
+  const discovering: TopicSuggestionsResponse = { status: "discovering", message: null, candidates: [], retry_after_seconds: 1 };
+  const { controller, timers } = await controllerWith([discovering]);
+  for (let index = 0; index < DISCOVERY_POLL_LIMIT + 1 && timers.pending.length; index += 1) await timers.fire();
+  assert.equal(controller.state.status, "unavailable");
+  assert.equal(controller.state.message, DISCOVERY_UNAVAILABLE);
+});
+
+test("after an empty state, Neue Vorschläge asks again and real questions replace the note", async () => {
+  const { controller, requests } = await controllerWith([
+    { status: "exhausted", message: null, candidates: [] },
+    { status: "ok", message: null, candidates: [candidate(4), candidate(5), candidate(6)] },
+  ]);
+  assert.equal(controller.state.status, "empty");
+  controller.refreshAll();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.ok(requests.length >= 2);
+  assert.equal(controller.state.status, "ready");
+  assert.deepEqual(visibleIds(controller.state), ["tc_4", "tc_5", "tc_6"]);
 });
