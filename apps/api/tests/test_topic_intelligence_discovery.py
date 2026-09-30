@@ -26,6 +26,7 @@ from clipforge.models import (
     YouTubeUpload,
 )
 from clipforge.topic_intelligence import service, transform
+from clipforge.topic_intelligence.scoring import SCORE_VERSION
 from clipforge.topic_intelligence.sources import BraveNewsSource, WikipediaPageviewsSource
 
 
@@ -57,7 +58,7 @@ def test_generate_next_video_discovers_scores_and_proposes_one_german_topic(db):
     assert candidate["question"].endswith("?")
     assert candidate["language"] == "de" and candidate["region"] == "DE"
     assert candidate["explanation"] and candidate["rationale"]
-    assert candidate["score_version"] == "ti-score-v1"
+    assert candidate["score_version"] == SCORE_VERSION
     assert set(candidate["details"]["components"]) >= {"trend", "outlier", "competition", "novelty", "channel_fit", "own_performance"}
     assert db.get(TopicCandidateRecord, candidate["candidate_id"]).status == "proposed"
     run = db.scalar(select(TopicDiscoveryRun))

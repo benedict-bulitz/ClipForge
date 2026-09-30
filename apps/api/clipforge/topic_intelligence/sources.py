@@ -154,8 +154,8 @@ def _wiki_flags(title: str, description: str, extract: str, disambiguation: bool
 class WikipediaPageviewsSource:
     name = "wikipedia_pageviews"
     TOP_LIMIT = 60
-    META_LIMIT = 20
-    HISTORY_LIMIT = 12
+    META_LIMIT = 40  # two Action API batches of 20 (the extracts limit)
+    HISTORY_LIMIT = 20
 
     def __init__(self, http_get: HttpGet = default_http_get) -> None:
         self.http_get = http_get
@@ -189,7 +189,8 @@ class WikipediaPageviewsSource:
             if len(titles) >= self.TOP_LIMIT:
                 break
         meta: dict[str, dict[str, Any]] = {}
-        if titles:
+        pages: list[dict[str, Any]] = []
+        for start in range(0, min(len(titles), self.META_LIMIT), 20):
             meter.charge()
             try:
                 response = self.http_get(
@@ -197,14 +198,16 @@ class WikipediaPageviewsSource:
                     {
                         "action": "query", "format": "json", "formatversion": "2",
                         "prop": "description|extracts|pageprops", "exintro": "1", "explaintext": "1",
-                        "exsentences": "2", "exlimit": str(self.META_LIMIT), "redirects": "1",
-                        "titles": "|".join(title.replace("_", " ") for title, _v, _r in titles[: self.META_LIMIT]),
+                        "exsentences": "2", "exlimit": "20", "redirects": "1",
+                        "titles": "|".join(title.replace("_", " ") for title, _v, _r in titles[start : start + 20]),
                     },
                     {},
                 )
             except FileNotFoundError:
                 response = {}
-            for page in (response.get("query") or {}).get("pages") or []:
+            pages.extend((response.get("query") or {}).get("pages") or [])
+        if pages:
+            for page in pages:
                 meta[str(page.get("title") or "").replace(" ", "_")] = {
                     "description": compact(page.get("description"), 160),
                     "extract": compact(page.get("extract"), 360),

@@ -16,6 +16,7 @@ from clipforge.models import GenerationJob, Project, TopicCandidateRecord
 from clipforge.schemas import AdvancedOptions, ProjectCreate
 from clipforge.topic_intelligence import service
 from clipforge.topic_intelligence.routes import next_topic_route, skip_topic_route
+from clipforge.topic_intelligence.scoring import DEFAULT_WEIGHTS, SCORE_VERSION
 from clipforge.youtube.fingerprint import build_fingerprint
 
 PACKAGE = Path(__file__).resolve().parents[1] / "clipforge" / "topic_intelligence"
@@ -52,8 +53,8 @@ def test_confirmed_topic_enters_the_existing_generation_entry_point_with_provena
     assert stored.request_payload["prompt"] == candidate["question"]
     assert provenance["topic_source"] == "topic_intelligence"
     assert provenance["candidate_id"] == candidate["candidate_id"]
-    assert provenance["score_version"] == "ti-score-v1"
-    assert provenance["score_breakdown"]["components"]["trend"]["weight"] == 0.2
+    assert provenance["score_version"] == SCORE_VERSION
+    assert provenance["score_breakdown"]["components"]["trend"]["weight"] == DEFAULT_WEIGHTS["trend"]
     assert "trend" in provenance["signals_used"] and "own_performance" not in provenance["signals_used"]
     assert provenance["selected_at"].startswith("20") and provenance["edited"] is False
     record = db.get(TopicCandidateRecord, candidate["candidate_id"])
@@ -203,6 +204,6 @@ def test_http_routes_are_wired_through_the_app(db, launched):
             "prompt": "Warum?", "topic_source": "topic_intelligence", "topic_candidate_id": another["candidate"]["candidate_id"],
         }).status_code == 409
         status = client.get("/api/topic-intelligence/status").json()
-        assert status["run"]["score_version"] == "ti-score-v1"
+        assert status["run"]["score_version"] == SCORE_VERSION
     finally:
         app.dependency_overrides.clear()

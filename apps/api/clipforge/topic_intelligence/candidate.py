@@ -26,6 +26,9 @@ SIGNAL_NAMES = (
     "visual",
     "researchability",
     "own_performance",
+    "broad_appeal",
+    "accessibility",
+    "question_form",
 )
 
 

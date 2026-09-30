@@ -6,6 +6,7 @@ from topic_support import NOW, FakeLLM, good_assessment, settings, spike
 
 from clipforge.topic_intelligence import scoring, transform
 from clipforge.topic_intelligence.candidate import (
+    SIGNAL_NAMES,
     RawTopic,
     Signal,
     TopicCandidate,
@@ -211,7 +212,7 @@ def test_deterministic_path_keeps_real_source_questions_and_never_templates_head
 
 
 def _candidate(**signals: Signal) -> TopicCandidate:
-    base = {name: Signal.unavailable("not_measured") for name in ("trend", "outlier", "competition", "novelty", "channel_fit", "suitability", "visual", "researchability", "own_performance")}
+    base = {name: Signal.unavailable("not_measured") for name in SIGNAL_NAMES}
     base.update(signals)
     return TopicCandidate(
         candidate_id=candidate_id_for("x"), topic="x", question="Warum ist x so?", rationale="", source_signals=[],
@@ -234,8 +235,10 @@ def test_missing_data_is_neutral_not_zero():
 
 def test_no_own_analytics_does_not_hurt_a_strong_candidate():
     strong = {
-        "trend": Signal(0.9, "high"), "novelty": Signal(1.0, "high"), "channel_fit": Signal(0.9, "medium"),
-        "suitability": Signal(0.85, "medium"), "visual": Signal(0.8, "medium"), "researchability": Signal(0.85, "medium"),
+        "trend": Signal(0.9, "high", sources=["wikipedia_pageviews", "youtube_trending_de"]), "novelty": Signal(1.0, "high"),
+        "channel_fit": Signal(0.9, "medium"), "suitability": Signal(0.85, "medium"), "visual": Signal(0.8, "medium"),
+        "researchability": Signal(0.85, "medium"), "broad_appeal": Signal(0.85, "medium"),
+        "accessibility": Signal(0.9, "medium"), "question_form": Signal(0.8, "high"),
     }
     without = _score(_candidate(**strong))
     with_neutral_own = _score(_candidate(**strong, own_performance=Signal(0.5, "high")))
@@ -276,12 +279,13 @@ def test_hard_rejections_are_separate_from_the_score():
     dup = _candidate(novelty=Signal(0.1, "high", {"duplicate_of": "project"}), trend=Signal(1.0, "high"))
     scored = _score(dup, issues=["answer_embedded"], flags=["opinion", "vague"])
     assert scored.rejection_reasons == ["duplicate_of_previous_topic", "question_answer_embedded", "flag_opinion"]
-    assert scored.score_breakdown["penalties"] == {"flags": ["vague"], "value": 0.06}
+    assert scored.score_breakdown["penalties"]["flags"] == ["vague"]
+    assert scored.score_breakdown["penalties"]["value"] == 0.06
     assert _score(_candidate(channel_fit=Signal(0.2, "medium"))).rejection_reasons == ["poor_channel_fit"]
 
 
 def test_degraded_sources_lower_confidence():
-    signals = {name: Signal(0.8, "high") for name in ("trend", "outlier", "novelty", "channel_fit", "suitability", "visual", "researchability")}
+    signals = {name: Signal(0.8, "high") for name in SIGNAL_NAMES if name not in {"competition", "own_performance"}}
     assert _score(_candidate(**signals)).confidence == "high"
     assert _score(_candidate(**signals), degraded_sources=True).confidence == "medium"
 
@@ -302,18 +306,19 @@ def test_ranking_is_deterministic_with_stable_tie_breaks():
 
 def test_weights_are_explicit_configurable_and_versioned():
     weights, version = scoring.resolve_weights(settings())
-    assert version == "ti-score-v1" and sum(weights.values()) == pytest.approx(1.0)
+    assert version == "ti-score-v2" and sum(weights.values()) == pytest.approx(1.0)
     assert set(weights) == set(scoring.WEIGHT_RATIONALE)
     custom, custom_version = scoring.resolve_weights(settings(topic_score_weights='{"trend": 0.4}'))
-    assert custom_version.startswith("ti-score-v1+w") and custom["trend"] > weights["trend"]
-    assert sum(custom.values()) == pytest.approx(1.0)
+    assert custom_version.startswith("ti-score-v2+w") and custom["trend"] > weights["trend"]
+    assert sum(custom.values()) == pytest.approx(1.0, abs=1e-5)
     with pytest.raises(ValueError):
         scoring.resolve_weights(settings(topic_score_weights='{"views": 1}'))
 
 
 def test_explanation_is_compact_and_derived_from_the_breakdown():
     candidate = _score(_candidate(
-        trend=Signal(0.9, "high"), novelty=Signal(0.95, "high"), visual=Signal(0.85, "medium"), competition=Signal(0.5, "medium"),
+        trend=Signal(0.9, "high", sources=["wikipedia_pageviews", "brave_news_de"]), novelty=Signal(0.95, "high"),
+        visual=Signal(0.85, "medium"), competition=Signal(0.5, "medium"), suitability=Signal(0.8, "medium"),
     ))
     lines = scoring.explain(candidate.score_breakdown)
     assert len(lines) <= 4

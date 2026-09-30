@@ -145,10 +145,36 @@ NICHE_PRIORS: dict[str, float] = {
     "unglueck_tragoedie": 0.08,
 }
 
+# Broad-audience appeal of a niche for general German knowledge shorts (documented prior,
+# 0..1): how likely an average viewer without special interest is curious about it.
+# A prior only - an assessed question or strong evidence can outweigh it.
+BROAD_APPEAL_PRIORS: dict[str, float] = {
+    "koerper_gesundheit": 0.9,
+    "weltraum": 0.88,
+    "psychologie": 0.86,
+    "alltag_phaenomene": 0.86,
+    "natur_tiere": 0.84,
+    "wissenschaft": 0.8,
+    "wetter_klima": 0.78,
+    "essen_trinken": 0.76,
+    "technik": 0.7,
+    "geschichte": 0.68,
+    "geografie": 0.64,
+    "wirtschaft_geld": 0.55,
+    "gesellschaft": 0.55,
+    "sprache_kultur": 0.5,
+    "unknown": 0.45,
+    "politik_tagesgeschehen": 0.3,
+    "sport": 0.3,
+    "unterhaltung": 0.3,
+    "promi_personen": 0.15,
+    "unglueck_tragoedie": 0.1,
+}
+
 POOR_FIT_NICHES = frozenset({"politik_tagesgeschehen", "sport", "unterhaltung", "promi_personen", "unglueck_tragoedie"})
 
 _NICHE_KEYWORDS: dict[str, tuple[str, ...]] = {
-    "koerper_gesundheit": ("koerp", "schlaf", "mued", "gehirn", "herz", "blut", "haut", "muskel", "gesund", "krank", "virus", "bakteri", "immun", "hunger", "durst", "schmerz", "zucker", "vitamin", "husten", "fieber", "grippe", "allergi", "augen", "zaehn", "magen", "darm", "atmen", "gaehn", "schwitz", "niesen", "altern", "mittagsschlaf", "koffein", "ernaehr", "medizin", "medikament", "impf"),
+    "koerper_gesundheit": ("koerp", "schluckauf", "zwerchfell", "reflex", "gaensehaut", "muskelkater", "schlaf", "mued", "gehirn", "herz", "blut", "haut", "muskel", "gesund", "krank", "virus", "bakteri", "immun", "hunger", "durst", "schmerz", "zucker", "vitamin", "husten", "fieber", "grippe", "allergi", "augen", "zaehn", "magen", "darm", "atmen", "gaehn", "schwitz", "niesen", "altern", "mittagsschlaf", "koffein", "ernaehr", "medizin", "medikament", "impf"),
     "psychologie": ("psych", "gefuehl", "angst", "stress", "gedaechtn", "erinner", "traeum", "traum", "gewohnheit", "motivation", "langeweil", "einsam", "lust", "gluecklich", "emotion", "verhalten", "entscheid"),
     "wissenschaft": ("physik", "chemi", "biolog", "forsch", "studie", "experiment", "atom", "molekuel", "energie", "licht", "schall", "gravitation", "schwerkraft", "temperatur", "wasser", "eis", "magnet", "elektr", "quant", "element", "reaktion", "evolution", "dna", "gen"),
     "weltraum": ("weltraum", "planet", "mond", "sonne", "stern", "galaxi", "rakete", "astronaut", "nasa", "esa", "mars", "komet", "asteroid", "schwarz loch", "universum", "satellit", "polarlicht", "sonnenfinsternis", "mondfinsternis", "sternschnupp", "meteor"),
@@ -250,3 +276,78 @@ def question_issues(question: str, *, evidence: str = "") -> list[str]:
 def compact(value: Any, limit: int = 280) -> str:
     text = " ".join(str(value or "").split())
     return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+
+
+# ---------------------------------------------------------------------------
+# Accessibility / obscurity features (observed properties of the text; the
+# scoring authority decides what they are worth).
+# ---------------------------------------------------------------------------
+
+_MONTHS = "januar|februar|märz|maerz|april|mai|juni|juli|august|september|oktober|november|dezember"
+_DATE_TITLE = re.compile(rf"(?i)^(?:\d{{1,2}}\.\s*(?:{_MONTHS})|(?:{_MONTHS})\s+\d{{3,4}}|\d{{3,4}}(?:\s*v\.\s*chr\.)?)$")
+_CALENDAR_DESCRIPTION = re.compile(r"(?i)\btag (?:des|im) gregorianischen kalender|\bjahr (?:des|im) \d+\. jahrhundert")
+# A name followed by a number ("Flug 1907", "Sommerspiele 2028") or a code ("A320"); a quantity
+# ("11 Kilometer") is not an identifier.
+_IDENTIFIER = re.compile(r"\b[A-ZÄÖÜ][\wäöüß-]*[- ]\d{2,}\b(?!\s*[A-Za-zäöüÄÖÜ])|\b[A-Z]{1,3}\d+[A-Z0-9]*\b")
+_DATE_IN_TEXT = re.compile(rf"(?i)\b\d{{1,2}}\.\s*(?:{_MONTHS})\b")
+_ACRONYM = re.compile(r"\b[A-ZÄÖÜ]{3,}\b")
+_FOREIGN_LETTERS = re.compile(r"[àáâãåæçèéêëìíîïñòóôõøùúûýÿœ]", re.IGNORECASE)
+_EVENT_DESCRIPTION = re.compile(r"(?i)\b(?:flugunfall|flugzeugabsturz|zwischenfall|linienflug|eisenbahnunfall|schiffsunglück|wahl (?:zum|in)|parlamentswahl|fußballspiel|länderspiel|saison \d)")
+_GENERIC_WRAPPER = re.compile(r"(?i)^(?:was steckt (?:eigentlich )?hinter|was (?:ist|sind|war|waren) (?:eigentlich )?|was bedeutet|wer (?:ist|war|sind|waren))\b")
+
+MECHANISMS = ("paradox", "what_if", "why", "how", "yes_no", "what_is", "other")
+
+
+def topic_obscurity_flags(title: str, description: str = "") -> set[str]:
+    """Why a raw topic may need prior knowledge (a date page, an identifier, an acronym, ...)."""
+    text = " ".join(str(title or "").split())
+    flags: set[str] = set()
+    if _DATE_TITLE.match(text) or _CALENDAR_DESCRIPTION.search(description or ""):
+        flags.add("date_page")
+    if _IDENTIFIER.search(text) and "date_page" not in flags:
+        flags.add("identifier")
+    if _ACRONYM.search(text):
+        flags.add("acronym")
+    if _FOREIGN_LETTERS.search(text):
+        flags.add("foreign_proper_name")
+    if text.count("-") >= 2 or (text.count("-") >= 1 and _ACRONYM.search(text)):
+        flags.add("compound_proper_name")
+    if _EVENT_DESCRIPTION.search(description or ""):
+        flags.add("isolated_event")
+    return flags
+
+
+def question_mechanism(question: str) -> str:
+    """The curiosity mechanism of a German question (used for quality and diversity)."""
+    text = " ".join(str(question or "").split()).casefold()
+    if re.match(r"^(?:wie kann es sein|wieso .*obwohl|warum .*obwohl|warum .*trotzdem)", text) or " obwohl " in text:
+        return "paradox"
+    if re.match(r"^(?:was (?:würde|wuerde) passieren|was wäre|was waere|was passiert,? wenn)", text):
+        return "what_if"
+    if re.match(r"^(?:warum|wieso|weshalb)\b", text):
+        return "why"
+    if re.match(r"^(?:wie|wodurch|woher)\b", text):
+        return "how"
+    if _GENERIC_WRAPPER.match(text):
+        return "what_is"
+    if re.match(r"^(?:kann|können|ist|sind|gibt|hat|haben|stimmt|macht|muss|müssen|wird|werden|darf|sollte)\b", text):
+        return "yes_no"
+    return "other"
+
+
+def question_flags(question: str, topic: str = "") -> set[str]:
+    """Obscurity carried INTO the question, plus a generic wrapper around a bare topic."""
+    text = " ".join(str(question or "").split())
+    flags = {f"question_{flag}" for flag in topic_obscurity_flags(text.rstrip("?")) - {"isolated_event", "date_page"}}
+    if _DATE_IN_TEXT.search(text):
+        flags.add("question_date")
+        flags.discard("question_identifier")
+    subject = " ".join(str(topic or "").split())
+    bare_topic_wrapper = bool(subject) and re.fullmatch(
+        rf"(?i)(?:was steckt (?:eigentlich )?hinter|was (?:ist|sind) (?:eigentlich )?|wie funktioniert (?:eigentlich )?|wie entsteht (?:eigentlich )?)"
+        rf"(?:der |die |das |ein |eine )?{re.escape(subject)}\?",
+        text,
+    )
+    if _GENERIC_WRAPPER.match(text) or (bare_topic_wrapper and subject and topic_obscurity_flags(subject)):
+        flags.add("generic_wrapper")
+    return flags

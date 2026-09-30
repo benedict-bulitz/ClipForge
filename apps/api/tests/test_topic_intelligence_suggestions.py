@@ -9,6 +9,7 @@ from topic_support import NOW, FakeWiki, deps, settings, spike
 
 from clipforge.models import GenerationJob, Project, TopicCandidateRecord, TopicDiscoveryRun
 from clipforge.topic_intelligence import service
+from clipforge.topic_intelligence.scoring import DIVERSITY_TOLERANCE
 
 ARTICLES = [
     {"title": title, "views": 50_000 - index, "description": description, "extract": f"{title}: {description}.",
@@ -42,7 +43,10 @@ def test_three_visible_plus_reserve_are_distinct_ranked_candidates(db):
     assert len(result["candidates"]) == 9 and len(set(ids(result))) == 9
     run = db.scalar(select(TopicDiscoveryRun))
     usable = [item for item in run.ranked_candidate_ids if not db.get(TopicCandidateRecord, item).rejection_reasons]
-    assert ids(result) == usable[:9]  # ranking order is the scoring authority's
+    # The scoring authority's order, only reshuffled among near-equal scores for diversity.
+    assert ids(result)[0] == usable[0]
+    ninth_best = db.get(TopicCandidateRecord, usable[8]).final_score
+    assert all(item["final_score"] >= ninth_best - DIVERSITY_TOLERANCE for item in result["candidates"])
     assert all(db.get(TopicCandidateRecord, item).status == "proposed" for item in ids(result))
     assert all(item["question"].endswith("?") for item in result["candidates"])
 
@@ -123,7 +127,8 @@ def test_exhausted_pool_refreshes_once_then_reports_exhausted(db):
     first = chips(db, count=12)
     runs = db.scalar(select(func.count()).select_from(TopicDiscoveryRun))
     result = chips(db, count=3, dismissed=ids(first)[:12], now=NOW + timedelta(minutes=1))
-    assert db.scalar(select(func.count()).select_from(TopicDiscoveryRun)) == runs + 1
+    # One normal refresh, plus at most one broadening pass - bounded, never a loop.
+    assert runs + 1 <= db.scalar(select(func.count()).select_from(TopicDiscoveryRun)) <= runs + 2
     assert not set(ids(result)) & set(ids(first))
 
 

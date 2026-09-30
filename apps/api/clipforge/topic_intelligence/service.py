@@ -32,8 +32,25 @@ from ..youtube.provider import YouTubeProvider, has_capability
 from . import history as history_module
 from .cache import CallMeter, prune_expired
 from .candidate import RawTopic, Signal, TopicCandidate, TopicGroup, candidate_id_for
-from .scoring import explain, rank, resolve_weights, score_candidate
-from .signals import assessed, channel_fit, competition_estimate, merge_trend, suitability
+from .scoring import (
+    RankedItem,
+    diversify,
+    explain,
+    rank,
+    rank_key,
+    resolve_weights,
+    score_candidate,
+)
+from .signals import (
+    accessibility,
+    assessed,
+    broad_appeal,
+    channel_fit,
+    competition_estimate,
+    merge_trend,
+    question_form,
+    suitability,
+)
 from .sources import (
     BraveNewsSource,
     DiscoveryContext,
@@ -44,7 +61,15 @@ from .sources import (
     YouTubeCompetitionProbe,
     YouTubeTrendingSource,
 )
-from .text import NICHE_PRIORS, similarity, topic_key
+from .text import (
+    BROAD_APPEAL_PRIORS,
+    NICHE_PRIORS,
+    question_flags,
+    question_mechanism,
+    similarity,
+    topic_key,
+    topic_obscurity_flags,
+)
 from .transform import MAX_BATCH, Transformed, transform_topics
 
 SKIP_MEMORY = timedelta(hours=24)
@@ -149,6 +174,21 @@ def _best_outlier(group: TopicGroup) -> Signal:
     return max(available, key=lambda signal: (signal.value or 0.0, signal.evidence.get("sample_size") or 0))
 
 
+def quality_signals(
+    question: str, topic: str, description: str, niche: str, assessment: dict[str, float], method: str,
+) -> tuple[dict[str, Signal], dict[str, Any]]:
+    """Mass-audience features of one question (signals only; scoring decides their worth)."""
+    topic_flags = topic_obscurity_flags(topic, description)
+    flags = question_flags(question, topic)
+    mechanism = question_mechanism(question)
+    signals = {
+        "broad_appeal": broad_appeal(niche, BROAD_APPEAL_PRIORS.get(niche, BROAD_APPEAL_PRIORS["unknown"]), assessment.get("broad_appeal"), method=method),
+        "accessibility": accessibility(flags, topic_flags, assessment.get("accessibility"), method=method),
+        "question_form": question_form(mechanism, flags),
+    }
+    return signals, {"mechanism": mechanism, "topic_flags": sorted(topic_flags), "question_flags": sorted(flags)}
+
+
 def build_candidate(
     group: TopicGroup,
     transformed: Transformed,
@@ -181,6 +221,8 @@ def build_candidate(
         ),
         "own_performance": own_priors.get(niche, own_default),
     }
+    features, feature_evidence = quality_signals(question, group.title, group.description(), niche, assessment, method)
+    signals.update(features)
     return TopicCandidate(
         candidate_id=candidate_id_for(topic_key(question) if question else f"raw:{group.key}"),
         topic=group.title,
@@ -201,6 +243,7 @@ def build_candidate(
             "flags": transformed.flags,
             "question_issues": transformed.issues,
             "run_id": run_id,
+            **feature_evidence,
         },
     )
 
@@ -283,8 +326,20 @@ def _prune(db: Session, now: datetime) -> None:
     db.commit()
 
 
-def discover(db: Session, settings: Settings, deps: DiscoveryDeps, *, now: datetime | None = None) -> TopicDiscoveryRun:
-    """One bounded discovery refresh: sources -> questions -> signals -> score -> pool."""
+def discover(
+    db: Session,
+    settings: Settings,
+    deps: DiscoveryDeps,
+    *,
+    now: datetime | None = None,
+    broaden_from: TopicDiscoveryRun | None = None,
+) -> TopicDiscoveryRun:
+    """One bounded discovery refresh: sources -> questions -> signals -> score -> pool.
+
+    ``broaden_from``: too few candidates of that run cleared the quality floor,
+    so evaluate the NEXT raw topics instead of the same ones again, keep that
+    run's usable candidates in the pool and spend no further search probes.
+    """
     now = now or _now()
     _prune(db, now)
     weights, version = resolve_weights(settings)
@@ -310,6 +365,18 @@ def discover(db: Session, settings: Settings, deps: DiscoveryDeps, *, now: datet
         db.commit()
         return run
     excluded_ids, excluded_groups = _recent_status_keys(db, now)
+    carried: list[TopicCandidateRecord] = []
+    carried_rejected: list[str] = []  # kept at the end for diagnostics; never served
+    if broaden_from is not None:
+        for candidate_id in broaden_from.ranked_candidate_ids or []:
+            record = db.get(TopicCandidateRecord, candidate_id)
+            if record is None:
+                continue
+            excluded_groups.add(str((record.provenance or {}).get("group_key") or ""))
+            if record.status in {"pooled", "proposed"} and not record.rejection_reasons and record.score_version == version:
+                carried.append(record)
+            elif record.rejection_reasons:
+                carried_rejected.append(record.candidate_id)
     groups = [
         group for group in group_topics(raw)
         if group.key not in excluded_groups and not group.flags & PREFILTER_FLAGS
@@ -334,7 +401,7 @@ def discover(db: Session, settings: Settings, deps: DiscoveryDeps, *, now: datet
     probe_report = SourceReport(deps.probe.name, "skipped", error=None if deps.probe.available else "YouTube is not connected")
     if deps.probe.available:
         calls_before, units_before = meter.calls, meter.quota_units
-        limit = max(0, int(settings.topic_youtube_search_probes))
+        limit = 0 if broaden_from is not None else max(0, int(settings.topic_youtube_search_probes))
         fetched = False
         probe_report.status = "ok"
         for candidate in [item for item in rank(candidates) if not item.rejected][:limit]:
@@ -371,7 +438,9 @@ def discover(db: Session, settings: Settings, deps: DiscoveryDeps, *, now: datet
         candidate.rationale = rationale_for(candidate)
     ranked = rank(ranked)
     _persist(db, run.id, ranked, now)
-    run.ranked_candidate_ids = list(dict.fromkeys(candidate.candidate_id for candidate in ranked))
+    order = [(rank_key(candidate.rejected, candidate.final_score, candidate.candidate_id), candidate.candidate_id) for candidate in ranked]
+    order += [(rank_key(False, record.final_score, record.candidate_id), record.candidate_id) for record in carried]
+    run.ranked_candidate_ids = list(dict.fromkeys([*(candidate_id for _key, candidate_id in sorted(order)), *carried_rejected]))
     run.status = "partial" if degraded else "ok"
     if transform_error:
         reports.append(SourceReport("question_transformation", "failed", error=transform_error))
@@ -387,9 +456,12 @@ def discover(db: Session, settings: Settings, deps: DiscoveryDeps, *, now: datet
 # ---------------------------------------------------------------------------
 
 
-def current_run(db: Session, now: datetime) -> TopicDiscoveryRun | None:
+def current_run(db: Session, now: datetime, version: str | None = None) -> TopicDiscoveryRun | None:
+    """The fresh pool; a pool scored by another score version is never reused."""
     run = db.scalar(select(TopicDiscoveryRun).order_by(TopicDiscoveryRun.sequence.desc()).limit(1))
     if run is None or run.status == "unavailable" or (_utc(run.expires_at) or now) <= now:
+        return None
+    if version is not None and run.score_version != version:
         return None
     return run
 
@@ -462,7 +534,7 @@ def next_topic(
 ) -> dict[str, Any]:
     now = now or _now()
     with _FLIGHT:  # single-flight: concurrent clicks share one refresh
-        run = None if refresh else current_run(db, now)
+        run = None if refresh else current_run(db, now, resolve_weights(settings)[1])
         fresh = run is None
         if run is None:
             run = discover(db, settings, deps, now=now)
@@ -515,8 +587,17 @@ def _mark(db: Session, candidate_ids: list[str], status: str, now: datetime) -> 
 
 
 def _available_records(db: Session, run: TopicDiscoveryRun, exclude: set[str]) -> list[TopicCandidateRecord]:
-    """Ranked, usable, not excluded and not a near-duplicate of anything excluded or already chosen."""
-    taken = [record.question for record in (db.get(TopicCandidateRecord, item) for item in exclude) if record is not None]
+    """Usable, not excluded, not a near-duplicate of anything excluded or chosen; diversified.
+
+    The order is the scoring authority's (``rank_key`` + ``diversify`` against
+    what the client currently shows).
+    """
+    excluded_records = [record for record in (db.get(TopicCandidateRecord, item) for item in exclude) if record is not None]
+    taken = [record.question for record in excluded_records]
+    shown = [
+        (record.niche, str((record.provenance or {}).get("mechanism") or "other"))
+        for record in excluded_records if record.status == "proposed"
+    ]
     chosen: list[TopicCandidateRecord] = []
     for candidate_id in run.ranked_candidate_ids or []:
         if candidate_id in exclude:
@@ -528,7 +609,12 @@ def _available_records(db: Session, run: TopicDiscoveryRun, exclude: set[str]) -
             continue
         chosen.append(record)
         taken.append(record.question)
-    return chosen
+    by_id = {record.candidate_id: record for record in chosen}
+    items = [
+        RankedItem(record.candidate_id, record.final_score, record.niche, str((record.provenance or {}).get("mechanism") or "other"))
+        for record in chosen
+    ]
+    return [by_id[item.candidate_id] for item in diversify(items, shown)]
 
 
 def suggestions(
@@ -554,7 +640,8 @@ def suggestions(
     with _FLIGHT:
         _mark(db, list(picked or []), "picked", now)
         _mark(db, list(dismissed or []), "skipped", now)
-        run = current_run(db, now)
+        version = resolve_weights(settings)[1]
+        run = current_run(db, now, version)
         fresh = run is None
         if run is None:
             run = discover(db, settings, deps, now=now)
@@ -562,9 +649,17 @@ def suggestions(
                 return {**_unavailable(run), "candidates": []}
         records = _available_records(db, run, excluded)
         if len(records) < count and not fresh:
+            # Pool expired-in-place or used up: a normal refresh first.
             refreshed = discover(db, settings, deps, now=now)
             if refreshed.status != "unavailable":
                 run = refreshed
+                records = _available_records(db, run, excluded)
+        if len(records) < count:
+            # Too few candidates clear the quality floor: evaluate the next raw
+            # topics once, rather than serving weak filler.
+            broadened = discover(db, settings, deps, now=now, broaden_from=run)
+            if broadened.status != "unavailable":
+                run = broadened
                 records = _available_records(db, run, excluded)
         records = records[:count]
         for record in records:
@@ -585,7 +680,7 @@ def warm_pool(session_factory: Any, settings: Settings, deps_factory: Any, *, no
     with session_factory() as db:
         now = now or _now()
         with _FLIGHT:
-            if current_run(db, now) is not None:
+            if current_run(db, now, resolve_weights(settings)[1]) is not None:
                 return None
             return discover(db, settings, deps_factory(db), now=now).status
 
@@ -601,6 +696,116 @@ def warm_pool_in_background(session_factory: Any, settings: Settings, deps_facto
     thread = threading.Thread(target=work, name="topic-intelligence-warmup", daemon=True)
     thread.start()
     return thread
+
+
+# ---------------------------------------------------------------------------
+# Developer diagnostics (tuning only; not part of the Home UI)
+# ---------------------------------------------------------------------------
+
+QUALITY_FEATURE_SIGNALS = ("broad_appeal", "accessibility", "question_form")
+
+
+def candidate_from_record(record: TopicCandidateRecord) -> TopicCandidate:
+    """Rebuild a candidate from its persisted signals (older versions get the v2 text features)."""
+    signals = {name: Signal.from_dict(payload) for name, payload in (record.signals or {}).items()}
+    provenance = dict(record.provenance or {})
+    missing = [name for name in QUALITY_FEATURE_SIGNALS if name not in signals]
+    if missing:
+        features, evidence = quality_signals(
+            record.question, record.topic, "", record.niche, {}, str(provenance.get("transformation") or "template"),
+        )
+        signals.update({name: features[name] for name in missing})
+        for key, value in evidence.items():
+            provenance.setdefault(key, value)
+    return TopicCandidate(
+        candidate_id=record.candidate_id,
+        topic=record.topic,
+        question=record.question,
+        rationale=record.rationale,
+        source_signals=list(record.source_signals or []),
+        discovered_at=_utc(record.discovered_at) or _now(),
+        language=record.language,
+        region=record.region,
+        niche=record.niche,
+        signals=signals,
+        freshness_at=_utc(record.freshness_at),
+        provenance=provenance,
+    )
+
+
+def rescore_record(record: TopicCandidateRecord, settings: Settings) -> TopicCandidate:
+    """Score a persisted candidate with the CURRENT authority, at its own discovery time."""
+    weights, version = resolve_weights(settings)
+    candidate = candidate_from_record(record)
+    provenance = candidate.provenance
+    return score_candidate(
+        candidate,
+        weights=weights,
+        version=version,
+        now=candidate.freshness_at or candidate.discovered_at,
+        issues=list(provenance.get("question_issues") or []),
+        flags=list(provenance.get("flags") or []),
+        degraded_sources=bool((record.score_breakdown or {}).get("degraded_sources")),
+    )
+
+
+def _score_view(breakdown: dict[str, Any], final: float, confidence: str, version: str, reasons: list[str]) -> dict[str, Any]:
+    return {
+        "score_version": version,
+        "final_score": final,
+        "confidence": confidence,
+        "components": {
+            name: {key: item.get(key) for key in ("value", "confidence", "effective", "weight", "contribution", "trend_quality_factor") if key in item}
+            for name, item in (breakdown.get("components") or {}).items()
+        },
+        "penalties": breakdown.get("penalties") or {},
+        "quality": breakdown.get("quality") or {},
+        "trend_quality": breakdown.get("trend_quality") or {},
+        "rejection_reasons": list(reasons),
+    }
+
+
+def diagnostics(
+    db: Session, settings: Settings, *, limit: int = 20, shown: bool = False, rescore: bool = False,
+) -> dict[str, Any]:
+    """Top candidates with every score component, penalties, quality gate and rejection reason.
+
+    ``shown``: the candidates handed to Home (in the order they were served)
+    instead of the latest pool.  ``rescore``: also score each persisted
+    candidate with the current authority (compare v1 winners with v2).
+    """
+    limit = max(1, min(200, int(limit)))
+    run = db.scalar(select(TopicDiscoveryRun).order_by(TopicDiscoveryRun.sequence.desc()).limit(1))
+    if shown:
+        served = db.scalars(
+            select(TopicCandidateRecord).where(TopicCandidateRecord.proposed_at.is_not(None))
+        ).all()
+        records = sorted(served, key=lambda record: (_utc(record.proposed_at), -record.final_score, record.candidate_id))[:limit]
+    else:
+        records = [record for record in (db.get(TopicCandidateRecord, item) for item in (run.ranked_candidate_ids if run else [])) if record is not None][:limit]
+    rows = []
+    for record in records:
+        row: dict[str, Any] = {
+            "candidate_id": record.candidate_id,
+            "question": record.question,
+            "topic": record.topic,
+            "status": record.status,
+            "niche": record.niche,
+            "mechanism": (record.provenance or {}).get("mechanism"),
+            "sources": sorted({str(item.get("source")) for item in record.source_signals or []}),
+            "transformation": (record.provenance or {}).get("transformation"),
+            "served_at": _utc(record.proposed_at),
+            "persisted": _score_view(record.score_breakdown or {}, record.final_score, record.confidence, record.score_version, record.rejection_reasons or []),
+        }
+        if rescore:
+            candidate = rescore_record(record, settings)
+            row["rescored"] = _score_view(candidate.score_breakdown, candidate.final_score, candidate.confidence, candidate.score_version, candidate.rejection_reasons)
+        rows.append(row)
+    return {
+        "current_score_version": resolve_weights(settings)[1],
+        "run": None if run is None else {"run_id": run.id, "score_version": run.score_version, "status": run.status, "sources": run.sources},
+        "candidates": rows,
+    }
 
 
 def discovery_status(db: Session, *, now: datetime | None = None) -> dict[str, Any]:

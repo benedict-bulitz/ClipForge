@@ -117,9 +117,15 @@ before the page opens; video generation never waits for it.
 - **Novelty** compares against projects, queued requests, uploaded videos and the Learning
   Archive with a light German-aware similarity (compounds, umlauts, synonyms), so rephrasings of an
   earlier video are rejected.
-- **Scoring**: one versioned authority (`topic_intelligence/scoring.py`, `ti-score-v1`) with
-  documented weights. Missing data (e.g. no own analytics yet) is neutral, never zero, and only
-  lowers the confidence. Override weights with `TOPIC_SCORE_WEIGHTS='{"trend": 0.25}'` (the score
+- **Scoring**: one versioned authority (`topic_intelligence/scoring.py`, `ti-score-v2`) with
+  documented weights. Mass-audience quality (suitability, broad appeal, accessibility without prior
+  niche knowledge, question form) carries the score; a trend spike counts only as much as its
+  corroboration and the topic's quality allow; date pages, identifiers, isolated events, acronyms,
+  proper-noun compounds and generic "Was steckt hinter X?" wrappers are penalized unless there is
+  exceptional evidence; candidates below the quality floor are never served as filler (one broader
+  discovery pass is tried instead); near-equal candidates are diversified by subject and question
+  structure. Missing data (e.g. no own analytics yet) is neutral, never zero, and only lowers the
+  confidence. Override weights with `TOPIC_SCORE_WEIGHTS='{"trend": 0.25}'` (the score
   version then records the override).
 - **Cost control**: normalized provider results are cached (2–24 h), the scored pool is reused for
   `TOPIC_POOL_TTL_MINUTES` (45), refreshes are single-flight, and each refresh has a hard YouTube
@@ -133,6 +139,17 @@ before the page opens; video generation never waits for it.
 If every discovery source fails and no chips are cached, Home says "Topic discovery is temporarily
 unavailable." and the manual prompt keeps working; if only some fail, the remaining sources are used with lower
 confidence. `GET /api/topic-intelligence/status` shows pool and cache freshness.
+
+Tuning diagnostics (developer only, read-only, no external calls):
+
+```bash
+cd apps/api && PYTHONPATH=. ../../.venv/bin/python scripts/topic_diagnostics.py --shown 9 --rescore
+```
+
+prints every served candidate with its sources, all score components, penalties, the quality gate,
+final score and rejection reasons (`--rescore` also scores persisted candidates with the current
+version). The same data is available at `GET /api/topic-intelligence/diagnostics` outside
+production.
 
 ## Verify
 

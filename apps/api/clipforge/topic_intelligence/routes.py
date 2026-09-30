@@ -52,6 +52,14 @@ def suggestions_route(payload: TopicSuggestionsRequest, db: DbSession, config: S
     )
 
 
+@router.get("/diagnostics")
+def diagnostics_route(db: DbSession, config: SettingsDep, limit: int = 20, shown: bool = False, rescore: bool = False) -> dict:
+    """Developer-only tuning view (every component, penalty, gate, rejection); off in production."""
+    if config.environment == "production":
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+    return service.diagnostics(db, config, limit=limit, shown=shown, rescore=rescore)
+
+
 @router.get("/status")
 def topic_status_route(db: DbSession) -> dict:
     """Internal freshness: latest discovery run and provider cache ages."""

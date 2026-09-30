@@ -242,3 +242,62 @@ def assessed(name: str, value: float | None, *, confidence: str, method: str, **
     if value is None:
         return Signal.unavailable("not_assessed")
     return Signal(round(clamp(value), 4), confidence, {"method": method, **evidence}, ["topic_assessment"])  # type: ignore[arg-type]
+
+
+
+# ---------------------------------------------------------------------------
+# Mass-audience quality features (ti-score-v2)
+# ---------------------------------------------------------------------------
+
+# How much each obscurity carried into the question costs accessibility.
+ACCESSIBILITY_DEDUCTIONS = {
+    "question_date": 0.45,
+    "question_identifier": 0.3,
+    "question_acronym": 0.2,
+    "question_compound_proper_name": 0.2,
+    "question_foreign_proper_name": 0.15,
+}
+# Curiosity strength of a question's structure (paradox and what-if open the widest gap).
+QUESTION_FORM_VALUES = {
+    "paradox": 0.9,
+    "what_if": 0.85,
+    "why": 0.8,
+    "how": 0.72,
+    "yes_no": 0.6,
+    "other": 0.5,
+    "what_is": 0.35,
+}
+GENERIC_WRAPPER_CAP = 0.25
+
+
+def broad_appeal(niche: str, prior: float, assessed_value: float | None, *, method: str) -> Signal:
+    """Would an average German viewer without special interest want the answer?"""
+    if assessed_value is not None:
+        return Signal(round(clamp(assessed_value), 4), "medium", {"method": method, "niche": niche, "niche_prior": prior}, ["topic_assessment"])
+    return Signal(round(clamp(prior), 4), "low", {"method": "niche_prior", "niche": niche}, ["topic_assessment"])
+
+
+def accessibility(question_flags: set[str], topic_flags: set[str], assessed_value: float | None, *, method: str) -> Signal:
+    """Premise understandable immediately, without niche knowledge (dates, codes, acronyms cost)."""
+    deductions = {flag: ACCESSIBILITY_DEDUCTIONS[flag] for flag in sorted(question_flags) if flag in ACCESSIBILITY_DEDUCTIONS}
+    feature_value = clamp(0.9 - sum(deductions.values()))
+    value = feature_value if assessed_value is None else min(feature_value, clamp(assessed_value))
+    return Signal(
+        round(value, 4),
+        "medium",
+        {
+            "method": method if assessed_value is not None else "text_features",
+            "question_flags": sorted(question_flags),
+            "topic_flags": sorted(topic_flags),
+            "deductions": deductions,
+        },
+        ["topic_features"],
+    )
+
+
+def question_form(mechanism: str, flags: set[str]) -> Signal:
+    """Strength of the question's curiosity structure; a bare generic wrapper is weak."""
+    value = QUESTION_FORM_VALUES.get(mechanism, QUESTION_FORM_VALUES["other"])
+    if "generic_wrapper" in flags:
+        value = min(value, GENERIC_WRAPPER_CAP)
+    return Signal(round(value, 4), "high", {"mechanism": mechanism, "generic_wrapper": "generic_wrapper" in flags}, ["topic_features"])

@@ -49,6 +49,8 @@ ASSESSMENT_KEYS = (
     "visual_potential",
     "researchability",
     "dach_relevance",
+    "broad_appeal",
+    "accessibility",
 )
 
 TRANSFORM_INSTRUCTIONS = (
@@ -65,7 +67,14 @@ TRANSFORM_INSTRUCTIONS = (
     "viewers would genuinely care. Score each dimension 0-10: curiosity_gap, clear_payoff (a clear, satisfying "
     "answer exists), substance (enough for 15-40 seconds, not trivial), premise_clarity, information_gain, "
     "visual_potential (real footage/photos can show it), researchability (verifiable from reliable sources), "
-    "dach_relevance. Flag problems with the allowed flags only: opinion, vague, needs_long_context, unverifiable, "
+    "dach_relevance, broad_appeal (would an average German viewer WITHOUT special interest want the answer?), "
+    "accessibility (the premise is understandable immediately, without knowing a specific place, project, date, "
+    "flight, code or person). Never use a generic wrapper such as 'Was steckt eigentlich hinter X?', 'Was ist X?' "
+    "or 'Wie funktioniert eigentlich X?' around a bare name; prefer a concrete curiosity mechanism (Warum ..., "
+    "Wieso ..., Wie kann es sein, dass ..., Was würde passieren, wenn ..., Warum passiert X, obwohl Y ...) ONLY when "
+    "the evidence supports it - never manufacture curiosity. If the topic is a calendar date, an isolated event id, "
+    "an obscure project or a name that needs context, either find the broadly interesting, supported phenomenon behind "
+    "it or set usable=false. Flag problems with the allowed flags only: opinion, vague, needs_long_context, unverifiable, "
     "trivial, no_clear_payoff, person_centric (gossip or a person's biography), tragedy_or_breaking_news (deaths, "
     "accidents, attacks), politics (party politics, elections), entertainment (a show, match or release itself), "
     "not_dach_relevant. Set usable=false when no honest knowledge question exists. angle: max 12 German words on "
@@ -87,6 +96,8 @@ class AITopicAssessment(BaseModel):
     visual_potential: int = Field(default=5, ge=0, le=10)
     researchability: int = Field(default=5, ge=0, le=10)
     dach_relevance: int = Field(default=5, ge=0, le=10)
+    broad_appeal: int = Field(default=5, ge=0, le=10)
+    accessibility: int = Field(default=5, ge=0, le=10)
     flags: list[str] = Field(default_factory=list)
 
 
@@ -147,6 +158,11 @@ def _heuristic_assessment(question: str, niche: str, group: TopicGroup, *, templ
     }
 
 
+_BODY_REACTION = ("reflex", "unwillkürliche", "unwillkuerliche", "kontraktion", "symptom")
+_PHENOMENON = ("erscheinung", "phänomen", "phaenomen", "wetterereignis", "niederschlag", "naturereignis", "effekt")
+_DEVICE = ("gerät", "geraet", "maschine", "verfahren", "technologie", "antrieb")
+
+
 def _template_question(group: TopicGroup, niche: str) -> tuple[str, str]:
     """(question, method) without an LLM: keep a real source question, else a neutral template."""
     for item in sorted(group.sightings, key=lambda sighting: sighting.kind != "video"):
@@ -157,9 +173,15 @@ def _template_question(group: TopicGroup, niche: str) -> tuple[str, str]:
     if not articles:
         return "", "none"  # a headline/video title is not turned into a question by string templates
     subject = articles[0].title.strip()
-    if niche == "technik":
+    description = f"{articles[0].description}".casefold()
+    # Concrete forms only where the encyclopedia itself says what the subject is.
+    if any(marker in description for marker in _BODY_REACTION):
+        return f"Warum bekommen wir {subject}?", "template"
+    if any(marker in description for marker in _PHENOMENON):
+        return f"Wie entsteht eigentlich {subject}?", "template"
+    if niche == "technik" and any(marker in description for marker in _DEVICE):
         return f"Wie funktioniert eigentlich {subject}?", "template"
-    return f"Was steckt eigentlich hinter {subject}?", "template"
+    return f"Was steckt eigentlich hinter {subject}?", "template"  # a generic wrapper: scored as weak
 
 
 def deterministic_transform(group: TopicGroup) -> Transformed:
