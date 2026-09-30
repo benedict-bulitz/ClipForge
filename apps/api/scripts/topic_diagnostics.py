@@ -5,6 +5,7 @@ the mass-audience quality gate, final score and rejection reasons.  Nothing is
 written and no external call is made.
 
     PYTHONPATH=. python scripts/topic_diagnostics.py --status       # which state Home is in, and why
+    PYTHONPATH=. python scripts/topic_diagnostics.py --status --live  # + live stage of the running API
     PYTHONPATH=. python scripts/topic_diagnostics.py                # latest pool, top 20
     PYTHONPATH=. python scripts/topic_diagnostics.py --shown 9      # what Home was served, in order
     PYTHONPATH=. python scripts/topic_diagnostics.py --rescore      # + score with the current version
@@ -59,7 +60,9 @@ def _print_view(label: str, view: dict) -> None:
 
 DIAGNOSES = {
     "discovery_running": "A discovery refresh is running right now; Home shows a loading note and asks again.",
-    "warmup_failed": "The startup warm-up failed before any pool existed (see warmup.error).",
+    "warmup_failed": "The startup warm-up failed or timed out before a pool existed (see warmup.error).",
+    "discovery_failed": "The last discovery failed (see the 'discovery' source error); the next request retries.",
+    "discovery_timed_out": "The last discovery was abandoned at its hard time limit; the next request retries.",
     "no_pool_yet": "No discovery has run yet; the first Home visit starts one.",
     "provider_failure": "Every discovery source failed (see sources); Home says discovery is unavailable.",
     "stale_pool_other_version": "The latest pool was scored by an older score version; the next request re-discovers.",
@@ -75,13 +78,33 @@ DIAGNOSES = {
 }
 
 
-def print_status(settings) -> None:
+def status_report(settings, live: str | None) -> dict:
+    """The running API's view (``--live``: flight, stage, warm-up live) or this process's DB-only view."""
+    if live:
+        import httpx
+
+        return httpx.get(f"{live.rstrip('/')}/api/topic-intelligence/status", timeout=10).json()
     with SessionLocal() as db:
-        report = service.discovery_status(db, settings)
+        return service.discovery_status(db, settings)
+
+
+def print_status(settings, live: str | None = None) -> None:
+    report = status_report(settings, live)
     print(f"diagnosis: {report['diagnosis']} - {DIAGNOSES.get(report['diagnosis'], '')}")
     print(f"score version: {report['current_score_version']} | discovery running: {report['discovery_running']}")
+    flight = report.get("discovery") or {}
+    scope = "running API" if live else "this process only - use --live for the running app"
+    print(f"discovery ({scope}): stage={flight.get('discovery_stage')} provider={flight.get('active_provider')} "
+          f"owner={flight.get('owner')} elapsed={flight.get('elapsed_seconds')}s stage_elapsed={flight.get('stage_elapsed_seconds')}s "
+          f"limit={flight.get('hard_limit_seconds')}s timeouts={flight.get('timeouts_seconds')}")
+    for stage in flight.get("stages") or []:
+        print(f"  stage {stage['stage']:22} {stage.get('provider') or ''!s:22} {stage.get('seconds')}s {stage.get('status') or 'running'}")
+    for event in flight.get("events") or []:
+        print(f"  event {event['code']}: {event['message']}")
+    if flight.get("last_error"):
+        print(f"  last error: {flight['last_error']}")
     warmup = report["warmup"]
-    print(f"warm-up (this process only): {warmup['state']} result={warmup['result']} error={warmup['error']}")
+    print(f"warm-up ({scope}): {warmup['state']} result={warmup['result']} error={warmup['error']}")
     print(f"config: {report['config']}")
     run = report["run"] or {}
     print(f"latest pool: version={run.get('score_version')} status={run.get('status')} fresh={run.get('fresh')} "
@@ -140,15 +163,16 @@ def main() -> None:
     parser.add_argument("--rescore", action="store_true", help="also score with the current scoring version")
     parser.add_argument("--status", action="store_true", help="diagnosis, sources, pool, rejections, caches")
     parser.add_argument("--json", action="store_true")
+    parser.add_argument("--live", nargs="?", const="http://localhost:8000", metavar="API_URL",
+                        help="with --status: read the running API (live discovery stage, warm-up, lock)")
     args = parser.parse_args()
     prepare_schema()
     settings = get_settings()
     if args.status:
         if args.json:
-            with SessionLocal() as db:
-                print(json.dumps(service.discovery_status(db, settings), default=str, ensure_ascii=False, indent=2))
+            print(json.dumps(status_report(settings, args.live), default=str, ensure_ascii=False, indent=2))
         else:
-            print_status(settings)
+            print_status(settings, args.live)
         return
     with SessionLocal() as db:
         report = service.diagnostics(

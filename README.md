@@ -142,6 +142,15 @@ before the page opens; video generation never waits for it.
 - **Availability**: an accepted candidate stays available until the user picks or dismisses it; a
   refill that finds nothing new never discards the shown chips. With only 1-2 strong candidates Home
   shows exactly those ("Gerade nur 2 starke Vorschläge.").
+- **Bounded discovery** (`topic_intelligence/runtime.py`): nothing waits forever. Each provider fetch
+  and competition probe runs under a 30 s wall-clock bound (a hung provider is marked `timeout`, the
+  others continue, and it is not retried within the same refresh); each curator request has a 60 s client timeout without retries plus a
+  wall-clock guard, and no new request starts after 150 s (the rest falls back to strict local rules).
+  Discovery holds no database transaction while waiting on the network. The single-flight lock has an
+  owner: a discovery (warm-up or request) holding it longer than 300 s is abandoned, the warm-up is
+  marked failed, and "Neue Vorschläge" can retry at once; a failed discovery ends as a `failed` run with
+  its error and never hides the last complete pool. Home waits for chips at most 180 s, then says
+  "Themenvorschläge konnten nicht geladen werden." and keeps "Neue Vorschläge" as the retry.
 - **Universal 12+ gate** (since `ti-score-v3`): a question whose premise needs prior knowledge (title
   context, a brand or multi-word name, product-generation news, an institution or one specific
   event, a date or identifier, or an obscure entity leading the question) is rejected as
@@ -174,15 +183,20 @@ confidence. `GET /api/topic-intelligence/status` shows pool and cache freshness.
 
 If Home shows no chips, it says why: "Themenvorschläge werden gesucht…" while discovery runs, only
 the questions that cleared the quality floor plus a note when there are fewer than three (the floor is
-never lowered to fill slots), or "Topic discovery is temporarily unavailable." when every source
-failed. To see which state applies:
+never lowered to fill slots), or "Themenvorschläge konnten nicht geladen werden." when discovery
+failed or timed out. To see which state applies:
 
 ```bash
 curl -s http://localhost:8000/api/topic-intelligence/status | python3 -m json.tool   # includes the live warm-up state
-cd apps/api && PYTHONPATH=. ../../.venv/bin/python scripts/topic_diagnostics.py --status
+cd apps/api && PYTHONPATH=. ../../.venv/bin/python scripts/topic_diagnostics.py --status --live
 ```
 
-`diagnosis` is one of `discovery_running`, `warmup_failed`, `no_pool_yet`, `provider_failure`,
+While discovery runs, `discovery` shows `discovery_stage` (`provider_cache_read`, `provider_fetch`,
+`merge_raw_topics`, `prefilter`, `curation_batch`, `curator_request`, `scoring`, `competition_probe`,
+`persistence`), `active_provider`, `stage_started_at`, `elapsed_seconds`, the lock owner, the stage log
+with durations and every timeout event.
+
+`diagnosis` is one of `discovery_running`, `discovery_failed`, `discovery_timed_out`, `warmup_failed`, `no_pool_yet`, `provider_failure`,
 `stale_pool_other_version`, `pool_expired_refreshes_on_next_request`, `question_transformation_failed`,
 `quality_floor_rejected_all`, `prior_knowledge_rejected_all`, `semantic_rejected_all`,
 `local_strict_rejected_all`, `no_usable_candidates`,

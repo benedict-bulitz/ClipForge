@@ -16,6 +16,7 @@ from sqlalchemy import delete
 from sqlalchemy.orm import Session
 
 from ..models import TopicSourceCache
+from . import runtime
 
 # Documented TTLs: trend sources move within hours, competition within days.
 PROVIDER_TTL: dict[str, timedelta] = {
@@ -76,17 +77,26 @@ def get_or_fetch(
     now: datetime,
     ttl: timedelta | None = None,
 ) -> CacheHit:
-    """Return a fresh cached payload or fetch once (single-flight per key)."""
+    """Return a fresh cached payload or fetch once (single-flight per key).
+
+    The fetch runs under a wall-clock bound (``runtime.PROVIDER_TIMEOUT_SECONDS``):
+    a hung provider raises ``runtime.CallTimeout`` instead of blocking discovery.
+    """
     cache_key = f"{provider}:{key}"[:200]
-    with _key_lock(cache_key):
+    lock = _key_lock(cache_key)
+    if not lock.acquire(timeout=runtime.PROVIDER_TIMEOUT_SECONDS + 5):
+        raise runtime.CallTimeout(f"{provider} cache entry is busy")
+    try:
+        runtime.FLIGHT.stage("provider_cache_read", provider)
         entry = db.get(TopicSourceCache, cache_key)
         if entry is not None and _utc(entry.expires_at) > now:
             return CacheHit(dict(entry.payload), True, _utc(entry.fetched_at), 0, 0)
         # End the read transaction before waiting on the network: an open SQLite
         # transaction would hold up writers such as a new generation job.
         db.commit()
+        runtime.FLIGHT.stage("provider_fetch", provider)
         before_calls, before_units = meter.calls, meter.quota_units
-        payload = fetch(meter)
+        payload = runtime.call_with_timeout(lambda: fetch(meter), runtime.PROVIDER_TIMEOUT_SECONDS, name=provider)
         calls, units = meter.calls - before_calls, meter.quota_units - before_units
         expires = now + (ttl or PROVIDER_TTL.get(provider, timedelta(hours=1)))
         if entry is None:
@@ -99,6 +109,8 @@ def get_or_fetch(
         entry.expires_at = expires
         db.commit()
         return CacheHit(payload, False, now, calls, units)
+    finally:
+        lock.release()
 
 
 def prune_expired(db: Session, *, now: datetime, keep: timedelta = timedelta(days=2)) -> int:

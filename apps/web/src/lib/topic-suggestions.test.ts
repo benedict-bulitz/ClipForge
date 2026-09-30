@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   DISCOVERY_POLL_LIMIT,
   DISCOVERY_UNAVAILABLE,
+  DISCOVERY_WAIT_MS,
   NO_FURTHER_SUGGESTIONS,
   NO_STRONG_SUGGESTIONS,
   RESERVE_TARGET,
@@ -244,13 +245,13 @@ function manualTimers() {
   };
 }
 
-async function controllerWith(responses: TopicSuggestionsResponse[], timers = manualTimers()) {
+async function controllerWith(responses: TopicSuggestionsResponse[], timers = manualTimers(), now: () => number = () => 1) {
   const requests: TopicSuggestionsRequest[] = [];
   const controller = createTopicSuggestions({
     load: async (request) => { requests.push(request); return responses[Math.min(requests.length - 1, responses.length - 1)]; },
     onChange: () => {},
     storage: memoryStorage(),
-    now: () => 1,
+    now,
     timers: timers.timers,
   });
   controller.start();
@@ -294,6 +295,71 @@ test("a discovery that never finishes ends as unavailable instead of loading for
   for (let index = 0; index < DISCOVERY_POLL_LIMIT + 1 && timers.pending.length; index += 1) await timers.fire();
   assert.equal(controller.state.status, "unavailable");
   assert.equal(controller.state.message, DISCOVERY_UNAVAILABLE);
+});
+
+test("Home leaves the loading state after a bounded wall-clock wait, however few polls that took", async () => {
+  // Real Mac: the warm-up hung inside a curator request; Home must not say "werden gesucht…" forever.
+  const discovering: TopicSuggestionsResponse = { status: "discovering", message: null, candidates: [], retry_after_seconds: 3 };
+  const ready: TopicSuggestionsResponse = { status: "ok", message: null, candidates: [candidate(0), candidate(1), candidate(2)] };
+  const responses = [discovering, discovering, discovering, ready];
+  let clock = 0;
+  const { controller, requests, timers } = await controllerWith(responses, manualTimers(), () => clock);
+  assert.equal(controller.state.status, "loading");
+  for (let index = 0; index < 5 && controller.state.status === "loading" && timers.pending.length; index += 1) {
+    clock += DISCOVERY_WAIT_MS / 2; // each slow answer takes a minute
+    await timers.fire();
+  }
+  assert.ok(requests.length < DISCOVERY_POLL_LIMIT);
+  assert.equal(controller.state.status, "unavailable");
+  assert.equal(controller.state.message, "Themenvorschläge konnten nicht geladen werden.");
+  assert.equal(timers.pending.length, 0); // no hidden endless polling
+  // The retry stays available: "Neue Vorschläge" asks again and real chips replace the note.
+  const chips = home.slice(home.indexOf("function TopicSuggestionChips"), home.indexOf("function bulkDeleteSummary"));
+  assert.match(chips, /!\(count === 0 && loading\)/);
+  controller.refreshAll();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(visibleIds(controller.state), ["tc_0", "tc_1", "tc_2"]);
+  // A single request that never answers is aborted by the page before the wait bound.
+  const bound = Number(/SUGGESTION_TIMEOUT_MS = ([\d_]+)/.exec(home)?.[1].replaceAll("_", ""));
+  assert.ok(bound > 0 && bound <= DISCOVERY_WAIT_MS);
+  assert.match(home, /withTimeout\(\(signal\) => loadTopicSuggestions\(request, signal\), SUGGESTION_TIMEOUT_MS\)/);
+});
+
+test("a suggestions request that runs the discovery itself and times out keeps waiting, bounded", async () => {
+  const timeout = Object.assign(new Error("The ClipForge API did not answer in time."), { name: "PollTimeoutError" });
+  const ready: TopicSuggestionsResponse = { status: "ok", message: null, candidates: [candidate(0), candidate(1), candidate(2)] };
+  let clock = 0;
+  let calls = 0;
+  const timers = manualTimers();
+  const controller = createTopicSuggestions({
+    load: async () => {
+      calls += 1;
+      clock += 90_000; // the page aborts each request after 90 s
+      if (calls === 1) throw timeout;
+      return ready;
+    },
+    onChange: () => {},
+    storage: memoryStorage(),
+    now: () => clock,
+    timers: timers.timers,
+  });
+  controller.start();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(controller.state.status, "loading"); // not "unavailable" after the first 90 s
+  await timers.fire();
+  assert.deepEqual(visibleIds(controller.state), ["tc_0", "tc_1", "tc_2"]);
+  // Beyond the wait bound a timeout is final.
+  const late = createTopicSuggestions({
+    load: async () => { clock += DISCOVERY_WAIT_MS; throw timeout; },
+    onChange: () => {},
+    storage: memoryStorage(),
+    now: () => clock,
+    timers: manualTimers().timers,
+  });
+  late.start();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(late.state.status, "unavailable");
+  assert.equal(late.state.message, DISCOVERY_UNAVAILABLE);
 });
 
 test("after an empty state, Neue Vorschläge asks again and real questions replace the note", async () => {

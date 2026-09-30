@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -31,7 +32,7 @@ from ..security.secrets import SecretStore
 from ..youtube.connection import access_token, active_connection
 from ..youtube.provider import YouTubeProvider, has_capability
 from . import history as history_module
-from . import semantic
+from . import runtime, semantic
 from .cache import CallMeter, prune_expired
 from .candidate import RawTopic, Signal, TopicCandidate, TopicGroup, candidate_id_for
 from .scoring import (
@@ -93,7 +94,8 @@ PREFILTER_TOPIC_FLAGS = frozenset({"date_page"})
 OBSCURE_ENTITY_FLAGS = frozenset({"identifier", "acronym", "compound_proper_name", "foreign_proper_name", "isolated_event", "date_page"})
 UNAVAILABLE_MESSAGE = "Topic discovery is temporarily unavailable."
 EXHAUSTED_MESSAGE = "No further topic candidates right now. Try again later or enter your own question."
-_FLIGHT = threading.Lock()
+# Single-flight discovery with an owner token, stage tracking and a hard limit (never held forever).
+_FLIGHT = runtime.FLIGHT
 logger = logging.getLogger(__name__)
 DISCOVERY_RETRY_SECONDS = 3
 # A pool that is short only because of the quality floor is not re-discovered on
@@ -113,6 +115,17 @@ AI_REQUEST_BUDGET = 3
 SEMANTIC_REPORT = "semantic_validation"
 # Last startup warm-up (idle | running | done | failed), for diagnostics.
 WARMUP: dict[str, Any] = {"state": "idle", "started_at": None, "finished_at": None, "result": None, "error": None}
+DISCOVERY_FAILED_MESSAGE = "Themenvorschläge konnten nicht geladen werden."
+
+
+def _abandoned(owner: str, message: str) -> None:
+    """The flight's hard limit abandoned a discovery: a stuck warm-up is failed, not "running" forever."""
+    logger.warning("Topic Intelligence %s", message)
+    if owner == "warmup" and WARMUP["state"] == "running":
+        WARMUP.update(state="failed", error=message, finished_at=_now().isoformat())
+
+
+_FLIGHT.on_abandon = _abandoned
 
 
 class TopicHandoffError(ValueError):
@@ -166,10 +179,20 @@ def _collect(ctx: DiscoveryContext, sources: list[TopicSource]) -> tuple[list[Ra
     topics: list[RawTopic] = []
     reports: list[SourceReport] = []
     for source in sources:
+        _FLIGHT.stage("provider", source.name)
+        if _FLIGHT.timed_out(source.name):
+            # Already waited out once in this refresh (e.g. before a broadening pass): not again.
+            reports.append(SourceReport(source.name, "timeout", error="skipped: timed out earlier in this refresh"))
+            continue
         try:
             result = source.discover(ctx)
         except SourceSkipped as exc:
             reports.append(SourceReport(source.name, "skipped", error=str(exc)))
+            continue
+        except runtime.CallTimeout as exc:
+            # One hung provider never freezes discovery: mark it and continue with the others.
+            ctx.db.rollback()
+            reports.append(SourceReport(source.name, "timeout", error=str(exc)[:200]))
             continue
         except Exception as exc:  # noqa: BLE001 - one failing source never breaks discovery
             ctx.db.rollback()
@@ -404,24 +427,67 @@ def discover(
     ``broaden_from``: too few candidates of that run cleared the quality floor,
     so evaluate the NEXT raw topics instead of the same ones again, keep that
     run's usable candidates in the pool and spend no further search probes.
+
+    Any failure (including an abandoned, timed-out discovery) ends the run as
+    ``failed`` with its error - never a run that looks "in progress" forever.
     """
-    now = now or _now()
+    started: dict[str, TopicDiscoveryRun] = {}
+    try:
+        return _discover(db, settings, deps, now=now or _now(), broaden_from=broaden_from, started=started)
+    except Exception as exc:
+        _fail_run(db, started.get("run"), exc)
+        raise
+
+
+def _fail_run(db: Session, run: TopicDiscoveryRun | None, exc: Exception) -> None:
+    error = f"{type(exc).__name__}: {str(exc)[:200]}"
+    _FLIGHT.note("discovery_failed", error)
+    logger.warning("Topic Intelligence discovery failed: %s", error)
+    try:
+        db.rollback()
+        if run is None:
+            return
+        run = db.get(TopicDiscoveryRun, run.id)
+        if run is None:
+            return
+        run.status = "failed"
+        run.completed_at = _now()
+        run.sources = [*(run.sources or []), {"name": "discovery", "status": "failed", "error": error, "calls": 0, "quota_units": 0, "items": 0}]
+        db.commit()
+    except Exception:  # recording the failure must not mask it
+        db.rollback()
+        logger.exception("Topic Intelligence could not record a failed discovery")
+
+
+def _discover(
+    db: Session,
+    settings: Settings,
+    deps: DiscoveryDeps,
+    *,
+    now: datetime,
+    broaden_from: TopicDiscoveryRun | None,
+    started: dict[str, TopicDiscoveryRun],
+) -> TopicDiscoveryRun:
+    _FLIGHT.stage("prune")
     _prune(db, now)
+    ai_deadline = _FLIGHT.deadline(runtime.AI_DEADLINE_SECONDS)
     weights, version = resolve_weights(settings)
     meter = CallMeter(quota_budget=max(0, int(settings.topic_youtube_quota_budget)))
     ctx = DiscoveryContext(db=db, settings=settings, now=now, meter=meter)
     sequence = int(db.scalar(select(func.max(TopicDiscoveryRun.sequence))) or 0) + 1
     run = TopicDiscoveryRun(
-        sequence=sequence, score_version=version, weights=weights, started_at=now,
+        sequence=sequence, score_version=version, weights=weights, started_at=now, status="running",
         expires_at=now + timedelta(minutes=max(1, int(settings.topic_pool_ttl_minutes))),
     )
     db.add(run)
     db.commit()  # a failing source rolls its own work back, never the run record
+    started["run"] = run
     raw, reports = _collect(ctx, deps.sources)
+    _FLIGHT.stage("merge_raw_topics")
     reports.extend(deps.extra_reports)
     run.raw_topic_count = len(raw)
     usable_sources = [report for report in reports if report.status in {"ok", "cached", "partial"} and report.items > 0]
-    degraded = any(report.status == "failed" for report in reports)
+    degraded = any(report.status in {"failed", "timeout"} for report in reports)
     if not raw or not usable_sources:
         run.status = "unavailable"
         run.sources = [report.to_dict() for report in reports]
@@ -444,7 +510,9 @@ def discover(
                 carried_rejected.append(record.candidate_id)
     groups: list[TopicGroup] = []
     prefiltered: list[str] = []
-    for group in group_topics(raw):
+    raw_groups = group_topics(raw)
+    _FLIGHT.stage("prefilter")
+    for group in raw_groups:
         if group.key in excluded_groups or group.flags & PREFILTER_FLAGS:
             continue
         if topic_obscurity_flags(group.title, group.description()) & PREFILTER_TOPIC_FLAGS:
@@ -478,6 +546,12 @@ def discover(
         queue = queue[len(batch):]
         evaluated += len(batch)
         transformed: list[Transformed] = []
+        _FLIGHT.stage("curation_batch", "openai_curator" if semantic_on else "local_rules")
+        if semantic_on and ai_left > 0 and time.monotonic() + runtime.CURATOR_TIMEOUT_SECONDS > ai_deadline:
+            # A slow model must not stretch the refresh: no new request past the deadline
+            # (cached judgements still apply; the rest falls back to strict local rules).
+            semantic_errors.append(f"ai_deadline: no new curator request after {runtime.AI_DEADLINE_SECONDS:g}s")
+            ai_left = 0
         if semantic_on:
             outcome = semantic.curate(db, settings, batch, requests_left=ai_left, now=now)
             curation_requests += outcome.requests
@@ -505,6 +579,7 @@ def discover(
                 item.semantic = semantic.unavailable("semantic_curator_unavailable")
                 transformed.append(item)
             methods.append("template")
+        _FLIGHT.stage("scoring")
         for group, item in zip(batch, transformed, strict=True):
             candidate = build_candidate(group, item, history=history, own_priors=own_priors, own_default=own_default, now=now, run_id=run.id)
             if candidate.candidate_id in excluded_ids:
@@ -519,6 +594,7 @@ def discover(
     # Competition probes: only for the strongest usable candidates, bounded per refresh.
     probe_report = SourceReport(deps.probe.name, "skipped", error=None if deps.probe.available else "YouTube is not connected")
     if deps.probe.available:
+        _FLIGHT.stage("competition_probe", deps.probe.name)
         calls_before, units_before = meter.calls, meter.quota_units
         limit = 0 if broaden_from is not None else max(0, int(settings.topic_youtube_search_probes))
         fetched = False
@@ -574,6 +650,7 @@ def discover(
             kept.append(candidate)
         candidate.rationale = rationale_for(candidate)
     ranked = rank(ranked)
+    _FLIGHT.stage("persistence")
     _persist(db, run.id, ranked, now)
     order = [(rank_key(candidate.rejected, candidate.final_score, candidate.candidate_id), candidate.candidate_id) for candidate in ranked]
     order += [(rank_key(False, record.final_score, record.candidate_id), record.candidate_id) for record in carried]
@@ -596,8 +673,14 @@ def discover(
 def current_run(
     db: Session, now: datetime, version: str | None = None, semantic_ready: bool | None = None,
 ) -> TopicDiscoveryRun | None:
-    """The fresh pool; a pool scored by another score version is never reused."""
-    run = db.scalar(select(TopicDiscoveryRun).order_by(TopicDiscoveryRun.sequence.desc()).limit(1))
+    """The fresh pool; a pool scored by another score version is never reused.
+
+    A discovery that failed or was abandoned mid-way never hides the last complete pool.
+    """
+    run = db.scalar(
+        select(TopicDiscoveryRun).where(TopicDiscoveryRun.status.not_in(("failed", "running")))
+        .order_by(TopicDiscoveryRun.sequence.desc()).limit(1)
+    )
     if run is None or run.status == "unavailable" or (_utc(run.expires_at) or now) <= now:
         return None
     if version is not None and run.score_version != version:
@@ -678,26 +761,39 @@ def next_topic(
     db: Session, settings: Settings, deps: DiscoveryDeps, *, now: datetime | None = None, refresh: bool = False,
 ) -> dict[str, Any]:
     now = now or _now()
-    with _FLIGHT:  # single-flight: concurrent clicks share one refresh
-        run = None if refresh else current_run(db, now, resolve_weights(settings)[1], semantic.semantic_enabled(settings))
-        fresh = run is None
-        if run is None:
-            run = discover(db, settings, deps, now=now)
-            if run.status == "unavailable":
-                return _unavailable(run)
+    # Single-flight: concurrent clicks share one refresh - but never wait on it unboundedly.
+    if not _FLIGHT.acquire(timeout=runtime.FLIGHT_WAIT_SECONDS):
+        return {"status": "discovering", "message": "Topic discovery is running.", "candidate": None, "pool": None,
+                "retry_after_seconds": DISCOVERY_RETRY_SECONDS}
+    try:
+        return _next_topic_locked(db, settings, deps, now=now, refresh=refresh)
+    except Exception as exc:  # noqa: BLE001 - a failed discovery is a state, not a hang or a 500
+        logger.warning("Topic Intelligence proposal failed: %s", exc)
+        return {"status": "unavailable", "message": DISCOVERY_FAILED_MESSAGE, "candidate": None, "pool": None}
+    finally:
+        _FLIGHT.release()
+
+
+def _next_topic_locked(db: Session, settings: Settings, deps: DiscoveryDeps, *, now: datetime, refresh: bool) -> dict[str, Any]:
+    run = None if refresh else current_run(db, now, resolve_weights(settings)[1], semantic.semantic_enabled(settings))
+    fresh = run is None
+    if run is None:
+        run = discover(db, settings, deps, now=now)
+        if run.status == "unavailable":
+            return _unavailable(run)
+    record = _next_record(db, run)
+    if record is None and not fresh:
+        run = discover(db, settings, deps, now=now)
+        if run.status == "unavailable":
+            return _unavailable(run)
         record = _next_record(db, run)
-        if record is None and not fresh:
-            run = discover(db, settings, deps, now=now)
-            if run.status == "unavailable":
-                return _unavailable(run)
-            record = _next_record(db, run)
-        if record is None:
-            return {"status": "exhausted", "message": EXHAUSTED_MESSAGE, "candidate": None, "pool": _pool_info(db, run)}
-        if record.status != "proposed":
-            record.status = "proposed"
-            record.proposed_at = now
-            db.commit()
-        return {"status": "proposed", "message": None, "candidate": serialize_candidate(record), "pool": _pool_info(db, run)}
+    if record is None:
+        return {"status": "exhausted", "message": EXHAUSTED_MESSAGE, "candidate": None, "pool": _pool_info(db, run)}
+    if record.status != "proposed":
+        record.status = "proposed"
+        record.proposed_at = now
+        db.commit()
+    return {"status": "proposed", "message": None, "candidate": serialize_candidate(record), "pool": _pool_info(db, run)}
 
 
 def skip_topic(
@@ -787,16 +883,28 @@ def suggestions(
     # Never make Home wait behind a discovery that is already running (e.g. the
     # startup warm-up): say so, and let the client ask again shortly.
     if not _FLIGHT.acquire(blocking=False):
+        flight = _FLIGHT.snapshot()
         return {
             "status": "discovering",
             "message": "Topic discovery is running.",
             "candidates": [],
             "retry_after_seconds": DISCOVERY_RETRY_SECONDS,
+            "discovery": {key: flight[key] for key in ("discovery_stage", "active_provider", "elapsed_seconds", "hard_limit_seconds")},
             "pool": None,
             "summary": None,
         }
     try:
         return _suggestions_locked(db, settings, deps, count=count, excluded=excluded, now=now)
+    except Exception as exc:  # noqa: BLE001 - a failed discovery ends in a real state, and the flight is released
+        logger.warning("Topic Intelligence suggestions failed: %s", exc)
+        return {
+            "status": "unavailable",
+            "message": DISCOVERY_FAILED_MESSAGE,
+            "error": f"{type(exc).__name__}: {str(exc)[:200]}",
+            "candidates": [],
+            "pool": None,
+            "summary": None,
+        }
     finally:
         _FLIGHT.release()
 
@@ -815,8 +923,8 @@ def _suggestions_locked(
     old_enough = (_utc(run.started_at) or now) <= now - MIN_REFRESH_INTERVAL
     if len(records) < count and not fresh and old_enough:
         # Pool used up by picks/refreshes: a normal refresh first.
-        refreshed = discover(db, settings, deps, now=now)
-        if refreshed.status != "unavailable":
+        refreshed = _discover_or_none(db, settings, deps, now=now)
+        if refreshed is not None and refreshed.status != "unavailable":
             run = refreshed
             records = _available_records(db, run, excluded)
     if (
@@ -825,8 +933,8 @@ def _suggestions_locked(
     ):
         # Too few candidates clear the quality floor: evaluate the next raw
         # topics once per pool, rather than serving weak filler.
-        broadened = discover(db, settings, deps, now=now, broaden_from=run)
-        if broadened.status != "unavailable":
+        broadened = _discover_or_none(db, settings, deps, now=now, broaden_from=run)
+        if broadened is not None and broadened.status != "unavailable":
             run = broadened
             records = _available_records(db, run, excluded)
     records = records[:count]
@@ -844,6 +952,16 @@ def _suggestions_locked(
         # Why fewer than requested: how many were evaluated and why they were rejected.
         "summary": pool_summary(db, run),
     }
+
+
+def _discover_or_none(db: Session, settings: Settings, deps: DiscoveryDeps, **kwargs: Any) -> TopicDiscoveryRun | None:
+    """A follow-up refresh/broadening that fails keeps the pool that is already there."""
+    try:
+        return discover(db, settings, deps, **kwargs)
+    except runtime.DiscoveryAbandoned:
+        raise
+    except Exception:  # noqa: BLE001 - recorded on the failed run by ``discover``
+        return None
 
 
 def evaluated_in(run: TopicDiscoveryRun) -> int:
@@ -880,10 +998,15 @@ def warm_pool(session_factory: Any, settings: Settings, deps_factory: Any, *, no
     """Fill the candidate pool ahead of the first Home visit (no-op while it is fresh)."""
     with session_factory() as db:
         now = now or _now()
-        with _FLIGHT:
+        # Never wait on (or deadlock with) a request that is already discovering.
+        if not _FLIGHT.acquire(blocking=False, owner="warmup"):
+            return "discovery_already_running"
+        try:
             if current_run(db, now, resolve_weights(settings)[1], semantic.semantic_enabled(settings)) is not None:
                 return None
             return discover(db, settings, deps_factory(db), now=now).status
+        finally:
+            _FLIGHT.release()
 
 
 def run_warmup(session_factory: Any, settings: Settings, deps_factory: Any) -> None:
@@ -891,7 +1014,8 @@ def run_warmup(session_factory: Any, settings: Settings, deps_factory: Any) -> N
     WARMUP.update(state="running", started_at=_now().isoformat(), finished_at=None, result=None, error=None)
     try:
         result = warm_pool(session_factory, settings, deps_factory)
-        WARMUP.update(state="done", result=result or "pool_already_fresh")
+        if WARMUP["state"] == "running":  # not already failed by the flight's hard limit
+            WARMUP.update(state="done", result=result or "pool_already_fresh")
     except Exception as exc:  # discovery must never affect the app
         WARMUP.update(state="failed", error=f"{type(exc).__name__}: {str(exc)[:200]}")
         logger.exception("Topic Intelligence warm-up failed")
@@ -1101,12 +1225,18 @@ def diagnose(db: Session, settings: Settings, *, now: datetime | None = None) ->
     run = db.scalar(select(TopicDiscoveryRun).order_by(TopicDiscoveryRun.sequence.desc()).limit(1))
     if _FLIGHT.locked():
         return "discovery_running"
-    if WARMUP["state"] == "failed" and run is None:
+    if WARMUP["state"] == "failed" and (run is None or run.status in {"failed", "running"}):
         return "warmup_failed"
     if run is None:
         return "no_pool_yet"
     if run.status == "unavailable":
         return "provider_failure"
+    if run.status in {"failed", "running"}:
+        usable = current_run(db, now, version, semantic.semantic_enabled(settings))
+        if usable is None:
+            # "running" without a flight: its discovery was abandoned before it could record anything.
+            return "discovery_timed_out" if run.status == "running" else "discovery_failed"
+        run = usable
     if run.score_version != version:
         return "stale_pool_other_version"
     if current_run(db, now, version, semantic.semantic_enabled(settings)) is None:
@@ -1144,6 +1274,8 @@ def discovery_status(db: Session, settings: Settings | None = None, *, now: date
         "diagnosis": diagnose(db, report_settings, now=now) if report_settings is not None else None,
         "current_score_version": resolve_weights(report_settings)[1] if report_settings is not None else None,
         "discovery_running": _FLIGHT.locked(),
+        # Live while discovery runs: stage, provider, elapsed, timeouts, lock state.
+        "discovery": _FLIGHT.snapshot(),
         "warmup": dict(WARMUP),
         "config": None if report_settings is None else {
             "ai_mode": report_settings.clipforge_ai_mode,

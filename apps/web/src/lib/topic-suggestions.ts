@@ -62,11 +62,14 @@ export const RESERVE_TTL_MS = 6 * 60 * 60 * 1000;
 export const TOPIC_SUGGESTIONS_KEY = "clipforge-topic-suggestions";
 /** Bumped with the backend score version (ti-score-v4 + semantic-validator-v1) so chips vetted by an older version are dropped once. */
 export const TOPIC_SUGGESTIONS_VERSION = 3;
-export const DISCOVERY_UNAVAILABLE = "Topic discovery is temporarily unavailable.";
+/** Shown (with "Neue Vorschläge" as the retry) when discovery failed, timed out or never answered. */
+export const DISCOVERY_UNAVAILABLE = "Themenvorschläge konnten nicht geladen werden.";
 export const NO_STRONG_SUGGESTIONS = "Gerade keine starken Themenvorschläge. Gib eine eigene Frage ein oder versuche es später erneut.";
 export const NO_FURTHER_SUGGESTIONS = "Gerade keine weiteren starken Vorschläge.";
 /** While the backend reports a running discovery, ask again at most this often/long. */
 export const DISCOVERY_POLL_LIMIT = 40;
+/** Home never shows "Themenvorschläge werden gesucht…" longer than this (wall clock, however slow each answer is). */
+export const DISCOVERY_WAIT_MS = 180_000;
 export const DEFAULT_DISCOVERY_RETRY_MS = 3000;
 
 export function emptySuggestions(): SuggestionState {
@@ -272,6 +275,8 @@ export function createTopicSuggestions(options: TopicSuggestionsOptions): TopicS
   };
   let retryHandle: unknown = null;
   let discoveryPolls = 0;
+  /** When the current wait for the first chips began (null: not waiting). */
+  let waitingSince: number | null = null;
   let state = emptySuggestions();
   let running = false;
   let inFlight: Promise<void> | null = null;
@@ -281,7 +286,18 @@ export function createTopicSuggestions(options: TopicSuggestionsOptions): TopicS
   /** Chips "Neue Vorschläge" still has to replace once new questions arrive. */
   let refreshTargets = new Set<string>();
 
+  /** Ask again later (one pending retry at most). */
+  function scheduleRetry(delay: number) {
+    if (retryHandle !== null) return;
+    retryHandle = timers.setTimeout(() => {
+      retryHandle = null;
+      void refill();
+    }, delay);
+  }
+
   function update(next: SuggestionState) {
+    if (next.status !== "loading") waitingSince = null;
+    else if (waitingSince === null) waitingSince = now();
     state = next;
     storage?.save(serializeSuggestions(state));
     if (running) options.onChange(state);
@@ -302,24 +318,19 @@ export function createTopicSuggestions(options: TopicSuggestionsOptions): TopicS
       if (response.status === "discovering") {
         // A refresh is running on the server: keep a real loading state and ask again (bounded).
         discoveryPolls += 1;
-        if (discoveryPolls > DISCOVERY_POLL_LIMIT) {
+        const waitedTooLong = waitingSince !== null && now() - waitingSince >= DISCOVERY_WAIT_MS;
+        if (discoveryPolls > DISCOVERY_POLL_LIMIT || waitedTooLong) {
           discoveryPolls = 0;
           if (!state.visible.some(Boolean)) update({ ...state, status: "unavailable", message: DISCOVERY_UNAVAILABLE });
           return;
         }
         if (!state.visible.some(Boolean)) update({ ...state, status: "loading", message: null });
-        const delay = Math.max(500, (response.retry_after_seconds ?? DEFAULT_DISCOVERY_RETRY_MS / 1000) * 1000);
-        if (retryHandle === null) {
-          retryHandle = timers.setTimeout(() => {
-            retryHandle = null;
-            void refill();
-          }, delay);
-        }
+        scheduleRetry(Math.max(500, (response.retry_after_seconds ?? DEFAULT_DISCOVERY_RETRY_MS / 1000) * 1000));
         return;
       }
       discoveryPolls = 0;
       if (response.status === "unavailable" && !response.candidates.length) {
-        update({ ...state, status: state.visible.some(Boolean) ? state.status : "unavailable", message: response.message || DISCOVERY_UNAVAILABLE });
+        update({ ...state, status: state.visible.some(Boolean) ? state.status : "unavailable", message: DISCOVERY_UNAVAILABLE });
         return;
       }
       let merged = mergeSuggestions(state, response.candidates, now());
@@ -335,9 +346,16 @@ export function createTopicSuggestions(options: TopicSuggestionsOptions): TopicS
         }
       }
       update(merged.status === "empty" ? { ...merged, message: NO_STRONG_SUGGESTIONS } : merged);
-    } catch {
+    } catch (reason) {
       pendingPicked = [...picked, ...pendingPicked];
       pendingDismissed = [...dismissed, ...pendingDismissed];
+      const timedOut = reason instanceof Error && reason.name === "PollTimeoutError";
+      if (running && timedOut && waitingSince !== null && now() - waitingSince < DISCOVERY_WAIT_MS) {
+        // This request ran the discovery and the page stopped waiting for it; the server keeps
+        // going, so ask again (it answers "discovering" until done) - still within the wait bound.
+        scheduleRetry(DEFAULT_DISCOVERY_RETRY_MS);
+        return;
+      }
       if (running && !state.visible.some(Boolean)) update({ ...state, status: "unavailable", message: DISCOVERY_UNAVAILABLE });
     }
   }

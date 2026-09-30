@@ -29,6 +29,7 @@ from sqlalchemy.orm import Session
 
 from ..config import Settings
 from ..models import TopicSourceCache
+from . import runtime
 from .candidate import Signal, TopicGroup
 from .text import compact, extract_question
 
@@ -194,8 +195,13 @@ def curate(
     ]
     db.commit()  # no open transaction while waiting on OpenAI
     outcome.requests = 1
-    try:
-        response = SEMANTIC_CLIENT_FACTORY(api_key=settings.openai_api_key).responses.parse(
+    runtime.FLIGHT.stage("curator_request", "openai_curator")
+
+    def request_batch() -> Any:
+        # Bounded twice: the client's own timeout (no retries - the budget is 3 requests),
+        # and a wall-clock guard in case the connection hangs anyway.
+        client = SEMANTIC_CLIENT_FACTORY(api_key=settings.openai_api_key, timeout=runtime.CURATOR_TIMEOUT_SECONDS, max_retries=0)
+        return client.responses.parse(
             model=model,
             instructions=CURATOR_INSTRUCTIONS,
             input=json.dumps({"market": {"language": "de", "region": "DE", "broader": "DACH"}, "topics": request}, ensure_ascii=False),
@@ -203,10 +209,13 @@ def curate(
             max_output_tokens=8000,
             store=False,
         )
+
+    try:
+        response = runtime.call_with_timeout(request_batch, runtime.CURATOR_TIMEOUT_SECONDS + runtime.CURATOR_GRACE_SECONDS, name="openai_curator")
         parsed = response.output_parsed
         if not isinstance(parsed, AICuratedBatch):
             raise TypeError("no parsed curation batch")
-    except (OpenAIError, ValidationError, ValueError, TypeError) as exc:
+    except (OpenAIError, ValidationError, ValueError, TypeError, runtime.CallTimeout) as exc:
         outcome.errors.append(f"{type(exc).__name__}: {str(exc)[:160]}")
         outcome.statuses.update({group.key: "failed" for group in batch})
         return outcome

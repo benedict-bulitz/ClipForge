@@ -192,7 +192,8 @@ class FakeCurator:
         self.fail = fail
         self.requests: list[list[dict[str, Any]]] = []
 
-    def __call__(self, api_key: str | None = None):
+    def __call__(self, api_key: str | None = None, **client_options: Any):
+        self.client_options = client_options  # timeout / max_retries of the real client
         return self
 
     @property
