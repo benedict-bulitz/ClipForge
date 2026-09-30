@@ -33,6 +33,7 @@ import {
 import { browserLocale, detectTimeZone, scheduleLine } from "@/lib/youtube";
 import { cn } from "@/lib/utils";
 import { Brand } from "./brand";
+import { ChannelPerformance } from "./channel-performance";
 import { Button } from "./ui/button";
 import { ThemeToggle } from "./theme-toggle";
 
@@ -179,6 +180,7 @@ export function VideoLibrary({ initialFilters }: { initialFilters: LibraryFilter
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  const [performanceKey, setPerformanceKey] = useState(0);
   const sequence = useRef(0);
 
   /** The first page for these filters; a newer request always wins. */
@@ -248,6 +250,7 @@ export function VideoLibrary({ initialFilters }: { initialFilters: LibraryFilter
       const result = await refreshRecentVideos();
       setNotice(result.error ? `Checked ${result.checked} recent video${result.checked === 1 ? "" : "s"} · ${result.error.message}` : `Checked ${result.checked} recent video${result.checked === 1 ? "" : "s"} with YouTube.`);
       setLoading(true);
+      setPerformanceKey((key) => key + 1);
       await firstPage(filters);
     } catch (reason) {
       setNotice(errorText(reason, "Recent videos could not be refreshed."));
@@ -288,6 +291,8 @@ export function VideoLibrary({ initialFilters }: { initialFilters: LibraryFilter
           </Button>
         </div>
         {notice && <p role="status" className="mt-3 text-xs text-[var(--muted-foreground)]">{notice}</p>}
+
+        <ChannelPerformance refreshKey={performanceKey} />
 
         <div className="mt-5 flex flex-wrap items-center gap-2" role="search">
           <label className="relative min-w-[220px] flex-1">

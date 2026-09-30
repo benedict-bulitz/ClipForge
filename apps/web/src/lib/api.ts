@@ -476,6 +476,11 @@ export function getVideo(id: string, signal?: AbortSignal) {
   return request<import("./videos").VideoDetail>(`/videos/${encodeURIComponent(id)}`, { cache: "no-store", signal });
 }
 
+/** Channel Performance over one cohort: one aggregate over stored analytics (no YouTube call). */
+export function getPerformanceOverview(scope: import("./performance").PerformanceScope, signal?: AbortSignal) {
+  return request<import("./performance").PerformanceOverview>(`/videos/performance?scope=${encodeURIComponent(scope)}`, { cache: "no-store", signal });
+}
+
 /** The existing status + due-analytics sync for the newest videos only (bounded). */
 export function refreshRecentVideos() {
   return request<{ checked: number; errors: number; error: { code: string; message: string } | null }>("/videos/refresh-recent", { method: "POST" });

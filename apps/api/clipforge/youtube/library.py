@@ -172,11 +172,14 @@ def _library_ids():
     return select(YouTubeUpload.id).where(library_condition()).scalar_subquery()
 
 
-def _analytics_summaries(db: Session, upload_ids: list[str] | None = None) -> dict[str, _Summary]:
+def _analytics_summaries(
+    db: Session, upload_ids: list[str] | None = None, metrics: tuple[str, ...] = SUMMARY_METRICS
+) -> dict[str, _Summary]:
     """Latest API snapshot with data (``learning.latest_with_data``) per upload, plus
-    its available summary metrics, in two aggregate queries.
+    its available ``metrics``, in two aggregate queries.
 
     ``upload_ids=None`` means every library video (a subquery, not a huge IN list).
+    Also used by the channel performance overview (``performance.py``).
     """
     if upload_ids is not None and not upload_ids:
         return {}
@@ -205,7 +208,7 @@ def _analytics_summaries(db: Session, upload_ids: list[str] | None = None) -> di
             (and_(YouTubeMetricValue.name == name, YouTubeMetricValue.availability == "available"), YouTubeMetricValue.value),
             else_=None,
         )).label(name)
-        for name in SUMMARY_METRICS
+        for name in metrics
     ]
     rows = db.execute(
         select(latest.c.upload_id, latest.c.status, latest.c.fetched_at, *columns)
@@ -217,7 +220,7 @@ def _analytics_summaries(db: Session, upload_ids: list[str] | None = None) -> di
         row.upload_id: _Summary(
             snapshot_status=row.status,
             fetched_at=row.fetched_at,
-            metrics={name: getattr(row, name) for name in SUMMARY_METRICS},
+            metrics={name: getattr(row, name) for name in metrics},
         )
         for row in rows
     }

@@ -29,6 +29,7 @@ from . import (
     learning,
     library,
     lifecycle,
+    performance,
     publishing,
     schedule_learning,
     uploads,
@@ -795,6 +796,13 @@ def refresh_recent_videos_route(db: DbSession, settings: SettingsDep, store: Sto
         "error": errors[0].get("error") if errors else None,
         "results": results,
     }
+
+
+@videos_router.get("/performance")
+def performance_overview_route(db: DbSession, settings: SettingsDep, scope: str = performance.DEFAULT_SCOPE) -> dict:
+    """Channel performance over a cohort of videos: one aggregate over the stored
+    analytics snapshots. Never calls YouTube (declared before ``/{identifier}``)."""
+    return jsonable_encoder(performance.performance_overview(db, scope=scope, min_sample=settings.youtube_baseline_min_sample))
 
 
 @videos_router.get("/{identifier}")
