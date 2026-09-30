@@ -31,6 +31,7 @@ from .verbal_hook import (
     _related,
     _rounded_from,
     information_gain,
+    is_salient_concept,
     proposition_words,
 )
 
@@ -140,7 +141,10 @@ def build_novelty_plan(
         claim = str(fact.get("claim") or "")
         duplicate_of: dict[str, Any] | None = None
         for previous in records[:index]:
-            if _similarity(record["words"], previous["words"]) >= 0.72:
+            # The same proposition in other words (concepts, synonyms,
+            # inflection) is a duplicate, not only the same words.
+            same_words = _similarity(record["words"], previous["words"]) >= 0.72
+            if same_words or not information_gain(previous["fact"].get("claim") or "", claim):
                 duplicate_of = previous
                 break
         if duplicate_of is not None:
@@ -262,6 +266,11 @@ _CONTRAST_GAIN = re.compile(
     r"(?i)\b(?:but|instead|rather than|unlike|whereas|while|versus|vs\.?|compared|than|"
     r"aber|sondern|stattdessen|anders als|während|im vergleich|als)\b"
 )
+# A conclusion drawn from what was said ("Darum ...", "That's why ...").
+_CONCLUSION = re.compile(
+    r"(?i)^\W*(?:(?:and|und|so)\s+)?(?:darum|deshalb|daher|deswegen|dadurch|also|therefore|thus|hence|so|"
+    r"that'?s why|this is why|which is why|das ist der grund|genau deshalb)\b"
+)
 # Sentences that only announce, react or sign off (any topic).
 _FILLER = re.compile(
     r"(?i)^\W*(?:(?:and|so|now|but|und|also|jetzt|aber)\s*,?\s+)?(?:"
@@ -335,7 +344,9 @@ def classify_gain(reference: str, sentence: str) -> dict[str, Any]:
         category = "filler"
     elif not words and not numbers and not flipped:
         category = "filler" if not said else "restatement"
-    elif not numbers and not flipped and len(words) <= 1 and coverage >= 0.75:
+    elif not numbers and not flipped and len(words) <= 1 and coverage >= 0.75 and not any(is_salient_concept(word) for word in words):
+        # One swapped plain word is a synonym; one new relation (more often,
+        # reversed, unfamiliar ...) is news.
         category = "paraphrase"
     elif _MECHANISM.search(sentence):
         category = "mechanism"
@@ -440,14 +451,16 @@ def _evidence(
         cited_words = set().union(*(proposition_words(claim) for claim in cited_claims))
         if not said or _related(said, cited_words) or _numbers(text) & set().union(*(_numbers(claim) for claim in cited_claims)):
             return {**base, "status": "supported", "reason": "Cites supported research facts."}
-        return {**base, "status": "unsupported", "reason": "Cites a research fact but states something the fact does not."}
+        # A sentence split from a longer block inherits the block's fact IDs;
+        # it is still grounded when the research as a whole says it.
     if not new:
         return {**base, "status": "derived", "reason": "Adds no new claim beyond what was already said."}
     grounded = _related(new, supported_words)
     if len(grounded) / len(new) >= 0.6:
         return {**base, "status": "derived", "reason": "Every new term is found in the supported research."}
     missing = sorted(new - grounded)[:5]
-    return {**base, "status": "unsupported", "reason": "New terms not found in any supported fact: " + ", ".join(missing) + "."}
+    prefix = "Cites a research fact but states something it does not. " if cited else ""
+    return {**base, "status": "unsupported", "reason": prefix + "New terms not found in any supported fact: " + ", ".join(missing) + "."}
 
 
 def _question(context: dict[str, Any]) -> str:
@@ -461,11 +474,7 @@ def _payoff_result(
     body = [unit for unit in units if unit["category"] != "hook"]
     if not body:
         return {"status": "missing", "result": "missing", "block_id": None, "reason": "The script has no body to pay off."}
-    arc = context["arc"]
-    final_id = str(arc.get("final_payoff_id") or "")
-    unit = next((item for item in reversed(body) if item["role"] == "payoff"), None)
-    unit = unit or next((item for item in reversed(body) if final_id and final_id in item["evidence"]["fact_ids"]), None)
-    unit = unit or body[-1]
+    unit = next((item for item in body if item.get("is_payoff")), body[-1])
     text = unit["text"]
     question = _question(context)
     question_words = proposition_words(question)
@@ -483,7 +492,7 @@ def _payoff_result(
         return {**base, "status": "fail", "result": "restates_question", "reason": "The payoff restates the question instead of answering it."}
     if not unit["counts_as_gain"]:
         return {**base, "status": "fail", "result": "unsupported", "reason": "The payoff's information is not supported by the research."}
-    strong = unit["category"] in {"mechanism", "quantitative", "contrast"} or unit["novelty_class"] in {"explanatory_gain", "comparison_gain", "distinctive"}
+    strong = unit["category"] in {"mechanism", "quantitative", "contrast", "resolution"} or unit["novelty_class"] in {"explanatory_gain", "comparison_gain", "distinctive"}
     return {
         **base, "status": "pass", "result": "strong" if strong else "adequate",
         "reason": "The payoff resolves the question with specific, supported information.",
@@ -497,6 +506,11 @@ def _signature(blocks: list[dict[str, Any]], state: dict[str, Any]) -> str:
         "arc": [str((state.get("story_arc") or {}).get(key) or "") for key in ("primary_answer_id", "final_payoff_id")] if isinstance(state.get("story_arc"), dict) else [],
     }
     return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode()).hexdigest()[:16]
+
+
+def _shared_weight(said: set[str], unit: dict[str, Any]) -> tuple[int, int]:
+    common = _related(said, proposition_words(unit["text"]))
+    return sum(2 if is_salient_concept(word) else 1 for word in common), unit["index"]
 
 
 def assess_blocks(blocks: list[dict[str, Any]], state: dict[str, Any]) -> list[dict[str, Any]]:
@@ -534,13 +548,15 @@ def assess_blocks(blocks: list[dict[str, Any]], state: dict[str, Any]) -> list[d
             category not in REDUNDANT_CATEGORIES and fact_ids and set(fact_ids) <= told
             and not result["new_numbers"] and not result["negation"]
             and len(result["new_words"]) <= 1 and result["coverage"] >= 0.6
+            and not any(is_salient_concept(word) for word in result["new_words"])
         ):
             # Its research fact was already told and the words barely differ.
             category = "repeated_fact"
         repeats = None
         if category in REDUNDANT_CATEGORIES and category != "filler":
-            said = set(result["said_words"])
-            repeats = max(earlier, key=lambda unit: len(_related(said, proposition_words(unit["text"]))), default=None)
+            # A shared relation (reversed, familiar ...) identifies the
+            # repeated statement better than a shared noun.
+            repeats = max(earlier, key=lambda unit: _shared_weight(set(result["said_words"]), unit), default=None)
         novelty_class = _novelty_class(plan, arc, fact_ids)
         evidence = _evidence(block, result, grounding, facts_by_id, supported_words, supported_claims)
         redundancy = "none"
@@ -581,7 +597,67 @@ def assess_blocks(blocks: list[dict[str, Any]], state: dict[str, Any]) -> list[d
         for unit in units:
             if unit["category"] != "hook":
                 unit["adds_to_hook"] = bool(information_gain(hook_text, unit["text"]))
+    payoff = _payoff_unit(units, arc)
+    if payoff is not None:
+        payoff["is_payoff"] = True
+        payoff["protected"] = True
+        if payoff["category"] in {"restatement", "paraphrase", "repeated_fact"} and _resolves(payoff, units, context):
+            # The closing synthesis: it draws on what the body established and
+            # answers the question with it - the payoff, not a repetition.
+            payoff.update(
+                category="resolution", redundancy="none", repeats_block_id=None,
+                new_information="resolves the question with: " + ", ".join(payoff["resolution_terms"][:6]),
+                information_gain_score=0.7,
+                counts_as_gain=payoff["evidence"]["status"] in {"supported", "derived", "not_applicable"},
+                reason="Resolves the question by drawing the established mechanism together.",
+            )
     return units
+
+
+def _payoff_unit(units: list[dict[str, Any]], arc: dict[str, Any]) -> dict[str, Any] | None:
+    """The unit that closes the video: the end of the payoff block.
+
+    A payoff block split into sentences ends in its resolution, so plain
+    ``detail`` continuations after the last payoff-role unit belong to it.
+    """
+    body = [unit for unit in units if unit["category"] != "hook"]
+    if not body:
+        return None
+    final_id = str(arc.get("final_payoff_id") or "")
+    start = next((position for position in range(len(body) - 1, -1, -1) if body[position]["role"] == "payoff"), None)
+    if start is None and final_id:
+        start = next((position for position in range(len(body) - 1, -1, -1) if final_id in body[position]["evidence"]["fact_ids"]), None)
+    if start is None:
+        return body[-1]
+    end = start
+    while end + 1 < len(body) and body[end + 1]["role"] == "detail":
+        end += 1
+    return body[end]
+
+
+def _resolves(unit: dict[str, Any], units: list[dict[str, Any]], context: dict[str, Any]) -> bool:
+    """A closing sentence that links the question to what the body established.
+
+    It must touch the question and draw on concepts the body introduced
+    (not the hook or the question): from two different units, or from one
+    with an explicit conclusion ("Darum ...").  Restating only the question or
+    the hook never qualifies.
+    """
+    question = proposition_words(_question(context))
+    hook = next((item for item in units if item["category"] == "hook"), None)
+    opening = question | (proposition_words(hook["text"]) if hook else set())
+    said = proposition_words(unit["text"])
+    if not question or not _related(said, question | opening):
+        return False
+    sources: dict[str, int] = {}
+    for item in units:
+        if item["category"] == "hook" or item["index"] >= unit["index"] or item["redundancy"] != "none":
+            continue
+        for word in proposition_words(item["text"]) - _related(proposition_words(item["text"]), opening):
+            sources.setdefault(word, item["index"])
+    drawn = {word: sources[word] for word in said if word in sources}
+    unit["resolution_terms"] = sorted(drawn)
+    return len(set(drawn.values())) >= 2 or (bool(drawn) and bool(_CONCLUSION.search(unit["text"])))
 
 
 def assess_information_gain(state: dict[str, Any]) -> dict[str, Any]:
@@ -787,7 +863,7 @@ def prune_redundant_information(
         changed = False
         for unit in units:
             index = unit["index"]
-            if unit["category"] not in REDUNDANT_CATEGORIES or _removal_blocked(blocks, index, arc, anchors):
+            if unit["category"] not in REDUNDANT_CATEGORIES or unit.get("is_payoff") or _removal_blocked(blocks, index, arc, anchors):
                 continue
             target, possible = _merge_target(blocks, index, unit["repeats_block_id"], deps)
             if not possible:
@@ -809,9 +885,10 @@ def prune_redundant_information(
         if changed:
             continue
         # A unit whose every word the next, richer unit repeats gives way to it.
+        closing = {unit["index"] for unit in units if unit.get("is_payoff")}
         for index in range(len(blocks) - 1):
             current, following = blocks[index], blocks[index + 1]
-            if _role(current) == "hook" or _role(following) == "hook" or set(_fact_ids(following)) & anchors:
+            if _role(current) == "hook" or _role(following) == "hook" or set(_fact_ids(following)) & anchors or index in closing:
                 continue
             said = proposition_words(_text(current))
             if len(said) < 2 or _related(said, proposition_words(_text(following))) != said or not information_gain(_text(current), _text(following)):

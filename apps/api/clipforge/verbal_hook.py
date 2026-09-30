@@ -924,18 +924,28 @@ _NEGATED = re.compile(r"(?i)\b(?:nicht|kein\w*|nie|niemals|not|no|never)\b|\w+n[
 
 
 # Words that carry no proposition in any topic: empty curiosity adjectives,
-# "something happens" verbs and nouns, intensifiers.  A sentence whose only
-# new words are these says nothing new ("does something strange" -> "reacts
-# strangely").
+# "something happens" verbs and nouns, intensifiers, hedges and possessives.
+# A sentence whose only new words are these says nothing new ("does
+# something strange" -> "reacts strangely").  Casefolded (ß -> ss).
 _VAGUE = {
     "something", "anything", "everything", "thing", "things", "stuff", "way", "ways", "kind", "too",
     "strange", "strangely", "weird", "weirdly", "odd", "oddly", "unusual", "surprising", "surprisingly",
     "interesting", "interestingly", "amazing", "incredible", "crazy", "fascinating", "curious",
     "react", "reacts", "reacting", "reacted", "happen", "happens", "happened", "happening",
-    "occur", "occurs", "occurring", "goes", "going", "went", "gone", "comes", "came", "quite", "pretty", "simply", "basically", "literally", "indeed",
+    "occur", "occurs", "occurring", "goes", "going", "went", "gone", "comes", "came", "quite", "pretty",
+    "simply", "basically", "literally", "indeed", "usually", "normally", "typically", "generally",
+    "exactly", "yourself", "itself", "themselves", "yours", "mine",
     "etwas", "ding", "dinge", "seltsam", "seltsame", "seltsames", "merkwürdig", "merkwürdiges", "komisch",
     "komisches", "erstaunlich", "interessant", "passiert", "passieren", "geschieht", "reagiert", "reagieren",
-    "ziemlich", "sozusagen", "quasi",
+    "ziemlich", "sozusagen", "quasi", "gewissermassen", "normalerweise", "meistens", "üblicherweise",
+    "genau", "selbst", "deines", "deinem", "meine", "meinen", "meinem", "meiner", "meines", "unseren",
+    "unserem", "unserer", "eigene", "eigenen", "eigenes", "eigener", "eigenem",
+}
+# Connectors state a relation between propositions, not a proposition; the
+# relation itself is read from the sentence grammar (mechanism/contrast).
+_CONNECTORS = {
+    "deshalb", "darum", "daher", "dadurch", "deswegen", "dagegen", "jedoch", "trotzdem", "während",
+    "sodass", "weshalb", "therefore", "thus", "hence", "whereas", "while", "however", "instead",
 }
 # Everyday paraphrase pairs (grammar-level, not topic vocabulary): each word
 # counts as its canonical form, so swapping one for the other adds nothing.
@@ -949,35 +959,132 @@ _SYNONYMS = {
     "generate": "produce", "generates": "produce", "produces": "produce",
     "begin": "start", "begins": "start", "starts": "start",
 }
+# Concepts: general relations that many topics express in unrelated words
+# ("spiegelverkehrt", "vertauscht die Seiten", "Umkehrung", "so herum" all
+# state one orientation fact).  A word matching a pattern counts as the
+# concept.  ``salient`` concepts are predicates: one new salient concept is
+# real news, never "just a synonym".  ``polar`` concepts carry the clause's
+# negation ("fehlt diese Umkehrung" = -reverse); ``negative`` words already
+# are the negated form ("ungewohnt" = -familiar).  ``None`` marks frame words
+# (perceiving, depicting, sides, people) that carry no proposition of their own.
+_CONCEPTS: tuple[tuple[str | None, bool, bool, re.Pattern[str]], ...] = (
+    ("reverse", True, False, re.compile(
+        r"(?:vertausch|umkehr|umgekehrt|verkehrt|revers|invert|flipp|swapp?)\w*|flip|flips|swap|swaps|"
+        r"andersherum|herum|rum|backwards|mirrored|gespiegelt\w*|seitenverkehrt\w*|spiegelverkehrt\w*"
+    )),
+    ("familiar", True, True, re.compile(r"(?:ungewohnt|unvertraut|unbekannt|unfamiliar|fremd)\w*")),
+    ("familiar", True, False, re.compile(r"(?:gewohnt|gewöhn|gewohnheit|vertraut|bekannt|familiar|accustom|habituat)\w*")),
+    ("different", True, False, re.compile(r"anders|(?:unterschied|verschieden|differ|distinct)\w*")),
+    ("frequent", True, False, re.compile(r"oft|öfter|(?:häufig|frequent)\w*|often")),
+    ("other", False, False, re.compile(r"andere|anderen|anderer|anderes|anderem|others?")),
+    ("photo", False, False, re.compile(r"(?:foto|photo|aufnahme|selfie)\w*")),
+    ("mirror", False, False, re.compile(r"(?:spiegel|mirror)\w*")),
+    (None, False, False, re.compile(
+        r"sieh\w*|sieht|sehe|sehen|sah|sahen|gesehen|aussehen|aussieht|wirk(?:e|st|t|en|te|test|ten)|(?:erschein|vorkomm|schau|anschau|betracht|zeig|fühl)\w*|"
+        r"looks?|looking|looked|see|sees|seen|seems?|seemed|appears?|appeared|shows?|showed|shown|views?|viewed|feels?|felt|"
+        r"bild|bilder|bildes|abbild\w*|version\w*|images?|pictures?|seite|seiten|sides?|links|rechts|left|right|"
+        r"menschen|leute|people|persons?|personen"
+    )),
+)
+_SALIENT = {name for name, salient, _polar, _pattern in _CONCEPTS if name and salient}
+# A clause is negated by an explicit negator or by stating that something is missing.
+_NEGATOR = re.compile(
+    r"(?i)\b(?:nicht|kein\w*|nie|niemals|not|no|never|ohne|without|fehlt|fehlen|fehlend\w*|lacks?|lacking|missing)\b|\w+n[’']t\b"
+)
+_CLAUSE = re.compile(r"\s*[,;:–—]\s*|(?<=[.!?])\s+")
+_NEGATOR_WORDS = {"fehlt", "fehlen", "fehlend", "fehlende", "fehlenden", "ohne", "without", "lack", "lacks", "lacking", "missing"}
+
+
+def _concept(word: str) -> tuple[str | None, bool] | None:
+    """(concept, negative) for a word, ``(None, False)`` for a frame word, None if plain."""
+    for name, _salient, negative, pattern in _CONCEPTS:
+        if pattern.fullmatch(word):
+            return name, negative
+    return None
+
+
+def _concept_parts(word: str) -> list[tuple[str | None, bool] | str]:
+    """A word as concepts; a German compound ("Spiegelbild", "seitenverkehrt")
+    is split into its head word and a concept tail."""
+    found = _concept(word)
+    if found is not None:
+        return [found]
+    for cut in range(4, len(word) - 3):
+        head, tail = word[:cut].removesuffix("s") if len(word[:cut]) > 4 else word[:cut], word[cut:]
+        found = _concept(tail)
+        if found is not None:
+            return [_concept(head) or head, found]
+    return [word]
+
+
+def is_salient_concept(token: str) -> bool:
+    return token[:1] in "+-" and token[1:] in _SALIENT
 
 
 def proposition_words(text: object) -> set[str]:
-    """Content words that carry a proposition (light grammar, vague words and
-    paraphrase synonyms normalised away)."""
-    canonical = {_SYNONYMS.get(word, word) for word in _words(text)}
-    return {word for word in canonical if word not in _LIGHT and word not in _VAGUE and word not in _STOP}
+    """What a sentence asserts, as comparable tokens.
+
+    Content words (light grammar, vague words, connectors and paraphrase
+    synonyms normalised away) plus concepts: ``+name`` / ``-name`` for a
+    general relation stated positively or negated in its clause, so the same
+    fact in other words ("vertauscht die Seiten" / "spiegelverkehrt") is the
+    same token and a denied fact ("fehlt diese Umkehrung") a different one.
+    """
+    tokens: set[str] = set()
+    for clause in _CLAUSE.split(str(text or "")):
+        negated = bool(_NEGATOR.search(clause))
+        for raw in _words(clause):
+            word = _SYNONYMS.get(raw, raw)
+            if word in _LIGHT or word in _VAGUE or word in _STOP or word in _CONNECTORS or word in _NEGATOR_WORDS:
+                continue
+            for part in _concept_parts(word):
+                if isinstance(part, str):
+                    if part not in _LIGHT and part not in _VAGUE and part not in _STOP:
+                        tokens.add(part)
+                    continue
+                name, negative = part
+                if name is None:
+                    continue
+                polar = name in _SALIENT
+                sign = "-" if polar and (negated != negative) else "+"
+                tokens.add(f"{sign}{name}")
+    return tokens
 
 
 _proposition_words = proposition_words
 
 
+def _asserted_clauses(reference: str) -> list[str]:
+    # A question asserts nothing: only the hook's statement part is "said";
+    # a sentence answering the question is progress.
+    return [
+        part for part in re.split(r"\s*[–—:;]\s*|(?<=[.!?])\s+", reference)
+        if part.strip() and "?" not in part and not re.match(r"(?i)\s*(?:aber\s+|und\s+|but\s+|and\s+)?(?:why|how|what|which|who|warum|wieso|weshalb|wie|was|welche\w*|wer)\b", part)
+    ]
+
+
 def information_gain(reference: str, sentence: str) -> list[str]:
     """What ``sentence`` says that ``reference`` does not (empty: same proposition).
 
-    Content words and numbers beyond the reference (inflection tolerant), or a
-    flipped negation.  Exact wording and word order are irrelevant.
+    Content words, concepts (with their polarity) and numbers beyond the
+    reference, inflection tolerant; exact wording and word order are
+    irrelevant.  A plain negation ("Schweden hat nicht mehr Inseln") counts
+    only against the one earlier statement it denies, never against the
+    whole reference ("nicht schlechter" in a hook is no news for every later
+    sentence without a "nicht").
     """
-    # A question asserts nothing: only the hook's statement part is "said";
-    # a sentence answering the question is progress.
-    asserted = " ".join(
-        part for part in re.split(r"\s*[–—:;]\s*|(?<=[.!?])\s+", reference)
-        if part.strip() and "?" not in part and not re.match(r"(?i)\s*(?:aber\s+|und\s+|but\s+|and\s+)?(?:why|how|what|which|who|warum|wieso|weshalb|wie|was|welche\w*|wer)\b", part)
-    )
-    known, said = _proposition_words(asserted), _proposition_words(sentence)
+    clauses = _asserted_clauses(reference)
+    asserted = " ".join(clauses)
+    # Per clause: a negation never leaks into the next clause's polarity.
+    known = set().union(*(_proposition_words(clause) for clause in clauses)) if clauses else set()
+    said = _proposition_words(sentence)
     gain = sorted(said - _related(said, known))
     gain += sorted(_numbers(sentence) - _numbers(asserted))
-    if bool(_NEGATED.search(asserted)) != bool(_NEGATED.search(sentence)):
-        gain.append("negation")
+    if not gain and said and not any(token[:1] in "+-" and token[1:] in _SALIENT for token in said):
+        denied = [clause for clause in clauses if _related(said, _proposition_words(clause)) == said]
+        negated = bool(_NEGATED.search(sentence))
+        if denied and all(bool(_NEGATED.search(clause)) != negated for clause in denied):
+            gain.append("negation")
     return gain
 
 

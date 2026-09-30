@@ -473,7 +473,11 @@ def build_story_arc(
 
     order = _topological(units, {fact_id: priority(fact_id) for fact_id in units})
     if final_last is None and len(order) > 1:
-        final = order[-1]  # the last meaningful beat after an early answer
+        # The last meaningful beat after an early answer - never a fact that
+        # only restates the answer (the payoff would repeat the setup).
+        final = _closing_beat(order, units, primary) or order[-1]
+        # The closing beat closes: nothing depends on it, so it may move last.
+        order = [fact_id for fact_id in order if fact_id != final] + [final]
     after_answer = _dependents(units, primary)
     for position, fact_id in enumerate(order):
         unit = units[fact_id]
@@ -854,6 +858,23 @@ def story_arc_issues(arc: dict[str, Any]) -> list[str]:
     if arc.get("curiosity_gap", {}).get("withhold_answer") and primary in units and units[primary].get("may_appear_in_hook"):
         issues.append("protected_answer_allowed_in_hook")
     return issues
+
+
+def _closing_beat(order: list[str], units: dict[str, dict[str, Any]], primary: str | None) -> str | None:
+    """The latest non-optional fact that tells more than the primary answer."""
+    # The shared proposition primitive (lazy: verbal_hook imports this module).
+    from .verbal_hook import information_gain
+
+    answer = str(units.get(str(primary), {}).get("claim") or "")
+    for fact_id in reversed(order):
+        unit = units[fact_id]
+        if fact_id == primary or unit.get("may_be_omitted") or unit.get("novelty") == "redundant":
+            continue
+        if any(fact_id in (other.get("depends_on") or []) for other in units.values()):
+            continue  # it must stay before what builds on it
+        if not answer or information_gain(answer, str(unit.get("claim") or "")):
+            return fact_id
+    return None
 
 
 def _has_cycle(units: dict[str, dict[str, Any]]) -> bool:

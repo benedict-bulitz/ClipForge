@@ -1023,10 +1023,13 @@ def _normalise_blocks(
             for sentence in re.split(r"(?<=[.!?])\s+", block["text"])
             if sentence.strip()
         ]
+        # A payoff block closes on its last sentence (the resolution); every
+        # other block leads with its first (the answer, the claim).
+        lead = len(sentences) - 1 if block["role"] == "payoff" else 0
         for sentence_index, sentence in enumerate(sentences):
             sentence_blocks.append(
                 {
-                    "role": block["role"] if sentence_index == 0 else "detail",
+                    "role": block["role"] if sentence_index == lead else "detail",
                     "text": sentence,
                     "fact_ids": list(block.get("fact_ids") or []),
                 }
