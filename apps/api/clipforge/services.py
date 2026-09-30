@@ -433,6 +433,9 @@ def create_project(
     state = build_initial_state(
         payload.prompt, payload.options, settings, progress=progress
     )
+    # Manual and Topic Intelligence questions share this one pipeline; only the
+    # provenance differs (persisted for later analytics learning).
+    state["topic_provenance"] = payload.topic_provenance or {"topic_source": payload.topic_source}
     script_ready = any(
         stage["id"] == "script" and stage["status"] == "complete" for stage in state["pipeline"]
     )

@@ -15,7 +15,10 @@ YouTube Analytics API v2, Google OAuth 2.0 for installed/local apps):
   (``contentDetails.relatedPlaylists.uploads``), paged with
   ``playlistItems?part=contentDetails`` (``maxResults`` <= 50,
   ``nextPageToken``), then ``videos.list`` by id in batches of <= 50.
-  ``search.list`` (100 quota units per call) is never used.
+  ``search.list`` (100 quota units per call) is never used here.
+* Topic Intelligence (read-only discovery): ``videos.list?chart=mostPopular``
+  (1 unit), ``channels.list`` by id (1 unit per <= 50 ids) and, bounded to a
+  few calls per discovery refresh and cached for a day, ``search.list``.
 * Analytics: ``youtubeanalytics.googleapis.com/v2/reports``.
 
 Secrets never leave this module in a log line or an error message: errors
@@ -144,6 +147,12 @@ class YouTubeProvider(Protocol):
     def set_thumbnail(self, access_token: str, video_id: str, data: bytes, content_type: str) -> dict[str, Any]: ...
 
     def list_categories(self, access_token: str, region_code: str, language: str) -> list[dict[str, Any]]: ...
+
+    def list_popular_videos(self, access_token: str, region_code: str, category_id: str | None, max_results: int) -> list[dict[str, Any]]: ...
+
+    def list_channels(self, access_token: str, channel_ids: list[str], parts: str) -> list[dict[str, Any]]: ...
+
+    def search_videos(self, access_token: str, params: dict[str, str]) -> list[dict[str, Any]]: ...
 
 
 class _Redactor(logging.Filter):
@@ -422,6 +431,41 @@ class GoogleYouTubeProvider:
         )
         if response.status_code != 200:
             raise _google_error(response, context="categories")
+        return list(response.json().get("items") or [])
+
+    def list_popular_videos(self, access_token: str, region_code: str, category_id: str | None, max_results: int) -> list[dict[str, Any]]:
+        params = {
+            "part": "snippet,statistics,contentDetails",
+            "chart": "mostPopular",
+            "regionCode": region_code,
+            "maxResults": str(max(1, min(PAGE_SIZE, max_results))),
+        }
+        if category_id:
+            params["videoCategoryId"] = category_id
+        response = self._send(
+            "GET", f"{DATA_API}/videos", context="topic discovery", params=params, headers=self._auth(access_token),
+        )
+        if response.status_code != 200:
+            raise _google_error(response, context="topic discovery")
+        return list(response.json().get("items") or [])
+
+    def list_channels(self, access_token: str, channel_ids: list[str], parts: str) -> list[dict[str, Any]]:
+        response = self._send(
+            "GET", f"{DATA_API}/channels", context="topic discovery",
+            params={"part": parts, "id": ",".join(channel_ids[:PAGE_SIZE]), "maxResults": str(PAGE_SIZE)},
+            headers=self._auth(access_token),
+        )
+        if response.status_code != 200:
+            raise _google_error(response, context="topic discovery")
+        return list(response.json().get("items") or [])
+
+    def search_videos(self, access_token: str, params: dict[str, str]) -> list[dict[str, Any]]:
+        response = self._send(
+            "GET", f"{DATA_API}/search", context="topic discovery",
+            params={"part": "snippet", "type": "video", **params}, headers=self._auth(access_token),
+        )
+        if response.status_code != 200:
+            raise _google_error(response, context="topic discovery")
         return list(response.json().get("items") or [])
 
 

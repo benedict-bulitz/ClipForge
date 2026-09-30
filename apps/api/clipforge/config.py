@@ -57,6 +57,15 @@ class Settings(BaseSettings):
     youtube_oauth_client_secret: str | None = None
     youtube_oauth_redirect_uri: str = "http://localhost:8000/api/youtube/oauth/callback"
     youtube_baseline_min_sample: int = 5
+    # Topic Intelligence ("Generate Next Video"): how long a scored candidate
+    # pool is reused, the hard YouTube quota budget of one discovery refresh
+    # (search.list costs 100 units, everything else 1), how many search.list
+    # competition probes a refresh may spend, and optional JSON weight
+    # overrides for the scoring authority (e.g. '{"trend": 0.25}').
+    topic_pool_ttl_minutes: int = 45
+    topic_youtube_quota_budget: int = 400
+    topic_youtube_search_probes: int = 2
+    topic_score_weights: str | None = None
     render_root: Path = Path("./projects")
     downloads_root: Path | None = None
 

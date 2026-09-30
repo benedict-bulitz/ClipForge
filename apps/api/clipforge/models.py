@@ -529,3 +529,87 @@ class YouTubeSlotReservation(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, onupdate=utc_now
     )
+
+
+# ---------------------------------------------------------------------------
+# Topic Intelligence V1 ("Generate Next Video")
+#
+# One candidate store (``topic_candidates``, keyed by a stable candidate id so
+# "Try another" and novelty memory survive a pool refresh), one discovery-run
+# log (freshness, per-source status, quota spent) and one provider cache of
+# *normalized* source results (never raw API payloads) with a TTL.  Scores are
+# written only by ``topic_intelligence.scoring``.
+# ---------------------------------------------------------------------------
+
+
+class TopicDiscoveryRun(Base):
+    __tablename__ = "topic_discovery_runs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    # Monotonic order of refreshes (timestamps can tie within one request).
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False, default=0, index=True)
+    # ok | partial | unavailable
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="ok", index=True)
+    language: Mapped[str] = mapped_column(String(8), nullable=False, default="de")
+    region: Mapped[str] = mapped_column(String(8), nullable=False, default="DE")
+    score_version: Mapped[str] = mapped_column(String(48), nullable=False)
+    weights: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    # [{name, status, error, cached, fetched_at, calls, quota_units, items}]
+    sources: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list, nullable=False)
+    transformation: Mapped[str] = mapped_column(String(16), nullable=False, default="template")
+    ranked_candidate_ids: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    raw_topic_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    youtube_quota_units: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+
+
+class TopicCandidateRecord(Base):
+    """The canonical TopicCandidate (see ``topic_intelligence.candidate``)."""
+
+    __tablename__ = "topic_candidates"
+
+    candidate_id: Mapped[str] = mapped_column(String(40), primary_key=True)
+    run_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    topic: Mapped[str] = mapped_column(String(300), nullable=False)
+    question: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    rationale: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    language: Mapped[str] = mapped_column(String(8), nullable=False, default="de")
+    region: Mapped[str] = mapped_column(String(8), nullable=False, default="DE")
+    niche: Mapped[str] = mapped_column(String(32), nullable=False, default="unknown")
+    # {trend|outlier|competition|novelty|channel_fit|suitability|visual|
+    #  researchability|own_performance: {value, confidence, evidence, sources}}
+    signals: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    source_signals: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list, nullable=False)
+    score_breakdown: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    final_score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    score_version: Mapped[str] = mapped_column(String(48), nullable=False, default="")
+    confidence: Mapped[str] = mapped_column(String(16), nullable=False, default="low")
+    rejection_reasons: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    provenance: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    freshness_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # pooled | proposed | skipped | used | rejected
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pooled", index=True)
+    discovered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    proposed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    skipped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    selected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    used_project_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
+
+
+class TopicSourceCache(Base):
+    """Normalized, compact provider results with a TTL (quota protection)."""
+
+    __tablename__ = "topic_source_cache"
+
+    key: Mapped[str] = mapped_column(String(200), primary_key=True)
+    provider: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    calls: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    quota_units: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)

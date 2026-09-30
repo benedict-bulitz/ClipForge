@@ -1,16 +1,18 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useReducer, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowRight, ChevronDown, Clapperboard, Clock3, CornerDownLeft, ListVideo, LoaderCircle, Plus, Settings, Trash2 } from "lucide-react";
-import { ApiError, clearGenerationQueue, deleteAllProjects, getBulkProjectDeletePlan, getGenerationJob, getProject, listGenerationJobs, listProjectOverview, removeQueuedGenerationJob, startGeneration } from "@/lib/api";
+import { ArrowRight, ChevronDown, Clapperboard, Clock3, CornerDownLeft, ListVideo, LoaderCircle, Plus, Settings, Sparkles, Trash2 } from "lucide-react";
+import { ApiError, clearGenerationQueue, deleteAllProjects, getBulkProjectDeletePlan, getGenerationJob, getProject, listGenerationJobs, listProjectOverview, proposeNextTopic, removeQueuedGenerationJob, startGeneration, tryAnotherTopic } from "@/lib/api";
 import { createGenerationWatcher, generationTimeLabel, POLL_TIMEOUT_MS, withTimeout, type GenerationWatcher } from "@/lib/generation-poll";
 import type { BulkProjectDeletePlan, GenerationJob, ProjectOverview } from "@/lib/types";
 import { activeQueueJobs, deletableProjectCount, visibleProjectHistory } from "@/lib/queue-overview";
 import { createHomePoller, type HomePoller } from "@/lib/home-poll";
 import { splitQuestions, submitQuestionsInOrder } from "@/lib/multi-question";
+import { INITIAL_TOPIC_FLOW, finalTopicQuestion, isTopicFlowBusy, topicFlowReducer, topicGenerationSource } from "@/lib/topic-intelligence";
 import { AdvancedOptions } from "@/components/advanced-options";
+import { TopicProposal } from "@/components/topic-proposal";
 import { Brand } from "@/components/brand";
 import { Button } from "@/components/ui/button";
 import { ThemeToggle } from "@/components/theme-toggle";
@@ -49,6 +51,7 @@ export default function Home() {
   const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
   const [bulkDeletePhrase, setBulkDeletePhrase] = useState("");
   const [bulkDeleting, setBulkDeleting] = useState(false);
+  const [topicFlow, dispatchTopic] = useReducer(topicFlowReducer, INITIAL_TOPIC_FLOW);
   /** Jobs + history now; the poller then keeps the right cadence (see home-poll.ts). */
   async function refresh() {
     await poller.current?.refreshAll();
@@ -155,6 +158,49 @@ export default function Home() {
     } finally {
       generationRequest.current = false;
       setLoading(false);
+    }
+  }
+
+  /** Generate Next Video: propose a topic first; nothing is generated until confirmed. */
+  async function discoverTopic() {
+    if (isTopicFlowBusy(topicFlow)) return;
+    dispatchTopic({ type: "discover" });
+    try {
+      dispatchTopic({ type: "received", proposal: await proposeNextTopic() });
+    } catch (reason) {
+      dispatchTopic({ type: "failed", message: reason instanceof Error ? reason.message : "Could not reach the ClipForge API." });
+    }
+  }
+
+  async function tryAnother() {
+    if (topicFlow.phase !== "proposed") return;
+    const candidateId = topicFlow.candidate.candidate_id;
+    dispatchTopic({ type: "another" });
+    try {
+      dispatchTopic({ type: "received", proposal: await tryAnotherTopic(candidateId) });
+    } catch (reason) {
+      dispatchTopic({ type: "failed", message: reason instanceof Error ? reason.message : "Could not reach the ClipForge API." });
+    }
+  }
+
+  /** The confirmed topic enters the same generation entry point as a typed question. */
+  async function generateTopic() {
+    if (topicFlow.phase !== "proposed" || generationRequest.current) return;
+    const question = finalTopicQuestion(topicFlow);
+    const source = topicGenerationSource(topicFlow.candidate);
+    generationRequest.current = true;
+    dispatchTopic({ type: "generate" });
+    try {
+      const started = await startGeneration(question, options, source);
+      if (!started.project_id) throw new Error("The project could not be created.");
+      openWhenComplete(started);
+      dispatchTopic({ type: "started" });
+      setQueueOpen(true);
+      await refresh();
+    } catch (reason) {
+      dispatchTopic({ type: "failed", message: reason instanceof Error ? reason.message : "Could not reach the ClipForge API." });
+    } finally {
+      generationRequest.current = false;
     }
   }
 
@@ -292,10 +338,17 @@ export default function Home() {
               </Button>
             </div>
           </div>
-          <label className="mt-3 flex items-center gap-2 px-2 text-left text-xs font-medium text-[var(--muted-foreground)]">
-            <input type="checkbox" checked={multipleQuestions} onChange={(event) => setMultipleQuestions(event.target.checked)} disabled={loading} className="size-4 accent-[var(--accent)]" />
-            Multiple questions
-          </label>
+          <div className="mt-3 flex flex-wrap items-center justify-between gap-2 px-2">
+            <label className="flex items-center gap-2 text-left text-xs font-medium text-[var(--muted-foreground)]">
+              <input type="checkbox" checked={multipleQuestions} onChange={(event) => setMultipleQuestions(event.target.checked)} disabled={loading} className="size-4 accent-[var(--accent)]" />
+              Multiple questions
+            </label>
+            <Button variant="outline" size="sm" onClick={() => void discoverTopic()} disabled={isTopicFlowBusy(topicFlow)} aria-describedby="generate-next-video-hint">
+              {topicFlow.phase === "loading" ? <LoaderCircle className="size-3.5 animate-spin" /> : <Sparkles className="size-3.5" />} Generate Next Video
+            </Button>
+            <span id="generate-next-video-hint" className="sr-only">ClipForge proposes a German topic first; nothing is generated until you confirm it.</span>
+          </div>
+          <TopicProposal state={topicFlow} dispatch={dispatchTopic} onGenerate={() => void generateTopic()} onTryAnother={() => void tryAnother()} onRetry={() => void discoverTopic()} />
           {multipleQuestions && prompt.trim() && <p className="mt-1 px-2 text-left text-xs text-[var(--muted-foreground)]">{detectedQuestions.length} question{detectedQuestions.length === 1 ? "" : "s"} detected</p>}
           {error && <p role="alert" className="mt-3 text-sm font-medium text-[var(--destructive)]">{error}</p>}
           <div className="mt-3"><AdvancedOptions value={options} onChange={setOptions} prompt={prompt} onReset={() => setOptions(resetCreatePreferences())} queueToggle={<button type="button" aria-expanded={queueOpen} aria-controls="video-queue-panel" onClick={() => setQueueOpen((open) => !open)} className="flex items-center gap-2 rounded-full px-3 py-2 text-sm font-medium text-[var(--muted-foreground)] hover:bg-[var(--surface-hover)] hover:text-[var(--foreground)]"><ListVideo className="size-4" /> Video Queue <span className="rounded-full bg-[var(--accent-soft)] px-2 py-0.5 text-xs font-bold text-[var(--accent)]">{activeJobs.length}</span><ChevronDown className={`size-4 transition-transform ${queueOpen ? "rotate-180" : ""}`} /></button>} /></div>

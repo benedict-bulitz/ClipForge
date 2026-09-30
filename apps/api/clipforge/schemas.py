@@ -72,11 +72,23 @@ class ProjectCreate(BaseModel):
     prompt: str = Field(min_length=3, max_length=4_000)
     mode: Literal["auto"] = "auto"
     options: AdvancedOptions = Field(default_factory=AdvancedOptions)
+    # Where the question came from.  "topic_intelligence" requires the id of a
+    # proposed candidate; ``topic_provenance`` is always (re)written by the
+    # server from its own candidate store, never trusted from a client.
+    topic_source: Literal["manual", "topic_intelligence"] = "manual"
+    topic_candidate_id: str | None = Field(default=None, max_length=40)
+    topic_provenance: dict[str, Any] | None = None
 
     @field_validator("prompt", mode="before")
     @classmethod
     def normalize_prompt(cls, value: object) -> object:
         return " ".join(value.split()) if isinstance(value, str) else value
+
+
+class TopicProposalRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    refresh: bool = False
 
 
 class ThumbnailSelectionUpdate(BaseModel):

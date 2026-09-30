@@ -94,6 +94,8 @@ from .services import (
     update_project_music_selection,
     update_project_social_metadata,
 )
+from .topic_intelligence import service as topic_intelligence
+from .topic_intelligence.routes import router as topic_intelligence_router
 from .voice_preview import (
     PreviewRateLimited,
     enforce_preview_rate_limit,
@@ -137,6 +139,7 @@ app.add_middleware(
 app.include_router(integrations_router)
 app.include_router(youtube_router)
 app.include_router(videos_router)
+app.include_router(topic_intelligence_router)
 
 
 @app.get("/api/health", response_model=HealthRead)
@@ -252,13 +255,25 @@ def delete_all_projects_route(db: DbSession, config: SettingsDep, store: SecretS
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
 
+def _with_topic_provenance(db: Session, payload: ProjectCreate) -> ProjectCreate:
+    """Manual and Topic Intelligence questions enter the same pipeline; attach provenance."""
+    try:
+        return topic_intelligence.resolve_topic_provenance(db, payload)
+    except topic_intelligence.TopicHandoffError as exc:
+        code = status.HTTP_409_CONFLICT if exc.code == "already_used" else status.HTTP_422_UNPROCESSABLE_CONTENT
+        raise HTTPException(status_code=code, detail={"status": exc.code, "message": exc.message}) from exc
+
+
 @app.post("/api/projects", response_model=ProjectRead, status_code=status.HTTP_201_CREATED)
 def create_project_route(
     payload: ProjectCreate,
     db: DbSession,
     config: SettingsDep,
 ) -> dict:
-    return serialize_project(create_project(db, payload, config))
+    payload = _with_topic_provenance(db, payload)
+    project = create_project(db, payload, config)
+    topic_intelligence.mark_topic_used(db, payload, project.id)
+    return serialize_project(project)
 
 
 @app.post(
@@ -271,7 +286,9 @@ def start_generation_job_route(
     db: DbSession,
     config: SettingsDep,
 ) -> dict:
+    payload = _with_topic_provenance(db, payload)
     job, created = create_generation_job(db, payload)
+    topic_intelligence.mark_topic_used(db, payload, job.project_id)
     if created:
         schedule_next_generation(config)
     return serialize_generation_job(job)

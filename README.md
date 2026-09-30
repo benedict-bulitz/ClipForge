@@ -94,6 +94,43 @@ cd apps/api && PYTHONPATH=. ../../.venv/bin/python scripts/youtube_diagnostics.p
 Due analytics snapshots (~1 h, 6 h, 24 h, 72 h, 7 d after publication) are taken by
 **Refresh analytics** or `POST /api/youtube/analytics/sync-due`, which is safe to call from cron.
 
+## Generate Next Video (Topic Intelligence V1)
+
+Next to the unchanged manual prompt, **Generate Next Video** lets ClipForge propose the next
+German knowledge short. It discovers candidates, scores them, shows the strongest one with a
+compact "Why this topic" explanation, and waits: **Generate video**, **Try another** or **Edit
+topic**. Nothing is generated, uploaded or published without that confirmation.
+
+- **Sources** (official APIs only, each behind one small `TopicSource` interface): German
+  Wikipedia pageviews (recent interest vs. the article's own median), YouTube's German
+  most-popular chart for Education / Science & Technology (when a channel is connected; each
+  video is compared with its own channel's recent uploads, never by absolute views), and
+  Brave News for Germany (when the Brave key is configured). Competition is a bounded YouTube
+  `search.list` estimate for the strongest candidates only.
+- **Topic → question**: with `CLIPFORGE_AI_MODE=openai`, one worker-model call rewrites a batch
+  of raw trends into natural German questions and rates their knowledge-short suitability;
+  otherwise real source questions are kept and plain template questions are used. Every question
+  is validated (German, a real question, no embedded answer, no clickbait, no unsupported numbers).
+- **Novelty** compares against projects, queued requests, uploaded videos and the Learning
+  Archive with a light German-aware similarity (compounds, umlauts, synonyms), so rephrasings of an
+  earlier video are rejected.
+- **Scoring**: one versioned authority (`topic_intelligence/scoring.py`, `ti-score-v1`) with
+  documented weights. Missing data (e.g. no own analytics yet) is neutral, never zero, and only
+  lowers the confidence. Override weights with `TOPIC_SCORE_WEIGHTS='{"trend": 0.25}'` (the score
+  version then records the override).
+- **Cost control**: normalized provider results are cached (2–24 h), the scored pool is reused for
+  `TOPIC_POOL_TTL_MINUTES` (45), refreshes are single-flight, and each refresh has a hard YouTube
+  quota budget (`TOPIC_YOUTUBE_QUOTA_BUDGET`, 400 units; at most `TOPIC_YOUTUBE_SEARCH_PROBES`=2
+  searches).
+- **Handoff**: a confirmed topic goes through the same `POST /api/generation-jobs` as a typed
+  question. `topic_source` (`manual` | `topic_intelligence`), the candidate id, score version, score
+  breakdown, signals used and selection time are stored with the request, the project state and
+  the production fingerprint for later analytics learning.
+
+If every discovery source fails, the UI says "Topic discovery is temporarily unavailable." and the
+manual prompt keeps working; if only some fail, the remaining sources are used with lower
+confidence. `GET /api/topic-intelligence/status` shows pool and cache freshness.
+
 ## Verify
 
 ```bash
@@ -115,5 +152,8 @@ The API tests run from the repository virtualenv installed by bootstrap:
 | `GET` | `/api/projects/{id}` | Load the current revision |
 | `POST` | `/api/projects/{id}/edits` | Apply a natural-language change |
 | `POST` | `/api/projects/{id}/undo` | Move to the previous revision |
+| `POST` | `/api/topic-intelligence/next` | Propose the next German topic (reuses the fresh pool) |
+| `POST` | `/api/topic-intelligence/candidates/{id}/skip` | Try another candidate |
+| `GET` | `/api/topic-intelligence/status` | Discovery pool and cache freshness |
 
 See [architecture notes](./docs/ARCHITECTURE.md) for state flow and the provider-backed production slices.

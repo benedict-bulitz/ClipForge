@@ -86,6 +86,16 @@ def _hook(state: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _topic(state: dict[str, Any]) -> dict[str, Any]:
+    """Where the question came from (manual or Topic Intelligence), compactly."""
+    provenance = _dict(state.get("topic_provenance"))
+    return {
+        key: provenance.get(key)
+        for key in ("topic_source", "candidate_id", "score_version", "final_score", "niche", "edited")
+        if key in provenance
+    } or {"topic_source": "manual"}
+
+
 def _scene_rows(state: dict[str, Any]) -> list[dict[str, Any]]:
     review = _dict(state.get("final_quality_review"))
     issues_by_scene: dict[str, int] = {}
@@ -187,6 +197,7 @@ def build_fingerprint(
             "answer_reveal_seconds": answer,
             "payoff_seconds": payoff,
             "title_word_count": _words(metadata.get("title")),
+            "topic": _topic(state),
         },
         "hook": _hook(state),
         "visual": {

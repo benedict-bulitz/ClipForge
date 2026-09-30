@@ -105,3 +105,14 @@ def forbid_real_overlay_summaries(monkeypatch):
 
     overlay_copy.clear_summary_cache()
     monkeypatch.setattr(overlay_copy, "SUMMARY_CLIENT_FACTORY", forbidden)
+
+
+@pytest.fixture(autouse=True)
+def forbid_real_topic_transformation(monkeypatch):
+    """Topic -> question rewriting must be faked; no real worker-model calls."""
+    from clipforge.topic_intelligence import transform
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("Real OpenAI topic transformation is forbidden in the test suite.")
+
+    monkeypatch.setattr(transform, "TRANSFORM_CLIENT_FACTORY", forbidden)

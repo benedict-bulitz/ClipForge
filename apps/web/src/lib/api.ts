@@ -16,6 +16,7 @@ import type {
   BulkProjectDeleteResult,
   MusicTrack,
 } from "./types";
+import type { TopicGenerationSource, TopicProposal } from "./topic-intelligence";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api";
 export const API_ORIGIN = API_URL.replace(/\/api\/?$/, "");
@@ -94,13 +95,30 @@ export function createProject(
   });
 }
 
+/** The one generation entry point: typed questions and confirmed Topic Intelligence topics alike. */
 export function startGeneration(
   prompt: string,
   options: Record<string, string | number | boolean | null>,
+  topic?: TopicGenerationSource,
 ) {
   return request<GenerationJob>("/generation-jobs", {
     method: "POST",
-    body: JSON.stringify({ prompt, mode: "auto", options }),
+    body: JSON.stringify({ prompt, mode: "auto", options, ...(topic ?? {}) }),
+  });
+}
+
+/** Generate Next Video: the best unused German topic (the backend reuses its fresh pool). */
+export function proposeNextTopic(refresh = false) {
+  return request<TopicProposal>("/topic-intelligence/next", {
+    method: "POST",
+    body: JSON.stringify({ refresh }),
+  });
+}
+
+/** Try another: skip this candidate and propose the next-ranked one. */
+export function tryAnotherTopic(candidateId: string) {
+  return request<TopicProposal>(`/topic-intelligence/candidates/${encodeURIComponent(candidateId)}/skip`, {
+    method: "POST",
   });
 }
 
