@@ -786,15 +786,25 @@ def _pre_reveal_body(blocks: list[dict[str, Any]], arc: dict[str, Any]) -> int |
     return None
 
 
-def _removal_blocked(blocks: list[dict[str, Any]], index: int, arc: dict[str, Any], anchors: set[str]) -> str | None:
+def _removal_blocked(
+    blocks: list[dict[str, Any]], index: int, arc: dict[str, Any], anchors: set[str],
+    target: int | None = None, *, closing: bool = False,
+) -> str | None:
     block = blocks[index]
-    if _role(block) in {"hook", "answer", "payoff"}:
+    if _role(block) in {"hook", "answer"} or (_role(block) == "payoff" and not closing):
         return "protected"
     final = str(arc.get("final_payoff_id") or "")
     for fact_id in set(_fact_ids(block)) & anchors:
         # An anchor may only lose a repetition: the reveal keeps its first
-        # telling (an earlier unit), the final payoff its closing one (a later unit).
+        # telling (an earlier unit), the final payoff its closing one (a later
+        # unit, or the unit that takes over the closing role).
+        if closing and fact_id == final:
+            continue
         others = range(index + 1, len(blocks)) if fact_id == final else range(index)
+        # The earlier unit this one repeats receives its facts: an evidence
+        # sentence restating the answer hands the answer fact to the answer.
+        if target is not None and target < index and fact_id != final:
+            continue
         if not any(fact_id in _fact_ids(blocks[position]) and _role(blocks[position]) != "hook" for position in others):
             return "protected"
     if sum(1 for item in blocks if _role(item) != "hook") <= 1:
@@ -833,6 +843,56 @@ def _merge_target(
     return target, True
 
 
+def _hand_over_payoff(
+    blocks: list[dict[str, Any]], units: list[dict[str, Any]], arc: dict[str, Any], anchors: set[str],
+    deps: dict[str, set[str]], repairs: list[dict[str, Any]],
+) -> bool:
+    """A closing unit that only repeats the body gives the payoff to the beat before it.
+
+    "Und mit zunehmendem Alter wird dieser Effekt stärker" after the age
+    correlation was already told is not a payoff; the last informative beat
+    (the mechanism) is.  Only the last body unit hands over, only to an
+    informative unit that is not the answer, and it takes its role and its
+    research facts (the arc's final payoff stays on the closing unit).
+    """
+    payoff = next((unit for unit in units if unit.get("is_payoff")), None)
+    body = [unit for unit in units if unit["category"] != "hook"]
+    # Only a closing unit that adds no proposition at all: a one-word
+    # paraphrase may still carry the closing fact ("der größte Inselstaat").
+    if payoff is None or payoff["category"] != "restatement" or body[-1] is not payoff or len(body) < 2:
+        return False
+    successor = body[-2]
+    # Never the answer or its own continuation (a unit telling only the answer's facts).
+    answer_facts = {fact_id for unit in body if unit["role"] == "answer" for fact_id in unit["evidence"]["fact_ids"]}
+    answer_facts |= {str(arc.get("primary_answer_id") or "")} - {""}
+    own = set(successor["evidence"]["fact_ids"])
+    continues_answer = own <= answer_facts if own else any(unit["role"] == "answer" for unit in body[:-1])
+    if (
+        successor["role"] in {"hook", "answer"} or continues_answer
+        or successor["category"] in REDUNDANT_CATEGORIES or not successor["counts_as_gain"]
+    ):
+        return False
+    index, target = payoff["index"], successor["index"]
+    if _removal_blocked(blocks, index, arc, anchors, closing=True):
+        return False
+    elsewhere = {fact_id for position, block in enumerate(blocks) if position != index for fact_id in _fact_ids(block)}
+    moving = [fact_id for fact_id in _fact_ids(blocks[index]) if fact_id not in elsewhere]
+    told = {fact_id for block in blocks[: target + 1] for fact_id in _fact_ids(block)}
+    if any(deps.get(fact_id, set()) - told - set(moving) for fact_id in moving):
+        return False
+    removed = blocks.pop(index)
+    closing = blocks[target]
+    previous_role = _role(closing)
+    closing["role"] = "payoff"
+    closing["fact_ids"] = [*_fact_ids(closing), *moving]
+    repairs.append({
+        "action": "hand_over_payoff", "block_id": removed.get("id"), "text": _text(removed),
+        "category": payoff["category"], "repeats_block_id": payoff["repeats_block_id"], "moved_fact_ids": moving,
+        "payoff_block_id": closing.get("id"), "payoff_previous_role": previous_role,
+    })
+    return True
+
+
 def prune_redundant_information(
     blocks: list[dict[str, Any]], state: dict[str, Any],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -863,10 +923,10 @@ def prune_redundant_information(
         changed = False
         for unit in units:
             index = unit["index"]
-            if unit["category"] not in REDUNDANT_CATEGORIES or unit.get("is_payoff") or _removal_blocked(blocks, index, arc, anchors):
+            if unit["category"] not in REDUNDANT_CATEGORIES or unit.get("is_payoff"):
                 continue
             target, possible = _merge_target(blocks, index, unit["repeats_block_id"], deps)
-            if not possible:
+            if not possible or _removal_blocked(blocks, index, arc, anchors, target):
                 continue
             removed = blocks.pop(index)
             moved: list[str] = []
@@ -883,6 +943,8 @@ def prune_redundant_information(
             changed = True
             break
         if changed:
+            continue
+        if _hand_over_payoff(blocks, units, arc, anchors, deps, repairs):
             continue
         # A unit whose every word the next, richer unit repeats gives way to it.
         closing = {unit["index"] for unit in units if unit.get("is_payoff")}

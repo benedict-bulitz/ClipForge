@@ -918,7 +918,8 @@ _LIGHT = {
     "macht", "machen", "machst", "bist", "ist", "sind", "war", "waren", "hat", "hast", "haben", "gibt", "geben", "wird", "wirst",
     "werden", "kommt", "sein", "nach", "vor", "beim", "einem", "einen", "einer", "eines", "dabei", "dafür", "davon", "darauf",
     "mich", "dich", "sich", "euch", "makes", "make", "made", "gets", "get", "there", "after", "before", "into", "does", "being",
-    "been", "will", "would", "could", "should",
+    "been", "will", "would", "could", "should", "bleibt", "bleiben", "bleibe", "blieb", "blieben", "remain", "remains",
+    "stay", "stays",
 }
 _NEGATED = re.compile(r"(?i)\b(?:nicht|kein\w*|nie|niemals|not|no|never)\b|\w+n[’']t\b")
 
@@ -940,13 +941,51 @@ _VAGUE = {
     "ziemlich", "sozusagen", "quasi", "gewissermassen", "normalerweise", "meistens", "üblicherweise",
     "genau", "selbst", "deines", "deinem", "meine", "meinen", "meinem", "meiner", "meines", "unseren",
     "unserem", "unserer", "eigene", "eigenen", "eigenes", "eigener", "eigenem",
+    "eher", "insgesamt", "tendenziell", "durchschnittlich", "rather", "overall",
 }
 # Connectors state a relation between propositions, not a proposition; the
 # relation itself is read from the sentence grammar (mechanism/contrast).
+# "Ein Grund: X" states X, the reason label adds nothing.
 _CONNECTORS = {
     "deshalb", "darum", "daher", "dadurch", "deswegen", "dagegen", "jedoch", "trotzdem", "während",
     "sodass", "weshalb", "therefore", "thus", "hence", "whereas", "while", "however", "instead",
+    "desto", "umso", "grund", "gründe", "reason", "reasons",
 }
+# Multi-word expressions of one concept (any topic), rewritten to a single
+# concept word before tokenising: "hängen bleiben", "einen starken Eindruck
+# hinterlassen" and "einprägsam" all say that something is remembered.  A
+# negation inside the phrase is kept ("keinen Eindruck" = -memorable).
+_PHRASES: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"(?i)\bhängen\s*(?:zu\s+)?bleib\w*|\bbleib\w*\s+(?:\w+\s+){0,2}?hängen\b|\bhängengeblieben\b"), " einprägsam "),
+    (re.compile(
+        r"(?i)\b(?:(?:stark|bleibend|tief|nachhaltig|groß|kein)\w*\s+)?eindr[uü]\w*\s+hinterl\w*|"
+        r"\bhinterl\w*\s+(?:(?:einen|einem|den|kein\w*|stark\w*|bleibend\w*|tief\w*|nachhaltig\w*|groß\w*)\s+){0,2}eindr[uü]\w*"
+    ), " einprägsam "),
+    (re.compile(r"(?i)\bleav\w*\s+(?:an?\s+)?(?:(?:strong|lasting|deep|big)\s+)?impressions?\b"), " memorable "),
+    (re.compile(r"(?i)\bstick\w*\s+(?:in\s+(?:your|the|our|their|my)\s+(?:mind|memory|head)|with\s+(?:you|us|them|me))\b"), " memorable "),
+    # A trend: "immer schneller", "ever faster", "more and more".
+    (re.compile(r"(?i)\bimmer\s+(?=\w{3,}er\b)"), " zunehmend "),
+    (re.compile(r"(?i)\bever\s+(?=\w{3,}er\b)|\bmore and more\b"), " increasingly "),
+    # A statistical qualifier, not a claim of its own.
+    (re.compile(r"(?i)\bim\s+durchschnitt\b|\bon\s+average\b"), " "),
+)
+# Reporting frames: who said or measured a claim is not the claim.  "In
+# Befragungen wählen Ältere häufiger die Antwort, dass X" states X again;
+# a number, a named source or a new group stays new information.
+_REPORTING = (
+    r"befrag\w*|umfrage\w*|studie|studien|antwort\w*|angab\w*|angeben|bericht\w*|wähl\w*|forscher\w*|forschung\w*|"
+    r"teilnehm\w*|survey\w*|study|studies|polls?|respond\w*|answers?|answered|reports?|reported|researchers?|participants?"
+)
+_REPORTING_RE = re.compile(rf"(?i)\b(?:{_REPORTING})\b")
+# A frequency word that qualifies a quantity ("oft weniger") or a report
+# ("wählen häufiger die Antwort") is a hedge, not a frequency claim.
+_HEDGING_FREQUENCY = re.compile(r"(?i)\b(?:oft|häufig\w*|often|frequently)\s+(?:weniger|mehr|less|more|fewer|kaum|nicht|kein\w*)\b")
+# An explicit comparison ("schneller als Jüngere", "je ... desto", "the more
+# ... the") already states the trend along its axis.
+_COMPARISON = re.compile(
+    r"(?i)\b\w{3,}er\s+(?:\w+\s+){0,3}?(?:als|than)\b|\b(?:mehr|weniger|more|less|fewer)\b[^.!?]*?\b(?:als|than)\b|"
+    r"\bje\b[^.!?]*?\bdesto\b|\bthe\s+(?:more|less|\w+er)\b[^.!?]*?,\s*the\s+(?:more|less|\w+er)\b"
+)
 # Everyday paraphrase pairs (grammar-level, not topic vocabulary): each word
 # counts as its canonical form, so swapping one for the other adds nothing.
 # A canonical form in ``_STOP`` ("fast") drops the whole group.
@@ -976,14 +1015,31 @@ _CONCEPTS: tuple[tuple[str | None, bool, bool, re.Pattern[str]], ...] = (
     ("familiar", True, False, re.compile(r"(?:gewohnt|gewöhn|gewohnheit|vertraut|bekannt|familiar|accustom|habituat)\w*")),
     ("different", True, False, re.compile(r"anders|(?:unterschied|verschieden|differ|distinct)\w*")),
     ("frequent", True, False, re.compile(r"oft|öfter|(?:häufig|frequent)\w*|often")),
+    # Novelty and memory: "neue Erlebnisse, die hängen bleiben" = "neue
+    # Erlebnisse, die einen starken Eindruck hinterlassen".
+    ("novel", True, False, re.compile(r"neu|neue|neuen|neuer|neues|neuem|neuartig\w*|neuheit\w*|novel\w*|new|newness")),
+    ("memorable", True, False, re.compile(
+        r"einprägsam\w*|(?:erinner|gedächtnis|memorab|remember|unvergess|unforgett)\w*|memory|memories"
+    )),
+    # Age as an axis: "Ältere", "mit dem Alter", "mit zunehmendem Alter" are
+    # one side of it, "Jüngere" the other.
+    ("age", True, True, re.compile(r"jünger\w*|younger|youth\w*")),
+    ("age", True, False, re.compile(r"alter|alters|älter\w*|altern\w*|altert|older|age|aged|ages|aging|ageing|elderly")),
+    # A rising trend or degree ("stärker", "zunehmend", "immer schneller").
+    ("more", False, False, re.compile(r"stärker|zunehmend\w*|steigend\w*|wachsend\w*|verstärk\w*|increasing\w*|growing|grows|stronger")),
     ("other", False, False, re.compile(r"andere|anderen|anderer|anderes|anderem|others?")),
     ("photo", False, False, re.compile(r"(?:foto|photo|aufnahme|selfie)\w*")),
     ("mirror", False, False, re.compile(r"(?:spiegel|mirror)\w*")),
     (None, False, False, re.compile(
-        r"sieh\w*|sieht|sehe|sehen|sah|sahen|gesehen|aussehen|aussieht|wirk(?:e|st|t|en|te|test|ten)|(?:erschein|vorkomm|schau|anschau|betracht|zeig|fühl)\w*|"
+        r"sieh\w*|sieht|sehe|sehen|sah|sahen|gesehen|aussehen|aussieht|wirk(?:e|st|t|en|te|test|ten)|(?:erschein|vorkomm|schau|anschau|betracht|zeig|fühl|anfühl)\w*|"
         r"looks?|looking|looked|see|sees|seen|seems?|seemed|appears?|appeared|shows?|showed|shown|views?|viewed|feels?|felt|"
         r"bild|bilder|bildes|abbild\w*|version\w*|images?|pictures?|seite|seiten|sides?|links|rechts|left|right|"
-        r"menschen|leute|people|persons?|personen"
+        r"menschen|leute|people|persons?|personen|"
+        # Time passing is what "time" does: "Zeit vergeht" states "Zeit".
+        r"vergeh\w*|verging\w*|vergang\w*|verstreich\w*|verstrich\w*|verflieg\w*|elaps\w*|"
+        # An anaphoric label for what was said ("dieser Effekt").
+        r"effekt\w*|effects?|phänomen\w*|phenomen\w*|"
+        + _REPORTING
     )),
 )
 _SALIENT = {name for name, salient, _polar, _pattern in _CONCEPTS if name and salient}
@@ -1031,8 +1087,12 @@ def proposition_words(text: object) -> set[str]:
     same token and a denied fact ("fehlt diese Umkehrung") a different one.
     """
     tokens: set[str] = set()
-    for clause in _CLAUSE.split(str(text or "")):
+    text = str(text or "")
+    for pattern, replacement in _PHRASES:
+        text = pattern.sub(lambda match, concept=replacement: " ".join([*_NEGATOR.findall(match.group(0)), concept]), text)
+    for clause in _CLAUSE.split(text):
         negated = bool(_NEGATOR.search(clause))
+        hedged = bool(_REPORTING_RE.search(clause) or _HEDGING_FREQUENCY.search(clause))
         for raw in _words(clause):
             word = _SYNONYMS.get(raw, raw)
             if word in _LIGHT or word in _VAGUE or word in _STOP or word in _CONNECTORS or word in _NEGATOR_WORDS:
@@ -1043,7 +1103,7 @@ def proposition_words(text: object) -> set[str]:
                         tokens.add(part)
                     continue
                 name, negative = part
-                if name is None:
+                if name is None or (name == "frequent" and hedged):
                     continue
                 polar = name in _SALIENT
                 sign = "-" if polar and (negated != negative) else "+"
@@ -1079,6 +1139,10 @@ def information_gain(reference: str, sentence: str) -> list[str]:
     known = set().union(*(_proposition_words(clause) for clause in clauses)) if clauses else set()
     said = _proposition_words(sentence)
     gain = sorted(said - _related(said, known))
+    if "+more" in gain and _COMPARISON.search(asserted):
+        # "Mit zunehmendem Alter wird der Effekt stärker" after "Ältere ...
+        # schneller als Jüngere": a rising trend is what the comparison said.
+        gain.remove("+more")
     gain += sorted(_numbers(sentence) - _numbers(asserted))
     if not gain and said and not any(token[:1] in "+-" and token[1:] in _SALIENT for token in said):
         denied = [clause for clause in clauses if _related(said, _proposition_words(clause)) == said]
