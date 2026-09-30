@@ -60,7 +60,9 @@ DIAGNOSES = {
     "provider_failure": "Every discovery source failed (see sources); Home says discovery is unavailable.",
     "stale_pool_other_version": "The latest pool was scored by an older score version; the next request re-discovers.",
     "pool_expired_refreshes_on_next_request": "The pool is older than its TTL; the next request refreshes it.",
+    "question_transformation_failed": "Discovery worked, but most topics could not become a valid German question.",
     "quality_floor_rejected_all": "Discovery worked, but no candidate cleared the quality floor (see rejection reasons).",
+    "prior_knowledge_rejected_all": "Discovery worked, but every question needed prior knowledge (universal 12+ gate).",
     "no_usable_candidates": "Discovery worked, but every candidate was rejected for other reasons.",
     "fewer_than_three_candidates": "Fewer than 3 candidates cleared the floor; Home shows only those plus a note.",
     "ok": "Enough candidates are available.",
@@ -82,15 +84,27 @@ def print_status(settings) -> None:
         print(f"  source {source['name']:28} {source['status']:8} items={source.get('items')} calls={source.get('calls')} "
               f"units={source.get('quota_units')} {source.get('error') or ''}")
     pool = report["pool"] or {}
-    print(f"pool: raw_topics={pool.get('raw_topics')} evaluated={pool.get('evaluated')} accepted={pool.get('accepted')} "
-          f"available={pool.get('available')} rejected={pool.get('rejected')} statuses={pool.get('statuses')}")
+    print(f"pool: raw_topics={pool.get('raw_topics')} evaluated={pool.get('evaluated')} (budget {pool.get('evaluation_budget')}) "
+          f"accepted={pool.get('accepted')} available={pool.get('available')} rejected={pool.get('rejected')} "
+          f"transformation_failures={pool.get('transformation_failures')} statuses={pool.get('statuses')}")
+    print(f"transformation: {pool.get('transformation')} (current version {pool.get('transformation_version')})")
+    evaluation = pool.get("evaluation") or {}
+    if evaluation:
+        print(f"evaluation: {evaluation.get('items')} evaluated, {evaluation.get('calls')} rewrite requests, {evaluation.get('error')}")
     print(f"rejection reasons: {pool.get('rejection_reasons')}")
+
+    def line(item: dict) -> str:
+        access = item.get("universal_accessibility")
+        prior = ",".join(item.get("prior_knowledge") or []) or "-"
+        return (f"{item['final_score']:.3f} access={access if access is not None else '-'} prior_knowledge={prior} "
+                f"via={item.get('transformation')} src={','.join(item.get('sources') or [])}")
+
     print("accepted:")
     for item in pool.get("accepted_candidates") or []:
-        print(f"  {item['final_score']:.3f} [{item['status']}] {item['question']}")
+        print(f"  [{item['status']}] {item['question']}\n      {line(item)}")
     print("rejected:")
     for item in pool.get("rejected_candidates") or []:
-        print(f"  {item['final_score']:.3f} {item['question'] or item['topic']}  <- {', '.join(item['reasons'])}")
+        print(f"  {item['question'] or '(no question) ' + item['topic']}  <- {', '.join(item['reasons'])}\n      {line(item)}")
     print("caches:")
     for cache in report["caches"]:
         print(f"  {cache['provider']:28} fresh={cache['fresh']} fetched={cache['fetched_at']} expires={cache['expires_at']}")

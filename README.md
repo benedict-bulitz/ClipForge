@@ -110,14 +110,25 @@ before the page opens; video generation never waits for it.
   video is compared with its own channel's recent uploads, never by absolute views), and
   Brave News for Germany (when the Brave key is configured). Competition is a bounded YouTube
   `search.list` estimate for the strongest candidates only.
-- **Topic → question**: with `CLIPFORGE_AI_MODE=openai`, one worker-model call rewrites a batch
-  of raw trends into natural German questions and rates their knowledge-short suitability;
-  otherwise real source questions are kept and plain template questions are used. Every question
-  is validated (German, a real question, no embedded answer, no clickbait, no unsupported numbers).
+- **Topic → question** (`tq3`): with `CLIPFORGE_AI_MODE=openai`, one worker-model call rewrites a
+  batch of up to 20 raw topics into natural German questions and rates their suitability. Locally,
+  a deterministic step keeps real questions ("Beziehung: Wie gesund ist die Liebe?" → "Wie gesund ist
+  die Liebe?"), turns indirect clauses and "Darum/So/Das passiert"-headlines into direct questions,
+  strips channel suffixes, hashtags, ALL-CAPS emphasis and exclamation marks, and uses a concrete
+  template only where the encyclopedia says what a subject is - never a generic
+  "Was steckt eigentlich hinter X?". Every question is validated (German, a real question, no
+  embedded answer, no clickbait, no unsupported numbers).
+- **Raw-pool backfill**: discovery ranks the order of work, it is not a gate. Topics are evaluated in
+  batches through the already-discovered raw pool until 9 candidates clear every gate or 60 topics
+  were evaluated (at most 3 rewrite requests with OpenAI) - without new provider calls.
+- **Universal 12+ gate** (`ti-score-v3`): a question whose premise needs prior knowledge (title
+  context, a brand or multi-word name, product-generation news, an institution or one specific
+  event, a date or identifier, or an obscure entity leading the question) is rejected as
+  `requires_prior_knowledge`; a niche topic passes only when reframed around a universal phenomenon.
 - **Novelty** compares against projects, queued requests, uploaded videos and the Learning
   Archive with a light German-aware similarity (compounds, umlauts, synonyms), so rephrasings of an
   earlier video are rejected.
-- **Scoring**: one versioned authority (`topic_intelligence/scoring.py`, `ti-score-v2`) with
+- **Scoring**: one versioned authority (`topic_intelligence/scoring.py`, `ti-score-v3`) with
   documented weights. Mass-audience quality (suitability, broad appeal, accessibility without prior
   niche knowledge, question form) carries the score; a trend spike counts only as much as its
   corroboration and the topic's quality allow; date pages, identifiers, isolated events, acronyms,
@@ -151,8 +162,9 @@ cd apps/api && PYTHONPATH=. ../../.venv/bin/python scripts/topic_diagnostics.py 
 ```
 
 `diagnosis` is one of `discovery_running`, `warmup_failed`, `no_pool_yet`, `provider_failure`,
-`stale_pool_other_version`, `pool_expired_refreshes_on_next_request`, `quality_floor_rejected_all`,
-`no_usable_candidates`, `fewer_than_three_candidates` or `ok`, next to per-source status, pool size,
+`stale_pool_other_version`, `pool_expired_refreshes_on_next_request`, `question_transformation_failed`,
+`quality_floor_rejected_all`, `prior_knowledge_rejected_all`, `no_usable_candidates`,
+`fewer_than_three_candidates` or `ok`, next to per-source status, pool size,
 accepted/rejected candidates with rejection reasons, the score version and cache freshness.
 
 Tuning diagnostics (developer only, read-only, no external calls):

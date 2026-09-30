@@ -18,12 +18,6 @@ from clipforge.topic_intelligence.candidate import (
     candidate_id_for,
 )
 from clipforge.topic_intelligence.routes import diagnostics_route
-from clipforge.topic_intelligence.signals import accessibility, question_form
-from clipforge.topic_intelligence.text import (
-    question_flags,
-    question_mechanism,
-    topic_obscurity_flags,
-)
 
 OBSCURE = [
     {"title": "GICON-Höhenwindturm", "views": 40_000, "description": "Windkraftanlage in Brandenburg",
@@ -61,11 +55,11 @@ def records(db) -> dict[str, TopicCandidateRecord]:
 def test_broad_compelling_topic_beats_obscure_wikipedia_spikes(db):
     result = served(db, OBSCURE + BROAD)
     questions = [item["question"] for item in result["candidates"]]
-    assert questions[:2] == ["Wie entsteht eigentlich Polarlicht?", "Warum bekommen wir Schluckauf?"] or set(questions[:2]) == {
-        "Wie entsteht eigentlich Polarlicht?", "Warum bekommen wir Schluckauf?"}
+    assert set(questions[:2]) == {"Wie entsteht eigentlich ein Polarlicht?", "Warum bekommen wir Schluckauf?"}
     by_topic = records(db)
+    weak = {"below_quality_floor", "question_no_question_transformation", "requires_prior_knowledge"}
     for topic in ("GICON-Höhenwindturm", "29. September", "Gol-Transportes-Aéreos-Flug 1907"):
-        assert "below_quality_floor" in by_topic[topic].rejection_reasons, topic
+        assert weak & set(by_topic[topic].rejection_reasons), topic
         # Each still had the biggest raw spike: it is the ranking, not discovery, that changed.
         assert by_topic[topic].signals["trend"]["value"] == 1.0
     assert by_topic["Schluckauf"].signals["trend"]["value"] < 0.5
@@ -74,10 +68,16 @@ def test_broad_compelling_topic_beats_obscure_wikipedia_spikes(db):
 def test_date_page_spike_alone_is_insufficient(db):
     served(db, [OBSCURE[1]])
     record = records(db)["29. September"]
-    breakdown = record.score_breakdown
-    assert breakdown["penalties"]["obscurity"]["date_page"] == scoring.OBSCURITY_PENALTIES["date_page"]
-    assert breakdown["components"]["trend"]["trend_quality_factor"] < 0.3
-    assert "below_quality_floor" in record.rejection_reasons
+    # Locally a calendar page never becomes a question (no generic wrapper) ...
+    assert record.question == "" and "question_no_question_transformation" in record.rejection_reasons
+    # ... and a date question with the biggest spike still fails the gates.
+    dated = score(candidate(
+        "date", question="Was geschah am 29. September?", topic="29. September",
+        trend=Signal(1.0, "high", sources=["wikipedia_pageviews"]), **GOOD,
+    ))
+    assert dated.rejected
+    assert {"requires_prior_knowledge"} <= set(dated.rejection_reasons)
+    assert dated.score_breakdown["components"]["trend"]["trend_quality_factor"] < 0.5
 
 
 def test_quality_floor_prevents_filler_and_broadens_discovery_once(db):
@@ -113,9 +113,9 @@ def test_llm_rewrites_obscure_topics_into_broad_questions_and_they_may_win(db, m
 
 def candidate(key: str, *, question: str = "Warum passiert das?", topic: str = "Thema", niche: str = "wissenschaft", **signals: Signal) -> TopicCandidate:
     base = {name: Signal.unavailable("not_measured") for name in SIGNAL_NAMES}
-    flags = question_flags(question, topic)
-    base["accessibility"] = accessibility(flags, topic_obscurity_flags(topic), None, method="text_features")
-    base["question_form"] = question_form(question_mechanism(question), flags)
+    features, _evidence = service.quality_signals(question, topic, "", niche, {}, "template")
+    base["accessibility"] = features["accessibility"]
+    base["question_form"] = features["question_form"]
     base.update(signals)
     return TopicCandidate(
         candidate_id=candidate_id_for(key), topic=topic, question=question, rationale="", source_signals=[], discovered_at=NOW,
@@ -131,21 +131,24 @@ def score(item: TopicCandidate) -> TopicCandidate:
 GOOD = {"suitability": Signal(0.8, "medium"), "broad_appeal": Signal(0.85, "medium"), "visual": Signal(0.8, "medium")}
 
 
-def test_obscure_topic_wins_with_exceptional_evidence():
-    obscure = score(candidate(
-        "obscure", question="Warum sank die MS Estonia 1994 so schnell?", topic="MS Estonia 1994",
-        trend=Signal(0.95, "high", sources=["wikipedia_pageviews", "brave_news_de", "youtube_trending_de"]),
-        outlier=Signal(0.9, "high"), **GOOD,
-    ))
+def test_obscure_topic_needs_reframing_even_with_exceptional_evidence():
+    evidence = {
+        "trend": Signal(0.95, "high", sources=["wikipedia_pageviews", "brave_news_de", "youtube_trending_de"]),
+        "outlier": Signal(0.9, "high"),
+        **GOOD,
+    }
+    named = score(candidate("named", question="Warum sank die MS Estonia 1994 so schnell?", topic="MS Estonia 1994", **evidence))
+    reframed = score(candidate("reframed", question="Wie kann ein großes Schiff innerhalb einer Stunde sinken?", topic="MS Estonia 1994", **evidence))
     middling = score(candidate(
         "middling", question="Warum ist Wasser nass?", topic="Wasser",
         trend=Signal(0.3, "medium", sources=["wikipedia_pageviews"]), suitability=Signal(0.6, "medium"),
         broad_appeal=Signal(0.7, "medium"),
     ))
-    assert not obscure.rejected
-    assert set(obscure.score_breakdown["quality"]["exceptional_evidence"]) >= {"corroborated_strong_trend", "strong_outlier"}
-    assert obscure.score_breakdown["penalties"]["obscurity_value"] < 0.1  # reduced to a quarter
-    assert obscure.final_score > middling.final_score
+    assert "requires_prior_knowledge" in named.rejection_reasons  # evidence does not lift the 12+ gate
+    assert "names_obscure_entity" in named.score_breakdown["quality"]["prior_knowledge"]
+    assert not reframed.rejected
+    assert set(reframed.score_breakdown["quality"]["exceptional_evidence"]) >= {"corroborated_strong_trend", "strong_outlier"}
+    assert reframed.final_score > middling.final_score
 
 
 def test_multi_source_corroboration_improves_trend_rank_and_confidence():
@@ -267,6 +270,8 @@ def test_diagnostics_show_components_penalties_and_can_rescore_v1_records(db):
     record = records(db)["29. September"]
     # Simulate a candidate persisted by ti-score-v1 (no v2 feature signals, v1 score).
     record.signals = {name: value for name, value in record.signals.items() if name not in {"broad_appeal", "accessibility", "question_form"}}
+    record.question = "Was steckt eigentlich hinter 29. September?"
+    record.provenance = {**record.provenance, "question_issues": []}
     record.score_version, record.final_score, record.rejection_reasons = "ti-score-v1", 0.69, []
     db.commit()
     report = service.diagnostics(db, settings(), limit=20, rescore=True)
@@ -274,8 +279,9 @@ def test_diagnostics_show_components_penalties_and_can_rescore_v1_records(db):
     row = next(item for item in report["candidates"] if item["topic"] == "29. September")
     assert row["persisted"]["score_version"] == "ti-score-v1" and row["persisted"]["final_score"] == 0.69
     assert row["rescored"]["score_version"] == scoring.SCORE_VERSION
-    assert "below_quality_floor" in row["rescored"]["rejection_reasons"]
+    assert {"below_quality_floor", "requires_prior_knowledge"} & set(row["rescored"]["rejection_reasons"])
     assert row["rescored"]["penalties"]["obscurity"]["date_page"] > 0
+    assert row["rescored"]["quality"]["universal_accessibility"] < 0.5
     assert set(row["rescored"]["components"]) == set(SIGNAL_NAMES)
     shown = service.diagnostics(db, settings(), limit=9, shown=True)
     assert [item["status"] for item in shown["candidates"]] and all(item["served_at"] for item in shown["candidates"])

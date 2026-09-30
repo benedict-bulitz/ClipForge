@@ -256,7 +256,7 @@ def question_issues(question: str, *, evidence: str = "") -> list[str]:
         issues.append("not_a_question")
     if not 4 <= len(words) <= 20 or len(text) > 150:
         issues.append("length_out_of_bounds")
-    if not _GERMAN_QUESTION_START.match(text) or detect_text_language(text) == "en":
+    if not (_GERMAN_QUESTION_START.match(text) or _V1_QUESTION.match(text)) or detect_text_language(text) == "en":
         issues.append("not_natural_german")
     if _ANSWER_MARKERS.search(text.rstrip("?")):
         issues.append("answer_embedded")
@@ -288,7 +288,7 @@ _DATE_TITLE = re.compile(rf"(?i)^(?:\d{{1,2}}\.\s*(?:{_MONTHS})|(?:{_MONTHS})\s+
 _CALENDAR_DESCRIPTION = re.compile(r"(?i)\btag (?:des|im) gregorianischen kalender|\bjahr (?:des|im) \d+\. jahrhundert")
 # A name followed by a number ("Flug 1907", "Sommerspiele 2028") or a code ("A320"); a quantity
 # ("11 Kilometer") is not an identifier.
-_IDENTIFIER = re.compile(r"\b[A-ZÄÖÜ][\wäöüß-]*[- ]\d{2,}\b(?!\s*[A-Za-zäöüÄÖÜ])|\b[A-Z]{1,3}\d+[A-Z0-9]*\b")
+_IDENTIFIER = re.compile(r"\b[A-ZÄÖÜ][\wäöüß-]*[- ]\d{2,}\b(?!\s*[A-ZÄÖÜ][a-zäöüß])|\b[A-Z]{1,3}\d+[A-Z0-9]*\b")
 _DATE_IN_TEXT = re.compile(rf"(?i)\b\d{{1,2}}\.\s*(?:{_MONTHS})\b")
 _ACRONYM = re.compile(r"\b[A-ZÄÖÜ]{3,}\b")
 _FOREIGN_LETTERS = re.compile(r"[àáâãåæçèéêëìíîïñòóôõøùúûýÿœ]", re.IGNORECASE)
@@ -351,3 +351,174 @@ def question_flags(question: str, topic: str = "") -> set[str]:
     if _GENERIC_WRAPPER.match(text) or (bare_topic_wrapper and subject and topic_obscurity_flags(subject)):
         flags.add("generic_wrapper")
     return flags
+
+
+# ---------------------------------------------------------------------------
+# Local (no-LLM) question extraction  - TRANSFORMATION_VERSION in transform.py
+# ---------------------------------------------------------------------------
+
+# Acronyms any 12+ viewer knows; others count as prior knowledge.
+EVERYDAY_ACRONYMS = frozenset({
+    "QR", "KI", "GPS", "DNA", "USB", "WLAN", "TV", "UV", "LED", "CO2", "PC", "MRT", "SMS", "PIN", "USA", "EU",
+    "NASA", "ESA", "WC", "ICE", "UFO", "ADHS", "IQ", "PS", "E-Mail", "App",
+})
+_W_WORDS = r"(?:warum|wieso|weshalb|weswegen|wie|was|wer|wem|wen|wo|woher|wohin|wann|welche[rsmn]?|wodurch|wozu|wofür|womit|worum|woran)"
+_W_START = re.compile(rf"(?i)^{_W_WORDS}\b")
+_V1_QUESTION = re.compile(
+    r"^[A-ZÄÖÜ][a-zäöüß]+\s+(?:ein|eine|einen|einem|einer|der|die|das|den|dem|man|du|ich|wir|es|sie|er|ihr|dein|deine|mein|meine|unser|unsere|jeder|jede|jedes|alle)\b"
+)
+# Headline openers whose premise is the article's own claim: "Darum werden wir müde" -> "Warum werden wir müde?"
+_ANSWER_HEADLINE = re.compile(r"(?i)^(darum|deshalb|deswegen|daher|aus diesem grund)\s+(?=\w)")
+_SO_HEADLINE = re.compile(r"(?i)^so\s+(funktioniert|funktionieren|entsteht|entstehen|wirkt|wirken|klappt|gelingt)\b")
+_DAS_PASSIERT = re.compile(r"(?i)^das passiert,?\s+wenn\b")
+_SEGMENT_SPLIT = re.compile(r"\s*(?:[:|•–—]|\s-\s)\s*")
+_SHOUT = re.compile(r"\b[A-ZÄÖÜ]{3,}\b")
+_VERB_ENDING = re.compile(r"^[a-zäöüß]{2,}(?:en|ern|eln|n|t|st|et)$")
+_FINITE_VERBS = frozenset({
+    "ist", "sind", "war", "hat", "muss", "müssen", "kann", "soll", "will", "darf", "mag", "wird", "gibt", "geht",
+    "sieht", "weiß", "tut", "bleibt", "fällt", "hält", "läuft", "schläft", "isst", "liest", "misst", "passiert",
+})
+_DEICTIC = re.compile(r"(?i)\b(?:welche[sn]?|dieser|diese|dieses|das neue|die neuen|der neue|er|sie)\b")
+
+
+def de_shout(text: str) -> str:
+    """Title text without ALL-CAPS emphasis (acronyms kept)."""
+    return _de_shout(text)[0]
+
+
+def _de_shout(text: str) -> tuple[str, bool]:
+    shouted = False
+
+    def lower(match: re.Match[str]) -> str:
+        nonlocal shouted
+        word = match.group(0)
+        if word in EVERYDAY_ACRONYMS or (len(word) <= 4 and not re.search(r"[AEIOUÄÖÜ]", word)):
+            return word  # an acronym, not emphasis
+        shouted = True
+        return word.lower()
+
+    return _SHOUT.sub(lower, text), shouted
+
+
+def _direct_question(clause: str) -> str | None:
+    """A German question sentence from one clause, or None."""
+    text = " ".join(clause.split()).strip(" .,;!\"'„“”")
+    if not text:
+        return None
+    if text.endswith("?"):
+        body = text.rstrip("?! ").strip()
+        return f"{body}?" if (_W_START.match(body) or _V1_QUESTION.match(body)) else None
+    body = text.rstrip("!?. ")
+    if _ANSWER_HEADLINE.match(body):
+        return f"Warum {_ANSWER_HEADLINE.sub('', body, count=1)}?"
+    if _SO_HEADLINE.match(body):
+        return f"Wie {body[3:]}?"
+    if _DAS_PASSIERT.match(body):
+        return "Was passiert, wenn" + body[_DAS_PASSIERT.match(body).end():] + "?"
+    if _W_START.match(body):
+        # Indirect question ("Warum auch die besten Kopfhörer Nachhilfe brauchen") -> move
+        # the clause-final finite verb behind the question word.
+        words = body.split()
+        if len(words) >= 3 and (words[-1] in _FINITE_VERBS or _VERB_ENDING.match(words[-1])):
+            first = words[0]
+            if len(words) >= 4 and words[1].casefold() in {"viel", "viele", "lange", "oft", "groß", "schnell", "weit", "alt"}:
+                head, rest = words[:2], words[2:-1]  # "Wie viel Wasser man braucht" -> "Wie viel Wasser braucht man"
+                return " ".join([*head, rest[0], words[-1], *rest[1:]]) + "?" if rest else None
+            return " ".join([first, words[-1], *words[1:-1]]) + "?"
+    return None
+
+
+def extract_question(title: str) -> tuple[str | None, set[str]]:
+    """Deterministic question from a source title: keep, extract or convert - never invent.
+
+    Notes: ``shouting`` / ``exclamation`` (clickbait styling was removed),
+    ``extracted_clause`` (a label or teaser prefix was dropped),
+    ``needs_title_context`` (the question only makes sense with that prefix),
+    ``converted_headline`` (a "Darum/So/Das passiert" headline became a question).
+    """
+    notes: set[str] = set()
+    text = _EMOJI.sub("", str(title or ""))
+    text = re.sub(r"#\w+", "", text)
+    text = re.sub(r"[\[(][^\])]*[\])]", "", text)
+    text, shouted = _de_shout(text)
+    if shouted:
+        notes.add("shouting")
+    if "!" in text:
+        notes.add("exclamation")
+    text = re.sub(r"\s*\?!+|!+\?", "?", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    segments = [segment for segment in _SEGMENT_SPLIT.split(text) if segment.strip()]
+    for index, segment in enumerate(segments):
+        question = _direct_question(segment)
+        if question is None:
+            continue
+        before = segments[:index]
+        if before or index < len(segments) - 1:
+            notes.add("extracted_clause")
+        if not segment.rstrip().endswith("?"):
+            notes.add("converted_headline")
+        prefix = " ".join(before)
+        if prefix and len(prefix.split()) >= 3 and _DEICTIC.search(question):
+            notes.add("needs_title_context")
+        question = question[0].upper() + question[1:]
+        return question, notes
+    return None, notes
+
+
+# ---------------------------------------------------------------------------
+# Prior knowledge / universal 12+ accessibility cues (content-based)
+# ---------------------------------------------------------------------------
+
+_INTERNAL_CAPITAL = re.compile(r"\b[a-zäöü]+[A-ZÄÖÜ]\w*|\b[A-ZÄÖÜ][a-zäöüß]+[A-ZÄÖÜ]\w*")  # iPhone, YouTube, PlayStation
+_PRODUCT_NEWS = re.compile(r"(?i)\b(?:modell|generation|generationenwechsel|update|version|release|staffel|folge|firmware|neue[nrs]? [A-ZÄÖÜ]\w+)\b")
+# "den Gesetzentwurf", "das Urteil": one specific event the viewer must already know about.
+_SPECIFIC_EVENT = re.compile(
+    r"\b(?:den|das|die|der|dem)\s+(?:gesetzentwurf|urteil|entscheidung|beschluss|vorfall|unfall|deal|vertrag|streit|skandal|"
+    r"rücktritt|wahlergebnis|anschlag|transfer|übernahme|ankündigung)\b",
+    re.IGNORECASE,
+)
+_INSTITUTIONAL = re.compile(r"(?i)\b(?:bundestag|ministerium|minister(?:in)?|partei|koalition|gesetzentwurf|behörde|verband|verein|konzern|gmbh|ag\b|e\.v\.)")
+UNIVERSAL_CUES = frozenset({
+    "wir", "uns", "unser", "unsere", "man", "einem", "du", "dich", "dir", "dein", "deine", "ich", "mich", "mir", "mein",
+    "meine", "mensch", "menschen", "körper", "gehirn", "herz", "erde", "welt", "mond", "sonne", "himmel", "meer",
+    "wasser", "luft", "essen", "schlaf", "zeit", "tiere", "handy", "wetter",
+})
+
+
+def _consecutive_names(question: str) -> bool:
+    """Three capitalized words in a row after the first word - a name ("YouTube Play Buttons").
+
+    Two in a row are ordinary German (subject + object nouns), so they do not count.
+    """
+    words = re.findall(r"[\wÄÖÜäöüß-]+", question)[1:]
+    run = 0
+    for word in words:
+        run = run + 1 if word[:1].isupper() else 0
+        if run >= 3:
+            return True
+    return False
+
+
+def prior_knowledge_flags(question: str, *, notes: set[str] | None = None) -> set[str]:
+    """What a viewer must already know before the question makes sense."""
+    text = " ".join(str(question or "").split())
+    flags: set[str] = set()
+    if "needs_title_context" in (notes or set()):
+        flags.add("needs_title_context")
+    if _INTERNAL_CAPITAL.search(text):
+        flags.add("named_brand")
+    if _consecutive_names(text):
+        flags.add("multiword_name")
+    if _PRODUCT_NEWS.search(text):
+        flags.add("product_news")
+    if _INSTITUTIONAL.search(text):
+        flags.add("institutional")
+    if _SPECIFIC_EVENT.search(text):
+        flags.add("specific_event_reference")
+    return flags
+
+
+def has_universal_subject(question: str) -> bool:
+    """The question is about the viewer, people in general or the everyday/physical world."""
+    words = {word.casefold() for word in re.findall(r"[\wÄÖÜäöüß]+", str(question or ""))}
+    return bool(words & UNIVERSAL_CUES)

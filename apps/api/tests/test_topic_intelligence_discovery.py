@@ -274,7 +274,7 @@ def test_try_another_returns_the_next_candidate_and_remembers_skips(db):
 
 def test_exhausted_pool_refreshes_discovery_then_reports_exhaustion(db):
     discovery = deps(wiki=FakeWiki(articles=[
-        {"title": "Polarlicht", "views": 60_000, "description": "Leuchterscheinung", "extract": "Leuchterscheinung am Himmel.", "history": spike(2_000, 24_000)},
+        {"title": "Polarlicht", "views": 60_000, "description": "Leuchterscheinung", "extract": "Ein Polarlicht ist eine Leuchterscheinung am Himmel.", "history": spike(2_000, 24_000)},
     ]))
     first = service.next_topic(db, settings(), discovery, now=NOW)
     assert first["status"] == "proposed"

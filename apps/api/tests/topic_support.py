@@ -49,6 +49,10 @@ DEFAULT_ARTICLES: list[dict[str, Any]] = [
      "history": spike(400, 5_000)},
     {"title": "Max Mustermann", "views": 50_000, "description": "deutscher Schauspieler",
      "extract": "Max Mustermann (* 3. Mai 1980 in Köln) ist ein deutscher Schauspieler.", "history": spike(100, 50_000)},
+    {"title": "Regenbogen", "views": 25_000, "description": "Optisches Phänomen",
+     "extract": "Der Regenbogen ist eine optische Erscheinung aus Licht und Wassertropfen.", "history": spike(900, 4_000)},
+    {"title": "Muskelkater", "views": 22_000, "description": "Muskelschmerz nach ungewohnter Belastung",
+     "extract": "Muskelkater bezeichnet Muskelschmerzen nach ungewohnter Anstrengung.", "history": spike(700, 3_000)},
     {"title": "Deutschland", "views": 20_000, "description": "Staat in Mitteleuropa",
      "extract": "Deutschland ist ein Bundesstaat in Mitteleuropa.", "history": spike(20_000, 20_000)},
 ]
@@ -111,6 +115,7 @@ class FakeYouTube:
     search_results: list[dict[str, Any]] = field(default_factory=list)
     calls: list[tuple[str, int, dict[str, Any]]] = field(default_factory=list)
     fail_popular: bool = False
+    missing_categories: set[str] = field(default_factory=set)  # charts YouTube does not offer in the region
 
     @property
     def units(self) -> int:
@@ -121,10 +126,12 @@ class FakeYouTube:
 
     def list_popular_videos(self, access_token: str, region_code: str, category_id: str | None, max_results: int):
         self.calls.append(("videos.list(chart)", 1, {"regionCode": region_code, "category": category_id}))
-        if self.fail_popular:
-            from clipforge.youtube.provider import YouTubeApiError
+        from clipforge.youtube.provider import YouTubeApiError
 
+        if self.fail_popular:
             raise YouTubeApiError("quota_exceeded", "quota")
+        if str(category_id) in self.missing_categories:
+            raise YouTubeApiError("not_found", "chart not found")
         return list(self.popular.get(str(category_id), []))
 
     def list_channels(self, access_token: str, channel_ids: list[str], parts: str):

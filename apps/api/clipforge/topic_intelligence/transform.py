@@ -10,6 +10,7 @@ real question, no embedded answer, no clickbait, no number the evidence lacks.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -19,10 +20,20 @@ from pydantic import BaseModel, Field, ValidationError
 from ..config import Settings
 from ..language import detect_text_language
 from .candidate import TopicGroup
-from .text import NICHE_PRIORS, classify_niche, clean_title, compact, question_issues
+from .text import (
+    NICHE_PRIORS,
+    classify_niche,
+    compact,
+    extract_question,
+    question_issues,
+    question_mechanism,
+)
 
 TRANSFORM_CLIENT_FACTORY: Any = OpenAI
-MAX_BATCH = 16
+# Topics per transformation call (one LLM request per batch when OpenAI is enabled).
+MAX_BATCH = 20
+# Bumped whenever the question step changes, so pools built by an older one are not reused.
+TRANSFORMATION_VERSION = "tq3"
 
 FLAG_VALUES = (
     "opinion",
@@ -31,6 +42,7 @@ FLAG_VALUES = (
     "unverifiable",
     "trivial",
     "no_clear_payoff",
+    "clickbait_source",
     "person_centric",
     "tragedy_or_breaking_news",
     "politics",
@@ -110,12 +122,14 @@ class Transformed:
     key: str
     question: str
     niche: str
-    method: Literal["llm", "source_question", "template", "none"]
+    method: Literal["llm", "source_question", "converted_headline", "template", "none"]
     assessment: dict[str, float] = field(default_factory=dict)
     assessment_confidence: Literal["low", "medium", "high"] = "low"
     flags: list[str] = field(default_factory=list)
     issues: list[str] = field(default_factory=list)
     angle: str = ""
+    # Local extraction notes (extracted_clause, converted_headline, needs_title_context, shouting, ...).
+    notes: set[str] = field(default_factory=set)
 
 
 VISUAL_BY_NICHE = {
@@ -142,12 +156,13 @@ def _group_flags(group: TopicGroup) -> list[str]:
 
 
 def _heuristic_assessment(question: str, niche: str, group: TopicGroup, *, template: bool) -> dict[str, float]:
-    lowered = question.casefold()
-    why_how = lowered.startswith(("warum", "wieso", "weshalb", "wie "))
+    mechanism = question_mechanism(question)
+    curiosity = {"paradox": 0.8, "what_if": 0.8, "why": 0.75, "how": 0.7, "yes_no": 0.62}.get(mechanism, 0.5)
+    payoff = {"paradox": 0.7, "what_if": 0.65, "why": 0.7, "how": 0.7, "yes_no": 0.6}.get(mechanism, 0.5)
     has_article = any(item.kind == "article" for item in group.sightings)
     return {
-        "curiosity_gap": 0.7 if why_how else 0.5,
-        "clear_payoff": 0.65 if why_how else 0.5,
+        "curiosity_gap": curiosity,
+        "clear_payoff": payoff,
         "substance": 0.5 if template else 0.6,
         "premise_clarity": 0.55 if template else 0.65,
         "information_gain": 0.5,
@@ -158,38 +173,65 @@ def _heuristic_assessment(question: str, niche: str, group: TopicGroup, *, templ
     }
 
 
-_BODY_REACTION = ("reflex", "unwillkürliche", "unwillkuerliche", "kontraktion", "symptom")
+# Conditions one "gets" (Schluckauf, Muskelkater) - not reflexes/actions (Gähnen), which would read badly.
+_BODY_REACTION = ("kontraktion", "symptom", "reizung", "beschwerde", "muskelschmerz")
 _PHENOMENON = ("erscheinung", "phänomen", "phaenomen", "wetterereignis", "niederschlag", "naturereignis", "effekt")
 _DEVICE = ("gerät", "geraet", "maschine", "verfahren", "technologie", "antrieb")
 
 
-def _template_question(group: TopicGroup, niche: str) -> tuple[str, str]:
-    """(question, method) without an LLM: keep a real source question, else a neutral template."""
-    for item in sorted(group.sightings, key=lambda sighting: sighting.kind != "video"):
-        title = clean_title(item.title)
-        if title.endswith("?") and detect_text_language(title) != "en" and not question_issues(title, evidence=_evidence_text(group)):
-            return title, "source_question"
+def _template_question(group: TopicGroup, niche: str) -> tuple[str, str, set[str]]:
+    """(question, method, notes) without an LLM: keep/extract a real question, else a concrete template.
+
+    Never a generic "Was steckt eigentlich hinter X?" wrapper: a topic without a
+    supported concrete question is not transformed at all.
+    """
+    evidence = _evidence_text(group)
+    order = {"video": 0, "news": 1, "article": 2}
+    for item in sorted(group.sightings, key=lambda sighting: (order[sighting.kind], sighting.title)):
+        question, notes = extract_question(item.title)
+        if question and detect_text_language(question) != "en" and not question_issues(question, evidence=evidence):
+            method = "converted_headline" if "converted_headline" in notes else "source_question"
+            return question, method, notes
     articles = [item for item in group.sightings if item.kind == "article"]
     if not articles:
-        return "", "none"  # a headline/video title is not turned into a question by string templates
+        return "", "none", set()
     subject = articles[0].title.strip()
     description = f"{articles[0].description}".casefold()
+    noun = _with_article(subject, articles[0].description)
     # Concrete forms only where the encyclopedia itself says what the subject is.
     if any(marker in description for marker in _BODY_REACTION):
-        return f"Warum bekommen wir {subject}?", "template"
-    if any(marker in description for marker in _PHENOMENON):
-        return f"Wie entsteht eigentlich {subject}?", "template"
-    if niche == "technik" and any(marker in description for marker in _DEVICE):
-        return f"Wie funktioniert eigentlich {subject}?", "template"
-    return f"Was steckt eigentlich hinter {subject}?", "template"  # a generic wrapper: scored as weak
+        return f"Warum bekommen wir {subject}?", "template", set()
+    if noun and any(marker in description for marker in _PHENOMENON):
+        return f"Wie entsteht eigentlich {noun}?", "template", set()
+    if noun and niche == "technik" and any(marker in description for marker in _DEVICE):
+        return f"Wie funktioniert eigentlich {noun}?", "template", set()
+    return "", "none", set()
+
+
+def _with_article(subject: str, text: str) -> str | None:
+    """'ein Regenbogen' / 'eine Sternschnuppe' from the extract's own article ('Der Regenbogen ist ...').
+
+    A mass noun used without an article ('Hagel ist ...') stays bare; an unknown
+    grammatical form yields None rather than broken German.
+    """
+    name = re.escape(subject)
+    match = re.search(rf"\b(Der|Das|Ein|Die|Eine)\s+{name}\b", str(text or ""))
+    if match:
+        return f"{'eine' if match.group(1) in {'Die', 'Eine'} else 'ein'} {subject}"
+    if re.search(rf"(?:^|\s){name}\s+(?:ist|bezeichnet|nennt man)\b", str(text or "")):
+        return subject
+    return None
 
 
 def deterministic_transform(group: TopicGroup) -> Transformed:
     niche, _strength = classify_niche(group.title, group.description())
-    question, method = _template_question(group, niche)
+    question, method, notes = _template_question(group, niche)
     flags = _group_flags(group)
+    if notes & {"shouting", "exclamation"}:
+        flags = sorted({*flags, "clickbait_source"})  # styling removed; the premise still counts less
     if method == "none":
         return Transformed(group.key, "", niche, "none", flags=flags, issues=["no_question_transformation"])
+    niche = classify_niche(question, group.title, group.description())[0]
     issues = question_issues(question, evidence=_evidence_text(group))
     return Transformed(
         group.key,
@@ -200,6 +242,7 @@ def deterministic_transform(group: TopicGroup) -> Transformed:
         "low",
         flags,
         issues,
+        notes=notes,
     )
 
 

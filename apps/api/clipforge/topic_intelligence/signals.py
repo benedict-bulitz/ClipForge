@@ -251,6 +251,15 @@ def assessed(name: str, value: float | None, *, confidence: str, method: str, **
 
 # How much each obscurity carried into the question costs accessibility.
 ACCESSIBILITY_DEDUCTIONS = {
+    # Prior knowledge the viewer needs before curiosity can start (content cues).
+    "needs_title_context": 0.45,
+    "names_obscure_entity": 0.35,
+    "named_brand": 0.3,
+    "multiword_name": 0.3,
+    "product_news": 0.3,
+    "institutional": 0.25,
+    "specific_event_reference": 0.3,
+    # Obscurity carried into the question.
     "question_date": 0.45,
     "question_identifier": 0.3,
     "question_acronym": 0.2,
@@ -270,17 +279,52 @@ QUESTION_FORM_VALUES = {
 GENERIC_WRAPPER_CAP = 0.25
 
 
-def broad_appeal(niche: str, prior: float, assessed_value: float | None, *, method: str) -> Signal:
-    """Would an average German viewer without special interest want the answer?"""
+UNIVERSAL_SUBJECT_BONUS = 0.05
+
+
+def broad_appeal(
+    niche: str,
+    prior: float,
+    assessed_value: float | None,
+    *,
+    method: str,
+    universal_subject: bool = False,
+    mechanism: str = "other",
+    prior_knowledge: set[str] | None = None,
+) -> Signal:
+    """Would an average German viewer (12+) without special interest want the answer?
+
+    Content-based: the question's own subject and mechanism count as much as the
+    niche prior, so a niche-origin question about a universal phenomenon can
+    score well and a "good" niche cannot carry a question that needs prior knowledge.
+    """
     if assessed_value is not None:
         return Signal(round(clamp(assessed_value), 4), "medium", {"method": method, "niche": niche, "niche_prior": prior}, ["topic_assessment"])
-    return Signal(round(clamp(prior), 4), "low", {"method": "niche_prior", "niche": niche}, ["topic_assessment"])
+    content = 0.55 + (0.2 if universal_subject else 0.0) + (0.1 if mechanism in {"why", "how", "what_if", "paradox"} else 0.0)
+    content -= 0.25 if prior_knowledge else 0.0
+    value = clamp(0.5 * prior + 0.5 * content)
+    return Signal(
+        round(value, 4),
+        "low",
+        {"method": "niche_prior_and_question_content", "niche": niche, "niche_prior": prior, "universal_subject": universal_subject,
+         "mechanism": mechanism, "prior_knowledge": sorted(prior_knowledge or [])},
+        ["topic_assessment"],
+    )
 
 
-def accessibility(question_flags: set[str], topic_flags: set[str], assessed_value: float | None, *, method: str) -> Signal:
-    """Premise understandable immediately, without niche knowledge (dates, codes, acronyms cost)."""
-    deductions = {flag: ACCESSIBILITY_DEDUCTIONS[flag] for flag in sorted(question_flags) if flag in ACCESSIBILITY_DEDUCTIONS}
-    feature_value = clamp(0.9 - sum(deductions.values()))
+def accessibility(
+    question_flags: set[str],
+    topic_flags: set[str],
+    assessed_value: float | None,
+    *,
+    method: str,
+    prior_knowledge: set[str] | None = None,
+    universal_subject: bool = False,
+) -> Signal:
+    """Universal 12+ accessibility: the premise is clear without context or specialist knowledge."""
+    flags = set(question_flags) | set(prior_knowledge or [])
+    deductions = {flag: ACCESSIBILITY_DEDUCTIONS[flag] for flag in sorted(flags) if flag in ACCESSIBILITY_DEDUCTIONS}
+    feature_value = clamp(0.9 - sum(deductions.values()) + (UNIVERSAL_SUBJECT_BONUS if universal_subject and not deductions else 0.0))
     value = feature_value if assessed_value is None else min(feature_value, clamp(assessed_value))
     return Signal(
         round(value, 4),
@@ -289,6 +333,8 @@ def accessibility(question_flags: set[str], topic_flags: set[str], assessed_valu
             "method": method if assessed_value is not None else "text_features",
             "question_flags": sorted(question_flags),
             "topic_flags": sorted(topic_flags),
+            "prior_knowledge": sorted(prior_knowledge or []),
+            "universal_subject": universal_subject,
             "deductions": deductions,
         },
         ["topic_features"],

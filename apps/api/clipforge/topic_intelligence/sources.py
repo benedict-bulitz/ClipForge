@@ -309,7 +309,8 @@ class YouTubeTrendingSource:
             try:
                 items = self.provider.list_popular_videos(token, ctx.region, category_id, self.CHART_SIZE)
             except YouTubeApiError as exc:
-                errors.append(exc.code)
+                # e.g. not_found: YouTube has no most-popular chart for this category in this region.
+                errors.append(f"chart {label} ({category_id}) in {ctx.region}: {exc.code}")
                 continue
             for rank, item in enumerate(items, 1):
                 snippet = item.get("snippet") or {}
@@ -328,7 +329,7 @@ class YouTubeTrendingSource:
                     "category": label,
                 })
         if not videos and errors:
-            raise SourceFailed(f"YouTube chart unavailable ({', '.join(sorted(set(errors)))})")
+            raise SourceFailed(f"YouTube chart unavailable ({'; '.join(sorted(set(errors)))})")
         # Channel baselines: recent uploads of the charted channels (bounded).
         channel_ids = list(dict.fromkeys(str(video["channel_id"]) for video in videos if video.get("channel_id")))[: self.MAX_CHANNELS]
         # channel -> [(video_id, views per day)] of its recent uploads
@@ -368,7 +369,7 @@ class YouTubeTrendingSource:
                         rows.append((video_id, round(views_per_day(views, published, ctx.now), 2)))
                     baselines[channel_id] = rows
         except (YouTubeApiError, BudgetExceeded) as exc:
-            errors.append(getattr(exc, "code", "budget"))
+            errors.append(f"channel baselines: {getattr(exc, 'code', 'quota_budget')}")
         for video in videos:
             # The charted video never counts towards its own channel's baseline.
             video["channel_recent_vpd"] = [
@@ -405,8 +406,10 @@ class YouTubeTrendingSource:
         hit = _run_cached(self.name, ctx, f"chart:{ctx.region}", lambda meter: self.fetch(ctx, meter))
         topics = self.topics(hit.payload, hit.fetched_at, ctx.now)
         partial = hit.payload.get("partial_errors") or []
+        # "partial": data arrived, but part of the source was unavailable (named in ``error``).
+        status = "partial" if partial else "cached" if hit.cached else "ok"
         return SourceResult(topics, SourceReport(
-            self.name, "cached" if hit.cached else "ok", error=", ".join(partial) or None,
+            self.name, status, error="; ".join(partial) or None,
             fetched_at=hit.fetched_at, calls=hit.calls, quota_units=hit.quota_units, items=len(topics),
         ))
 

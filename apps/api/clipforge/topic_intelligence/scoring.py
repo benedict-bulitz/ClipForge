@@ -28,6 +28,16 @@ eigentlich hinter 29. September?"):
   instead of being served as the least-bad filler.
 * Diversity: among near-equal scores, prefer a different subject/mechanism.
 
+v3 (real Mac validation: 0 of 16 candidates usable in local mode):
+
+* Universal 12+ accessibility is a gate, not a bonus: a question whose premise
+  needs prior knowledge (title context, a brand or multi-word name, product
+  generation news, an institution, a date, an identifier) is rejected as
+  ``requires_prior_knowledge`` - exceptional evidence does not lift this
+  gate; only reframing the question around a universal phenomenon does.
+* Accessibility weighs 0.14 (was 0.10), taken from trend and channel fit.
+* The quality floor and obscurity penalties are unchanged.
+
 Unchanged from v1: missing data is neutral (0.5), never zero, and only lowers
 ``confidence``; low-confidence evidence is shrunk towards neutral;
 competition enters as openness; trend decays with evidence age; hard
@@ -56,7 +66,7 @@ from .candidate import (
 from .history import is_duplicate
 from .transform import REJECT_FLAGS
 
-SCORE_VERSION = "ti-score-v2"
+SCORE_VERSION = "ti-score-v3"
 NEUTRAL_PRIOR = 0.5
 CONFIDENCE_WEIGHT: dict[str, float] = {"high": 1.0, "medium": 0.8, "low": 0.55, "unavailable": 0.0}
 TREND_HALF_LIFE_HOURS = 48.0
@@ -73,11 +83,11 @@ MIN_SUITABILITY = 0.35
 DEFAULT_WEIGHTS: dict[str, float] = {
     "suitability": 0.15,
     "broad_appeal": 0.14,
-    "trend": 0.13,
-    "accessibility": 0.10,
+    "accessibility": 0.14,
+    "trend": 0.11,
     "outlier": 0.10,
     "novelty": 0.09,
-    "channel_fit": 0.07,
+    "channel_fit": 0.05,
     "question_form": 0.06,
     "visual": 0.06,
     "researchability": 0.04,
@@ -88,7 +98,7 @@ WEIGHT_RATIONALE: dict[str, str] = {
     "suitability": "Curiosity gap, clear payoff and substance decide whether a short can work at all.",
     "broad_appeal": "General German knowledge shorts need topics an average viewer wants answered.",
     "trend": "Current German demand - but a lone page spike is not a video topic by itself.",
-    "accessibility": "The premise must be understandable without a specific date, code, project or name.",
+    "accessibility": "Universal 12+: the premise is clear without context, a specific name, product, date or specialist knowledge.",
     "outlier": "Related videos beating their own channel's normal level signal topic pull, not channel size.",
     "novelty": "Repeating recent ClipForge topics wastes a slot.",
     "channel_fit": "German short-form knowledge content, relevant to DACH viewers.",
@@ -102,6 +112,8 @@ WEIGHT_RATIONALE: dict[str, str] = {
 # Mass-audience quality = mean of these (available ones only).
 QUALITY_SIGNALS = ("suitability", "broad_appeal", "accessibility", "question_form")
 QUALITY_FLOOR = 0.55
+# Universal accessibility below this = the premise needs prior knowledge.
+PRIOR_KNOWLEDGE_GATE = 0.5
 QUALITY_FLOOR_EXCEPTIONAL = 0.45
 # Trend quality: how much a spike counts by corroboration.
 TREND_SINGLE_WIKIPEDIA = 0.65
@@ -295,6 +307,9 @@ def rejection_reasons(
     suitability = candidate.signal("suitability")
     if suitability.available and (suitability.value or 0) < MIN_SUITABILITY:
         reasons.append("weak_knowledge_short")
+    access = candidate.signal("accessibility")
+    if access.available and (access.value or 0) < PRIOR_KNOWLEDGE_GATE:
+        reasons.append("requires_prior_knowledge")
     if quality is not None and quality < floor:
         reasons.append("below_quality_floor")
     return list(dict.fromkeys(reasons))
@@ -363,6 +378,9 @@ def score_candidate(
             "floor": floor,
             "passed": quality is None or quality >= floor,
             "exceptional_evidence": exceptional,
+            "prior_knowledge_gate": PRIOR_KNOWLEDGE_GATE,
+            "universal_accessibility": candidate.signal("accessibility").value,
+            "prior_knowledge": candidate.signal("accessibility").evidence.get("prior_knowledge") or [],
         },
         "trend_quality": trend_notes,
         "final": final,

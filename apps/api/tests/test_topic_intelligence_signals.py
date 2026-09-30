@@ -193,8 +193,8 @@ def test_llm_failure_falls_back_to_the_deterministic_path(monkeypatch):
     monkeypatch.setattr(transform, "TRANSFORM_CLIENT_FACTORY", FakeLLM({}, fail=True))
     results, method, error = transform.transform_topics([_group("Polarlicht")], settings(clipforge_ai_mode="openai", openai_api_key="sk-test"))
     assert method == "template" and error and "OpenAIError" in error
-    assert results[0].question == "Was steckt eigentlich hinter Polarlicht?"
-    assert results[0].assessment_confidence == "low"
+    # No generic "Was steckt eigentlich hinter X?" fallback for a bare title.
+    assert results[0].question == "" and results[0].issues == ["no_question_transformation"]
 
 
 def test_deterministic_path_keeps_real_source_questions_and_never_templates_headlines():
@@ -306,10 +306,10 @@ def test_ranking_is_deterministic_with_stable_tie_breaks():
 
 def test_weights_are_explicit_configurable_and_versioned():
     weights, version = scoring.resolve_weights(settings())
-    assert version == "ti-score-v2" and sum(weights.values()) == pytest.approx(1.0)
+    assert version == scoring.SCORE_VERSION and sum(weights.values()) == pytest.approx(1.0)
     assert set(weights) == set(scoring.WEIGHT_RATIONALE)
     custom, custom_version = scoring.resolve_weights(settings(topic_score_weights='{"trend": 0.4}'))
-    assert custom_version.startswith("ti-score-v2+w") and custom["trend"] > weights["trend"]
+    assert custom_version.startswith(f"{scoring.SCORE_VERSION}+w") and custom["trend"] > weights["trend"]
     assert sum(custom.values()) == pytest.approx(1.0, abs=1e-5)
     with pytest.raises(ValueError):
         scoring.resolve_weights(settings(topic_score_weights='{"views": 1}'))

@@ -12,19 +12,21 @@ from clipforge.topic_intelligence import service
 from clipforge.topic_intelligence.scoring import DIVERSITY_TOLERANCE
 
 ARTICLES = [
-    {"title": title, "views": 50_000 - index, "description": description, "extract": f"{title}: {description}.",
+    {"title": title, "views": 50_000 - index, "description": description, "extract": extract,
      "history": spike(500, 5_000 - index * 100)}
-    for index, (title, description) in enumerate([
-        ("Polarlicht", "Leuchterscheinung am Nachthimmel"),
-        ("Schlafträgheit", "Benommenheit nach dem Aufwachen"),
-        ("Zugvogel", "Vogel, der jährlich zwischen Brut- und Winterquartier wandert"),
-        ("Gewitter", "Wetterereignis mit Blitz und Donner"),
-        ("Honigbiene", "Staaten bildendes Insekt"),
-        ("Vulkan", "Geologische Struktur, aus der Magma austritt"),
-        ("Regenbogen", "Optisches Phänomen in der Atmosphäre"),
-        ("Tintenfisch", "Meerestier mit acht Armen"),
-        ("Hagel", "Niederschlag aus Eiskörnern"),
-        ("Kürbis", "Pflanzengattung und Gemüse"),
+    for index, (title, description, extract) in enumerate([
+        ("Polarlicht", "Leuchterscheinung am Nachthimmel", "Ein Polarlicht ist eine Leuchterscheinung der Hochatmosphäre."),
+        ("Regenbogen", "Optisches Phänomen", "Der Regenbogen ist eine optische Erscheinung aus Licht und Wasser."),
+        ("Gewitter", "Wetterereignis mit Blitz und Donner", "Das Gewitter ist ein Wetterereignis mit Blitz und Donner."),
+        ("Hagel", "Niederschlag aus Eiskörnern", "Hagel ist Niederschlag aus Eiskörnern."),
+        ("Sternschnuppe", "Leuchterscheinung eines Meteoroiden", "Eine Sternschnuppe ist eine Leuchterscheinung am Himmel."),
+        ("Nebel", "Wetterereignis in Bodennähe", "Nebel ist ein Wetterereignis mit kleinen Wassertröpfchen."),
+        ("Muskelkater", "Muskelschmerz nach Belastung", "Muskelkater bezeichnet Muskelschmerzen nach Anstrengung."),
+        ("Schluckauf", "Unwillkürliche Kontraktion des Zwerchfells", "Schluckauf ist eine Kontraktion des Zwerchfells."),
+        ("Halo", "Lichterscheinung um Sonne oder Mond", "Ein Halo ist eine Lichterscheinung um die Sonne."),
+        ("Wetterleuchten", "Leuchterscheinung eines fernen Gewitters", "Das Wetterleuchten ist eine Leuchterscheinung."),
+        ("Seitenstechen", "Symptom beim Laufen", "Seitenstechen ist ein Symptom beim Laufen."),
+        ("Morgenrot", "Optisches Phänomen am Morgen", "Das Morgenrot ist eine Erscheinung der Atmosphäre."),
     ])
 ]
 
@@ -82,7 +84,7 @@ def test_no_near_duplicate_of_an_excluded_question(db):
     shown = first["candidates"][0]
     twin = db.get(TopicCandidateRecord, ids(chips(db, count=1, exclude=ids(first)))[0])
     twin_id = twin.candidate_id
-    twin.question = shown["question"].replace("eigentlich ", "")  # a rephrasing of a visible chip
+    twin.question = shown["question"].replace("eigentlich ", "wirklich ")  # a rephrasing of a visible chip
     twin.status = "pooled"
     db.commit()
     again = chips(db, count=6, exclude=ids(first))
@@ -90,7 +92,7 @@ def test_no_near_duplicate_of_an_excluded_question(db):
 
 
 def test_recent_projects_are_never_suggested(db):
-    db.add(Project(original_prompt="Was steckt eigentlich hinter Polarlicht?", title="Polarlicht"))
+    db.add(Project(original_prompt="Wie entsteht eigentlich ein Polarlicht?", title="Polarlicht"))
     db.commit()
     result = chips(db, count=9)
     assert all("Polarlicht" not in item["question"] for item in result["candidates"])

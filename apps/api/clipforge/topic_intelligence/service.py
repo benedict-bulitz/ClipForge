@@ -65,17 +65,29 @@ from .sources import (
 from .text import (
     BROAD_APPEAL_PRIORS,
     NICHE_PRIORS,
+    content_tokens,
+    de_shout,
+    extract_question,
+    has_universal_subject,
+    prior_knowledge_flags,
     question_flags,
     question_mechanism,
     similarity,
     topic_key,
     topic_obscurity_flags,
 )
-from .transform import MAX_BATCH, Transformed, transform_topics
+from .transform import (
+    MAX_BATCH,
+    TRANSFORMATION_VERSION,
+    Transformed,
+    deterministic_transform,
+    transform_topics,
+)
 
 SKIP_MEMORY = timedelta(hours=24)
 RETENTION = timedelta(days=14)
 PREFILTER_FLAGS = frozenset({"person", "tragedy", "disambiguation"})
+OBSCURE_ENTITY_FLAGS = frozenset({"identifier", "acronym", "compound_proper_name", "foreign_proper_name", "isolated_event", "date_page"})
 UNAVAILABLE_MESSAGE = "Topic discovery is temporarily unavailable."
 EXHAUSTED_MESSAGE = "No further topic candidates right now. Try again later or enter your own question."
 _FLIGHT = threading.Lock()
@@ -85,6 +97,13 @@ DISCOVERY_RETRY_SECONDS = 3
 # every chip refill (each refresh may cost a question-rewriting call).
 MIN_REFRESH_INTERVAL = timedelta(minutes=10)
 BROADENING_REPORT = "broadening_pass"
+EVALUATION_REPORT = "candidate_evaluation"
+# Raw-pool backfill: keep evaluating already-discovered topics (no new provider
+# calls) until this many candidates clear every gate, within a hard budget per
+# pool (shared with its broadening pass).  With OpenAI enabled one batch = one
+# request, so the budget also bounds requests: ceil(60 / MAX_BATCH) = 3.
+TARGET_ACCEPTED = 9
+EVALUATION_BUDGET = 60
 # Last startup warm-up (idle | running | done | failed), for diagnostics.
 WARMUP: dict[str, Any] = {"state": "idle", "started_at": None, "finished_at": None, "result": None, "error": None}
 
@@ -171,7 +190,9 @@ def group_topics(topics: list[RawTopic]) -> list[TopicGroup]:
 def _preliminary(group: TopicGroup) -> float:
     trend = merge_trend([item.trend for item in group.sightings if item.trend is not None])
     outliers = [item.outlier.value or 0.0 for item in group.sightings if item.outlier is not None and item.outlier.available]
-    return round((trend.value or 0.0) + 0.5 * (max(outliers) if outliers else 0.0) + 0.1 * len(group.sources), 4)
+    # Titles that already carry a question are cheap and likely to transform: try them earlier.
+    question_like = any(extract_question(item.title)[0] for item in group.sightings)
+    return round((trend.value or 0.0) + 0.5 * (max(outliers) if outliers else 0.0) + 0.1 * len(group.sources) + (0.3 if question_like else 0.0), 4)
 
 
 def _best_outlier(group: TopicGroup) -> Signal:
@@ -183,18 +204,46 @@ def _best_outlier(group: TopicGroup) -> Signal:
 
 
 def quality_signals(
-    question: str, topic: str, description: str, niche: str, assessment: dict[str, float], method: str,
+    question: str,
+    topic: str,
+    description: str,
+    niche: str,
+    assessment: dict[str, float],
+    method: str,
+    notes: set[str] | None = None,
 ) -> tuple[dict[str, Signal], dict[str, Any]]:
     """Mass-audience features of one question (signals only; scoring decides their worth)."""
-    topic_flags = topic_obscurity_flags(topic, description)
+    # An entity name keeps its capitals (GICON is an acronym); a headline loses its shouting (FALSCH is emphasis).
+    is_entity = extract_question(topic)[0] is None and len(topic.split()) <= 6
+    topic_flags = topic_obscurity_flags(topic if is_entity else de_shout(topic), description)
     flags = question_flags(question, topic)
     mechanism = question_mechanism(question)
+    prior_knowledge = prior_knowledge_flags(question, notes=notes)
+    # The obscure entity may appear in the video as an example, but it must not lead the question.
+    # Only an entity name counts here - a headline/video title is the question's own source text.
+    entity_tokens = content_tokens(topic)
+    if is_entity and topic_flags & OBSCURE_ENTITY_FLAGS and entity_tokens and similarity(entity_tokens, content_tokens(question)) >= 0.5:
+        prior_knowledge.add("names_obscure_entity")
+    universal = has_universal_subject(question)
     signals = {
-        "broad_appeal": broad_appeal(niche, BROAD_APPEAL_PRIORS.get(niche, BROAD_APPEAL_PRIORS["unknown"]), assessment.get("broad_appeal"), method=method),
-        "accessibility": accessibility(flags, topic_flags, assessment.get("accessibility"), method=method),
+        "broad_appeal": broad_appeal(
+            niche, BROAD_APPEAL_PRIORS.get(niche, BROAD_APPEAL_PRIORS["unknown"]), assessment.get("broad_appeal"),
+            method=method, universal_subject=universal, mechanism=mechanism, prior_knowledge=prior_knowledge,
+        ),
+        "accessibility": accessibility(
+            flags, topic_flags, assessment.get("accessibility"), method=method,
+            prior_knowledge=prior_knowledge, universal_subject=universal,
+        ),
         "question_form": question_form(mechanism, flags),
     }
-    return signals, {"mechanism": mechanism, "topic_flags": sorted(topic_flags), "question_flags": sorted(flags)}
+    return signals, {
+        "mechanism": mechanism,
+        "topic_flags": sorted(topic_flags),
+        "question_flags": sorted(flags),
+        "prior_knowledge": sorted(prior_knowledge),
+        "universal_subject": universal,
+        "extraction_notes": sorted(notes or []),
+    }
 
 
 def build_candidate(
@@ -229,7 +278,7 @@ def build_candidate(
         ),
         "own_performance": own_priors.get(niche, own_default),
     }
-    features, feature_evidence = quality_signals(question, group.title, group.description(), niche, assessment, method)
+    features, feature_evidence = quality_signals(question, group.title, group.description(), niche, assessment, method, transformed.notes)
     signals.update(features)
     return TopicCandidate(
         candidate_id=candidate_id_for(topic_key(question) if question else f"raw:{group.key}"),
@@ -363,7 +412,7 @@ def discover(
     raw, reports = _collect(ctx, deps.sources)
     reports.extend(deps.extra_reports)
     run.raw_topic_count = len(raw)
-    usable_sources = [report for report in reports if report.status in {"ok", "cached"} and report.items > 0]
+    usable_sources = [report for report in reports if report.status in {"ok", "cached", "partial"} and report.items > 0]
     degraded = any(report.status == "failed" for report in reports)
     if not raw or not usable_sources:
         run.status = "unavailable"
@@ -389,22 +438,45 @@ def discover(
         group for group in group_topics(raw)
         if group.key not in excluded_groups and not group.flags & PREFILTER_FLAGS
     ]
-    groups.sort(key=lambda group: (-_preliminary(group), group.key))
-    batch = groups[:MAX_BATCH]
-    db.commit()  # no open transaction while the question step may wait on OpenAI
-    transformed, method, transform_error = transform_topics(batch, settings)
-    run.transformation = method
+    if settings.clipforge_ai_mode == "openai" and settings.openai_api_key:
+        groups.sort(key=lambda group: (-_preliminary(group), group.key))
+    else:
+        # Local mode: a topic without a locally derivable question can never pass, so topics that
+        # can become one are evaluated first (ordering only - the rest still follow within budget).
+        groups.sort(key=lambda group: (deterministic_transform(group).method == "none", -_preliminary(group), group.key))
+    budget = EVALUATION_BUDGET - (evaluated_in(broaden_from) if broaden_from is not None else 0)
     history = history_module.load_history(db)
     own_priors, own_default = history_module.own_performance_priors(db, settings)
     candidates: list[TopicCandidate] = []
     extras: dict[str, tuple[list[str], list[str]]] = {}
-    for group, item in zip(batch, transformed, strict=True):
-        candidate = build_candidate(group, item, history=history, own_priors=own_priors, own_default=own_default, now=now, run_id=run.id)
-        if candidate.candidate_id in excluded_ids:
-            continue
-        extras[candidate.candidate_id] = (item.issues, item.flags)
-        score_candidate(candidate, weights=weights, version=version, now=now, issues=item.issues, flags=item.flags, degraded_sources=degraded)
-        candidates.append(candidate)
+    methods: list[str] = []
+    transform_errors: list[str] = []
+    evaluated = transform_requests = 0
+    batch: list[TopicGroup] = []
+    accepted = len(carried)
+    queue = list(groups)
+    # Backfill through the raw pool: the discovery pre-rank orders the work, it is not a gate.
+    while queue and evaluated < budget and accepted < TARGET_ACCEPTED:
+        batch = queue[: min(MAX_BATCH, budget - evaluated)]
+        queue = queue[len(batch):]
+        db.commit()  # no open transaction while the question step may wait on OpenAI
+        transformed, method, transform_error = transform_topics(batch, settings)
+        methods.append(method)
+        transform_requests += method == "llm" or bool(transform_error)
+        if transform_error:
+            transform_errors.append(transform_error)
+        evaluated += len(batch)
+        for group, item in zip(batch, transformed, strict=True):
+            candidate = build_candidate(group, item, history=history, own_priors=own_priors, own_default=own_default, now=now, run_id=run.id)
+            if candidate.candidate_id in excluded_ids:
+                continue
+            extras[candidate.candidate_id] = (item.issues, item.flags)
+            score_candidate(candidate, weights=weights, version=version, now=now, issues=item.issues, flags=item.flags, degraded_sources=degraded)
+            candidates.append(candidate)
+            accepted += not candidate.rejected
+    method = "llm" if "llm" in methods else "template"
+    run.transformation = f"{method}:{TRANSFORMATION_VERSION}"
+    transform_error = "; ".join(dict.fromkeys(transform_errors)) or None
     # Competition probes: only for the strongest usable candidates, bounded per refresh.
     probe_report = SourceReport(deps.probe.name, "skipped", error=None if deps.probe.available else "YouTube is not connected")
     if deps.probe.available:
@@ -433,8 +505,12 @@ def discover(
         probe_report.calls = meter.calls - calls_before
         probe_report.quota_units = meter.quota_units - units_before
     reports.append(probe_report)
+    reports.append(SourceReport(
+        EVALUATION_REPORT, "ok", items=evaluated, calls=transform_requests,
+        error=f"raw_groups={len(groups)} budget={budget} target={TARGET_ACCEPTED} accepted={accepted} remaining={len(queue)}",
+    ))
     if broaden_from is not None:
-        reports.append(SourceReport(BROADENING_REPORT, "ok", items=len(batch)))
+        reports.append(SourceReport(BROADENING_REPORT, "ok", items=evaluated))
     for candidate in candidates:
         issues, flags = extras[candidate.candidate_id]
         score_candidate(candidate, weights=weights, version=version, now=now, issues=issues, flags=flags, degraded_sources=degraded)
@@ -473,6 +549,8 @@ def current_run(db: Session, now: datetime, version: str | None = None) -> Topic
         return None
     if version is not None and run.score_version != version:
         return None
+    if version is not None and not str(run.transformation or "").endswith(f":{TRANSFORMATION_VERSION}"):
+        return None  # questions built by an older question step
     return run
 
 
@@ -684,7 +762,7 @@ def _suggestions_locked(
         if refreshed.status != "unavailable":
             run = refreshed
             records = _available_records(db, run, excluded)
-    if len(records) < count and not was_broadened(run):
+    if len(records) < count and not was_broadened(run) and evaluated_in(run) < EVALUATION_BUDGET:
         # Too few candidates clear the quality floor: evaluate the next raw
         # topics once per pool, rather than serving weak filler.
         broadened = discover(db, settings, deps, now=now, broaden_from=run)
@@ -706,6 +784,14 @@ def _suggestions_locked(
         # Why fewer than requested: how many were evaluated and why they were rejected.
         "summary": pool_summary(db, run),
     }
+
+
+def evaluated_in(run: TopicDiscoveryRun) -> int:
+    """How many raw topics this pool (and the pass it broadened) already evaluated."""
+    return sum(
+        int(item.get("items") or 0) for item in run.sources or []
+        if isinstance(item, dict) and item.get("name") == EVALUATION_REPORT
+    )
 
 
 def was_broadened(run: TopicDiscoveryRun) -> bool:
@@ -759,6 +845,7 @@ def candidate_from_record(record: TopicCandidateRecord) -> TopicCandidate:
     if missing:
         features, evidence = quality_signals(
             record.question, record.topic, "", record.niche, {}, str(provenance.get("transformation") or "template"),
+            set(provenance.get("extraction_notes") or []),
         )
         signals.update({name: features[name] for name in missing})
         for key, value in evidence.items():
@@ -867,15 +954,32 @@ def pool_summary(db: Session, run: TopicDiscoveryRun | None) -> dict[str, Any] |
         if record is None:
             continue
         statuses[record.status] += 1
+        quality = (record.score_breakdown or {}).get("quality") or {}
+        row = {
+            "question": record.question,
+            "topic": record.topic,
+            "final_score": record.final_score,
+            "universal_accessibility": quality.get("universal_accessibility"),
+            "prior_knowledge": quality.get("prior_knowledge") or [],
+            "mass_audience_quality": quality.get("mass_audience"),
+            "sources": sorted({str(item.get("source")) for item in record.source_signals or []}),
+            "transformation": (record.provenance or {}).get("transformation"),
+        }
         if record.rejection_reasons:
             reasons.update(record.rejection_reasons)
-            rejected.append({"question": record.question, "topic": record.topic, "final_score": record.final_score, "reasons": list(record.rejection_reasons)})
+            rejected.append({**row, "reasons": list(record.rejection_reasons)})
         else:
-            accepted.append({"question": record.question, "final_score": record.final_score, "status": record.status})
+            accepted.append({**row, "status": record.status})
+    evaluation = next((item for item in run.sources or [] if isinstance(item, dict) and item.get("name") == EVALUATION_REPORT), None)
     return {
         "score_version": run.score_version,
+        "transformation": run.transformation,
+        "transformation_version": TRANSFORMATION_VERSION,
         "raw_topics": run.raw_topic_count,
         "evaluated": len(accepted) + len(rejected),
+        "evaluation": evaluation,
+        "evaluation_budget": EVALUATION_BUDGET,
+        "transformation_failures": reasons.get("question_no_question_transformation", 0),
         "accepted": len(accepted),
         "available": sum(1 for item in accepted if item["status"] in {"pooled", "proposed"}),
         "rejected": len(rejected),
@@ -905,8 +1009,14 @@ def diagnose(db: Session, settings: Settings, *, now: datetime | None = None) ->
         return "pool_expired_refreshes_on_next_request"
     summary = pool_summary(db, run) or {}
     if not summary.get("available"):
-        if (summary.get("rejection_reasons") or {}).get("below_quality_floor"):
+        reasons = summary.get("rejection_reasons") or {}
+        rejected = max(1, int(summary.get("rejected") or 0))
+        if reasons.get("question_no_question_transformation", 0) * 2 >= rejected:
+            return "question_transformation_failed"
+        if reasons.get("below_quality_floor"):
             return "quality_floor_rejected_all"
+        if reasons.get("requires_prior_knowledge"):
+            return "prior_knowledge_rejected_all"
         return "no_usable_candidates"
     if summary["available"] < 3:
         return "fewer_than_three_candidates"

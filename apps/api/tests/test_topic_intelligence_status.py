@@ -9,7 +9,7 @@ from sqlalchemy.orm import sessionmaker
 from topic_support import NOW, FakeWiki, deps, settings, spike
 
 from clipforge.models import TopicCandidateRecord, TopicDiscoveryRun
-from clipforge.topic_intelligence import service
+from clipforge.topic_intelligence import scoring, service
 from clipforge.topic_intelligence.routes import topic_status_route
 
 GOOD = [
@@ -42,9 +42,9 @@ def test_quality_floor_rejecting_everything_is_explicit_not_empty_ok(db):
     assert result["status"] == "exhausted" and result["candidates"] == []
     summary = result["summary"]
     assert summary["accepted"] == 0 and summary["rejected"] >= 2
-    assert summary["rejection_reasons"]["below_quality_floor"] >= 2
+    assert summary["rejection_reasons"]["question_no_question_transformation"] >= 2
     assert {item["topic"] for item in summary["rejected_candidates"]} >= {"29. September", "Gol-Transportes-Aéreos-Flug 1907"}
-    assert service.diagnose(db, settings(), now=NOW) == "quality_floor_rejected_all"
+    assert service.diagnose(db, settings(), now=NOW) == "question_transformation_failed"
 
 
 def test_quality_floor_is_not_lowered_to_fill_three_slots(db):
@@ -106,12 +106,12 @@ def test_warmup_failure_and_success_are_recorded(db):
 def test_status_endpoint_reports_everything_needed_to_debug(db):
     chips(db, GOOD + WEAK)
     report = topic_status_route(db, settings())
-    assert report["current_score_version"] == "ti-score-v2"
+    assert report["current_score_version"] == scoring.SCORE_VERSION
     assert report["diagnosis"] in {"ok", "fewer_than_three_candidates", "pool_expired_refreshes_on_next_request"}
     assert report["config"]["question_rewriting"] == "template"
     assert report["config"]["youtube_connected"] is False
     assert report["pool"]["accepted"] >= 2 and report["pool"]["rejected"] >= 2
-    assert report["pool"]["rejection_reasons"]["below_quality_floor"] >= 2
+    assert report["pool"]["rejection_reasons"]["question_no_question_transformation"] >= 2
     assert {"accepted_candidates", "rejected_candidates", "raw_topics", "evaluated"} <= set(report["pool"])
     assert report["caches"] and report["warmup"]["state"] == "idle"
     assert report["run"]["sources"]
