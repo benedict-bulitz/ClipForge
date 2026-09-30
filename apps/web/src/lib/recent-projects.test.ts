@@ -44,11 +44,13 @@ test("meaningful failed projects stay in the history (the API drops only technic
   assert.doesNotMatch(home, /Untitled project/);
 });
 
-test("delete-all is shown only when a deletable project exists", () => {
+test("delete-all is shown whenever deletable history exists, including early-failed requests", () => {
   assert.equal(deletableProjectCount([]), 0);
-  // an early-failed request without a project row is listed, but bulk delete cannot remove it
-  assert.equal(deletableProjectCount([overview("f", "Warum …", "failed", null)]), 0);
-  assert.equal(deletableProjectCount([overview("f", "Warum …", "failed", null), overview("a", "Why cats purr", "rendered", 2)]), 1);
+  // an early-failed request without a project row is history that bulk delete clears too
+  assert.equal(deletableProjectCount([overview("f", "Warum …", "failed", null)]), 1);
+  assert.equal(deletableProjectCount([overview("f", "Warum …", "failed", null), overview("a", "Why cats purr", "rendered", 2)]), 2);
+  // active generations are never part of a bulk delete
+  assert.equal(deletableProjectCount([overview("r", "Running", "running", null), overview("q", "Queued", "queued", null)]), 0);
   assert.match(home, /const deletableProjects = deletableProjectCount\(history\);/);
   assert.match(section, /\{deletableProjects > 0 && \(\n\s+<button type="button" onClick=\{\(\) => void openBulkDelete\(\)\}/);
 });
@@ -70,4 +72,30 @@ test("bulk deletion keeps its typed confirmation and tells what stays in Videos"
   assert.match(home, /projects_keeping_learning_record/);
   assert.match(home, /in <Link href="\/videos" className="underline">Videos<\/Link> erhalten/);
   assert.match(home, /await deleteAllProjects\(\);[\s\S]*?await refresh\(\);/);
+});
+
+test("the confirmation counts early-failed requests and opens even without project rows", () => {
+  assert.match(home, /setBulkDeleteOpen\(plan\.project_count \+ \(plan\.history_entry_count \?\? 0\) > 0\);/);
+  assert.match(home, /\$\{history\} fehlgeschlagene \$\{history === 1 \? "Anfrage" : "Anfragen"\}/);
+  assert.match(home, /\{bulkDeleteSummary\(bulkDeletePlan\)\}/);
+});
+
+test("the wording never implies that YouTube videos or their learning data are deleted", () => {
+  const dialog = home.slice(home.indexOf('id="bulk-delete-title"'), home.indexOf("Zum Bestätigen"));
+  assert.match(dialog, /lokal gerenderte Videodateien/);
+  assert.doesNotMatch(dialog, /projektlokalen Videos|YouTube-Videos werden gelöscht|Lerndaten werden gelöscht/);
+  assert.match(dialog, /bleib(t|en)"\} in <Link href="\/videos"/);
+  assert.match(dialog, /YouTube-Videos werden nie gelöscht\./);
+});
+
+test("after a successful bulk delete the page renders from an emptied history", () => {
+  const success = home.slice(home.indexOf("const result = await deleteAllProjects();"), home.indexOf("setBulkDeleting(false);"));
+  // local state is cleared, then the API's (now empty) history is loaded
+  assert.match(success, /setRecent\(\[\]\);[\s\S]*setQueue\(\[\]\);[\s\S]*await refresh\(\);/);
+  const history = visibleProjectHistory([], []);
+  assert.equal(history.length, 0);
+  assert.equal(deletableProjectCount(history), 0); // the delete-all action disappears
+  // no count badge at all for zero entries, and the empty state takes its place
+  assert.match(section, /Recent Projects\{history\.length > 0 \? ` \(\$\{history\.length\}\)` : ""\}/);
+  assert.match(section, /\) : projectsLoaded \? \(\n\s+<div className="px-1 py-2">\n\s+<p className="text-sm font-semibold">Noch keine Projekte<\/p>/);
 });

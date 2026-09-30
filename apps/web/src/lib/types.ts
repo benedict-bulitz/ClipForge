@@ -108,6 +108,8 @@ export type BulkProjectDeletePlan = {
   shared_cache_excluded: boolean;
   /** Uploaded projects whose video stays in Videos (compact learning/analytics record). */
   projects_keeping_learning_record?: number;
+  /** Finished requests without a project (Recent Projects history) that are cleared too. */
+  history_entry_count?: number;
 };
 
 export type BulkProjectDeleteResult = {
@@ -115,6 +117,7 @@ export type BulkProjectDeleteResult = {
   freed_bytes: number;
   failed_projects: Record<string, string>;
   remaining_projects: number;
+  deleted_history_entries?: number;
 };
 
 export type ScriptBlock = { id: string; role: string; text: string };

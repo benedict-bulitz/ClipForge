@@ -585,3 +585,40 @@ def test_bulk_delete_keeps_uploaded_videos_in_the_library(db, settings, store, f
     assert item["project"]["available"] is False and item["thumbnail_url"]
     detail = client.get(f"/api/videos/{row.id}").json()
     assert detail["performance"]["status"] == "ready" and detail["retention_curve"]
+
+
+def test_bulk_delete_clears_all_history_and_keeps_the_learning_record(db, settings, store, fake):
+    """Real project + uploaded project + early-failed request -> empty Recent Projects,
+    video and its learning data still in the library."""
+    from clipforge.models import (
+        GenerationJob,
+        YouTubeAnalyticsSnapshot,
+        YouTubeLearningArchive,
+        YouTubeRetentionPoint,
+    )
+
+    connect(db, settings, store, fake)
+    row = _published_with_analytics(db, settings, store, fake, build_project(db, settings))
+    build_project(db, settings, project_id=OTHER, content=b"N" * 20_000)
+    db.add(GenerationJob(project_id="early-failed", request_hash="e" * 64, status="failed", failure_category="provider_error",
+                         request_payload={"prompt": "Warum bin ich nach einem Mittagsschlaf manchmal müde?"}))
+    db.commit()
+    client = api_client(db, settings, store, fake)
+    overview = client.get("/api/projects/overview").json()
+    assert {item["title"] for item in overview} >= {"Warum bin ich nach einem Mittagsschlaf manchmal müde?"}
+    assert len(overview) == 3
+    plan = client.get("/api/projects/delete-plan").json()
+    assert (plan["project_count"], plan["history_entry_count"], plan["projects_keeping_learning_record"]) == (2, 1, 1)
+
+    result = client.delete("/api/projects").json()
+
+    assert result["deleted_projects"] == 2 and result["deleted_history_entries"] == 1 and result["archived_projects"] == 1
+    assert client.get("/api/projects/overview").json() == []
+    assert db.scalars(select(GenerationJob)).all() == []
+    # the Video Library and its learning data are untouched
+    item = library_page(client)["items"][0]
+    assert item["id"] == row.id and item["project"]["available"] is False
+    assert db.scalar(select(YouTubeLearningArchive)).upload_ids == [row.id]
+    assert db.scalars(select(YouTubeAnalyticsSnapshot)).all() and db.scalars(select(YouTubeRetentionPoint)).all()
+    detail = client.get(f"/api/videos/{row.id}").json()
+    assert detail["performance"]["status"] == "ready" and detail["retention_curve"] and detail["production"]["hook_strategy"]

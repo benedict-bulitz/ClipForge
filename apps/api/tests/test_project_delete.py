@@ -257,3 +257,60 @@ def test_bulk_delete_stops_and_reports_partial_filesystem_failure(db, tmp_path, 
     assert db.get(Project, first.id) is None
     assert db.get(Project, second.id) is not None
     assert second_dir.exists()
+
+
+def test_bulk_delete_clears_finished_job_only_history_but_never_active_work(db, tmp_path):
+    """Finished requests that never created a project are Recent Projects history
+    only; "Alle Projekte löschen" clears them. Active work is never touched."""
+    settings = _settings(tmp_path)
+    kept = _project(db, "ffffffff-ffff-4fff-8fff-ffffffffffff", "Real project")
+    db.add_all([
+        GenerationJob(id="failed-only", project_id="job-only-failed", request_hash="f", status="failed",
+                      request_payload={"prompt": "Warum bin ich nach einem Mittagsschlaf manchmal müde?"}),
+        GenerationJob(id="completed-only", project_id="job-only-completed", request_hash="c", status="completed",
+                      request_payload={"prompt": "A completed request whose project is gone"}),
+        GenerationJob(id="legacy-only", project_id="job-only-legacy", request_hash="l", status="failed", request_payload={}),
+        GenerationJob(id="project-job", project_id=kept.id, request_hash="p", status="completed"),
+    ])
+    db.commit()
+
+    result = delete_all_projects(db, settings)
+
+    assert result.deleted_projects == 1 and result.deleted_history_entries == 3
+    assert db.scalars(select(GenerationJob)).all() == []
+    assert db.scalars(select(Project)).all() == []
+
+
+def test_bulk_delete_keeps_the_jobs_of_a_project_that_could_not_be_deleted(db, tmp_path, monkeypatch):
+    settings = _settings(tmp_path)
+    stuck = _project(db, "abababab-abab-4bab-8bab-abababababab", "Stuck")
+    _project_files(settings.render_root, stuck.id)
+    db.add_all([
+        GenerationJob(id="stuck-job", project_id=stuck.id, request_hash="s", status="failed"),
+        GenerationJob(id="history-job", project_id="job-only-x", request_hash="h", status="failed", request_payload={"prompt": "History entry"}),
+    ])
+    db.commit()
+    monkeypatch.setattr("clipforge.services.shutil.rmtree", lambda path: (_ for _ in ()).throw(OSError("busy")))
+
+    result = delete_all_projects(db, settings)
+
+    assert result.failed_projects and db.get(Project, stuck.id) is not None
+    assert db.get(GenerationJob, "stuck-job") is not None  # belongs to a still-existing project
+    assert db.get(GenerationJob, "history-job") is None
+
+
+def test_bulk_delete_with_a_running_job_deletes_nothing(db, tmp_path):
+    settings = _settings(tmp_path)
+    project = _project(db, "cdcdcdcd-cdcd-4dcd-8dcd-cdcdcdcdcdcd", "Kept")
+    db.add_all([
+        GenerationJob(id="running-job", project_id="job-only-running", request_hash="r", status="running", request_payload={"prompt": "Running"}),
+        GenerationJob(id="queued-job", project_id="job-only-queued", request_hash="q", status="queued", request_payload={"prompt": "Queued"}),
+        GenerationJob(id="failed-job", project_id="job-only-failed-2", request_hash="f2", status="failed", request_payload={"prompt": "Failed"}),
+    ])
+    db.commit()
+
+    with pytest.raises(ProjectDeletionError, match="still being generated"):
+        delete_all_projects(db, settings)
+
+    assert db.get(Project, project.id) is not None
+    assert {job.id for job in db.scalars(select(GenerationJob)).all()} == {"running-job", "queued-job", "failed-job"}

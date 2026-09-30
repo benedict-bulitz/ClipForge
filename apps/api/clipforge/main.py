@@ -70,6 +70,7 @@ from .schemas import (
 )
 from .security.secrets import SecretStore
 from .services import (
+    TERMINAL_JOB_STATUSES,
     ProjectDeletionBusy,
     ProjectDeletionError,
     RevisionConflict,
@@ -230,7 +231,17 @@ def bulk_delete_plan_route(db: DbSession, config: SettingsDep) -> dict:
         1 for item in plan.projects
         if any(lifecycle.classify_upload(db, upload) == lifecycle.SUCCEEDED for upload in db.scalars(select(YouTubeUpload).where(YouTubeUpload.project_id == item.project_id)).all())
     )
-    return {**_serialize_bulk_delete_plan(plan), "projects_keeping_learning_record": archived}
+    # Visible Recent Projects entries without a project (finished requests), counted
+    # with the overview's own rule; bulk deletion clears them too.
+    history_entries = sum(
+        1 for item in list_project_overview(db)
+        if item["current_revision"] is None and item["status"] in TERMINAL_JOB_STATUSES
+    )
+    return {
+        **_serialize_bulk_delete_plan(plan),
+        "projects_keeping_learning_record": archived,
+        "history_entry_count": history_entries,
+    }
 
 
 @app.delete("/api/projects")

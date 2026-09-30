@@ -200,7 +200,7 @@ export default function Home() {
       const plan = await getBulkProjectDeletePlan();
       setBulkDeletePlan(plan);
       setBulkDeletePhrase("");
-      setBulkDeleteOpen(plan.project_count > 0);
+      setBulkDeleteOpen(plan.project_count + (plan.history_entry_count ?? 0) > 0);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Projektlöschplan konnte nicht geladen werden.");
     }
@@ -342,8 +342,8 @@ export default function Home() {
         <div className="fixed inset-0 z-50 grid place-items-center bg-black/45 p-4" role="dialog" aria-modal="true" aria-labelledby="bulk-delete-title">
           <div className="cf-surface w-full max-w-md rounded-[24px] border p-6 text-left shadow-[0_22px_70px_rgba(0,0,0,.25)]">
             <h2 id="bulk-delete-title" className="text-lg font-semibold">Alle Projekte wirklich löschen?</h2>
-            <p className="mt-2 text-sm leading-6 text-[var(--muted-foreground)]">Alle projektlokalen Videos, Audio-Dateien, Medienableitungen und Projektdaten werden dauerhaft gelöscht. Wiederverwendbare Caches bleiben erhalten.</p>
-            <p className="mt-4 rounded-xl bg-black/[.04] px-3 py-2 text-sm font-semibold">{bulkDeletePlan.project_count} Projekte · ca. {formatBytes(bulkDeletePlan.total_bytes)}</p>
+            <p className="mt-2 text-sm leading-6 text-[var(--muted-foreground)]">Alle Projekte in ClipForge – lokal gerenderte Videodateien, Audio-Dateien, Medienableitungen und Projektdaten – sowie fehlgeschlagene Anfragen werden dauerhaft gelöscht. Wiederverwendbare Caches bleiben erhalten.</p>
+            <p className="mt-4 rounded-xl bg-black/[.04] px-3 py-2 text-sm font-semibold">{bulkDeleteSummary(bulkDeletePlan)}</p>
             {(bulkDeletePlan.projects_keeping_learning_record ?? 0) > 0 && <p className="mt-2 text-xs text-[var(--muted-foreground)]">{bulkDeletePlan.projects_keeping_learning_record} auf YouTube hochgeladene{bulkDeletePlan.projects_keeping_learning_record === 1 ? "s Video bleibt" : " Videos bleiben"} in <Link href="/videos" className="underline">Videos</Link> erhalten (kompakte Analyse- und Lerndaten). YouTube-Videos werden nie gelöscht.</p>}
             <label className="mt-5 block text-sm font-medium">Zum Bestätigen <span className="font-bold">LÖSCHEN</span> eingeben
               <input aria-label="Type LÖSCHEN to confirm deletion" value={bulkDeletePhrase} onChange={(event) => setBulkDeletePhrase(event.target.value)} className="mt-2 w-full rounded-xl border bg-transparent px-3 py-2 outline-none focus:border-[#ff6838]" autoComplete="off" />
@@ -360,6 +360,15 @@ export default function Home() {
       <div className="pointer-events-none absolute -bottom-24 left-1/2 h-60 w-[70vw] -translate-x-1/2 rounded-[100%] border border-[#ff6838]/10 bg-[#ff9d6f]/8 blur-2xl" />
     </main>
   );
+}
+
+/** "2 Projekte · 1 fehlgeschlagene Anfrage · ca. 133 KB" */
+function bulkDeleteSummary(plan: BulkProjectDeletePlan): string {
+  const parts = [`${plan.project_count} ${plan.project_count === 1 ? "Projekt" : "Projekte"}`];
+  const history = plan.history_entry_count ?? 0;
+  if (history > 0) parts.push(`${history} fehlgeschlagene ${history === 1 ? "Anfrage" : "Anfragen"}`);
+  if (plan.project_count > 0) parts.push(`ca. ${formatBytes(plan.total_bytes)}`);
+  return parts.join(" · ");
 }
 
 function formatBytes(bytes: number) {

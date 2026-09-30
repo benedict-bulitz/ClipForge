@@ -13,9 +13,10 @@ export function visibleProjectHistory(projects: ProjectOverview[], jobs: Generat
 }
 
 /**
- * Entries bulk deletion can remove: those with a Project row (a revision).
- * Early-failed requests without a project are listed but are not projects yet.
+ * Recent Projects entries "Alle Projekte löschen" removes: every project and every
+ * finished request that never created one (e.g. failed during research).
+ * Active generations are never part of a bulk delete.
  */
 export function deletableProjectCount(history: ProjectOverview[]): number {
-  return history.filter((project) => project.current_revision !== null).length;
+  return history.filter((project) => project.status !== "queued" && project.status !== "running").length;
 }

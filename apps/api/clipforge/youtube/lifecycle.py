@@ -270,6 +270,7 @@ def delete_all_lifecycle(db: Session, settings: Settings, store: SecretStore, pr
     result = delete_all_projects(db, settings, delete_one=one)
     return {
         "deleted_projects": result.deleted_projects,
+        "deleted_history_entries": result.deleted_history_entries,
         "freed_bytes": result.freed_bytes,
         "failed_projects": result.failed_projects,
         "remaining_projects": result.remaining_projects,

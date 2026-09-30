@@ -25,7 +25,7 @@ from .exporter import (
 from .final_critic import disabled_review, run_final_quality_review
 from .hashing import attach_hashes
 from .media import prepare_project_media
-from .models import GenerationJob, Project, ProjectChatMessage, ProjectRevision
+from .models import GenerationJob, Project, ProjectChatMessage, ProjectRevision, YouTubeUpload
 from .music import MusicTrack, available_music_tracks, music_track_state, ranked_music_tracks
 from .pacing import analyze_pacing
 from .pipeline import (
@@ -96,6 +96,8 @@ class BulkProjectDeletionResult:
     freed_bytes: int
     failed_projects: dict[str, str]
     remaining_projects: int
+    # Finished generation requests that never created a project (history only).
+    deleted_history_entries: int = 0
 
 
 def _project_storage_directory(project_id: str, settings: Settings) -> Path:
@@ -238,6 +240,24 @@ def delete_project(db: Session, project_id: str, settings: Settings) -> ProjectD
     return ProjectDeletionResult(reclaimed_bytes=plan.reclaimed_bytes)
 
 
+TERMINAL_JOB_STATUSES = ("completed", "failed")
+
+
+def job_only_history_filter():
+    """Finished generation jobs whose project was never created.
+
+    They are only Recent Projects history (e.g. a request that failed during
+    research): no Project row, no local media, and - since uploads need a
+    project - never an upload. Queued/running jobs are excluded (active work),
+    and so, defensively, is any project id that has YouTube upload records.
+    """
+    return (
+        GenerationJob.status.in_(TERMINAL_JOB_STATUSES),
+        GenerationJob.project_id.not_in(select(Project.id)),
+        GenerationJob.project_id.not_in(select(YouTubeUpload.project_id)),
+    )
+
+
 def delete_all_projects(
     db: Session,
     settings: Settings,
@@ -266,12 +286,20 @@ def delete_all_projects(
             break
         deleted_projects += 1
         freed_bytes += result.reclaimed_bytes
+    # Finished requests that never became a project are history rows only
+    # (including legacy rows without request data); jobs of projects that
+    # still exist - e.g. after a failed deletion above - are not touched.
+    history_ids = set(db.scalars(select(GenerationJob.project_id).where(*job_only_history_filter())).all())
+    if history_ids:
+        db.execute(delete(GenerationJob).where(*job_only_history_filter()))
+        db.commit()
     remaining_projects = int(db.scalar(select(func.count()).select_from(Project)) or 0)
     return BulkProjectDeletionResult(
         deleted_projects=deleted_projects,
         freed_bytes=freed_bytes,
         failed_projects=failed_projects,
         remaining_projects=remaining_projects,
+        deleted_history_entries=len(history_ids),
     )
 
 
