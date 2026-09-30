@@ -62,6 +62,7 @@ export function jobProgressPercent(job: GenerationJob | null | undefined, previo
   if (!job) return previous;
   if (job.status === "completed") return 100;
   const value = Math.round(Math.max(0, Math.min(1, Number(job.progress) || 0)) * 100);
+  if (job.status === "cancelling" || job.status === "cancelled") return Math.max(previous, Math.min(99, value));
   return job.status === "running" ? Math.max(previous, Math.min(99, value)) : value;
 }
 
@@ -181,7 +182,7 @@ export function createGenerationWatcher<P>(options: GenerationWatcherOptions<P>)
       if (stopped) return;
       failures = 0;
       options.onError?.(null);
-      if (job && (job.status === "failed" || job.status === "removed")) {
+      if (job && (job.status === "failed" || job.status === "removed" || job.status === "cancelled")) {
         stopped = true;
         options.onJob?.(job);
         options.onFailed?.(job);

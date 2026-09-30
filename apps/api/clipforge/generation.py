@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import shutil
 import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -10,17 +11,26 @@ from threading import Lock, Thread
 from typing import Any
 
 from pydantic import ValidationError
-from sqlalchemy import exists, select, update
+from sqlalchemy import case, exists, select, update
 from sqlalchemy.orm import Session, sessionmaker
 
+from . import cancellation
+from .cancellation import GenerationCancelled
 from .config import Settings
 from .database import SessionLocal
-from .models import GenerationJob, GenerationTimingStat
+from .models import GenerationJob, GenerationTimingStat, ProjectRevision
 from .progress import ProgressEvent
 from .renderer import RenderUnavailable, VoiceGenerationError
 from .schemas import ProjectCreate
 
-ACTIVE_JOB_STATUSES = ("queued", "running")
+# Lifecycle: queued -> running -> completed | failed
+#            queued -> removed                       (taken out of the queue)
+#            running -> cancelling -> cancelled      (user cancel; the worker stops cooperatively)
+# ``cancelling`` still holds the one worker slot: the worker thread is alive until
+# it reaches a checkpoint.  ``cancelled`` is terminal, never failed or completed.
+ACTIVE_JOB_STATUSES = ("queued", "running", "cancelling")
+WORKER_BUSY_STATUSES = ("running", "cancelling")
+CANCELLED_CATEGORY = "user_cancelled"
 EMA_ALPHA = 0.3
 _SCHEDULER_LOCK = Lock()
 
@@ -163,10 +173,14 @@ def create_generation_job(
 
 
 def active_generation_job(db: Session) -> GenerationJob | None:
+    """The job holding the worker (running or cancelling), else the oldest queued one."""
     return db.scalar(
         select(GenerationJob)
         .where(GenerationJob.status.in_(ACTIVE_JOB_STATUSES))
-        .order_by(GenerationJob.status.desc(), GenerationJob.created_at.asc())
+        .order_by(
+            case((GenerationJob.status.in_(WORKER_BUSY_STATUSES), 0), else_=1),
+            GenerationJob.created_at.asc(),
+        )
     )
 
 
@@ -275,6 +289,76 @@ def clear_queued_generation_jobs(db: Session) -> int:
     return int(result.rowcount or 0)
 
 
+def request_generation_cancel(db: Session, job_id: str) -> tuple[str, GenerationJob | None]:
+    """Ask the running job to stop.  Idempotent; returns (outcome, job).
+
+    ``requested``   running -> cancelling (atomically; the worker finishes it)
+    ``cancelling``  already requested (a repeated click)
+    ``cancelled``   already stopped
+    ``not_running`` queued / completed / failed / removed - nothing is changed
+    ``not_found``   no such job
+    """
+    now = datetime.now(UTC)
+    result = db.execute(
+        update(GenerationJob)
+        .where(GenerationJob.id == job_id, GenerationJob.status == "running")
+        .values(status="cancelling", updated_at=now)
+    )
+    db.commit()
+    job = db.get(GenerationJob, job_id)
+    if job is not None:
+        db.refresh(job)
+    if result.rowcount == 1:
+        cancellation.signal(job_id)
+        return "requested", job
+    if job is None:
+        return "not_found", None
+    if job.status == "cancelling":
+        cancellation.signal(job_id)  # harmless repeat: the worker may have registered since
+        return "cancelling", job
+    if job.status == "cancelled":
+        return "cancelled", job
+    return "not_running", job
+
+
+def finalize_cancelled_job(db: Session, job_id: str, *, now: datetime | None = None) -> bool:
+    """cancelling -> cancelled (terminal).  Keeps where it stopped for diagnostics."""
+    now = now or datetime.now(UTC)
+    job = db.get(GenerationJob, job_id)
+    if job is None:
+        return False
+    db.refresh(job)
+    if job.status != "cancelling":
+        return job.status == "cancelled"
+    stage = job.stage_label or job.current_stage
+    result = db.execute(
+        update(GenerationJob)
+        .where(GenerationJob.id == job_id, GenerationJob.status == "cancelling")
+        .values(
+            status="cancelled",
+            failure_category=CANCELLED_CATEGORY,
+            failure_message=f"Cancelled by the user during: {stage}.",
+            estimated_remaining_seconds=None,
+            completed_at=now,
+            updated_at=now,
+            active_key=None,
+        )
+    )
+    db.commit()
+    return result.rowcount == 1
+
+
+def finish_orphaned_cancel(db: Session, job_id: str, settings: Settings) -> bool:
+    """A cancel for a job no worker in this process holds (e.g. claimed but not yet
+    started): end it here and let the next queued job start."""
+    if cancellation.has_worker(job_id):
+        return False
+    finished = finalize_cancelled_job(db, job_id)
+    if finished:
+        schedule_next_generation(settings)
+    return finished
+
+
 def claim_next_generation_job(db: Session) -> GenerationJob | None:
     """Atomically claim the oldest queued job only when the sole worker is idle."""
     candidate_id = db.scalar(
@@ -286,7 +370,8 @@ def claim_next_generation_job(db: Session) -> GenerationJob | None:
     if candidate_id is None:
         return None
     now = datetime.now(UTC)
-    no_running = ~exists(select(GenerationJob.id).where(GenerationJob.status == "running"))
+    # A cancelling job still holds the one worker: never two active jobs.
+    no_running = ~exists(select(GenerationJob.id).where(GenerationJob.status.in_(WORKER_BUSY_STATUSES)))
     result = db.execute(
         update(GenerationJob)
         .where(GenerationJob.id == candidate_id, GenerationJob.status == "queued", no_running)
@@ -338,6 +423,13 @@ class ProgressTracker:
     def __call__(self, event: ProgressEvent) -> None:
         now = self.now()
         job = self.session.get(GenerationJob, self.job_id)
+        if job is not None:
+            self.session.refresh(job)
+        # Every stage and unit (scene, asset, render segment) passes here: the
+        # canonical cooperative checkpoint of a running generation.
+        cancellation.checkpoint()
+        if job is not None and job.status == "cancelling":
+            raise GenerationCancelled(f"Generation {self.job_id} was cancelled.")
         if job is None or job.status not in ACTIVE_JOB_STATUSES:
             return
         plan = [dict(item) for item in job.stage_plan]
@@ -368,7 +460,15 @@ class ProgressTracker:
             job.current_stage = event.stage
             job.stage_label = event.label
             job.stage_started_at = now
-        job.status = "running"
+        # The status is only ever changed by conditional UPDATEs (claim, cancel,
+        # complete, fail) - never by this read-modify-write, so a concurrent cancel
+        # cannot be overwritten.  A job driven without a claim is promoted here.
+        if job.status == "queued":
+            self.session.execute(
+                update(GenerationJob)
+                .where(GenerationJob.id == self.job_id, GenerationJob.status == "queued")
+                .values(status="running")
+            )
         if job.started_at is None:
             job.started_at = now
         job.completed_units = event.completed_units
@@ -437,27 +537,46 @@ class ProgressTracker:
         stat.sample_count += 1
 
     def complete(self) -> None:
+        """running -> completed, atomically.  A cancel that committed first wins
+        (deterministic: one conditional UPDATE each, the database orders them)."""
         now = self.now()
-        job = self.session.get(GenerationJob, self.job_id)
-        if job is None:
-            return
-        job.status = "completed"
-        job.current_stage = "complete"
-        job.stage_label = "Complete"
-        job.progress = 1.0
-        job.completed_units = None
-        job.total_units = None
-        job.estimated_remaining_seconds = 0.0
-        job.completed_at = now
-        job.updated_at = now
-        job.active_key = None
+        cancellation.checkpoint()
+        result = self.session.execute(
+            update(GenerationJob)
+            .where(GenerationJob.id == self.job_id, GenerationJob.status == "running")
+            .values(
+                status="completed",
+                current_stage="complete",
+                stage_label="Complete",
+                progress=1.0,
+                completed_units=None,
+                total_units=None,
+                estimated_remaining_seconds=0.0,
+                completed_at=now,
+                updated_at=now,
+                active_key=None,
+            )
+        )
         self.session.commit()
+        if result.rowcount != 1:
+            job = self.session.get(GenerationJob, self.job_id)
+            if job is not None:
+                self.session.refresh(job)
+                if job.status == "cancelling":
+                    raise GenerationCancelled(f"Generation {self.job_id} was cancelled.")
 
     def fail(self, message: str, *, category: str = "generation_failed") -> None:
         now = self.now()
         job = self.session.get(GenerationJob, self.job_id)
         if job is None:
             return
+        self.session.refresh(job)
+        if job.status in {"cancelling", "cancelled"}:
+            # A failure after the user cancelled (e.g. a stopped process) is a cancellation.
+            finalize_cancelled_job(self.session, self.job_id, now=now)
+            return
+        if job.status not in {"running", "queued"}:
+            return  # already finished: never overwrite a terminal state
         job.status = "failed"
         job.progress = min(job.progress, 0.99)
         job.failure_category = category
@@ -477,75 +596,116 @@ def run_generation_job(
 ) -> None:
     from .services import create_project, render_project
 
-    with session_factory() as db:
-        job = db.get(GenerationJob, job_id)
-        if job is None or job.status != "running":
-            return
-        try:
-            payload = ProjectCreate.model_validate(job.request_payload)
-        except ValidationError:
-            ProgressTracker(job_id, session=db).fail(
-                "Generation request data is unavailable. Create the project again.",
-                category="interrupted",
-            )
-            schedule_next_generation(settings, session_factory=session_factory)
-            return
-        tracker = ProgressTracker(job_id, session=db)
-        tracker(
-            ProgressEvent(
-                stage="preparing",
-                label=STAGE_LABELS["preparing"],
-                phase="start",
-            )
-        )
-        tracker(
-            ProgressEvent(
-                stage="preparing",
-                label=STAGE_LABELS["preparing"],
-                phase="complete",
-            )
-        )
-        try:
+    # Registered BEFORE the job is read: a cancel either finds this token, or it
+    # committed "cancelling" before our read (then nothing runs at all).
+    token = cancellation.register(job_id)
+    try:
+        with session_factory() as db, cancellation.scope(token):
             job = db.get(GenerationJob, job_id)
-            if job is None:
+            if job is None or job.status != "running":
+                if job is not None and job.status == "cancelling":
+                    finalize_cancelled_job(db, job_id)
                 return
-            project = create_project(
-                db,
-                payload,
-                settings,
-                project_id=job.project_id,
-                progress=tracker,
-            )
-            render_project(
-                db,
-                project,
-                settings,
-                base_revision=project.current_revision,
-                progress=tracker,
-            )
-            tracker.complete()
-        except Exception as exc:  # noqa: BLE001 - durable job boundary
-            db.rollback()
-            if isinstance(exc, VoiceGenerationError):
-                tracker.fail(str(exc), category=exc.category)
-            elif isinstance(exc, RenderUnavailable):
-                tracker.fail(str(exc), category="render_unavailable")
-            else:
-                job = db.get(GenerationJob, job_id)
-                label = job.stage_label if job is not None else "generation"
-                tracker.fail(
-                    f"Generation stopped while {label.casefold()}. You can retry safely.",
-                    category="generation_failed",
+            try:
+                payload = ProjectCreate.model_validate(job.request_payload)
+            except ValidationError:
+                ProgressTracker(job_id, session=db).fail(
+                    "Generation request data is unavailable. Create the project again.",
+                    category="interrupted",
                 )
-    # A terminal job always releases the one worker slot before the next claim.
-    schedule_next_generation(settings, session_factory=session_factory)
+                return
+            tracker = ProgressTracker(job_id, session=db)
+            try:
+                tracker(ProgressEvent(stage="preparing", label=STAGE_LABELS["preparing"], phase="start"))
+                tracker(ProgressEvent(stage="preparing", label=STAGE_LABELS["preparing"], phase="complete"))
+                job = db.get(GenerationJob, job_id)
+                if job is None:
+                    return
+                project = create_project(
+                    db,
+                    payload,
+                    settings,
+                    project_id=job.project_id,
+                    progress=tracker,
+                )
+                cancellation.checkpoint()
+                render_project(
+                    db,
+                    project,
+                    settings,
+                    base_revision=project.current_revision,
+                    progress=tracker,
+                )
+                tracker.complete()
+            except GenerationCancelled:
+                db.rollback()
+                _cleanup_cancelled_run(db, token, settings)
+                finalize_cancelled_job(db, job_id)
+            except Exception as exc:  # noqa: BLE001 - durable job boundary
+                db.rollback()
+                if isinstance(exc, VoiceGenerationError):
+                    tracker.fail(str(exc), category=exc.category)
+                elif isinstance(exc, RenderUnavailable):
+                    tracker.fail(str(exc), category="render_unavailable")
+                else:
+                    job = db.get(GenerationJob, job_id)
+                    label = job.stage_label if job is not None else "generation"
+                    tracker.fail(
+                        f"Generation stopped while {label.casefold()}. You can retry safely.",
+                        category="generation_failed",
+                    )
+                if token.cancelled:  # the failure came from stopping the work: a cancellation
+                    _cleanup_cancelled_run(db, token, settings)
+    finally:
+        cancellation.unregister(token)
+        # A terminal job always releases the one worker slot before the next claim
+        # (every exit path; the claim itself guarantees a single running job).
+        schedule_next_generation(settings, session_factory=session_factory)
+
+
+def _cleanup_cancelled_run(db: Session, token: cancellation.CancelToken, settings: Settings) -> list[str]:
+    """Remove only what the cancelled run created and never persisted.
+
+    Candidates are directories the renderer claimed as NEW for this run
+    (``renders/vN``, ``audio-layers/vN`` of a revision number not yet saved).
+    Anything a saved revision refers to, earlier exports, caches and other
+    projects' files are never touched; when in doubt, keep.
+    """
+    removed: list[str] = []
+    root = settings.render_root.resolve()
+    job = db.get(GenerationJob, token.job_id)
+    if job is None:
+        return removed
+    project_root = (root / job.project_id).resolve()
+    for path in list(dict.fromkeys(token.owned_paths)):
+        try:
+            target = path.resolve()
+            if not target.is_dir() or project_root not in target.parents:
+                continue
+            number = int(target.name[1:]) if target.name[:1] == "v" and target.name[1:].isdigit() else None
+            if number is None:
+                continue
+            persisted = db.scalar(
+                select(ProjectRevision.id).where(ProjectRevision.project_id == job.project_id, ProjectRevision.number == number)
+            )
+            if persisted is not None:
+                continue  # a saved revision owns it now (e.g. cancel raced with completion)
+            shutil.rmtree(target)
+            removed.append(target.relative_to(root).as_posix())
+        except (OSError, ValueError):
+            continue
+    return removed
 
 
 def mark_interrupted_generation_jobs(db: Session) -> int:
+    """On startup: no worker survives a restart.  A requested cancel is completed
+    (never resumed); an interrupted run is failed so it can be retried."""
+    now = datetime.now(UTC)
+    for job in db.scalars(select(GenerationJob).where(GenerationJob.status == "cancelling")).all():
+        finalize_cancelled_job(db, job.id, now=now)
     jobs = db.scalars(
         select(GenerationJob).where(GenerationJob.status == "running")
     ).all()
-    now = datetime.now(UTC)
     for job in jobs:
         job.status = "failed"
         job.failure_category = "interrupted"

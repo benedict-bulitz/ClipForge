@@ -52,7 +52,8 @@ export type HomePoller = {
 };
 
 export function hasActiveJob(jobs: GenerationJob[]): boolean {
-  return jobs.some((job) => job.status === "queued" || job.status === "running");
+  // "cancelling" is still active (the worker is stopping); "cancelled" is terminal.
+  return jobs.some((job) => job.status === "queued" || job.status === "running" || job.status === "cancelling");
 }
 
 const browserTimers: Timers = {

@@ -131,6 +131,11 @@ export function removeQueuedGenerationJob(jobId: string) {
   return request<void>(`/generation-jobs/${jobId}`, { method: "DELETE" });
 }
 
+/** Cancel the RUNNING generation (idempotent; keeps the project). */
+export function cancelGenerationJob(jobId: string) {
+  return request<GenerationJob>(`/generation-jobs/${jobId}/cancel`, { method: "POST" });
+}
+
 export function clearGenerationQueue() {
   return request<void>("/generation-jobs/queue", { method: "DELETE" });
 }

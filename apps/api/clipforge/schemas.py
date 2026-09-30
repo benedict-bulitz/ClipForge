@@ -112,7 +112,7 @@ class GenerationJobRead(BaseModel):
     project_id: str
     prompt: str
     base_revision: int | None
-    status: Literal["queued", "running", "completed", "failed", "removed"]
+    status: Literal["queued", "running", "cancelling", "completed", "failed", "removed", "cancelled"]
     current_stage: str
     stage_label: str
     progress: float = Field(ge=0, le=1)

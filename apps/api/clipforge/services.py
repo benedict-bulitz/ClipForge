@@ -11,6 +11,7 @@ from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from . import cancellation
 from .ai import rank_music_with_openai
 from .config import Settings
 from .dependencies import expand_dependencies
@@ -23,6 +24,7 @@ from .exporter import (
     rollback_finalized_export,
 )
 from .final_critic import disabled_review, run_final_quality_review
+from .generation import WORKER_BUSY_STATUSES  # a live worker: its project must not be deleted
 from .hashing import attach_hashes
 from .media import prepare_project_media
 from .models import GenerationJob, Project, ProjectChatMessage, ProjectRevision, YouTubeUpload
@@ -177,7 +179,7 @@ def plan_bulk_project_deletion(db: Session, settings: Settings) -> BulkProjectDe
     projects = db.scalars(select(Project).order_by(Project.created_at.asc())).all()
     plans = tuple(plan_project_deletion(db, project.id, settings) for project in projects)
     running_job = db.scalar(
-        select(GenerationJob.id).where(GenerationJob.status == "running").limit(1)
+        select(GenerationJob.id).where(GenerationJob.status.in_(WORKER_BUSY_STATUSES)).limit(1)
     )
     if running_job is not None:
         raise ProjectDeletionBusy("A project is still being generated; bulk deletion cannot start.")
@@ -195,7 +197,7 @@ def delete_project(db: Session, project_id: str, settings: Settings) -> ProjectD
     active_job = db.scalar(
         select(GenerationJob.id).where(
             GenerationJob.project_id == project_id,
-            GenerationJob.status == "running",
+            GenerationJob.status.in_(WORKER_BUSY_STATUSES),
         )
     )
     if active_job is not None:
@@ -240,7 +242,9 @@ def delete_project(db: Session, project_id: str, settings: Settings) -> ProjectD
     return ProjectDeletionResult(reclaimed_bytes=plan.reclaimed_bytes)
 
 
-TERMINAL_JOB_STATUSES = ("completed", "failed")
+# Finished requests that may be history-only rows (a cancelled one that never
+# created a project too); "removed" queue entries were never user projects.
+TERMINAL_JOB_STATUSES = ("completed", "failed", "cancelled")
 
 
 def job_only_history_filter():
@@ -248,7 +252,7 @@ def job_only_history_filter():
 
     They are only Recent Projects history (e.g. a request that failed during
     research): no Project row, no local media, and - since uploads need a
-    project - never an upload. Queued/running jobs are excluded (active work),
+    project - never an upload. Queued/running/cancelling jobs are excluded (active work),
     and so, defensively, is any project id that has YouTube upload records.
     """
     return (
@@ -673,6 +677,7 @@ def render_project(
         raise RevisionConflict(
             f"Project changed since revision {expected}; reload before rendering."
         )
+    cancellation.checkpoint()  # before rendering (no-op outside a generation job)
     next_number = _next_revision_number(db, project.id)
     render_kwargs = {"progress": progress} if progress is not None else {}
     state = _render_state(
@@ -699,6 +704,8 @@ def render_project(
             "selected_variant_id": None,
             "variants": [],
         }
+    # A cancelled run never saves its render as a finished revision.
+    cancellation.checkpoint()
     return _append_revision(
         db,
         project,

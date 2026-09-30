@@ -236,6 +236,23 @@ final score and rejection reasons (`--rescore` also scores persisted candidates 
 version). The same data is available at `GET /api/topic-intelligence/diagnostics` outside
 production.
 
+## Cancelling a running generation
+
+The Video Queue shows **Abbrechen** on the running job (queued jobs keep **Remove**). The job
+turns `cancelling` at once ("Wird abgebrochen…") and `cancelled` ("Abgebrochen") when the worker
+reaches its next checkpoint: every progress event (stage, scene, asset, render segment), before
+rendering, before a finished render is saved, and at completion. A render/FFmpeg process that
+ClipForge started for the job is terminated (killed only after a short grace period) and reaped;
+other processes are never touched, and a provider request that cannot be interrupted simply
+returns first. `cancelled` is terminal - never `failed` or `completed`, never resumed after a
+restart (a restart finishes a pending cancel). The project, its question and settings and all saved
+revisions are kept; only directories the cancelled run created and never saved
+(`renders/vN`, `audio-layers/vN`) are removed. The next queued job starts right after.
+
+```bash
+curl -X POST http://localhost:8000/api/generation-jobs/<job-id>/cancel   # idempotent; 409 for queued/finished jobs
+```
+
 ## Verify
 
 ```bash

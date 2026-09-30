@@ -270,7 +270,7 @@ export type GenerationJob = {
   project_id: string;
   prompt: string;
   base_revision: number | null;
-  status: "queued" | "running" | "completed" | "failed" | "removed";
+  status: "queued" | "running" | "cancelling" | "completed" | "failed" | "removed" | "cancelled";
   current_stage: string;
   stage_label: string;
   progress: number;

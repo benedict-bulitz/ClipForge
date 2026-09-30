@@ -23,6 +23,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from ..config import Settings
+from ..generation import WORKER_BUSY_STATUSES
 from ..models import (
     GenerationJob,
     ProductionFingerprint,
@@ -157,7 +158,8 @@ def plan_deletion(
         reclaimable: int | None = project_local_storage_bytes(project_id, settings)
     except (ProjectDeletionError, OSError):
         reclaimable = None  # never block deletion on accounting
-    running = db.scalar(select(GenerationJob.id).where(GenerationJob.project_id == project_id, GenerationJob.status == "running"))
+    # "cancelling" too: the worker is still stopping and may be writing this project's files.
+    running = db.scalar(select(GenerationJob.id).where(GenerationJob.project_id == project_id, GenerationJob.status.in_(WORKER_BUSY_STATUSES)))
     kinds = {kind for _upload, kind in classified}
     messages: list[str] = []
     if running is not None or ACTIVE in kinds:

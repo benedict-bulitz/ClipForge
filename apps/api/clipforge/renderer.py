@@ -22,7 +22,7 @@ from openai import (
 )
 from PIL import Image, UnidentifiedImageError
 
-from . import still_image
+from . import cancellation, still_image
 from .alignment import (
     align_narration,
     alignment_readiness,
@@ -83,10 +83,10 @@ def ffmpeg_path() -> str | None:
 
 
 def _run_process(command: list[str], *, timeout: int, failure: str) -> subprocess.CompletedProcess:
+    # Inside a generation job the process is watched: a user cancel stops it
+    # (terminate, short grace, kill only if needed, reaped) - see ``cancellation``.
     try:
-        return subprocess.run(
-            command, capture_output=True, text=True, timeout=timeout, check=False
-        )
+        return cancellation.run_process(command, timeout=timeout)
     except (OSError, subprocess.SubprocessError) as exc:
         raise RenderUnavailable(failure) from exc
 
@@ -160,8 +160,27 @@ def render_video(
         raise RenderUnavailable("Narration validation failed before rendering.")
 
     output_dir = settings.render_root.resolve() / project_id / "renders" / f"v{revision_number}"
+    if not output_dir.exists():
+        cancellation.claim_path(output_dir)  # new for this run: removable if it is cancelled
     output_dir.mkdir(parents=True, exist_ok=True)
     output = output_dir / "clipforge.mp4"
+    try:
+        return _render_video(state, project_id, revision_number, settings, ffmpeg, output, progress=progress)
+    except cancellation.GenerationCancelled:
+        output.unlink(missing_ok=True)  # a half-written file is never a finished video
+        raise
+
+
+def _render_video(
+    state: dict,
+    project_id: str,
+    revision_number: int,
+    settings: Settings,
+    ffmpeg: str,
+    output: Path,
+    *,
+    progress: ProgressCallback | None,
+) -> RenderResult:
     with tempfile.TemporaryDirectory(prefix="clipforge-") as temp_name:
         temp = Path(temp_name)
         report_progress(progress, "voice", "Generating narration", phase="start")
@@ -340,6 +359,8 @@ def render_video(
         )
         # Retain independent sources outside the export cleanup directories.
         layers = settings.render_root.resolve() / project_id / "audio-layers" / f"v{revision_number}"
+        if not layers.exists():
+            cancellation.claim_path(layers)
         layers.mkdir(parents=True, exist_ok=True)
         shutil.copy2(output, layers / "picture.mp4")
         shutil.copy2(audio, layers / "narration.wav")

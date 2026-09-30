@@ -4,10 +4,11 @@ import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ArrowRight, ChevronDown, Clapperboard, Clock3, CornerDownLeft, ListVideo, LoaderCircle, Plus, RefreshCw, Settings, Trash2 } from "lucide-react";
-import { ApiError, clearGenerationQueue, deleteAllProjects, getBulkProjectDeletePlan, getGenerationJob, getProject, listGenerationJobs, listProjectOverview, loadTopicSuggestions, removeQueuedGenerationJob, startGeneration } from "@/lib/api";
+import { ApiError, cancelGenerationJob, clearGenerationQueue, deleteAllProjects, getBulkProjectDeletePlan, getGenerationJob, getProject, listGenerationJobs, listProjectOverview, loadTopicSuggestions, removeQueuedGenerationJob, startGeneration } from "@/lib/api";
 import { createGenerationWatcher, generationTimeLabel, POLL_TIMEOUT_MS, withTimeout, type GenerationWatcher } from "@/lib/generation-poll";
 import type { BulkProjectDeletePlan, GenerationJob, ProjectOverview } from "@/lib/types";
-import { activeQueueJobs, deletableProjectCount, visibleProjectHistory } from "@/lib/queue-overview";
+import { activeQueueJobs, deletableProjectCount, historyStatusLabel, queueDisplayJobs, visibleProjectHistory } from "@/lib/queue-overview";
+import { applyJob, CANCEL_LABEL, CANCELLED_LABEL, CANCELLING_LABEL, cancelView, createCancelRequester, markCancelling, type CancelRequester } from "@/lib/generation-cancel";
 import { createHomePoller, type HomePoller } from "@/lib/home-poll";
 import { splitQuestions, submitQuestionsInOrder } from "@/lib/multi-question";
 import { browserSuggestionStorage, createTopicSuggestions, emptySuggestions, topicGenerationSource, type SuggestionState, type TopicSuggestion, type TopicSuggestions } from "@/lib/topic-suggestions";
@@ -39,6 +40,10 @@ export default function Home() {
   const [queue, setQueue] = useState<GenerationJob[]>([]);
   const [queueOpen, setQueueOpen] = useState(false);
   const [queueAction, setQueueAction] = useState<string | null>(null);
+  // Running jobs whose cancel request is on its way, and jobs cancelled from this page.
+  const [cancelPending, setCancelPending] = useState<ReadonlySet<string>>(new Set());
+  const [cancelledHere, setCancelledHere] = useState<ReadonlySet<string>>(new Set());
+  const cancelRequester = useRef<CancelRequester | null>(null);
   const [projectsLoaded, setProjectsLoaded] = useState(false);
   const poller = useRef<HomePoller | null>(null);
   const mounted = useRef(false);
@@ -190,6 +195,23 @@ export default function Home() {
     }
   }
 
+  /** "Abbrechen": the card says "Wird abgebrochen…" at once; one request per job, however often clicked. */
+  function cancelRunning(jobId: string) {
+    cancelRequester.current ??= createCancelRequester({
+      cancel: cancelGenerationJob,
+      onPending: (pending) => { if (mounted.current) setCancelPending(pending); },
+      onJob: (job) => {
+        if (!mounted.current) return;
+        setQueue((items) => applyJob(items, job));
+        setCancelledHere((ids) => new Set([...ids, job.id]));
+        void refresh();
+      },
+      onError: (message) => { if (mounted.current) setError(message); },
+    });
+    setError(null);
+    if (cancelRequester.current.request(jobId)) setQueue((items) => markCancelling(items, jobId));
+  }
+
   async function removeFromQueue(jobId: string) {
     if (queueAction) return;
     setQueueAction(jobId);
@@ -267,6 +289,7 @@ export default function Home() {
   }
 
   const activeJobs = activeQueueJobs(queue);
+  const queueJobs = queueDisplayJobs(queue, cancelledHere);
   const history = visibleProjectHistory(recent, queue);
   const deletableProjects = deletableProjectCount(history);
   const detectedQuestions = multipleQuestions ? splitQuestions(prompt) : [];
@@ -337,7 +360,7 @@ export default function Home() {
           <div className="mt-3"><AdvancedOptions value={options} onChange={setOptions} prompt={prompt} onReset={() => setOptions(resetCreatePreferences())} queueToggle={<button type="button" aria-expanded={queueOpen} aria-controls="video-queue-panel" onClick={() => setQueueOpen((open) => !open)} className="flex items-center gap-2 rounded-full px-3 py-2 text-sm font-medium text-[var(--muted-foreground)] hover:bg-[var(--surface-hover)] hover:text-[var(--foreground)]"><ListVideo className="size-4" /> Video Queue <span className="rounded-full bg-[var(--accent-soft)] px-2 py-0.5 text-xs font-bold text-[var(--accent)]">{activeJobs.length}</span><ChevronDown className={`size-4 transition-transform ${queueOpen ? "rotate-180" : ""}`} /></button>} /></div>
         </div>
 
-        {queueOpen && <GenerationQueue jobs={activeJobs} onRemove={removeFromQueue} onClear={clearQueue} busy={queueAction !== null} />}
+        {queueOpen && <GenerationQueue jobs={queueJobs} onRemove={removeFromQueue} onClear={clearQueue} onCancel={cancelRunning} cancelPending={cancelPending} busy={queueAction !== null} />}
 
         <TopicSuggestionChips state={suggestions} onUse={applySuggestion} onRefreshAll={() => suggestionsRef.current?.refreshAll()} />
 
@@ -356,7 +379,7 @@ export default function Home() {
               {history.map((project) => (
                 <Link key={project.id} href={`/projects/${project.id}`} className="cf-surface group rounded-[18px] border p-4 transition-[transform,background-color,border-color,box-shadow] duration-150 ease-[cubic-bezier(.23,1,.32,1)] active:scale-[.99] hover:bg-[var(--surface-hover)] hover:shadow-sm">
                   <p className="truncate text-sm font-semibold">{project.title}</p>
-                  <p className="mono mt-2 text-[9px] uppercase tracking-[.1em] text-[#929289]">{project.current_revision ? `v${project.current_revision} · ` : ""}{project.status.replaceAll("_", " ")}</p>
+                  <p className="mono mt-2 text-[9px] uppercase tracking-[.1em] text-[#929289]">{project.current_revision ? `v${project.current_revision} · ` : ""}{historyStatusLabel(project.status)}</p>
                 </Link>
               ))}
             </div>
@@ -444,19 +467,31 @@ function formatBytes(bytes: number) {
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }
 
-function GenerationQueue({ jobs, onRemove, onClear, busy }: { jobs: GenerationJob[]; onRemove: (jobId: string) => void; onClear: () => void; busy: boolean }) {
-  const running = jobs.filter((job) => job.status === "running");
+function GenerationQueue({ jobs, onRemove, onClear, onCancel, cancelPending, busy }: { jobs: GenerationJob[]; onRemove: (jobId: string) => void; onClear: () => void; onCancel: (jobId: string) => void; cancelPending: ReadonlySet<string>; busy: boolean }) {
+  // The job holding the worker (running / cancelling) and ones just cancelled from here.
+  const running = jobs.filter((job) => job.status === "running" || job.status === "cancelling" || job.status === "cancelled");
   const waiting = jobs.filter((job) => job.status === "queued");
   const [clearConfirmationOpen, setClearConfirmationOpen] = useState(false);
   return (
     <section id="video-queue-panel" className="queue-card cf-surface mt-5 w-full max-w-[780px] border p-4 text-left" aria-label="Video Queue" aria-live="polite">
       {jobs.length === 0 && <p className="text-sm text-[var(--muted-foreground)]">Keine Videos in der Warteschlange.</p>}
-      {running.map((item) => <Link key={item.project_id} href={`/projects/${item.project_id}`} className="block rounded-xl border border-[#ff6838]/30 bg-[#ff6838]/5 p-4 hover:bg-[#ff6838]/10">
-        <p className="flex items-center justify-between text-xs font-bold text-[#d94c20]"><span>● Wird erstellt</span><span>{Math.round(item.progress * 100)}%</span></p>
-        <p className="mt-2 break-words text-sm font-semibold">{item.prompt}</p>
-        <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-[#ff6838]/15" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(item.progress * 100)}><div className="h-full bg-[#ff6838]" style={{ width: `${Math.round(item.progress * 100)}%` }} /></div>
-        {generationTimeLabel(item) && <p className="generation-timing mt-2"><span className="mono">{generationTimeLabel(item)}</span>{item.stage_label && <span className="cf-text-meta"> · {item.stage_label}</span>}</p>}
-      </Link>)}
+      {running.map((item) => {
+        const view = cancelView(item, cancelPending);
+        const stopped = view === "cancelled";
+        return <div key={item.project_id} className={`mb-2 rounded-xl border p-4 ${stopped ? "border-[var(--border)] bg-[var(--surface-hover)]" : "border-[#ff6838]/30 bg-[#ff6838]/5"}`}>
+          <div className="flex items-start justify-between gap-3">
+            <Link href={`/projects/${item.project_id}`} className="min-w-0 flex-1">
+              <p className={`flex items-center gap-2 text-xs font-bold ${stopped ? "text-[var(--muted-foreground)]" : "text-[#d94c20]"}`}><span>{view === "cancelling" ? `● ${CANCELLING_LABEL}` : stopped ? CANCELLED_LABEL : "● Wird erstellt"}</span>{!stopped && <span>{Math.round(item.progress * 100)}%</span>}</p>
+              <p className="mt-2 break-words text-sm font-semibold">{item.prompt}</p>
+            </Link>
+            {view === "cancel" && <button type="button" onClick={() => onCancel(item.id)} className="queue-cancel shrink-0 text-xs font-semibold text-red-700 hover:text-red-800">{CANCEL_LABEL}</button>}
+            {view === "cancelling" && <span className="queue-cancel inline-flex shrink-0 items-center gap-1.5 text-xs font-semibold text-[var(--muted-foreground)]" role="status"><LoaderCircle className="size-3 animate-spin" aria-hidden /> {CANCELLING_LABEL}</span>}
+          </div>
+          {!stopped && <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-[#ff6838]/15" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(item.progress * 100)}><div className="h-full bg-[#ff6838]" style={{ width: `${Math.round(item.progress * 100)}%` }} /></div>}
+          {view === "cancel" && generationTimeLabel(item) && <p className="generation-timing mt-2"><span className="mono">{generationTimeLabel(item)}</span>{item.stage_label && <span className="cf-text-meta"> · {item.stage_label}</span>}</p>}
+          {stopped && <p className="mt-1 text-xs text-[var(--muted-foreground)]">Das Projekt bleibt erhalten.</p>}
+        </div>;
+      })}
       {waiting.length > 0 && <div className="mb-2 mt-4 flex items-center justify-between gap-3"><p className="text-[11px] font-bold uppercase tracking-[.12em] text-[#85857c]">Warteschlange</p><button type="button" disabled={busy} onClick={() => setClearConfirmationOpen(true)} className="text-xs font-semibold text-red-700 hover:text-red-800 disabled:opacity-50">Clear Queue</button></div>}
       {clearConfirmationOpen && <div className="mb-3 flex items-center justify-between gap-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-900"><span>Clear {waiting.length} queued project{waiting.length === 1 ? "" : "s"}?</span><span className="flex gap-2"><button type="button" disabled={busy} onClick={() => setClearConfirmationOpen(false)}>Cancel</button><button type="button" disabled={busy} onClick={() => { setClearConfirmationOpen(false); onClear(); }} className="font-bold text-red-800">Clear Queue</button></span></div>}
       <div className="grid gap-2">{waiting.map((item) => <div key={item.project_id} className="flex items-start gap-3 rounded-xl border p-3 hover:bg-[var(--surface-hover)]"><Link href={`/projects/${item.project_id}`} className="flex min-w-0 flex-1 items-start gap-3"><span className="mono shrink-0 text-xs font-bold text-[#d94c20]">#{item.queue_position}</span><span className="min-w-0"><span className="block break-words text-sm font-semibold">{item.prompt}</span><span className="mt-1 block text-xs text-[var(--muted-foreground)]">In Warteschlange</span></span></Link><button type="button" aria-label={`Remove ${item.prompt} from queue`} disabled={busy} onClick={() => onRemove(item.id)} className="shrink-0 text-xs font-semibold text-red-700 hover:text-red-800 disabled:opacity-50">Remove</button></div>)}</div>

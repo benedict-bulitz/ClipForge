@@ -23,10 +23,12 @@ from .generation import (
     active_generation_job,
     clear_queued_generation_jobs,
     create_generation_job,
+    finish_orphaned_cancel,
     get_generation_job,
     list_generation_jobs,
     mark_interrupted_generation_jobs,
     remove_queued_generation_job,
+    request_generation_cancel,
     schedule_next_generation,
     serialize_generation_job,
 )
@@ -193,7 +195,7 @@ def list_project_overview(db: DbSession) -> list[dict]:
         {
             "id": project.id,
             "title": project.title,
-            "status": latest_jobs[project.id].status if project.id in latest_jobs and latest_jobs[project.id].status in ("queued", "running", "failed") else project.status,
+            "status": latest_jobs[project.id].status if project.id in latest_jobs and latest_jobs[project.id].status in ("queued", "running", "cancelling", "failed", "cancelled") else project.status,
             "current_revision": project.current_revision,
             "created_at": project.created_at,
             "updated_at": project.updated_at,
@@ -317,6 +319,27 @@ def remove_generation_job_route(job_id: str, db: DbSession) -> None:
     if job is None:
         raise HTTPException(status_code=404, detail="Generation job not found")
     raise HTTPException(status_code=409, detail="Only queued generation jobs can be removed")
+
+
+@app.post("/api/generation-jobs/{job_id}/cancel", response_model=GenerationJobRead)
+def cancel_generation_job_route(job_id: str, db: DbSession, config: SettingsDep) -> dict:
+    """Cancel the RUNNING generation (idempotent).  Never deletes anything.
+
+    The job becomes ``cancelling`` at once and ``cancelled`` when the worker
+    reaches its next checkpoint; the project and its data are kept.  Queued
+    jobs keep their own action (remove); finished jobs are left unchanged (409).
+    """
+    outcome, job = request_generation_cancel(db, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Generation job not found")
+    if outcome == "not_running":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"status": job.status, "message": "Only a running generation can be cancelled; queued jobs are removed from the queue."},
+        )
+    if outcome in {"requested", "cancelling"} and finish_orphaned_cancel(db, job_id, config):
+        db.refresh(job)  # no worker held it (e.g. just claimed): ended here, the queue continues
+    return serialize_generation_job(job)
 
 
 @app.get("/api/generation-jobs/active", response_model=GenerationJobRead | None)
