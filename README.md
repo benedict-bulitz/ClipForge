@@ -121,14 +121,24 @@ before the page opens; video generation never waits for it.
 - **Raw-pool backfill**: discovery ranks the order of work, it is not a gate. Topics are evaluated in
   batches through the already-discovered raw pool until 9 candidates clear every gate or 60 topics
   were evaluated (at most 3 rewrite requests with OpenAI) - without new provider calls.
-- **Universal 12+ gate** (`ti-score-v3`): a question whose premise needs prior knowledge (title
+- **Semantic validation** (`semantic-validator-v1`, `ti-score-v4`): questions that pass the local
+  gates are judged on meaning by the worker model - the question alone, without its source - on
+  self-contained clarity, clear factual payoff, universal 12+ relevance, freedom from prior knowledge,
+  natural spoken German and knowledge-short fit (0-10 each, plus issue codes such as
+  `unexplained_metaphor` or `rhetorical_or_opinion`). Any issue or any dimension below 6 rejects.
+  Batched (<= 20 per request), cached per question and validator version, and sharing one budget of at
+  most 3 AI requests per pool with question rewriting. It needs `OPENAI_API_KEY` (not the director's AI
+  mode; disable with `TOPIC_SEMANTIC_VALIDATION=false`). Without it, strict local rules apply: only
+  why/how/what-if questions with a fully accessible premise and no clickbait-styled source - fewer
+  suggestions, never unvetted ones.
+- **Universal 12+ gate** (since `ti-score-v3`): a question whose premise needs prior knowledge (title
   context, a brand or multi-word name, product-generation news, an institution or one specific
   event, a date or identifier, or an obscure entity leading the question) is rejected as
   `requires_prior_knowledge`; a niche topic passes only when reframed around a universal phenomenon.
 - **Novelty** compares against projects, queued requests, uploaded videos and the Learning
   Archive with a light German-aware similarity (compounds, umlauts, synonyms), so rephrasings of an
   earlier video are rejected.
-- **Scoring**: one versioned authority (`topic_intelligence/scoring.py`, `ti-score-v3`) with
+- **Scoring**: one versioned authority (`topic_intelligence/scoring.py`, `ti-score-v4`) with
   documented weights. Mass-audience quality (suitability, broad appeal, accessibility without prior
   niche knowledge, question form) carries the score; a trend spike counts only as much as its
   corroboration and the topic's quality allow; date pages, identifiers, isolated events, acronyms,
@@ -163,7 +173,8 @@ cd apps/api && PYTHONPATH=. ../../.venv/bin/python scripts/topic_diagnostics.py 
 
 `diagnosis` is one of `discovery_running`, `warmup_failed`, `no_pool_yet`, `provider_failure`,
 `stale_pool_other_version`, `pool_expired_refreshes_on_next_request`, `question_transformation_failed`,
-`quality_floor_rejected_all`, `prior_knowledge_rejected_all`, `no_usable_candidates`,
+`quality_floor_rejected_all`, `prior_knowledge_rejected_all`, `semantic_rejected_all`,
+`local_strict_rejected_all`, `no_usable_candidates`,
 `fewer_than_three_candidates` or `ok`, next to per-source status, pool size,
 accepted/rejected candidates with rejection reasons, the score version and cache freshness.
 

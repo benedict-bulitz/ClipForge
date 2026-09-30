@@ -29,6 +29,7 @@ SIGNAL_NAMES = (
     "broad_appeal",
     "accessibility",
     "question_form",
+    "semantic",
 )
 
 

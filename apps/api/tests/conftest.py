@@ -126,3 +126,14 @@ def no_topic_warmup(monkeypatch):
     started: list[object] = []
     monkeypatch.setattr(service, "warm_pool_in_background", lambda *args, **kwargs: started.append(args))
     return started
+
+
+@pytest.fixture(autouse=True)
+def forbid_real_semantic_validation(monkeypatch):
+    """Semantic question validation must be faked; no real worker-model calls."""
+    from clipforge.topic_intelligence import semantic
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("Real OpenAI semantic validation is forbidden in the test suite.")
+
+    monkeypatch.setattr(semantic, "SEMANTIC_CLIENT_FACTORY", forbidden)

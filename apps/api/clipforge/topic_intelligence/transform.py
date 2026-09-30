@@ -280,12 +280,17 @@ def _from_llm(group: TopicGroup, item: AITopicAssessment) -> Transformed:
     )
 
 
-def transform_topics(groups: list[TopicGroup], settings: Settings) -> tuple[list[Transformed], str, str | None]:
-    """(results in input order, method used, error).  One bounded LLM call at most."""
+def transform_topics(
+    groups: list[TopicGroup], settings: Settings, *, allow_llm: bool = True,
+) -> tuple[list[Transformed], str, str | None]:
+    """(results in input order, method used, error).  One bounded LLM call at most.
+
+    ``allow_llm=False`` when the pool's AI budget must be kept for validation.
+    """
     groups = groups[:MAX_BATCH]
     if not groups:
         return [], "none", None
-    if settings.clipforge_ai_mode != "openai" or not settings.openai_api_key:
+    if not allow_llm or settings.clipforge_ai_mode != "openai" or not settings.openai_api_key:
         return [deterministic_transform(group) for group in groups], "template", None
     try:
         response = TRANSFORM_CLIENT_FACTORY(api_key=settings.openai_api_key).responses.parse(

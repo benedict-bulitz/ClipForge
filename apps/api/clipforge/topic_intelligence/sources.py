@@ -84,6 +84,7 @@ class SourceReport:
     calls: int = 0
     quota_units: int = 0
     items: int = 0
+    detail: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -94,6 +95,7 @@ class SourceReport:
             "calls": self.calls,
             "quota_units": self.quota_units,
             "items": self.items,
+            **({"detail": self.detail} if self.detail else {}),
         }
 
 

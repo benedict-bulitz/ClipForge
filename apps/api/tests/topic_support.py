@@ -209,3 +209,50 @@ def good_assessment(question: str, niche: str, **overrides: Any) -> dict[str, An
     }
     values.update(overrides)
     return values
+
+
+GOOD_JUDGEMENT = {
+    "self_contained_clarity": 9, "clear_factual_payoff": 8, "universal_12plus_relevance": 8,
+    "prior_knowledge_free": 9, "natural_spoken_german": 9, "knowledge_short_fit": 8, "issues": [], "reason": "klar",
+}
+
+
+class FakeValidator:
+    """Semantic validator stand-in: scripted judgements per question, good by default; records batches."""
+
+    def __init__(self, judgements: dict[str, dict[str, Any]] | None = None, *, default: dict[str, Any] | None = None, fail: bool = False) -> None:
+        self.judgements = judgements or {}
+        self.default = GOOD_JUDGEMENT if default is None else default
+        self.fail = fail
+        self.requests: list[list[str]] = []
+
+    def __call__(self, api_key: str | None = None):
+        return self
+
+    @property
+    def responses(self):
+        return self
+
+    def parse(self, **kwargs: Any):
+        from clipforge.topic_intelligence.semantic import AISemanticBatch, AISemanticJudgement
+
+        questions = json.loads(kwargs["input"])["questions"]
+        self.requests.append([item["question"] for item in questions])
+        if self.fail:
+            from openai import OpenAIError
+
+            raise OpenAIError("validator down")
+        items = [
+            AISemanticJudgement(id=item["id"], **{**self.default, **self.judgements.get(item["question"], {})})
+            for item in questions
+        ]
+
+        class Response:
+            output_parsed = AISemanticBatch(items=items)
+
+        return Response()
+
+
+def bad(**overrides: Any) -> dict[str, Any]:
+    """A judgement that fails the named dimensions/issues."""
+    return {**GOOD_JUDGEMENT, **overrides}

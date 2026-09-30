@@ -6,11 +6,20 @@ from fastapi import HTTPException
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
-from topic_support import NOW, FakeLLM, FakeWiki, deps, good_assessment, settings, spike
+from topic_support import (
+    NOW,
+    FakeLLM,
+    FakeValidator,
+    FakeWiki,
+    deps,
+    good_assessment,
+    settings,
+    spike,
+)
 
 from clipforge.database import Base
 from clipforge.models import TopicCandidateRecord, TopicDiscoveryRun
-from clipforge.topic_intelligence import scoring, service, transform
+from clipforge.topic_intelligence import scoring, semantic, service, transform
 from clipforge.topic_intelligence.candidate import (
     SIGNAL_NAMES,
     Signal,
@@ -85,7 +94,9 @@ def test_quality_floor_prevents_filler_and_broadens_discovery_once(db):
     assert result["candidates"] == []  # no least-bad filler
     assert result["status"] == "exhausted"
     runs = db.scalars(select(TopicDiscoveryRun).order_by(TopicDiscoveryRun.sequence)).all()
-    assert len(runs) == 2  # the pool plus one broadening pass, never a loop
+    # Every raw topic was already evaluated: no broadening pass (it could only repeat cached data), never a loop.
+    assert len(runs) == 1 and not service.was_broadened(runs[0])
+    assert service.pool_summary(db, runs[0])["evaluation"]["remaining_raw_groups"] == 0
 
 
 def test_llm_rewrites_obscure_topics_into_broad_questions_and_they_may_win(db, monkeypatch):
@@ -98,6 +109,8 @@ def test_llm_rewrites_obscure_topics_into_broad_questions_and_they_may_win(db, m
         "Schluckauf": good_assessment("Warum bekommen wir Schluckauf?", "koerper_gesundheit", broad_appeal=9, accessibility=9),
     })
     monkeypatch.setattr(transform, "TRANSFORM_CLIENT_FACTORY", llm)
+    validator = FakeValidator()
+    monkeypatch.setattr(semantic, "SEMANTIC_CLIENT_FACTORY", validator)
     served(db, OBSCURE + BROAD, config=settings(clipforge_ai_mode="openai", openai_api_key="sk-test"))
     by_topic = records(db)
     flight = by_topic["Gol-Transportes-Aéreos-Flug 1907"]

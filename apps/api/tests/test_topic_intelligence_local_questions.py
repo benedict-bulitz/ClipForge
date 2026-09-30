@@ -11,6 +11,7 @@ from sqlalchemy import func, select
 from topic_support import (
     NOW,
     FakeLLM,
+    FakeValidator,
     FakeWiki,
     FakeYouTube,
     deps,
@@ -20,7 +21,7 @@ from topic_support import (
 )
 
 from clipforge.models import TopicCandidateRecord, TopicDiscoveryRun, TopicSourceCache
-from clipforge.topic_intelligence import scoring, service, transform
+from clipforge.topic_intelligence import scoring, semantic, service, transform
 from clipforge.topic_intelligence.candidate import (
     SIGNAL_NAMES,
     RawTopic,
@@ -344,10 +345,14 @@ def test_backfill_reaches_strong_topics_past_the_old_top_16(db):
 def test_llm_backfill_batches_topics_and_bounds_requests(db, monkeypatch):
     llm = FakeLLM({})  # nothing usable: worst case for the number of requests
     monkeypatch.setattr(transform, "TRANSFORM_CLIENT_FACTORY", llm)
+    validator = FakeValidator()
+    monkeypatch.setattr(semantic, "SEMANTIC_CLIENT_FACTORY", validator)
     source = StaticSource(pool_of_96())
     service.suggestions(db, settings(clipforge_ai_mode="openai", openai_api_key="sk-test"), static_deps(source), count=3, now=NOW)
-    assert len(llm.requests) <= -(-service.EVALUATION_BUDGET // transform.MAX_BATCH)  # ceil(60/20) = 3
+    # Rewriting and validation share one budget: at most 3 AI requests per pool, <= 20 items each.
+    assert len(llm.requests) + len(validator.requests) <= service.AI_REQUEST_BUDGET
     assert all(len(request["topics"]) <= transform.MAX_BATCH for request in llm.requests)
+    assert all(len(batch) <= semantic.MAX_VALIDATION_BATCH for batch in validator.requests)
 
 
 # --- 9. Versioned invalidation (candidates only, provider caches kept) ----------------------

@@ -208,4 +208,5 @@ def test_a_short_pool_is_not_rediscovered_on_every_refill(db):
         assert again["status"] == "exhausted" and again["summary"]["evaluated"] >= 1
     assert db.scalar(select(func.count()).select_from(TopicDiscoveryRun)) == runs  # no refresh, no second broadening
     assert len(wiki.calls) == calls
-    assert service.was_broadened(db.scalar(select(TopicDiscoveryRun).order_by(TopicDiscoveryRun.sequence.desc())))
+    latest = db.scalar(select(TopicDiscoveryRun).order_by(TopicDiscoveryRun.sequence.desc()))
+    assert service.pool_summary(db, latest)["evaluation"]["remaining_raw_groups"] == 0  # nothing left to broaden into

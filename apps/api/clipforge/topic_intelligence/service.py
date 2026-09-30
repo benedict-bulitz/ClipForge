@@ -31,6 +31,7 @@ from ..security.secrets import SecretStore
 from ..youtube.connection import access_token, active_connection
 from ..youtube.provider import YouTubeProvider, has_capability
 from . import history as history_module
+from . import semantic
 from .cache import CallMeter, prune_expired
 from .candidate import RawTopic, Signal, TopicCandidate, TopicGroup, candidate_id_for
 from .scoring import (
@@ -104,6 +105,10 @@ EVALUATION_REPORT = "candidate_evaluation"
 # request, so the budget also bounds requests: ceil(60 / MAX_BATCH) = 3.
 TARGET_ACCEPTED = 9
 EVALUATION_BUDGET = 60
+# All AI requests of one pool (question rewriting + semantic validation), shared with its
+# broadening pass.  Each request carries up to 20 topics/questions.
+AI_REQUEST_BUDGET = 3
+SEMANTIC_REPORT = "semantic_validation"
 # Last startup warm-up (idle | running | done | failed), for diagnostics.
 WARMUP: dict[str, Any] = {"state": "idle", "started_at": None, "finished_at": None, "result": None, "error": None}
 
@@ -277,6 +282,7 @@ def build_candidate(
             "researchability", research_value, confidence="medium" if has_article else confidence, method=method, encyclopedic_article=has_article,
         ),
         "own_performance": own_priors.get(niche, own_default),
+        "semantic": semantic.pending(),
     }
     features, feature_evidence = quality_signals(question, group.title, group.description(), niche, assessment, method, transformed.notes)
     signals.update(features)
@@ -451,21 +457,30 @@ def discover(
     extras: dict[str, tuple[list[str], list[str]]] = {}
     methods: list[str] = []
     transform_errors: list[str] = []
-    evaluated = transform_requests = 0
+    semantic_errors: list[str] = []
+    evaluated = transform_requests = validation_requests = validated = cached_validations = 0
+    ai_left = AI_REQUEST_BUDGET - (ai_requests_in(broaden_from) if broaden_from is not None else 0)
+    semantic_on = semantic.semantic_enabled(settings)
     batch: list[TopicGroup] = []
     accepted = len(carried)
     queue = list(groups)
     # Backfill through the raw pool: the discovery pre-rank orders the work, it is not a gate.
+    # A round = question step -> deterministic gates -> semantic validation of the survivors.
     while queue and evaluated < budget and accepted < TARGET_ACCEPTED:
         batch = queue[: min(MAX_BATCH, budget - evaluated)]
         queue = queue[len(batch):]
         db.commit()  # no open transaction while the question step may wait on OpenAI
-        transformed, method, transform_error = transform_topics(batch, settings)
+        # Rewriting may use the AI only while one request stays free for validation.
+        allow_llm = ai_left >= (2 if semantic_on else 1)
+        transformed, method, transform_error = transform_topics(batch, settings, allow_llm=allow_llm)
         methods.append(method)
-        transform_requests += method == "llm" or bool(transform_error)
+        used = method == "llm" or bool(transform_error)
+        transform_requests += used
+        ai_left -= used
         if transform_error:
             transform_errors.append(transform_error)
         evaluated += len(batch)
+        round_candidates: list[TopicCandidate] = []
         for group, item in zip(batch, transformed, strict=True):
             candidate = build_candidate(group, item, history=history, own_priors=own_priors, own_default=own_default, now=now, run_id=run.id)
             if candidate.candidate_id in excluded_ids:
@@ -473,7 +488,22 @@ def discover(
             extras[candidate.candidate_id] = (item.issues, item.flags)
             score_candidate(candidate, weights=weights, version=version, now=now, issues=item.issues, flags=item.flags, degraded_sources=degraded)
             candidates.append(candidate)
-            accepted += not candidate.rejected
+            round_candidates.append(candidate)
+        survivors = {candidate.candidate_id: candidate.question for candidate in round_candidates if not candidate.rejected}
+        if survivors:
+            outcome = semantic.validate(db, settings, survivors, requests_left=ai_left, now=now)
+            validation_requests += outcome.requests
+            ai_left -= outcome.requests
+            cached_validations += outcome.cached
+            validated += sum(1 for signal in outcome.signals.values() if signal.available)
+            if outcome.error:
+                semantic_errors.append(outcome.error)
+            for candidate in round_candidates:
+                if candidate.candidate_id in outcome.signals:
+                    candidate.signals["semantic"] = outcome.signals[candidate.candidate_id]
+                    issues, flags = extras[candidate.candidate_id]
+                    score_candidate(candidate, weights=weights, version=version, now=now, issues=issues, flags=flags, degraded_sources=degraded)
+        accepted = len(carried) + sum(1 for candidate in candidates if not candidate.rejected)
     method = "llm" if "llm" in methods else "template"
     run.transformation = f"{method}:{TRANSFORMATION_VERSION}"
     transform_error = "; ".join(dict.fromkeys(transform_errors)) or None
@@ -506,8 +536,20 @@ def discover(
         probe_report.quota_units = meter.quota_units - units_before
     reports.append(probe_report)
     reports.append(SourceReport(
-        EVALUATION_REPORT, "ok", items=evaluated, calls=transform_requests,
+        EVALUATION_REPORT, "ok", items=evaluated, calls=transform_requests + validation_requests,
         error=f"raw_groups={len(groups)} budget={budget} target={TARGET_ACCEPTED} accepted={accepted} remaining={len(queue)}",
+        detail={"ai_requests": transform_requests + validation_requests, "ai_request_budget": AI_REQUEST_BUDGET,
+                "rewrite_requests": transform_requests, "validation_requests": validation_requests,
+                "remaining_raw_groups": len(queue), "broadened_from": broaden_from.id if broaden_from is not None else None},
+    ))
+    reports.append(SourceReport(
+        SEMANTIC_REPORT,
+        "ok" if semantic_on and not semantic_errors else "failed" if semantic_errors else "unavailable",
+        error="; ".join(dict.fromkeys(semantic_errors)) or (None if semantic_on else "No OpenAI key (or disabled): strict local acceptance"),
+        calls=validation_requests,
+        items=validated,
+        detail={"validator_version": semantic.SEMANTIC_VALIDATOR_VERSION, "enabled": semantic_on,
+                "validated": validated, "cached": cached_validations},
     ))
     if broaden_from is not None:
         reports.append(SourceReport(BROADENING_REPORT, "ok", items=evaluated))
@@ -542,7 +584,9 @@ def discover(
 # ---------------------------------------------------------------------------
 
 
-def current_run(db: Session, now: datetime, version: str | None = None) -> TopicDiscoveryRun | None:
+def current_run(
+    db: Session, now: datetime, version: str | None = None, semantic_ready: bool | None = None,
+) -> TopicDiscoveryRun | None:
     """The fresh pool; a pool scored by another score version is never reused."""
     run = db.scalar(select(TopicDiscoveryRun).order_by(TopicDiscoveryRun.sequence.desc()).limit(1))
     if run is None or run.status == "unavailable" or (_utc(run.expires_at) or now) <= now:
@@ -551,6 +595,10 @@ def current_run(db: Session, now: datetime, version: str | None = None) -> Topic
         return None
     if version is not None and not str(run.transformation or "").endswith(f":{TRANSFORMATION_VERSION}"):
         return None  # questions built by an older question step
+    if version is not None and semantic_ready is not None:
+        detail = semantic_report(run).get("detail") or {}
+        if detail.get("validator_version") != semantic.SEMANTIC_VALIDATOR_VERSION or bool(detail.get("enabled")) != semantic_ready:
+            return None  # judged by another validator version, or validation availability changed
     return run
 
 
@@ -622,7 +670,7 @@ def next_topic(
 ) -> dict[str, Any]:
     now = now or _now()
     with _FLIGHT:  # single-flight: concurrent clicks share one refresh
-        run = None if refresh else current_run(db, now, resolve_weights(settings)[1])
+        run = None if refresh else current_run(db, now, resolve_weights(settings)[1], semantic.semantic_enabled(settings))
         fresh = run is None
         if run is None:
             run = discover(db, settings, deps, now=now)
@@ -748,7 +796,7 @@ def _suggestions_locked(
     db: Session, settings: Settings, deps: DiscoveryDeps, *, count: int, excluded: set[str], now: datetime,
 ) -> dict[str, Any]:
     version = resolve_weights(settings)[1]
-    run = current_run(db, now, version)
+    run = current_run(db, now, version, semantic.semantic_enabled(settings))
     fresh = run is None
     if run is None:
         run = discover(db, settings, deps, now=now)
@@ -762,7 +810,10 @@ def _suggestions_locked(
         if refreshed.status != "unavailable":
             run = refreshed
             records = _available_records(db, run, excluded)
-    if len(records) < count and not was_broadened(run) and evaluated_in(run) < EVALUATION_BUDGET:
+    if (
+        len(records) < count and not was_broadened(run) and evaluated_in(run) < EVALUATION_BUDGET
+        and _evaluation_detail(run).get("remaining_raw_groups", 1) > 0
+    ):
         # Too few candidates clear the quality floor: evaluate the next raw
         # topics once per pool, rather than serving weak filler.
         broadened = discover(db, settings, deps, now=now, broaden_from=run)
@@ -794,6 +845,24 @@ def evaluated_in(run: TopicDiscoveryRun) -> int:
     )
 
 
+def _evaluation_detail(run: TopicDiscoveryRun) -> dict[str, Any]:
+    for item in run.sources or []:
+        if isinstance(item, dict) and item.get("name") == EVALUATION_REPORT:
+            return dict(item.get("detail") or {})
+    return {}
+
+
+def ai_requests_in(run: TopicDiscoveryRun) -> int:
+    for item in run.sources or []:
+        if isinstance(item, dict) and item.get("name") == EVALUATION_REPORT:
+            return int((item.get("detail") or {}).get("ai_requests") or 0)
+    return 0
+
+
+def semantic_report(run: TopicDiscoveryRun) -> dict[str, Any]:
+    return next((item for item in run.sources or [] if isinstance(item, dict) and item.get("name") == SEMANTIC_REPORT), {})
+
+
 def was_broadened(run: TopicDiscoveryRun) -> bool:
     return any(isinstance(item, dict) and item.get("name") == BROADENING_REPORT for item in run.sources or [])
 
@@ -803,7 +872,7 @@ def warm_pool(session_factory: Any, settings: Settings, deps_factory: Any, *, no
     with session_factory() as db:
         now = now or _now()
         with _FLIGHT:
-            if current_run(db, now, resolve_weights(settings)[1]) is not None:
+            if current_run(db, now, resolve_weights(settings)[1], semantic.semantic_enabled(settings)) is not None:
                 return None
             return discover(db, settings, deps_factory(db), now=now).status
 
@@ -962,6 +1031,7 @@ def pool_summary(db: Session, run: TopicDiscoveryRun | None) -> dict[str, Any] |
             "universal_accessibility": quality.get("universal_accessibility"),
             "prior_knowledge": quality.get("prior_knowledge") or [],
             "mass_audience_quality": quality.get("mass_audience"),
+            "semantic": quality.get("semantic") or {},
             "sources": sorted({str(item.get("source")) for item in record.source_signals or []}),
             "transformation": (record.provenance or {}).get("transformation"),
         }
@@ -970,7 +1040,30 @@ def pool_summary(db: Session, run: TopicDiscoveryRun | None) -> dict[str, Any] |
             rejected.append({**row, "reasons": list(record.rejection_reasons)})
         else:
             accepted.append({**row, "status": record.status})
-    evaluation = next((item for item in run.sources or [] if isinstance(item, dict) and item.get("name") == EVALUATION_REPORT), None)
+    chain = [run]
+    parent_id = _evaluation_detail(run).get("broadened_from")
+    parent = db.get(TopicDiscoveryRun, parent_id) if parent_id else None
+    if parent is not None:
+        chain.append(parent)
+    evaluation = {
+        "evaluated": sum(evaluated_in(item) for item in chain),
+        "ai_requests": sum(ai_requests_in(item) for item in chain),
+        "ai_request_budget": AI_REQUEST_BUDGET,
+        "rewrite_requests": sum(int(_evaluation_detail(item).get("rewrite_requests") or 0) for item in chain),
+        "validation_requests": sum(int(_evaluation_detail(item).get("validation_requests") or 0) for item in chain),
+        "remaining_raw_groups": _evaluation_detail(run).get("remaining_raw_groups"),
+        "broadened": parent is not None,
+    }
+    semantic_reports = [semantic_report(item) for item in chain if semantic_report(item)]
+    semantic_summary = {
+        "status": next((item["status"] for item in semantic_reports if item.get("status") != "ok"), semantic_reports[0]["status"] if semantic_reports else None),
+        "validator_version": semantic.SEMANTIC_VALIDATOR_VERSION,
+        "enabled": any((item.get("detail") or {}).get("enabled") for item in semantic_reports),
+        "requests": sum(int(item.get("calls") or 0) for item in semantic_reports),
+        "validated": sum(int((item.get("detail") or {}).get("validated") or 0) for item in semantic_reports),
+        "cached": sum(int((item.get("detail") or {}).get("cached") or 0) for item in semantic_reports),
+        "errors": [item["error"] for item in semantic_reports if item.get("error")],
+    }
     return {
         "score_version": run.score_version,
         "transformation": run.transformation,
@@ -979,6 +1072,7 @@ def pool_summary(db: Session, run: TopicDiscoveryRun | None) -> dict[str, Any] |
         "evaluated": len(accepted) + len(rejected),
         "evaluation": evaluation,
         "evaluation_budget": EVALUATION_BUDGET,
+        "semantic_validation": semantic_summary,
         "transformation_failures": reasons.get("question_no_question_transformation", 0),
         "accepted": len(accepted),
         "available": sum(1 for item in accepted if item["status"] in {"pooled", "proposed"}),
@@ -1005,7 +1099,7 @@ def diagnose(db: Session, settings: Settings, *, now: datetime | None = None) ->
         return "provider_failure"
     if run.score_version != version:
         return "stale_pool_other_version"
-    if current_run(db, now, version) is None:
+    if current_run(db, now, version, semantic.semantic_enabled(settings)) is None:
         return "pool_expired_refreshes_on_next_request"
     summary = pool_summary(db, run) or {}
     if not summary.get("available"):
@@ -1013,6 +1107,10 @@ def diagnose(db: Session, settings: Settings, *, now: datetime | None = None) ->
         rejected = max(1, int(summary.get("rejected") or 0))
         if reasons.get("question_no_question_transformation", 0) * 2 >= rejected:
             return "question_transformation_failed"
+        if any(reason.startswith("semantic_") for reason in reasons):
+            return "semantic_rejected_all"
+        if any(reason.startswith("unvalidated_") for reason in reasons):
+            return "local_strict_rejected_all"
         if reasons.get("below_quality_floor"):
             return "quality_floor_rejected_all"
         if reasons.get("requires_prior_knowledge"):
@@ -1027,7 +1125,10 @@ def discovery_status(db: Session, settings: Settings | None = None, *, now: date
     """Internal state of Topic Intelligence: diagnosis, sources, pool, rejections, caches."""
     now = now or _now()
     run = db.scalar(select(TopicDiscoveryRun).order_by(TopicDiscoveryRun.sequence.desc()).limit(1))
-    caches = db.scalars(select(TopicSourceCache).order_by(TopicSourceCache.provider)).all()
+    caches = db.scalars(
+        select(TopicSourceCache).where(TopicSourceCache.provider != semantic.CACHE_PROVIDER).order_by(TopicSourceCache.provider)
+    ).all()
+    semantic_cached = db.scalar(select(func.count()).select_from(TopicSourceCache).where(TopicSourceCache.provider == semantic.CACHE_PROVIDER)) or 0
     report_settings = settings
     return {
         "diagnosis": diagnose(db, report_settings, now=now) if report_settings is not None else None,
@@ -1037,10 +1138,13 @@ def discovery_status(db: Session, settings: Settings | None = None, *, now: date
         "config": None if report_settings is None else {
             "ai_mode": report_settings.clipforge_ai_mode,
             "question_rewriting": "llm" if report_settings.clipforge_ai_mode == "openai" and report_settings.openai_api_key else "template",
+            "semantic_validation": "enabled" if semantic.semantic_enabled(report_settings) else "unavailable (strict local acceptance)",
+            "semantic_validator_version": semantic.SEMANTIC_VALIDATOR_VERSION,
             "brave_configured": bool(report_settings.brave_search_api_key),
             "youtube_connected": active_connection(db) is not None,
         },
         "pool": pool_summary(db, run),
+        "semantic_cache_entries": int(semantic_cached),
         "run": None if run is None else {
             **_pool_info(db, run),
             "score_version": run.score_version,

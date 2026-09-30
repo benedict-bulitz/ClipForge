@@ -38,6 +38,18 @@ v3 (real Mac validation: 0 of 16 candidates usable in local mode):
 * Accessibility weighs 0.14 (was 0.10), taken from trend and channel fit.
 * The quality floor and obscurity penalties are unchanged.
 
+v4 (real Mac validation: only 2/9 suggestions passed a human review):
+
+* The ``semantic`` signal (``semantic-validator-v1``: six 0-10 dimensions +
+  issue codes, judged on the final question alone) is a hard gate: any issue
+  code, or any dimension below 6/10, rejects the candidate with an explicit
+  reason.  It also weighs 0.12 in the score.
+* Without a semantic judgement (no key, failure, budget exhausted) the
+  strict local rules apply: only why/how/what-if/paradox questions with a
+  fully accessible premise and no clickbait-styled source are accepted -
+  fewer suggestions rather than unvetted ones.
+* Pending (not yet validated) candidates are never served.
+
 Unchanged from v1: missing data is neutral (0.5), never zero, and only lowers
 ``confidence``; low-confidence evidence is shrunk towards neutral;
 competition enters as openness; trend decays with evidence age; hard
@@ -66,7 +78,7 @@ from .candidate import (
 from .history import is_duplicate
 from .transform import REJECT_FLAGS
 
-SCORE_VERSION = "ti-score-v3"
+SCORE_VERSION = "ti-score-v4"
 NEUTRAL_PRIOR = 0.5
 CONFIDENCE_WEIGHT: dict[str, float] = {"high": 1.0, "medium": 0.8, "low": 0.55, "unavailable": 0.0}
 TREND_HALF_LIFE_HOURS = 48.0
@@ -81,20 +93,22 @@ MIN_SUITABILITY = 0.35
 # outlier) still decides between good topics; novelty and fit keep the channel
 # coherent; own performance stays a small optional prior.
 DEFAULT_WEIGHTS: dict[str, float] = {
-    "suitability": 0.15,
-    "broad_appeal": 0.14,
-    "accessibility": 0.14,
+    "semantic": 0.12,
+    "broad_appeal": 0.12,
+    "accessibility": 0.12,
     "trend": 0.11,
-    "outlier": 0.10,
-    "novelty": 0.09,
+    "suitability": 0.10,
+    "outlier": 0.09,
+    "novelty": 0.08,
     "channel_fit": 0.05,
-    "question_form": 0.06,
+    "question_form": 0.05,
     "visual": 0.06,
     "researchability": 0.04,
     "competition": 0.04,
     "own_performance": 0.02,
 }
 WEIGHT_RATIONALE: dict[str, str] = {
+    "semantic": "Independent judgement of the final question: clear, factual payoff, universal, natural German.",
     "suitability": "Curiosity gap, clear payoff and substance decide whether a short can work at all.",
     "broad_appeal": "General German knowledge shorts need topics an average viewer wants answered.",
     "trend": "Current German demand - but a lone page spike is not a video topic by itself.",
@@ -112,6 +126,19 @@ WEIGHT_RATIONALE: dict[str, str] = {
 # Mass-audience quality = mean of these (available ones only).
 QUALITY_SIGNALS = ("suitability", "broad_appeal", "accessibility", "question_form")
 QUALITY_FLOOR = 0.55
+# Semantic gate: every dimension must reach this (6/10); any issue code rejects.
+SEMANTIC_DIMENSION_MIN = 0.6
+SEMANTIC_DIMENSION_REASONS = {
+    "self_contained_clarity": "semantic_not_self_contained",
+    "clear_factual_payoff": "semantic_unclear_payoff",
+    "universal_12plus_relevance": "semantic_not_universal",
+    "prior_knowledge_free": "semantic_prior_knowledge",
+    "natural_spoken_german": "semantic_unnatural_german",
+    "knowledge_short_fit": "semantic_not_knowledge_short",
+}
+# Strict local acceptance when no semantic judgement exists.
+LOCAL_STRICT_MECHANISMS = frozenset({"why", "how", "what_if", "paradox"})
+LOCAL_STRICT_ACCESSIBILITY = 0.85
 # Universal accessibility below this = the premise needs prior knowledge.
 PRIOR_KNOWLEDGE_GATE = 0.5
 QUALITY_FLOOR_EXCEPTIONAL = 0.45
@@ -143,11 +170,12 @@ LABELS = {
     "broad_appeal": ("Broad audience appeal", "Niche audience"),
     "accessibility": ("Instantly understandable premise", "Needs prior knowledge"),
     "question_form": ("Strong curiosity question", "Generic question"),
+    "semantic": ("Clear, self-contained knowledge question", "Unclear question"),
     "visual": ("Good visual potential", "Limited visual potential"),
     "researchability": ("Well researchable", "Hard to verify"),
     "own_performance": ("Similar videos did well on your channel", "Similar videos were weaker on your channel"),
 }
-NEGATIVE_LABEL_SIGNALS = {"novelty", "channel_fit", "suitability", "own_performance", "broad_appeal", "accessibility", "question_form"}
+NEGATIVE_LABEL_SIGNALS = {"novelty", "channel_fit", "suitability", "own_performance", "broad_appeal", "accessibility", "question_form", "semantic"}
 
 
 def resolve_weights(settings: Settings | None = None) -> tuple[dict[str, float], str]:
@@ -310,9 +338,39 @@ def rejection_reasons(
     access = candidate.signal("accessibility")
     if access.available and (access.value or 0) < PRIOR_KNOWLEDGE_GATE:
         reasons.append("requires_prior_knowledge")
+    reasons.extend(semantic_rejections(candidate, flags))
     if quality is not None and quality < floor:
         reasons.append("below_quality_floor")
     return list(dict.fromkeys(reasons))
+
+
+def semantic_status(candidate: TopicCandidate) -> str:
+    """validated | cached | pending | unavailable | failed | not_validated | absent."""
+    semantic = candidate.signal("semantic")
+    return str(semantic.evidence.get("status") or ("validated" if semantic.available else "absent"))
+
+
+def semantic_rejections(candidate: TopicCandidate, flags: list[str]) -> list[str]:
+    """Semantic gate, or the strict local rules when there is no semantic judgement."""
+    semantic = candidate.signal("semantic")
+    status = semantic_status(candidate)
+    if semantic.available:
+        dims = semantic.evidence.get("dimensions") or {}
+        reasons = [f"semantic_{issue}" for issue in semantic.evidence.get("issues") or []]
+        reasons += [reason for name, reason in SEMANTIC_DIMENSION_REASONS.items() if float(dims.get(name, 0)) < SEMANTIC_DIMENSION_MIN]
+        return reasons
+    if status in {"pending", "absent"}:
+        return []  # deterministic gates only; a pending candidate is validated before it can be served
+    # No judgement (validator unavailable/failed/over budget): strict local acceptance.
+    reasons = []
+    mechanism = candidate.signal("question_form").evidence.get("mechanism")
+    if mechanism not in LOCAL_STRICT_MECHANISMS:
+        reasons.append("unvalidated_weak_question_form")
+    if (candidate.signal("accessibility").value or 0) < LOCAL_STRICT_ACCESSIBILITY:
+        reasons.append("unvalidated_prior_knowledge")
+    if "clickbait_source" in flags:
+        reasons.append("unvalidated_clickbait_source")  # teaser framing needs a semantic judgement
+    return reasons
 
 
 def overall_confidence(candidate: TopicCandidate, weights: dict[str, float], *, degraded_sources: bool) -> Confidence:
@@ -381,6 +439,14 @@ def score_candidate(
             "prior_knowledge_gate": PRIOR_KNOWLEDGE_GATE,
             "universal_accessibility": candidate.signal("accessibility").value,
             "prior_knowledge": candidate.signal("accessibility").evidence.get("prior_knowledge") or [],
+            "semantic": {
+                "status": semantic_status(candidate),
+                "dimensions": candidate.signal("semantic").evidence.get("dimensions"),
+                "issues": candidate.signal("semantic").evidence.get("issues") or [],
+                "reason": candidate.signal("semantic").evidence.get("reason"),
+                "validator_version": candidate.signal("semantic").evidence.get("validator_version"),
+                "dimension_min": SEMANTIC_DIMENSION_MIN,
+            },
         },
         "trend_quality": trend_notes,
         "final": final,

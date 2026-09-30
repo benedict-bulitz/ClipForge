@@ -66,6 +66,9 @@ class Settings(BaseSettings):
     topic_youtube_quota_budget: int = 400
     topic_youtube_search_probes: int = 2
     topic_score_weights: str | None = None
+    # Semantic question validation (needs OPENAI_API_KEY; independent of the
+    # director's AI mode). Off or unavailable -> strict local acceptance.
+    topic_semantic_validation: bool = True
     render_root: Path = Path("./projects")
     downloads_root: Path | None = None
 

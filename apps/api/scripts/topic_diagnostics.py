@@ -47,6 +47,10 @@ def _print_view(label: str, view: dict) -> None:
         extras.append(f"trend_factor={trend_factor}")
     if penalties.get("value"):
         extras.append(f"penalty={penalties.get('value')} {penalties.get('obscurity') or ''} {penalties.get('flags') or ''}".strip())
+    sem = (quality or {}).get("semantic") or {}
+    if sem:
+        dims = " ".join(f"{name}={value}" for name, value in (sem.get("dimensions") or {}).items())
+        extras.append(f"semantic={sem.get('status')} {dims} issues={sem.get('issues')} v={sem.get('validator_version')}")
     if view.get("rejection_reasons"):
         extras.append(f"REJECTED: {', '.join(view['rejection_reasons'])}")
     if extras:
@@ -63,6 +67,8 @@ DIAGNOSES = {
     "question_transformation_failed": "Discovery worked, but most topics could not become a valid German question.",
     "quality_floor_rejected_all": "Discovery worked, but no candidate cleared the quality floor (see rejection reasons).",
     "prior_knowledge_rejected_all": "Discovery worked, but every question needed prior knowledge (universal 12+ gate).",
+    "semantic_rejected_all": "The semantic validator rejected every candidate (see semantic issues/dimensions).",
+    "local_strict_rejected_all": "No semantic validation available; the strict local rules accepted nothing.",
     "no_usable_candidates": "Discovery worked, but every candidate was rejected for other reasons.",
     "fewer_than_three_candidates": "Fewer than 3 candidates cleared the floor; Home shows only those plus a note.",
     "ok": "Enough candidates are available.",
@@ -90,8 +96,23 @@ def print_status(settings) -> None:
     print(f"transformation: {pool.get('transformation')} (current version {pool.get('transformation_version')})")
     evaluation = pool.get("evaluation") or {}
     if evaluation:
-        print(f"evaluation: {evaluation.get('items')} evaluated, {evaluation.get('calls')} rewrite requests, {evaluation.get('error')}")
+        print(f"evaluation: {evaluation.get('evaluated')} evaluated, AI requests {evaluation.get('ai_requests')}/{evaluation.get('ai_request_budget')} "
+              f"(rewrite {evaluation.get('rewrite_requests')}, validation {evaluation.get('validation_requests')}), "
+              f"raw groups left {evaluation.get('remaining_raw_groups')}, broadened={evaluation.get('broadened')}")
+    sem = pool.get("semantic_validation") or {}
+    if sem:
+        print(f"semantic validation: {sem.get('status')} enabled={sem.get('enabled')} version={sem.get('validator_version')} "
+              f"requests={sem.get('requests')} validated={sem.get('validated')} cached={sem.get('cached')} {'; '.join(sem.get('errors') or [])}")
     print(f"rejection reasons: {pool.get('rejection_reasons')}")
+
+    def semantic_line(item: dict) -> str:
+        info = item.get("semantic") or {}
+        dims = info.get("dimensions") or {}
+        short = {"self_contained_clarity": "clear", "clear_factual_payoff": "payoff", "universal_12plus_relevance": "12+",
+                 "prior_knowledge_free": "no_prior", "natural_spoken_german": "german", "knowledge_short_fit": "short_fit"}
+        cells = " ".join(f"{short[name]}={value}" for name, value in dims.items()) or "-"
+        issues = ",".join(info.get("issues") or []) or "-"
+        return f"semantic={info.get('status')} [{cells}] issues={issues} {info.get('reason') or ''}".rstrip()
 
     def line(item: dict) -> str:
         access = item.get("universal_accessibility")
@@ -101,10 +122,11 @@ def print_status(settings) -> None:
 
     print("accepted:")
     for item in pool.get("accepted_candidates") or []:
-        print(f"  [{item['status']}] {item['question']}\n      {line(item)}")
+        print(f"  [{item['status']}] {item['question']}\n      {line(item)}\n      {semantic_line(item)}")
     print("rejected:")
     for item in pool.get("rejected_candidates") or []:
-        print(f"  {item['question'] or '(no question) ' + item['topic']}  <- {', '.join(item['reasons'])}\n      {line(item)}")
+        print(f"  {item['question'] or '(no question) ' + item['topic']}  <- {', '.join(item['reasons'])}\n      {line(item)}\n      {semantic_line(item)}")
+    print(f"semantic validation cache: {report.get('semantic_cache_entries')} questions")
     print("caches:")
     for cache in report["caches"]:
         print(f"  {cache['provider']:28} fresh={cache['fresh']} fetched={cache['fetched_at']} expires={cache['expires_at']}")

@@ -7,6 +7,7 @@ from sqlalchemy import func, select
 from topic_support import (
     NOW,
     FakeLLM,
+    FakeValidator,
     FakeWiki,
     FakeYouTube,
     deps,
@@ -25,7 +26,7 @@ from clipforge.models import (
     YouTubeLearningArchive,
     YouTubeUpload,
 )
-from clipforge.topic_intelligence import service, transform
+from clipforge.topic_intelligence import semantic, service, transform
 from clipforge.topic_intelligence.scoring import SCORE_VERSION
 from clipforge.topic_intelligence.sources import BraveNewsSource, WikipediaPageviewsSource
 
@@ -113,6 +114,8 @@ def test_not_dach_relevant_or_non_german_llm_questions_are_rejected(db, monkeypa
         "Deutschland": good_assessment("Was ist Deutschland?", "geografie", flags=["not_dach_relevant"]),
     })
     monkeypatch.setattr(transform, "TRANSFORM_CLIENT_FACTORY", llm)
+    validator = FakeValidator()
+    monkeypatch.setattr(semantic, "SEMANTIC_CLIENT_FACTORY", validator)
     result = propose(db, config=settings(clipforge_ai_mode="openai", openai_api_key="sk-test"))
     assert result["candidate"]["question"] == "Warum leuchtet der Himmel bei Polarlichtern grün?"
     by_topic = {record.topic: record for record in db.scalars(select(TopicCandidateRecord)).all()}
