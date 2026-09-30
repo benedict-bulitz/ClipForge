@@ -347,3 +347,50 @@ def question_form(mechanism: str, flags: set[str]) -> Signal:
     if "generic_wrapper" in flags:
         value = min(value, GENERIC_WRAPPER_CAP)
     return Signal(round(value, 4), "high", {"mechanism": mechanism, "generic_wrapper": "generic_wrapper" in flags}, ["topic_features"])
+
+
+# ---------------------------------------------------------------------------
+# Short-worthiness (ti-score-v6): would this make a STRONG short, not merely a clear one?
+# ---------------------------------------------------------------------------
+
+# The curator's short dimensions (0-1) and their share of the value.
+SHORT_WEIGHTS = {
+    "curiosity_strength": 0.25,
+    "payoff_specificity": 0.20,
+    "reveal_potential": 0.20,
+    "concreteness": 0.15,
+    "knowledge_short_fit": 0.10,
+    "visual_potential": 0.10,
+}
+# Without a curator judgement only the question's structure is known (low confidence).
+LOCAL_SHORT_BASE = {"paradox": 0.8, "what_if": 0.75, "why": 0.7, "how": 0.62, "yes_no": 0.58, "other": 0.45, "what_is": 0.35}
+# Deterministic form of a weak default short (see ``text.short_shape_flags``).
+SHAPE_PENALTIES = {"multi_part": 0.25, "list_answer": 0.25, "abstract_measure": 0.25, "advice": 0.12}
+# Curator issues that lower the rank without rejecting (useful but dry is not wrong).
+SOFT_ISSUE_PENALTIES = {"generic_advice": 0.12, "broad_overview": 0.1, "no_clear_reveal": 0.15}
+MAX_SHORT_PENALTY = 0.4
+
+
+def short_worthiness(mechanism: str, shape_flags: set[str], semantic: Signal | None = None) -> Signal:
+    """Immediate curiosity, one specific reveal, concrete premise, substance and footage - minus weak shapes."""
+    short = (semantic.evidence.get("short_dimensions") if semantic is not None and semantic.available else None) or None
+    if short:
+        base = sum(weight * float(short.get(name, 0.5)) for name, weight in SHORT_WEIGHTS.items())
+        confidence, basis = "medium", "curator"
+        issues = set(semantic.evidence.get("issues") or []) if semantic is not None else set()
+        focus: float | None = float(short.get("single_question_focus", 0.5))
+    else:
+        base = LOCAL_SHORT_BASE.get(mechanism, LOCAL_SHORT_BASE["other"])
+        confidence, basis, issues, focus = "low", "question_shape", set(), None
+    penalties = {f"shape_{flag}": SHAPE_PENALTIES[flag] for flag in sorted(shape_flags) if flag in SHAPE_PENALTIES}
+    penalties.update({f"issue_{issue}": SOFT_ISSUE_PENALTIES[issue] for issue in sorted(issues) if issue in SOFT_ISSUE_PENALTIES})
+    if "shape_advice" in penalties and "issue_generic_advice" in penalties:
+        del penalties["shape_advice"]  # the same weakness, counted once
+    value = clamp(base - min(MAX_SHORT_PENALTY, sum(penalties.values())))
+    return Signal(
+        round(value, 4),
+        confidence,  # type: ignore[arg-type]
+        {"basis": basis, "base": round(base, 4), "penalties": penalties, "shape_flags": sorted(shape_flags),
+         "single_question_focus": focus, "dimensions": short},
+        ["short_worthiness"],
+    )

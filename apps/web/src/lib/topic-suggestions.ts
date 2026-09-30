@@ -60,8 +60,8 @@ export const RECENT_LIMIT = 60;
 /** Hidden reserve entries older than this are refetched; visible chips are never replaced by time. */
 export const RESERVE_TTL_MS = 6 * 60 * 60 * 1000;
 export const TOPIC_SUGGESTIONS_KEY = "clipforge-topic-suggestions";
-/** Bumped with the backend score version (ti-score-v4 + semantic-validator-v1) so chips vetted by an older version are dropped once. */
-export const TOPIC_SUGGESTIONS_VERSION = 3;
+/** Bumped with the backend score version (ti-score-v6 + semantic-curator-v2) so chips vetted by an older version are dropped once. */
+export const TOPIC_SUGGESTIONS_VERSION = 4;
 /** Shown (with "Neue Vorschläge" as the retry) when discovery failed, timed out or never answered. */
 export const DISCOVERY_UNAVAILABLE = "Themenvorschläge konnten nicht geladen werden.";
 export const NO_STRONG_SUGGESTIONS = "Gerade keine starken Themenvorschläge. Gib eine eigene Frage ein oder versuche es später erneut.";

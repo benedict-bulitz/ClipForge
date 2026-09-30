@@ -52,6 +52,7 @@ from .signals import (
     competition_estimate,
     merge_trend,
     question_form,
+    short_worthiness,
     suitability,
 )
 from .sources import (
@@ -74,6 +75,7 @@ from .text import (
     prior_knowledge_flags,
     question_flags,
     question_mechanism,
+    short_shape_flags,
     similarity,
     topic_key,
     topic_obscurity_flags,
@@ -241,8 +243,9 @@ def quality_signals(
     assessment: dict[str, float],
     method: str,
     notes: set[str] | None = None,
+    semantic_signal: Signal | None = None,
 ) -> tuple[dict[str, Signal], dict[str, Any]]:
-    """Mass-audience features of one question (signals only; scoring decides their worth)."""
+    """Mass-audience and short-worthiness features of one question (signals only; scoring decides their worth)."""
     # An entity name keeps its capitals (GICON is an acronym); a headline loses its shouting (FALSCH is emphasis).
     is_entity = extract_question(topic)[0] is None and len(topic.split()) <= 6
     topic_flags = topic_obscurity_flags(topic if is_entity else de_shout(topic), description)
@@ -265,6 +268,7 @@ def quality_signals(
             prior_knowledge=prior_knowledge, universal_subject=universal,
         ),
         "question_form": question_form(mechanism, flags),
+        "short_worthiness": short_worthiness(mechanism, short_shape_flags(question), semantic_signal),
     }
     return signals, {
         "mechanism": mechanism,
@@ -309,7 +313,9 @@ def build_candidate(
         "own_performance": own_priors.get(niche, own_default),
         "semantic": transformed.semantic or semantic.pending(),
     }
-    features, feature_evidence = quality_signals(question, group.title, group.description(), niche, assessment, method, transformed.notes)
+    features, feature_evidence = quality_signals(
+        question, group.title, group.description(), niche, assessment, method, transformed.notes, signals["semantic"],
+    )
     signals.update(features)
     return TopicCandidate(
         candidate_id=candidate_id_for(topic_key(question) if question else f"raw:{group.key}"),
@@ -1036,7 +1042,7 @@ def warm_pool_in_background(session_factory: Any, settings: Settings, deps_facto
 # Developer diagnostics (tuning only; not part of the Home UI)
 # ---------------------------------------------------------------------------
 
-QUALITY_FEATURE_SIGNALS = ("broad_appeal", "accessibility", "question_form")
+QUALITY_FEATURE_SIGNALS = ("broad_appeal", "accessibility", "question_form", "short_worthiness")
 
 
 def candidate_from_record(record: TopicCandidateRecord) -> TopicCandidate:
@@ -1047,7 +1053,7 @@ def candidate_from_record(record: TopicCandidateRecord) -> TopicCandidate:
     if missing:
         features, evidence = quality_signals(
             record.question, record.topic, "", record.niche, {}, str(provenance.get("transformation") or "template"),
-            set(provenance.get("extraction_notes") or []),
+            set(provenance.get("extraction_notes") or []), signals.get("semantic"),
         )
         signals.update({name: features[name] for name in missing})
         for key, value in evidence.items():

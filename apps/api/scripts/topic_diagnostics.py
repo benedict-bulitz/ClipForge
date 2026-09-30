@@ -52,6 +52,11 @@ def _print_view(label: str, view: dict) -> None:
     if sem:
         dims = " ".join(f"{name}={value}" for name, value in (sem.get("dimensions") or {}).items())
         extras.append(f"semantic={sem.get('status')} {dims} issues={sem.get('issues')} grounded={sem.get('grounded')} v={sem.get('curator_version')}")
+    short = (quality or {}).get("short_worthiness") or {}
+    if short.get("value") is not None:
+        dims = " ".join(f"{name}={value}" for name, value in (short.get("dimensions") or {}).items())
+        extras.append(f"short_worthiness={short.get('value')} (floor {short.get('floor')}, {short.get('basis')}) {dims} "
+                      f"penalties={short.get('penalties') or {}} shape={short.get('shape_flags') or []}")
     if view.get("rejection_reasons"):
         extras.append(f"REJECTED: {', '.join(view['rejection_reasons'])}")
     if extras:

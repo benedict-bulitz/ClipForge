@@ -30,6 +30,7 @@ SIGNAL_NAMES = (
     "accessibility",
     "question_form",
     "semantic",
+    "short_worthiness",
 )
 
 

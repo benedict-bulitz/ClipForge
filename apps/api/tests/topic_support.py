@@ -173,6 +173,8 @@ GOOD_JUDGEMENT = {
     "self_contained_clarity": 9, "clear_factual_payoff": 8, "universal_12plus_relevance": 8,
     "prior_knowledge_free": 9, "natural_spoken_german": 9, "knowledge_short_fit": 8,
     "curiosity_gap": 8, "visual_potential": 7, "dach_relevance": 8, "grounded": True, "issues": [], "reason": "klar",
+    # semantic-curator-v2 short-worthiness: a solid (not exceptional) short
+    "curiosity_strength": 7, "payoff_specificity": 7, "reveal_potential": 7, "concreteness": 8, "single_question_focus": 10,
 }
 
 

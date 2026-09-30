@@ -110,7 +110,7 @@ before the page opens; video generation never waits for it.
   video is compared with its own channel's recent uploads, never by absolute views), and
   Brave News for Germany (when the Brave key is configured). Competition is a bounded YouTube
   `search.list` estimate for the strongest candidates only.
-- **AI curation** (`semantic-curator-v1`, `ti-score-v5`): one combined worker-model call per batch of
+- **AI curation** (since `semantic-curator-v1` / `ti-score-v5`): one combined worker-model call per batch of
   up to 20 raw topics creates the question *and* judges it - no separate rewrite and validation
   requests, at most 3 requests (60 topics) per pool. The curator sees each topic with its source
   evidence (titles, descriptions, kind) and, when there is one, the locally extracted question as a
@@ -139,6 +139,16 @@ before the page opens; video generation never waits for it.
 - **Raw-pool backfill**: discovery ranks the order of work, it is not a gate. Topics are evaluated in
   batches through the already-discovered raw pool until 9 candidates clear every gate or 60 topics
   were evaluated / 3 AI requests used - without new provider calls.
+- **Short-worthiness** (`ti-score-v6`, `semantic-curator-v2`): clear, factual and broad is not enough
+  - a default suggestion must make a strong short. The curator also rates curiosity strength, payoff
+  specificity, reveal potential, concreteness and single-question focus; together with knowledge-short
+  fit and visual potential they form the `short_worthiness` signal (weight 0.13). One core question
+  only: multi-part questions ("X, und welchen Anteil hat Y?"), "Welche Faktoren/Gründe/Tipps ..." list
+  questions and population survey/measurement questions are rejected; generic advice, broad
+  overviews and questions without a clear reveal only rank lower. Short-worthiness below 0.45 rejects
+  as `weak_short_concept`, and a trend spike counts only as much as the concept is short-worthy -
+  demand helps a strong short but cannot rescue a weak one. No domain is penalized: a health or
+  social topic wins with a concrete, surprising reveal. The 12+ and grounding gates are unchanged.
 - **Availability**: an accepted candidate stays available until the user picks or dismisses it; a
   refill that finds nothing new never discards the shown chips. With only 1-2 strong candidates Home
   shows exactly those ("Gerade nur 2 starke Vorschläge.").
@@ -158,7 +168,7 @@ before the page opens; video generation never waits for it.
 - **Novelty** compares against projects, queued requests, uploaded videos and the Learning
   Archive with a light German-aware similarity (compounds, umlauts, synonyms), so rephrasings of an
   earlier video are rejected.
-- **Scoring**: one versioned authority (`topic_intelligence/scoring.py`, `ti-score-v5`) with
+- **Scoring**: one versioned authority (`topic_intelligence/scoring.py`, `ti-score-v6`) with
   documented weights. Mass-audience quality (suitability, broad appeal, accessibility without prior
   niche knowledge, question form) carries the score; a trend spike counts only as much as its
   corroboration and the topic's quality allow; date pages, identifiers, isolated events, acronyms,

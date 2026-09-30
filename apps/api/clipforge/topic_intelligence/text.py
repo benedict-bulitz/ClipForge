@@ -335,6 +335,46 @@ def question_mechanism(question: str) -> str:
     return "other"
 
 
+# Short-worthiness SHAPE (form only - whether a question is a strong short is the curator's call).
+# A default suggestion asks ONE thing: "X, und welchen Anteil hat Y?" asks two.
+_MULTI_PART = re.compile(
+    r"(?i)(?:,\s*|\s)(?:und|oder|sowie|bzw\.?)\s+(?:warum|wieso|weshalb|wie|was|wer|wo|woher|wohin|wann|welche[rsmn]?|wodurch|wozu|wofür|womit)\b"
+    r"|\?.*\S.*\?"
+)
+# The answer is an enumeration, not one reveal: "Welche Faktoren/Gründe/Tipps ...".
+_LIST_ANSWER = re.compile(
+    r"(?i)^(?:welche[rsmn]?|was sind (?:die )?)\s*(?:\w+\s+)?(?:faktoren|gründe|gruende|ursachen|tipps|tricks|möglichkeiten|moeglichkeiten|"
+    r"maßnahmen|massnahmen|aspekte|methoden|strategien|vorteile|nachteile|regeln|dinge|punkte)\b"
+)
+# Useful guidance, no reveal: "Woran erkennt man ...", "Wie lässt sich X testen/verbessern?".
+_ADVICE = re.compile(
+    r"(?i)^(?:woran erkennt man|wie erkennt man|was (?:sollte|kann|muss) man\b.*\btun\b|"
+    r"wie (?:lässt|laesst) sich\b.*\b(?:testen|verbessern|vermeiden|schützen|stärken|steigern|senken|trainieren|messen)\?$|"
+    r"wie (?:kann|sollte|muss) man\b.*\b(?:testen|verbessern|vermeiden|schützen|stärken|steigern|senken|trainieren|messen)\?$)"
+)
+# A population measurement or survey result instead of a mechanism.
+_ABSTRACT_MEASURE = re.compile(
+    r"(?i)\b(?:in der bevölkerung|in der bevoelkerung|umfrage\w*)\b|"
+    r"^wie (?:stark|groß|gross|hoch|verbreitet|ausgeprägt) ist (?:das|die|der) \w*(?:empfinden|vertrauen|zufriedenheit|bewusstsein|"
+    r"akzeptanz|bereitschaft|zustimmung|wohlbefinden|gefühl|gefuehl)\b"
+)
+
+
+def short_shape_flags(question: str) -> set[str]:
+    """multi_part | list_answer | advice | abstract_measure - the form of a weak default short."""
+    text = " ".join(str(question or "").split())
+    flags: set[str] = set()
+    if _MULTI_PART.search(text):
+        flags.add("multi_part")
+    if _LIST_ANSWER.match(text):
+        flags.add("list_answer")
+    if _ADVICE.match(text):
+        flags.add("advice")
+    if _ABSTRACT_MEASURE.search(text):
+        flags.add("abstract_measure")
+    return flags
+
+
 def question_flags(question: str, topic: str = "") -> set[str]:
     """Obscurity carried INTO the question, plus a generic wrapper around a bare topic."""
     text = " ".join(str(question or "").split())

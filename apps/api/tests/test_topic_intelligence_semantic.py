@@ -154,7 +154,7 @@ def test_understandable_is_not_the_same_as_universal(db, monkeypatch):
 
 
 def test_gates_are_unchanged(db):
-    assert scoring.SCORE_VERSION == "ti-score-v5"
+    assert scoring.SCORE_VERSION == "ti-score-v6"
     assert scoring.SEMANTIC_DIMENSION_MIN == 0.6 and scoring.QUALITY_FLOOR == 0.55 and scoring.PRIOR_KNOWLEDGE_GATE == 0.5
 
 
@@ -247,7 +247,7 @@ def test_video_generation_provider_and_latency_are_unchanged(db, monkeypatch):
 def test_diagnostics_show_the_curation_breakdown(db, monkeypatch):
     run_pool(db, [QR, CARPLAY], curator=real_curator(), monkeypatch=monkeypatch, kind="video")
     report = service.discovery_status(db, settings(**KEY), now=NOW)
-    assert report["current_score_version"] == "ti-score-v5"
+    assert report["current_score_version"] == scoring.SCORE_VERSION
     assert report["config"]["semantic_curator_version"] == semantic.SEMANTIC_CURATOR_VERSION
     pool = report["pool"]
     assert pool["semantic_validation"]["status"] == "ok" and pool["semantic_validation"]["curated"] == 2

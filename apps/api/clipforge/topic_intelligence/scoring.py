@@ -58,6 +58,26 @@ grounded question + the same six dimensions + issue codes, including
 unchanged: any issue or any dimension below 6/10 rejects; without a
 judgement the strict local rules apply.
 
+v6 (real Mac: clear, broad questions, but only 3/9 made strong shorts - generic
+advice, survey summaries, "Welche Faktoren ..., und ...?" lists): a
+``short_worthiness`` signal (``semantic-curator-v2``: curiosity_strength,
+payoff_specificity, reveal_potential, concreteness, knowledge_short_fit, visual
+potential; minus weak question shapes) weighs 0.13 and gates:
+
+* a multi-part question (two things asked, or single_question_focus < 6/10),
+  a "Welche Faktoren/Gründe/Tipps ..." list question and a population
+  survey/measurement question ("... in der Bevölkerung?") are rejected;
+* the curator's ``multi_part_question``, ``list_answer`` and
+  ``abstract_or_survey`` reject; ``generic_advice``, ``broad_overview`` and
+  ``no_clear_reveal`` only lower short-worthiness (useful but dry ranks lower);
+* short-worthiness below 0.45 rejects as ``weak_short_concept`` - with or
+  without exceptional trend evidence;
+* a trend spike counts only as much as the concept is short-worthy, so demand
+  helps a strong short but cannot rescue a weak one.
+
+No domain is penalized: the signal judges the question's shape and payoff, not
+its niche.  12+ accessibility and grounding gates are unchanged.
+
 Unchanged from v1: missing data is neutral (0.5), never zero, and only lowers
 ``confidence``; low-confidence evidence is shrunk towards neutral;
 competition enters as openness; trend decays with evidence age; hard
@@ -86,7 +106,7 @@ from .candidate import (
 from .history import is_duplicate
 from .transform import REJECT_FLAGS
 
-SCORE_VERSION = "ti-score-v5"
+SCORE_VERSION = "ti-score-v6"
 NEUTRAL_PRIOR = 0.5
 CONFIDENCE_WEIGHT: dict[str, float] = {"high": 1.0, "medium": 0.8, "low": 0.55, "unavailable": 0.0}
 TREND_HALF_LIFE_HOURS = 48.0
@@ -101,21 +121,23 @@ MIN_SUITABILITY = 0.35
 # outlier) still decides between good topics; novelty and fit keep the channel
 # coherent; own performance stays a small optional prior.
 DEFAULT_WEIGHTS: dict[str, float] = {
-    "semantic": 0.12,
-    "broad_appeal": 0.12,
+    "short_worthiness": 0.13,
     "accessibility": 0.12,
-    "trend": 0.11,
-    "suitability": 0.10,
-    "outlier": 0.09,
+    "broad_appeal": 0.10,
+    "trend": 0.10,
+    "semantic": 0.09,
+    "suitability": 0.08,
+    "outlier": 0.08,
     "novelty": 0.08,
     "channel_fit": 0.05,
-    "question_form": 0.05,
-    "visual": 0.06,
+    "question_form": 0.04,
+    "visual": 0.04,
     "researchability": 0.04,
-    "competition": 0.04,
+    "competition": 0.03,
     "own_performance": 0.02,
 }
 WEIGHT_RATIONALE: dict[str, str] = {
+    "short_worthiness": "A strong short: immediate curiosity, one specific and surprising reveal, a concrete premise, footage.",
     "semantic": "Independent judgement of the final question: clear, factual payoff, universal, natural German.",
     "suitability": "Curiosity gap, clear payoff and substance decide whether a short can work at all.",
     "broad_appeal": "General German knowledge shorts need topics an average viewer wants answered.",
@@ -144,6 +166,14 @@ SEMANTIC_DIMENSION_REASONS = {
     "natural_spoken_german": "semantic_unnatural_german",
     "knowledge_short_fit": "semantic_not_knowledge_short",
 }
+# Short-worthiness gates (v6): below the floor the concept is too weak for a default suggestion,
+# whatever the trend; one core question only.
+SHORT_WORTHINESS_FLOOR = 0.45
+SINGLE_QUESTION_FOCUS_MIN = 0.6
+# Curator issues that only lower short-worthiness (the rest of its issue codes reject).
+SOFT_SHORT_ISSUES = frozenset({"generic_advice", "broad_overview", "no_clear_reveal"})
+# How much a trend spike counts for a concept of this short-worthiness (full from 0.8).
+SHORT_TREND_LOW, SHORT_TREND_FULL = 0.45, 0.8
 # Strict local acceptance when no semantic judgement exists.
 LOCAL_STRICT_MECHANISMS = frozenset({"why", "how", "what_if", "paradox"})
 LOCAL_STRICT_ACCESSIBILITY = 0.85
@@ -179,11 +209,15 @@ LABELS = {
     "accessibility": ("Instantly understandable premise", "Needs prior knowledge"),
     "question_form": ("Strong curiosity question", "Generic question"),
     "semantic": ("Clear, self-contained knowledge question", "Unclear question"),
+    "short_worthiness": ("Strong short: concrete hook, one clear reveal", "Weak short concept"),
     "visual": ("Good visual potential", "Limited visual potential"),
     "researchability": ("Well researchable", "Hard to verify"),
     "own_performance": ("Similar videos did well on your channel", "Similar videos were weaker on your channel"),
 }
-NEGATIVE_LABEL_SIGNALS = {"novelty", "channel_fit", "suitability", "own_performance", "broad_appeal", "accessibility", "question_form", "semantic"}
+NEGATIVE_LABEL_SIGNALS = {
+    "novelty", "channel_fit", "suitability", "own_performance", "broad_appeal", "accessibility", "question_form", "semantic",
+    "short_worthiness",
+}
 
 
 def resolve_weights(settings: Settings | None = None) -> tuple[dict[str, float], str]:
@@ -267,11 +301,17 @@ def trend_quality_factor(candidate: TopicCandidate, quality: float | None) -> tu
         source_factor *= TREND_OBSCURE_UNCORROBORATED
     q = NEUTRAL_PRIOR if quality is None else quality
     quality_gate = 0.4 + 0.6 * clamp((q - 0.35) / 0.35)
-    factor = round(source_factor * quality_gate, 4)
+    # Demand helps a strong short; it cannot rescue a weak concept.
+    short = candidate.signal("short_worthiness")
+    short_gate = 1.0
+    if short.available:
+        short_gate = 0.3 + 0.7 * clamp(((short.value or 0.0) - SHORT_TREND_LOW) / (SHORT_TREND_FULL - SHORT_TREND_LOW))
+    factor = round(source_factor * quality_gate * short_gate, 4)
     return factor, {
         "corroborating_sources": len(sources),
         "source_factor": round(source_factor, 4),
         "quality_gate": round(quality_gate, 4),
+        "short_gate": round(short_gate, 4),
         "obscure_uncorroborated": obscure,
     }
 
@@ -347,6 +387,7 @@ def rejection_reasons(
     if access.available and (access.value or 0) < PRIOR_KNOWLEDGE_GATE:
         reasons.append("requires_prior_knowledge")
     reasons.extend(semantic_rejections(candidate, flags))
+    reasons.extend(short_rejections(candidate))
     if quality is not None and quality < floor:
         reasons.append("below_quality_floor")
     return list(dict.fromkeys(reasons))
@@ -364,7 +405,7 @@ def semantic_rejections(candidate: TopicCandidate, flags: list[str]) -> list[str
     status = semantic_status(candidate)
     if semantic.available:
         dims = semantic.evidence.get("dimensions") or {}
-        reasons = [f"semantic_{issue}" for issue in semantic.evidence.get("issues") or []]
+        reasons = [f"semantic_{issue}" for issue in semantic.evidence.get("issues") or [] if issue not in SOFT_SHORT_ISSUES]
         reasons += [reason for name, reason in SEMANTIC_DIMENSION_REASONS.items() if float(dims.get(name, 0)) < SEMANTIC_DIMENSION_MIN]
         return reasons
     if status in {"pending", "absent"}:
@@ -378,6 +419,26 @@ def semantic_rejections(candidate: TopicCandidate, flags: list[str]) -> list[str
         reasons.append("unvalidated_prior_knowledge")
     if "clickbait_source" in flags:
         reasons.append("unvalidated_clickbait_source")  # teaser framing needs a semantic judgement
+    return reasons
+
+
+def short_rejections(candidate: TopicCandidate) -> list[str]:
+    """One core question, no list answer, and a concept strong enough for a short - trend cannot lift this."""
+    short = candidate.signal("short_worthiness")
+    if not short.available:
+        return []
+    evidence = short.evidence
+    shape = set(evidence.get("shape_flags") or [])
+    focus = evidence.get("single_question_focus")
+    reasons: list[str] = []
+    if "multi_part" in shape or (focus is not None and float(focus) < SINGLE_QUESTION_FOCUS_MIN):
+        reasons.append("multi_part_question")
+    if "list_answer" in shape:
+        reasons.append("list_answer_question")
+    if "abstract_measure" in shape:
+        reasons.append("abstract_or_survey_question")
+    if (short.value or 0.0) < SHORT_WORTHINESS_FLOOR:
+        reasons.append("weak_short_concept")
     return reasons
 
 
@@ -455,6 +516,15 @@ def score_candidate(
                 "curator_version": candidate.signal("semantic").evidence.get("curator_version"),
                 "grounded": candidate.signal("semantic").evidence.get("grounded"),
                 "dimension_min": SEMANTIC_DIMENSION_MIN,
+            },
+            "short_worthiness": {
+                "value": candidate.signal("short_worthiness").value,
+                "floor": SHORT_WORTHINESS_FLOOR,
+                "basis": candidate.signal("short_worthiness").evidence.get("basis"),
+                "dimensions": candidate.signal("short_worthiness").evidence.get("dimensions"),
+                "penalties": candidate.signal("short_worthiness").evidence.get("penalties") or {},
+                "shape_flags": candidate.signal("short_worthiness").evidence.get("shape_flags") or [],
+                "single_question_focus": candidate.signal("short_worthiness").evidence.get("single_question_focus"),
             },
         },
         "trend_quality": trend_notes,

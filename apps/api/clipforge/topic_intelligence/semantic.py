@@ -1,4 +1,4 @@
-"""Semantic topic curation (semantic-curator-v1): question creation + validation in ONE call.
+"""Semantic topic curation (semantic-curator-v2): question creation + validation in ONE call.
 
 Deterministic rules verify a question's FORM; they cannot judge meaning, and
 they cannot honestly turn a statement headline into a question.  With an
@@ -8,6 +8,8 @@ batched worker-model request per <= 20 raw topics:
     raw topic + evidence -> usable? -> grounded German question -> judged on
     self_contained_clarity, clear_factual_payoff, universal_12plus_relevance,
     prior_knowledge_free, natural_spoken_german, knowledge_short_fit (0-10)
+    + short-worthiness: curiosity_strength, payoff_specificity, reveal_potential,
+    concreteness, single_question_focus (0-10)   [v2]
     + issue codes
 
 It only supplies signals (the question and the ``semantic`` signal); accept /
@@ -33,7 +35,7 @@ from . import runtime
 from .candidate import Signal, TopicGroup
 from .text import compact, extract_question
 
-SEMANTIC_CURATOR_VERSION = "semantic-curator-v1"
+SEMANTIC_CURATOR_VERSION = "semantic-curator-v2"
 SEMANTIC_CLIENT_FACTORY: Any = OpenAI
 MAX_CURATION_BATCH = 20
 CACHE_PROVIDER = "semantic_curator"
@@ -47,6 +49,14 @@ DIMENSIONS = (
     "natural_spoken_german",
     "knowledge_short_fit",
 )
+# v2: is it a STRONG short, not merely a clear, factual, broad one?
+SHORT_DIMENSIONS = (
+    "curiosity_strength",
+    "payoff_specificity",
+    "reveal_potential",
+    "concreteness",
+    "single_question_focus",
+)
 ISSUES = (
     "unexplained_metaphor",
     "unclear_payoff",
@@ -56,6 +66,13 @@ ISSUES = (
     "demographic_subgroup_only",
     "unnatural_or_headline_german",
     "unsupported_premise",
+    # v2 short-worthiness (scoring decides which reject and which only lower the rank)
+    "multi_part_question",
+    "list_answer",
+    "abstract_or_survey",
+    "generic_advice",
+    "broad_overview",
+    "no_clear_reveal",
 )
 
 CURATOR_INSTRUCTIONS = (
@@ -74,11 +91,23 @@ CURATOR_INSTRUCTIONS = (
     "universal_12plus_relevance (would an average viewer care - NOT the same as understandable: a question limited to one "
     "product, brand, demographic subgroup, niche hobby or specialist field scores low even if clear), prior_knowledge_free, "
     "natural_spoken_german, knowledge_short_fit (a factual, satisfying short; not opinion, advice for one product, or one "
-    "survey's result), curiosity_gap, visual_potential (real footage can show it), dach_relevance. Also set grounded "
-    "(true only if the evidence supports every premise of the question). Issue codes, allowed values only: "
-    "unexplained_metaphor, unclear_payoff, rhetorical_or_opinion, niche_context_required, too_narrow_audience, "
-    "demographic_subgroup_only, unnatural_or_headline_german, unsupported_premise. Be strict; when in doubt, score low or "
-    "set usable=false. reason: at most 12 words. Return the supplied id unchanged. Structured output only."
+    "survey's result), curiosity_gap, visual_potential (real footage can show it), dach_relevance. SHORT-WORTHINESS: clear, "
+    "factual and broad is not enough - it must make a STRONG short. Ask ONE core question (never 'X, und Y?' or two things "
+    "at once; if the evidence holds two, pick the stronger single one). Prefer a concrete mechanism, a surprising limit, an "
+    "apparent contradiction, a hidden cause or a concrete consequence over broad overviews, generic advice or guidance, "
+    "survey results, abstract social measurements, and 'Welche Faktoren/Gründe/Tipps ...' questions whose answer is a "
+    "list. No domain is excluded: a health, fitness or social topic wins when it has a concrete, surprising reveal (weak: "
+    "'Welche Faktoren beeinflussen den Schlaf, und was hilft am meisten?', 'Wie zufrieden sind die Deutschen mit ihrer "
+    "Arbeit?'; strong: 'Warum kann man sich nicht selbst kitzeln?'). Rate the FINAL question 0-10 also on: "
+    "curiosity_strength (would a scrolling viewer stop to hear the answer - an immediate hook), payoff_specificity (one "
+    "concrete, specific answer - not 'it depends', not a list of factors), reveal_potential (the answer is surprising or "
+    "non-obvious), concreteness (a concrete premise, not an abstract concept or measurement), single_question_focus (10 = "
+    "exactly one core question). Also set grounded (true only if the evidence supports every premise of the question). "
+    "Issue codes, allowed values only: unexplained_metaphor, unclear_payoff, rhetorical_or_opinion, niche_context_required, "
+    "too_narrow_audience, demographic_subgroup_only, unnatural_or_headline_german, unsupported_premise, "
+    "multi_part_question, list_answer, abstract_or_survey, generic_advice, broad_overview, no_clear_reveal. Be strict; "
+    "when in doubt, score low or set usable=false. reason: at most 12 words. Return the supplied id unchanged. "
+    "Structured output only."
 )
 
 
@@ -93,6 +122,11 @@ class AICuratedTopic(BaseModel):
     prior_knowledge_free: int = Field(default=0, ge=0, le=10)
     natural_spoken_german: int = Field(default=0, ge=0, le=10)
     knowledge_short_fit: int = Field(default=0, ge=0, le=10)
+    curiosity_strength: int = Field(default=5, ge=0, le=10)
+    payoff_specificity: int = Field(default=5, ge=0, le=10)
+    reveal_potential: int = Field(default=5, ge=0, le=10)
+    concreteness: int = Field(default=5, ge=0, le=10)
+    single_question_focus: int = Field(default=5, ge=0, le=10)
     curiosity_gap: int = Field(default=5, ge=0, le=10)
     visual_potential: int = Field(default=5, ge=0, le=10)
     dach_relevance: int = Field(default=5, ge=0, le=10)
@@ -122,13 +156,17 @@ def unavailable(reason: str, *, status: str = "unavailable") -> Signal:
 
 def curated_signal(judgement: dict[str, Any], *, status: str) -> Signal:
     dims = {name: round(max(0, min(10, int(judgement.get(name, 0)))) / 10, 2) for name in DIMENSIONS}
+    short = {
+        name: round(max(0, min(10, int(judgement.get(name, 5)))) / 10, 2)
+        for name in (*SHORT_DIMENSIONS, "knowledge_short_fit", "visual_potential")
+    }
     issues = {str(issue) for issue in judgement.get("issues") or [] if str(issue) in ISSUES}
     if not judgement.get("grounded", False) and judgement.get("usable"):
         issues.add("unsupported_premise")
     return Signal(
         round(sum(dims.values()) / len(dims), 4),
         "medium",
-        {"status": status, "dimensions": dims, "issues": sorted(issues), "reason": str(judgement.get("reason") or "")[:200],
+        {"status": status, "dimensions": dims, "short_dimensions": short, "issues": sorted(issues), "reason": str(judgement.get("reason") or "")[:200],
          "grounded": bool(judgement.get("grounded", False)), "curator_version": SEMANTIC_CURATOR_VERSION},
         ["semantic_curator"],
     )
