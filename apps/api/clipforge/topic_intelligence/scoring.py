@@ -50,6 +50,14 @@ v4 (real Mac validation: only 2/9 suggestions passed a human review):
   fewer suggestions rather than unvetted ones.
 * Pending (not yet validated) candidates are never served.
 
+v5 (real Mac: only 4 of 60 evaluated topics reached validation - the local
+question step was the bottleneck): the ``semantic`` signal now comes from one
+combined curation call per <= 20 raw topics (``semantic-curator-v1``: a
+grounded question + the same six dimensions + issue codes, including
+``unsupported_premise`` and ``demographic_subgroup_only``).  The gates are
+unchanged: any issue or any dimension below 6/10 rejects; without a
+judgement the strict local rules apply.
+
 Unchanged from v1: missing data is neutral (0.5), never zero, and only lowers
 ``confidence``; low-confidence evidence is shrunk towards neutral;
 competition enters as openness; trend decays with evidence age; hard
@@ -78,7 +86,7 @@ from .candidate import (
 from .history import is_duplicate
 from .transform import REJECT_FLAGS
 
-SCORE_VERSION = "ti-score-v4"
+SCORE_VERSION = "ti-score-v5"
 NEUTRAL_PRIOR = 0.5
 CONFIDENCE_WEIGHT: dict[str, float] = {"high": 1.0, "medium": 0.8, "low": 0.55, "unavailable": 0.0}
 TREND_HALF_LIFE_HOURS = 48.0
@@ -444,7 +452,8 @@ def score_candidate(
                 "dimensions": candidate.signal("semantic").evidence.get("dimensions"),
                 "issues": candidate.signal("semantic").evidence.get("issues") or [],
                 "reason": candidate.signal("semantic").evidence.get("reason"),
-                "validator_version": candidate.signal("semantic").evidence.get("validator_version"),
+                "curator_version": candidate.signal("semantic").evidence.get("curator_version"),
+                "grounded": candidate.signal("semantic").evidence.get("grounded"),
                 "dimension_min": SEMANTIC_DIMENSION_MIN,
             },
         },

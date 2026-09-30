@@ -8,18 +8,17 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 from topic_support import (
     NOW,
-    FakeLLM,
-    FakeValidator,
+    FakeCurator,
     FakeWiki,
+    curated,
     deps,
-    good_assessment,
     settings,
     spike,
 )
 
 from clipforge.database import Base
 from clipforge.models import TopicCandidateRecord, TopicDiscoveryRun
-from clipforge.topic_intelligence import scoring, semantic, service, transform
+from clipforge.topic_intelligence import scoring, semantic, service
 from clipforge.topic_intelligence.candidate import (
     SIGNAL_NAMES,
     Signal,
@@ -67,18 +66,19 @@ def test_broad_compelling_topic_beats_obscure_wikipedia_spikes(db):
     assert set(questions[:2]) == {"Wie entsteht eigentlich ein Polarlicht?", "Warum bekommen wir Schluckauf?"}
     by_topic = records(db)
     weak = {"below_quality_floor", "question_no_question_transformation", "requires_prior_knowledge"}
-    for topic in ("GICON-Höhenwindturm", "29. September", "Gol-Transportes-Aéreos-Flug 1907"):
+    for topic in ("GICON-Höhenwindturm", "Gol-Transportes-Aéreos-Flug 1907"):
         assert weak & set(by_topic[topic].rejection_reasons), topic
+    assert "29. September" not in by_topic  # a calendar page is filtered out before evaluation
+    for topic in ("GICON-Höhenwindturm", "Gol-Transportes-Aéreos-Flug 1907"):
         # Each still had the biggest raw spike: it is the ranking, not discovery, that changed.
         assert by_topic[topic].signals["trend"]["value"] == 1.0
     assert by_topic["Schluckauf"].signals["trend"]["value"] < 0.5
 
 
 def test_date_page_spike_alone_is_insufficient(db):
-    served(db, [OBSCURE[1]])
-    record = records(db)["29. September"]
-    # Locally a calendar page never becomes a question (no generic wrapper) ...
-    assert record.question == "" and "question_no_question_transformation" in record.rejection_reasons
+    result = served(db, [OBSCURE[1]])
+    # A calendar page is filtered out before evaluation (never a generic wrapper, never an AI call) ...
+    assert "29. September" not in records(db) and result["candidates"] == []
     # ... and a date question with the biggest spike still fails the gates.
     dated = score(candidate(
         "date", question="Was geschah am 29. September?", topic="29. September",
@@ -99,26 +99,23 @@ def test_quality_floor_prevents_filler_and_broadens_discovery_once(db):
     assert service.pool_summary(db, runs[0])["evaluation"]["remaining_raw_groups"] == 0
 
 
-def test_llm_rewrites_obscure_topics_into_broad_questions_and_they_may_win(db, monkeypatch):
-    llm = FakeLLM({
-        "Gol-Transportes-Aéreos-Flug 1907": good_assessment(
-            "Wie kann es sein, dass zwei Flugzeuge mitten in der Luft zusammenstoßen?", "technik",
-            curiosity_gap=9, clear_payoff=9, broad_appeal=8, accessibility=9),
-        "29. September": good_assessment("Was ist der 29. September?", "unknown", curiosity_gap=2, clear_payoff=2,
-                                         substance=2, broad_appeal=2, accessibility=3),
-        "Schluckauf": good_assessment("Warum bekommen wir Schluckauf?", "koerper_gesundheit", broad_appeal=9, accessibility=9),
+def test_curator_reframes_obscure_topics_into_broad_questions_and_they_may_win(db, monkeypatch):
+    curator = FakeCurator({
+        "Gol-Transportes-Aéreos-Flug 1907": curated(
+            "Wie kann es sein, dass zwei Flugzeuge mitten in der Luft zusammenstoßen?", "technik", curiosity_gap=9),
+        "Schluckauf": curated("Warum bekommen wir Schluckauf?", "koerper_gesundheit"),
     })
-    monkeypatch.setattr(transform, "TRANSFORM_CLIENT_FACTORY", llm)
-    validator = FakeValidator()
-    monkeypatch.setattr(semantic, "SEMANTIC_CLIENT_FACTORY", validator)
-    served(db, OBSCURE + BROAD, config=settings(clipforge_ai_mode="openai", openai_api_key="sk-test"))
+    monkeypatch.setattr(semantic, "SEMANTIC_CLIENT_FACTORY", curator)
+    served(db, OBSCURE + BROAD, config=settings(openai_api_key="sk-test"))
     by_topic = records(db)
     flight = by_topic["Gol-Transportes-Aéreos-Flug 1907"]
     assert not flight.rejection_reasons  # the reframed question needs no identifier
     assert flight.provenance["mechanism"] == "paradox"
     assert "identifier" not in flight.score_breakdown["penalties"]["obscurity"]
-    assert "below_quality_floor" in by_topic["29. September"].rejection_reasons
-    assert by_topic["Schluckauf"].final_score > by_topic["29. September"].final_score
+    # A calendar page is obvious garbage: it never reaches the curator.
+    assert "29. September" not in by_topic
+    assert all(topic["topic"] != "29. September" for request in curator.requests for topic in request)
+    assert not by_topic["Schluckauf"].rejection_reasons
 
 
 # --- Scoring-level properties ----------------------------------------------------------
@@ -280,7 +277,8 @@ def test_a_pool_scored_by_another_version_is_not_reused(db):
 
 def test_diagnostics_show_components_penalties_and_can_rescore_v1_records(db):
     served(db, OBSCURE + BROAD, count=3)
-    record = records(db)["29. September"]
+    record = records(db)["GICON-Höhenwindturm"]
+    record.topic = "29. September"
     # Simulate a candidate persisted by ti-score-v1 (no v2 feature signals, v1 score).
     record.signals = {name: value for name, value in record.signals.items() if name not in {"broad_appeal", "accessibility", "question_form"}}
     record.question = "Was steckt eigentlich hinter 29. September?"

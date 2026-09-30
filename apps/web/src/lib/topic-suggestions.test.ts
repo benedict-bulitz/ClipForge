@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   DISCOVERY_POLL_LIMIT,
   DISCOVERY_UNAVAILABLE,
+  NO_FURTHER_SUGGESTIONS,
   NO_STRONG_SUGGESTIONS,
   RESERVE_TARGET,
   RESERVE_TTL_MS,
@@ -15,6 +16,7 @@ import {
   pickSuggestion,
   refillRequest,
   refreshAllSuggestions,
+  replaceChips,
   serializeSuggestions,
   topicGenerationSource,
   type SuggestionState,
@@ -305,4 +307,45 @@ test("after an empty state, Neue Vorschläge asks again and real questions repla
   assert.ok(requests.length >= 2);
   assert.equal(controller.state.status, "ready");
   assert.deepEqual(visibleIds(controller.state), ["tc_4", "tc_5", "tc_6"]);
+});
+
+test("Neue Vorschläge never discards the only good chips when nothing can replace them", async () => {
+  const { controller, requests } = await controllerWith([
+    { status: "partial", message: null, candidates: [candidate(0), candidate(1)] },
+    { status: "exhausted", message: null, candidates: [] },
+  ]);
+  assert.deepEqual(visibleIds(controller.state), ["tc_0", "tc_1", null]);
+  controller.refreshAll();
+  // Nothing in the reserve: the two accepted chips stay visible and are NOT reported as dismissed.
+  assert.deepEqual(visibleIds(controller.state), ["tc_0", "tc_1", null]);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.ok(requests.slice(1).every((request) => request.dismissed.length === 0));
+  assert.deepEqual(visibleIds(controller.state), ["tc_0", "tc_1", null]);
+  assert.equal(controller.state.message, NO_FURTHER_SUGGESTIONS);
+  assert.match(home, /: state\.message;/); // the note is shown next to full or partial chips
+});
+
+test("Neue Vorschläge replaces only what it can now and the rest when new questions arrive", async () => {
+  const { controller, requests } = await controllerWith([
+    { status: "ok", message: null, candidates: [candidate(0), candidate(1), candidate(2), candidate(3)] },
+    { status: "partial", message: null, candidates: [candidate(4), candidate(5)] },
+  ]);
+  assert.deepEqual(visibleIds(controller.state), ["tc_0", "tc_1", "tc_2"]);
+  assert.deepEqual(controller.state.reserve.map((item) => item.candidate_id), ["tc_3"]);
+  controller.refreshAll();
+  assert.deepEqual(visibleIds(controller.state), ["tc_3", "tc_1", "tc_2"]); // one replacement available right now
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(visibleIds(controller.state), ["tc_3", "tc_4", "tc_5"]); // the rest once the refill arrived
+  const dismissed = requests.flatMap((request) => request.dismissed);
+  assert.ok(dismissed.includes("tc_0"));
+});
+
+test("replaceChips dismisses a chip only when another question takes its place", () => {
+  const state = mergeSuggestions(emptySuggestions(), [candidate(0), candidate(1)], 1);
+  const none = replaceChips(state, null);
+  assert.deepEqual(none.dismissed, []);
+  assert.deepEqual(none.remaining.sort(), ["tc_0", "tc_1"]);
+  const withReserve = replaceChips({ ...state, reserve: [{ ...candidate(5), fetched_at: 1, rationale: "", confidence: "low" }] }, null);
+  assert.deepEqual(withReserve.dismissed, []); // the empty third slot is filled first, nothing is discarded
+  assert.deepEqual(visibleIds(withReserve.state), ["tc_0", "tc_1", "tc_5"]);
 });

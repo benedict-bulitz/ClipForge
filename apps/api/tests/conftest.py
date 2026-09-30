@@ -108,17 +108,6 @@ def forbid_real_overlay_summaries(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def forbid_real_topic_transformation(monkeypatch):
-    """Topic -> question rewriting must be faked; no real worker-model calls."""
-    from clipforge.topic_intelligence import transform
-
-    def forbidden(*_args, **_kwargs):
-        raise AssertionError("Real OpenAI topic transformation is forbidden in the test suite.")
-
-    monkeypatch.setattr(transform, "TRANSFORM_CLIENT_FACTORY", forbidden)
-
-
-@pytest.fixture(autouse=True)
 def no_topic_warmup(monkeypatch):
     """App startup must not reach real discovery providers from the test suite."""
     from clipforge.topic_intelligence import service
@@ -129,11 +118,11 @@ def no_topic_warmup(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def forbid_real_semantic_validation(monkeypatch):
-    """Semantic question validation must be faked; no real worker-model calls."""
+def forbid_real_semantic_curation(monkeypatch):
+    """Topic curation (question + judgement) must be faked; no real worker-model calls."""
     from clipforge.topic_intelligence import semantic
 
     def forbidden(*_args, **_kwargs):
-        raise AssertionError("Real OpenAI semantic validation is forbidden in the test suite.")
+        raise AssertionError("Real OpenAI topic curation is forbidden in the test suite.")
 
     monkeypatch.setattr(semantic, "SEMANTIC_CLIENT_FACTORY", forbidden)

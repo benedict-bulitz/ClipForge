@@ -6,12 +6,11 @@ from datetime import timedelta
 from sqlalchemy import func, select
 from topic_support import (
     NOW,
-    FakeLLM,
-    FakeValidator,
+    FakeCurator,
     FakeWiki,
     FakeYouTube,
+    curated,
     deps,
-    good_assessment,
     settings,
     spike,
     video,
@@ -26,7 +25,7 @@ from clipforge.models import (
     YouTubeLearningArchive,
     YouTubeUpload,
 )
-from clipforge.topic_intelligence import semantic, service, transform
+from clipforge.topic_intelligence import semantic, service
 from clipforge.topic_intelligence.scoring import SCORE_VERSION
 from clipforge.topic_intelligence.sources import BraveNewsSource, WikipediaPageviewsSource
 
@@ -107,21 +106,21 @@ def test_wikipedia_source_is_the_german_wikipedia_and_prefilters_people(db):
     assert "Schlafträgheit" in topics
 
 
-def test_not_dach_relevant_or_non_german_llm_questions_are_rejected(db, monkeypatch):
-    llm = FakeLLM({
-        "Polarlicht": good_assessment("Warum leuchtet der Himmel bei Polarlichtern grün?", "weltraum"),
-        "Schlafträgheit": good_assessment("Why do naps make me groggy?", "koerper_gesundheit"),
-        "Deutschland": good_assessment("Was ist Deutschland?", "geografie", flags=["not_dach_relevant"]),
+def test_curated_questions_are_gated_with_the_main_ai_mode_still_local(db, monkeypatch):
+    curator = FakeCurator({
+        "Polarlicht": curated("Warum leuchtet der Himmel bei Polarlichtern grün?", "weltraum"),
+        "Schlafträgheit": curated("Why do naps make me groggy?", "koerper_gesundheit"),
+        "Deutschland": curated("Was ist Deutschland?", "geografie", clear_factual_payoff=2, issues=["unclear_payoff"]),
     })
-    monkeypatch.setattr(transform, "TRANSFORM_CLIENT_FACTORY", llm)
-    validator = FakeValidator()
-    monkeypatch.setattr(semantic, "SEMANTIC_CLIENT_FACTORY", validator)
-    result = propose(db, config=settings(clipforge_ai_mode="openai", openai_api_key="sk-test"))
+    monkeypatch.setattr(semantic, "SEMANTIC_CLIENT_FACTORY", curator)
+    config = settings(openai_api_key="sk-test")  # CLIPFORGE_AI_MODE stays "local"
+    assert config.clipforge_ai_mode == "local"
+    result = propose(db, config=config)
     assert result["candidate"]["question"] == "Warum leuchtet der Himmel bei Polarlichtern grün?"
     by_topic = {record.topic: record for record in db.scalars(select(TopicCandidateRecord)).all()}
     assert "question_not_natural_german" in by_topic["Schlafträgheit"].rejection_reasons
-    assert "flag_not_dach_relevant" in by_topic["Deutschland"].rejection_reasons
-    assert len(llm.requests) == 1  # one bounded transformation call per refresh
+    assert "semantic_unclear_payoff" in by_topic["Deutschland"].rejection_reasons
+    assert len(curator.requests) == 1  # one combined curation call for this small pool
 
 
 def _zugvoegel(db) -> TopicCandidateRecord:

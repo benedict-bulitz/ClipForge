@@ -16,7 +16,6 @@ from clipforge.topic_intelligence.sources import (
     YouTubeCompetitionProbe,
     YouTubeTrendingSource,
 )
-from clipforge.topic_intelligence.transform import AITopicAssessment, AITopicBatch
 
 NOW = datetime(2026, 9, 30, 8, 0, tzinfo=UTC)
 
@@ -165,66 +164,33 @@ def deps(wiki: FakeWiki | None = None, youtube: FakeYouTube | None = None, brave
     return DiscoveryDeps(sources=sources, probe=YouTubeCompetitionProbe(youtube, token))
 
 
-class FakeLLM:
-    """OpenAI Responses stand-in: maps the supplied topic titles to assessments."""
-
-    def __init__(self, answers: dict[str, dict[str, Any]], *, fail: bool = False) -> None:
-        self.answers = answers
-        self.fail = fail
-        self.requests: list[dict[str, Any]] = []
-
-    def __call__(self, api_key: str | None = None):
-        return self
-
-    @property
-    def responses(self):
-        return self
-
-    def parse(self, **kwargs: Any):
-        request = json.loads(kwargs["input"])
-        self.requests.append(request)
-        if self.fail:
-            from openai import OpenAIError
-
-            raise OpenAIError("provider down")
-        items = []
-        for topic in request["topics"]:
-            answer = self.answers.get(topic["topic"])
-            if answer is None:
-                items.append(AITopicAssessment(id=topic["id"], usable=False))
-            else:
-                items.append(AITopicAssessment(id=topic["id"], **answer))
-
-        class Response:
-            output_parsed = AITopicBatch(items=items)
-
-        return Response()
-
-
-def good_assessment(question: str, niche: str, **overrides: Any) -> dict[str, Any]:
-    values = {
-        "usable": True, "question": question, "niche": niche, "angle": "erklärt den Mechanismus",
-        "curiosity_gap": 8, "clear_payoff": 8, "substance": 7, "premise_clarity": 8, "information_gain": 7,
-        "visual_potential": 7, "researchability": 8, "dach_relevance": 8, "flags": [],
-    }
-    values.update(overrides)
-    return values
+def curated(question: str, niche: str = "unknown", **overrides: Any) -> dict[str, Any]:
+    """A usable curator answer for one topic."""
+    return {"usable": True, "question": question, "niche": niche, **overrides}
 
 
 GOOD_JUDGEMENT = {
     "self_contained_clarity": 9, "clear_factual_payoff": 8, "universal_12plus_relevance": 8,
-    "prior_knowledge_free": 9, "natural_spoken_german": 9, "knowledge_short_fit": 8, "issues": [], "reason": "klar",
+    "prior_knowledge_free": 9, "natural_spoken_german": 9, "knowledge_short_fit": 8,
+    "curiosity_gap": 8, "visual_potential": 7, "dach_relevance": 8, "grounded": True, "issues": [], "reason": "klar",
 }
 
 
-class FakeValidator:
-    """Semantic validator stand-in: scripted judgements per question, good by default; records batches."""
+class FakeCurator:
+    """Semantic curator stand-in (one call = question + judgement for <= 20 topics).
 
-    def __init__(self, judgements: dict[str, dict[str, Any]] | None = None, *, default: dict[str, Any] | None = None, fail: bool = False) -> None:
-        self.judgements = judgements or {}
+    ``by_topic`` scripts a topic (its title) -> fields (question, usable, dims ...);
+    ``by_question`` scripts a final question -> judgement overrides.  Unscripted
+    topics keep their local_question with a good judgement, or are unusable.
+    """
+
+    def __init__(self, by_topic: dict[str, dict[str, Any]] | None = None, *, by_question: dict[str, dict[str, Any]] | None = None,
+                 default: dict[str, Any] | None = None, fail: bool = False) -> None:
+        self.by_topic = by_topic or {}
+        self.by_question = by_question or {}
         self.default = GOOD_JUDGEMENT if default is None else default
         self.fail = fail
-        self.requests: list[list[str]] = []
+        self.requests: list[list[dict[str, Any]]] = []
 
     def __call__(self, api_key: str | None = None):
         return self
@@ -234,21 +200,26 @@ class FakeValidator:
         return self
 
     def parse(self, **kwargs: Any):
-        from clipforge.topic_intelligence.semantic import AISemanticBatch, AISemanticJudgement
+        from clipforge.topic_intelligence.semantic import AICuratedBatch, AICuratedTopic
 
-        questions = json.loads(kwargs["input"])["questions"]
-        self.requests.append([item["question"] for item in questions])
+        topics = json.loads(kwargs["input"])["topics"]
+        self.requests.append(topics)
         if self.fail:
             from openai import OpenAIError
 
-            raise OpenAIError("validator down")
-        items = [
-            AISemanticJudgement(id=item["id"], **{**self.default, **self.judgements.get(item["question"], {})})
-            for item in questions
-        ]
+            raise OpenAIError("curator down")
+        items = []
+        for topic in topics:
+            scripted = self.by_topic.get(topic["topic"], {})
+            question = scripted.get("question", topic.get("local_question") or "")
+            usable = scripted.get("usable", bool(question))
+            fields = {**self.default, **self.by_question.get(question, {}), **scripted}
+            fields.update(question=question, usable=usable)
+            fields.setdefault("niche", "unknown")
+            items.append(AICuratedTopic(id=topic["id"], **fields))
 
         class Response:
-            output_parsed = AISemanticBatch(items=items)
+            output_parsed = AICuratedBatch(items=items)
 
         return Response()
 
@@ -256,3 +227,24 @@ class FakeValidator:
 def bad(**overrides: Any) -> dict[str, Any]:
     """A judgement that fails the named dimensions/issues."""
     return {**GOOD_JUDGEMENT, **overrides}
+
+
+def curate_groups(db, groups, curator, config=None, *, now=NOW):
+    """Run the real curate() + curated_transform() path with a fake curator client."""
+    from clipforge.topic_intelligence import semantic
+    from clipforge.topic_intelligence.transform import curated_transform, deterministic_transform
+
+    original = semantic.SEMANTIC_CLIENT_FACTORY
+    semantic.SEMANTIC_CLIENT_FACTORY = curator
+    try:
+        outcome = semantic.curate(db, config or settings(openai_api_key="sk-test"), groups, requests_left=3, now=now)
+    finally:
+        semantic.SEMANTIC_CLIENT_FACTORY = original
+    results = []
+    for group in groups:
+        judgement = outcome.judgements.get(group.key)
+        if judgement is None:
+            results.append(deterministic_transform(group))
+        else:
+            results.append(curated_transform(group, judgement, semantic.curated_signal(judgement, status=outcome.statuses[group.key])))
+    return results, outcome

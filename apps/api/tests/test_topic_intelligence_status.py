@@ -41,9 +41,12 @@ def test_quality_floor_rejecting_everything_is_explicit_not_empty_ok(db):
     result = chips(db, WEAK)
     assert result["status"] == "exhausted" and result["candidates"] == []
     summary = result["summary"]
-    assert summary["accepted"] == 0 and summary["rejected"] >= 2
-    assert summary["rejection_reasons"]["question_no_question_transformation"] >= 2
-    assert {item["topic"] for item in summary["rejected_candidates"]} >= {"29. September", "Gol-Transportes-Aéreos-Flug 1907"}
+    assert summary["accepted"] == 0 and summary["rejected"] >= 1
+    assert summary["rejection_reasons"]["question_no_question_transformation"] >= 1
+    assert {item["topic"] for item in summary["rejected_candidates"]} >= {"Gol-Transportes-Aéreos-Flug 1907"}
+    # A calendar page is dropped by the deterministic prefilter before evaluation - and says so.
+    run = db.scalar(select(TopicDiscoveryRun).order_by(TopicDiscoveryRun.sequence.desc()))
+    assert service.pool_summary(db, run)["evaluation"]["prefiltered_topics"] == ["29. September"]
     assert service.diagnose(db, settings(), now=NOW) == "question_transformation_failed"
 
 
@@ -110,8 +113,9 @@ def test_status_endpoint_reports_everything_needed_to_debug(db):
     assert report["diagnosis"] in {"ok", "fewer_than_three_candidates", "pool_expired_refreshes_on_next_request"}
     assert report["config"]["question_rewriting"] == "template"
     assert report["config"]["youtube_connected"] is False
-    assert report["pool"]["accepted"] >= 2 and report["pool"]["rejected"] >= 2
-    assert report["pool"]["rejection_reasons"]["question_no_question_transformation"] >= 2
+    assert report["pool"]["accepted"] >= 2 and report["pool"]["rejected"] >= 1
+    assert report["pool"]["rejection_reasons"]["question_no_question_transformation"] >= 1
+    assert report["pool"]["evaluation"]["prefiltered"] == 1
     assert {"accepted_candidates", "rejected_candidates", "raw_topics", "evaluated"} <= set(report["pool"])
     assert report["caches"] and report["warmup"]["state"] == "idle"
     assert report["run"]["sources"]

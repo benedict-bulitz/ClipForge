@@ -64,6 +64,7 @@ export const TOPIC_SUGGESTIONS_KEY = "clipforge-topic-suggestions";
 export const TOPIC_SUGGESTIONS_VERSION = 3;
 export const DISCOVERY_UNAVAILABLE = "Topic discovery is temporarily unavailable.";
 export const NO_STRONG_SUGGESTIONS = "Gerade keine starken Themenvorschläge. Gib eine eigene Frage ein oder versuche es später erneut.";
+export const NO_FURTHER_SUGGESTIONS = "Gerade keine weiteren starken Vorschläge.";
 /** While the backend reports a running discovery, ask again at most this often/long. */
 export const DISCOVERY_POLL_LIMIT = 40;
 export const DEFAULT_DISCOVERY_RETRY_MS = 3000;
@@ -121,15 +122,47 @@ export function pickSuggestion(state: SuggestionState, index: number): { state: 
   return { state: { ...state, visible, reserve, recent: remember(state.recent, next ? [next.candidate_id, picked.candidate_id] : [picked.candidate_id]) }, picked };
 }
 
-/** "Neue Vorschläge": all three visible chips are replaced from the reserve. */
-export function refreshAllSuggestions(state: SuggestionState): { state: SuggestionState; dismissed: string[] } {
-  const dismissed = state.visible.filter((item): item is TopicSuggestion => item !== null).map((item) => item.candidate_id);
-  const next = state.reserve.slice(0, VISIBLE_COUNT);
-  const visible = Array.from({ length: VISIBLE_COUNT }, (_unused, index) => next[index] ?? null);
+/**
+ * Replace visible chips from the reserve - but only where a replacement exists.
+ * ``targets``: the chips to replace (null = every visible chip).  A chip is
+ * dismissed (reported to the backend as skipped) only when another question
+ * actually takes its place; the rest stay visible and are returned as ``remaining``.
+ */
+export function replaceChips(
+  state: SuggestionState,
+  targets: Set<string> | null,
+): { state: SuggestionState; dismissed: string[]; remaining: string[] } {
+  const reserve = [...state.reserve];
+  const visible = [...state.visible];
+  const dismissed: string[] = [];
+  const shown: string[] = [];
+  const remaining: string[] = [];
+  // Empty slots first (more good chips), then the chips that should be replaced.
+  for (const fillEmpty of [true, false]) {
+    for (let index = 0; index < visible.length; index += 1) {
+      const current = visible[index];
+      if (fillEmpty !== (current === null)) continue;
+      if (current && targets !== null && !targets.has(current.candidate_id)) continue;
+      const next = reserve.shift();
+      if (!next) {
+        if (current) remaining.push(current.candidate_id);
+        continue;
+      }
+      if (current) dismissed.push(current.candidate_id);
+      visible[index] = next;
+      shown.push(next.candidate_id);
+    }
+  }
   return {
-    state: { ...state, visible, reserve: state.reserve.slice(VISIBLE_COUNT), recent: remember(state.recent, [...next.map((item) => item.candidate_id), ...dismissed]) },
+    state: { ...state, visible, reserve, recent: remember(state.recent, [...shown, ...dismissed]) },
     dismissed,
+    remaining,
   };
+}
+
+/** "Neue Vorschläge": replace the visible chips - never leaving the user with fewer good ones. */
+export function refreshAllSuggestions(state: SuggestionState): { state: SuggestionState; dismissed: string[]; remaining: string[] } {
+  return replaceChips(state, null);
 }
 
 /** How many to fetch in the background, or null when visible + reserve are full. */
@@ -245,6 +278,8 @@ export function createTopicSuggestions(options: TopicSuggestionsOptions): TopicS
   let again = false;
   let pendingPicked: string[] = [];
   let pendingDismissed: string[] = [];
+  /** Chips "Neue Vorschläge" still has to replace once new questions arrive. */
+  let refreshTargets = new Set<string>();
 
   function update(next: SuggestionState) {
     state = next;
@@ -287,7 +322,18 @@ export function createTopicSuggestions(options: TopicSuggestionsOptions): TopicS
         update({ ...state, status: state.visible.some(Boolean) ? state.status : "unavailable", message: response.message || DISCOVERY_UNAVAILABLE });
         return;
       }
-      const merged = mergeSuggestions(state, response.candidates, now());
+      let merged = mergeSuggestions(state, response.candidates, now());
+      if (refreshTargets.size) {
+        const replaced = replaceChips(merged, refreshTargets);
+        pendingDismissed.push(...replaced.dismissed);
+        refreshTargets = new Set(replaced.remaining);
+        merged = replaced.state;
+        if (refreshTargets.size && !response.candidates.length) {
+          // Nothing new exists: keep the good chips the user already has, and say so.
+          refreshTargets.clear();
+          merged = { ...merged, message: NO_FURTHER_SUGGESTIONS };
+        }
+      }
       update(merged.status === "empty" ? { ...merged, message: NO_STRONG_SUGGESTIONS } : merged);
     } catch {
       pendingPicked = [...picked, ...pendingPicked];
@@ -337,7 +383,8 @@ export function createTopicSuggestions(options: TopicSuggestionsOptions): TopicS
     refreshAll() {
       const result = refreshAllSuggestions(state);
       pendingDismissed.push(...result.dismissed);
-      update(result.state);
+      refreshTargets = new Set(result.remaining);
+      update({ ...result.state, message: null });
       void refill();
     },
     refill,

@@ -1,36 +1,33 @@
 """Topic -> compelling, truth-seeking German question (bounded, validated).
 
 Raw trends ("Schlafträgheit", a video title, a headline) are rarely good video
-prompts.  With the OpenAI director configured, ONE structured worker-model call
-rewrites a whole batch and assesses knowledge-short suitability; otherwise a
-deterministic path keeps source questions and builds plain template questions.
+prompts.  Two paths feed the same candidate model:
+
+* ``curated_transform``: the semantic curator's grounded question and
+  judgement (one batched AI call per <= 20 topics, see ``semantic``).
+* ``deterministic_transform``: without AI, keep/extract real questions and use
+  concrete templates only where the encyclopedia says what a subject is.
+
 Every question is validated deterministically either way: natural German, a
 real question, no embedded answer, no clickbait, no number the evidence lacks.
 """
 from __future__ import annotations
 
-import json
 import re
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from openai import OpenAI, OpenAIError
-from pydantic import BaseModel, Field, ValidationError
-
-from ..config import Settings
 from ..language import detect_text_language
-from .candidate import TopicGroup
+from .candidate import Signal, TopicGroup
 from .text import (
     NICHE_PRIORS,
     classify_niche,
-    compact,
     extract_question,
     question_issues,
     question_mechanism,
 )
 
-TRANSFORM_CLIENT_FACTORY: Any = OpenAI
-# Topics per transformation call (one LLM request per batch when OpenAI is enabled).
+# Topics per evaluation round (one curator request per round when AI is enabled).
 MAX_BATCH = 20
 # Bumped whenever the question step changes, so pools built by an older one are not reused.
 TRANSFORMATION_VERSION = "tq3"
@@ -65,64 +62,12 @@ ASSESSMENT_KEYS = (
     "accessibility",
 )
 
-TRANSFORM_INSTRUCTIONS = (
-    "You are ClipForge's topic editor for a GERMAN short-form knowledge channel (YouTube Shorts, TikTok, Reels; "
-    "15-40 second explainers) whose audience lives in Germany, Austria and Switzerland. For every supplied topic "
-    "decide whether it can become one strong knowledge short and, if so, rewrite it as ONE natural German question "
-    "a curious viewer would ask. Rules for the question: everyday spoken German a 14-year-old understands, concrete "
-    "rather than broad, immediately understandable without context, truth-seeking (it asks, it does not claim), no "
-    "answer or explanation inside the question, no invented premise (use only what the supplied evidence says; never "
-    "add numbers, dates, records or claims that are not in the evidence), no clickbait words, no emoji, at most 18 "
-    "words, ending with a question mark. Prefer the underlying explainable phenomenon over the news event (e.g. raw "
-    "topic 'Schlafträgheit' -> 'Warum fühle ich mich nach einem kurzen Mittagsschlaf manchmal schlechter als "
-    "vorher?'). Do not translate international trends blindly: rate dach_relevance by whether German-speaking "
-    "viewers would genuinely care. Score each dimension 0-10: curiosity_gap, clear_payoff (a clear, satisfying "
-    "answer exists), substance (enough for 15-40 seconds, not trivial), premise_clarity, information_gain, "
-    "visual_potential (real footage/photos can show it), researchability (verifiable from reliable sources), "
-    "dach_relevance, broad_appeal (would an average German viewer WITHOUT special interest want the answer?), "
-    "accessibility (the premise is understandable immediately, without knowing a specific place, project, date, "
-    "flight, code or person). Never use a generic wrapper such as 'Was steckt eigentlich hinter X?', 'Was ist X?' "
-    "or 'Wie funktioniert eigentlich X?' around a bare name; prefer a concrete curiosity mechanism (Warum ..., "
-    "Wieso ..., Wie kann es sein, dass ..., Was würde passieren, wenn ..., Warum passiert X, obwohl Y ...) ONLY when "
-    "the evidence supports it - never manufacture curiosity. If the topic is a calendar date, an isolated event id, "
-    "an obscure project or a name that needs context, either find the broadly interesting, supported phenomenon behind "
-    "it or set usable=false. Flag problems with the allowed flags only: opinion, vague, needs_long_context, unverifiable, "
-    "trivial, no_clear_payoff, person_centric (gossip or a person's biography), tragedy_or_breaking_news (deaths, "
-    "accidents, attacks), politics (party politics, elections), entertainment (a show, match or release itself), "
-    "not_dach_relevant. Set usable=false when no honest knowledge question exists. angle: max 12 German words on "
-    "what the video would explain. Return the supplied id unchanged. Structured output only."
-)
-
-
-class AITopicAssessment(BaseModel):
-    id: str
-    usable: bool
-    question: str = Field(default="", max_length=220)
-    niche: str = "unknown"
-    angle: str = Field(default="", max_length=160)
-    curiosity_gap: int = Field(default=5, ge=0, le=10)
-    clear_payoff: int = Field(default=5, ge=0, le=10)
-    substance: int = Field(default=5, ge=0, le=10)
-    premise_clarity: int = Field(default=5, ge=0, le=10)
-    information_gain: int = Field(default=5, ge=0, le=10)
-    visual_potential: int = Field(default=5, ge=0, le=10)
-    researchability: int = Field(default=5, ge=0, le=10)
-    dach_relevance: int = Field(default=5, ge=0, le=10)
-    broad_appeal: int = Field(default=5, ge=0, le=10)
-    accessibility: int = Field(default=5, ge=0, le=10)
-    flags: list[str] = Field(default_factory=list)
-
-
-class AITopicBatch(BaseModel):
-    items: list[AITopicAssessment]
-
-
 @dataclass
 class Transformed:
     key: str
     question: str
     niche: str
-    method: Literal["llm", "source_question", "converted_headline", "template", "none"]
+    method: Literal["curator", "source_question", "converted_headline", "template", "none"]
     assessment: dict[str, float] = field(default_factory=dict)
     assessment_confidence: Literal["low", "medium", "high"] = "low"
     flags: list[str] = field(default_factory=list)
@@ -130,6 +75,8 @@ class Transformed:
     angle: str = ""
     # Local extraction notes (extracted_clause, converted_headline, needs_title_context, shouting, ...).
     notes: set[str] = field(default_factory=set)
+    # The curator's judgement of the final question (None = not curated).
+    semantic: Signal | None = None
 
 
 VISUAL_BY_NICHE = {
@@ -246,70 +193,53 @@ def deterministic_transform(group: TopicGroup) -> Transformed:
     )
 
 
-def _llm_request(groups: list[TopicGroup]) -> list[dict[str, Any]]:
-    return [
-        {
-            "id": f"t{index}",
-            "topic": group.title,
-            "evidence": [
-                {"source": item.source, "kind": item.kind, "title": compact(item.title, 160), "text": compact(item.description, 300)}
-                for item in group.sightings[:3]
-            ],
-        }
-        for index, group in enumerate(groups)
-    ]
+def _curated_issues(question: str, evidence: str) -> list[str]:
+    """Hard deterministic checks on a curated question.
+
+    The fixed list of question openers is a prefilter for *extracted* headlines;
+    the curator judges natural spoken German itself (``natural_spoken_german``), so
+    a verb-first question it wrote ("Verarbeiten Hunde Wörter ...?") is not
+    rejected for its opener - only for English or for not being a question.
+    """
+    issues = question_issues(question, evidence=evidence)
+    if "not_natural_german" in issues and question.endswith("?") and detect_text_language(question) != "en":
+        issues.remove("not_natural_german")
+    return issues
 
 
-def _from_llm(group: TopicGroup, item: AITopicAssessment) -> Transformed:
-    niche = item.niche if item.niche in NICHE_PRIORS else classify_niche(group.title, item.question)[0]
-    flags = sorted({flag for flag in item.flags if flag in FLAG_VALUES} | set(_group_flags(group)))
-    question = " ".join(item.question.split())
-    if not item.usable or not question:
-        return Transformed(group.key, question, niche, "llm", flags=flags, issues=["not_usable_for_knowledge_short"], angle=item.angle)
-    assessment = {key: round(getattr(item, key) / 10, 3) for key in ASSESSMENT_KEYS}
+def curated_transform(group: TopicGroup, judgement: dict[str, Any], semantic_signal: Signal) -> Transformed:
+    """A candidate from the curator's grounded question; deterministic checks still apply."""
+    question = " ".join(str(judgement.get("question") or "").split())
+    niche = str(judgement.get("niche") or "")
+    niche = niche if niche in NICHE_PRIORS else classify_niche(question or group.title, group.title, group.description())[0]
+    flags = _group_flags(group)
+    if not judgement.get("usable") or not question:
+        return Transformed(group.key, question, niche, "curator", flags=flags, issues=["not_usable_for_knowledge_short"], semantic=semantic_signal)
+    def ten(name: str, default: int = 5) -> float:
+        return round(max(0, min(10, int(judgement.get(name, default)))) / 10, 3)
+    assessment = {
+        "curiosity_gap": ten("curiosity_gap"),
+        "clear_payoff": ten("clear_factual_payoff"),
+        "substance": ten("knowledge_short_fit"),
+        "premise_clarity": ten("self_contained_clarity"),
+        "information_gain": ten("knowledge_short_fit"),
+        "visual_potential": ten("visual_potential"),
+        "researchability": 0.8 if any(item.kind == "article" for item in group.sightings) else 0.6,
+        "dach_relevance": ten("dach_relevance"),
+        "broad_appeal": ten("universal_12plus_relevance"),
+        "accessibility": ten("prior_knowledge_free"),
+    }
+    _local, _method, notes = _template_question(group, niche)
     return Transformed(
         group.key,
         question,
         niche,
-        "llm",
+        "curator",
         assessment,
         "medium",
         flags,
-        question_issues(question, evidence=_evidence_text(group)),
-        compact(item.angle, 120),
+        _curated_issues(question, _evidence_text(group)),
+        str(judgement.get("reason") or "")[:120],
+        notes=notes if question == _local else set(),
+        semantic=semantic_signal,
     )
-
-
-def transform_topics(
-    groups: list[TopicGroup], settings: Settings, *, allow_llm: bool = True,
-) -> tuple[list[Transformed], str, str | None]:
-    """(results in input order, method used, error).  One bounded LLM call at most.
-
-    ``allow_llm=False`` when the pool's AI budget must be kept for validation.
-    """
-    groups = groups[:MAX_BATCH]
-    if not groups:
-        return [], "none", None
-    if not allow_llm or settings.clipforge_ai_mode != "openai" or not settings.openai_api_key:
-        return [deterministic_transform(group) for group in groups], "template", None
-    try:
-        response = TRANSFORM_CLIENT_FACTORY(api_key=settings.openai_api_key).responses.parse(
-            model=settings.openai_worker_model,
-            instructions=TRANSFORM_INSTRUCTIONS,
-            input=json.dumps({"market": {"language": "de", "region": "DE", "broader": "DACH"}, "topics": _llm_request(groups)}, ensure_ascii=False),
-            text_format=AITopicBatch,
-            max_output_tokens=6000,
-            store=False,
-        )
-        parsed = response.output_parsed
-        if not isinstance(parsed, AITopicBatch):
-            raise TypeError("no parsed topic batch")
-    except (OpenAIError, ValidationError, ValueError, TypeError) as exc:
-        # The question step failed: fall back to the honest deterministic path.
-        return [deterministic_transform(group) for group in groups], "template", f"{type(exc).__name__}: {str(exc)[:160]}"
-    by_id = {item.id: item for item in parsed.items}
-    results = []
-    for index, group in enumerate(groups):
-        item = by_id.get(f"t{index}")
-        results.append(_from_llm(group, item) if item is not None else deterministic_transform(group))
-    return results, "llm", None

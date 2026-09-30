@@ -404,7 +404,7 @@ function TopicSuggestionChips({ state, onUse, onRefreshAll }: { state: Suggestio
     ? (loading ? "Themenvorschläge werden gesucht…" : state.message)
     : count < state.visible.length
       ? (loading ? "Weitere Vorschläge werden gesucht…" : `Gerade ${count === 1 ? "nur ein starker Vorschlag" : `nur ${count} starke Vorschläge`}.`)
-      : null;
+      : state.message;
   return (
     <div className="mt-9 flex w-full max-w-[780px] flex-col items-center gap-2">
       {count > 0 && (

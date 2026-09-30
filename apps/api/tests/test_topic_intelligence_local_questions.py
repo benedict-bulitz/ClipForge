@@ -10,12 +10,13 @@ from datetime import timedelta
 from sqlalchemy import func, select
 from topic_support import (
     NOW,
-    FakeLLM,
-    FakeValidator,
+    FakeCurator,
     FakeWiki,
     FakeYouTube,
+    bad,
+    curate_groups,
+    curated,
     deps,
-    good_assessment,
     settings,
     video,
 )
@@ -156,15 +157,15 @@ def test_answer_headlines_become_questions_only_with_their_own_premise():
     assert extract_question("Du wirst nicht glauben, was dann passiert!")[0] is None
 
 
-def test_unsupported_premises_are_rejected(monkeypatch):
-    # A rewrite may not add a claim (here a number) that the source does not make.
-    llm = FakeLLM({"Igel": good_assessment("Warum leben Igel bis zu 25 Jahre?", "natur_tiere")})
-    monkeypatch.setattr(transform, "TRANSFORM_CLIENT_FACTORY", llm)
-    results, _method, _ = transform.transform_topics(
-        [group("Igel", kind="article", source="wikipedia_pageviews", description="Igel leben einige Jahre.")],
-        settings(clipforge_ai_mode="openai", openai_api_key="sk-test"),
-    )
+def test_unsupported_premises_are_rejected(db):
+    # A curated question may not add a claim (here a number) that the source does not make.
+    curator = FakeCurator({"Igel": curated("Warum leben Igel bis zu 25 Jahre?", "natur_tiere")})
+    results, _ = curate_groups(db, [group("Igel", kind="article", source="wikipedia_pageviews", description="Igel leben einige Jahre.")], curator)
     assert "unsupported_number" in results[0].issues
+    # And a premise the curator itself marks as ungrounded is an issue, not a pass.
+    ungrounded, _ = curate_groups(db, [group("Igelschlaf", kind="article", source="wikipedia_pageviews", description="Igel halten Winterschlaf.")],
+                                  FakeCurator({"Igelschlaf": curated("Warum träumen Igel im Winterschlaf?", "natur_tiere", grounded=False)}))
+    assert "unsupported_premise" in ungrounded[0].semantic.evidence["issues"]
 
 
 def test_no_generic_wrapper_is_generated_locally():
@@ -234,22 +235,19 @@ def test_obscure_trend_spike_alone_is_insufficient():
     assert "requires_prior_knowledge" in spike_only.rejection_reasons
 
 
-def test_niche_origin_topic_passes_after_universal_reframing(monkeypatch):
-    llm = FakeLLM({
-        "GICON-Höhenwindturm": good_assessment(
-            "Kann ein Windrad in 1.000 Metern Höhe viel mehr Strom erzeugen?", "technik", broad_appeal=8, accessibility=9),
-        "Gol-Transportes-Aéreos-Flug 1907": good_assessment(
-            "Warum können Piloten trotz moderner Technik zwei Flugzeuge übersehen?", "technik", broad_appeal=8, accessibility=8),
+def test_niche_origin_topic_passes_after_universal_reframing(db):
+    curator = FakeCurator({
+        "GICON-Höhenwindturm": curated("Kann ein Windrad in 1.000 Metern Höhe viel mehr Strom erzeugen?", "technik"),
+        "Gol-Transportes-Aéreos-Flug 1907": curated("Warum können Piloten trotz moderner Technik zwei Flugzeuge übersehen?", "technik"),
     })
-    monkeypatch.setattr(transform, "TRANSFORM_CLIENT_FACTORY", llm)
     groups = [
         group("GICON-Höhenwindturm", kind="article", source="wikipedia_pageviews",
               description="Windkraftanlage, die Wind in 1.000 Metern Höhe nutzen soll"),
         group("Gol-Transportes-Aéreos-Flug 1907", kind="article", source="wikipedia_pageviews",
               description="Kollision zweier Flugzeuge trotz Kollisionswarnsystemen"),
     ]
-    results, method, _ = transform.transform_topics(groups, settings(clipforge_ai_mode="openai", openai_api_key="sk-test"))
-    assert method == "llm"
+    results, outcome = curate_groups(db, groups, curator)
+    assert outcome.requests == 1
     for item, topic in zip(results, ("GICON-Höhenwindturm", "Gol-Transportes-Aéreos-Flug 1907"), strict=True):
         assert item.issues == [], item.question
         candidate = scored(item.question, topic=topic)
@@ -342,17 +340,16 @@ def test_backfill_reaches_strong_topics_past_the_old_top_16(db):
     assert len(result["candidates"]) == 3 and source.calls == 1
 
 
-def test_llm_backfill_batches_topics_and_bounds_requests(db, monkeypatch):
-    llm = FakeLLM({})  # nothing usable: worst case for the number of requests
-    monkeypatch.setattr(transform, "TRANSFORM_CLIENT_FACTORY", llm)
-    validator = FakeValidator()
-    monkeypatch.setattr(semantic, "SEMANTIC_CLIENT_FACTORY", validator)
+def test_curation_batches_topics_and_bounds_requests(db, monkeypatch):
+    curator = FakeCurator(default=bad(clear_factual_payoff=2))  # nothing passes: worst case for the number of requests
+    monkeypatch.setattr(semantic, "SEMANTIC_CLIENT_FACTORY", curator)
     source = StaticSource(pool_of_96())
-    service.suggestions(db, settings(clipforge_ai_mode="openai", openai_api_key="sk-test"), static_deps(source), count=3, now=NOW)
-    # Rewriting and validation share one budget: at most 3 AI requests per pool, <= 20 items each.
-    assert len(llm.requests) + len(validator.requests) <= service.AI_REQUEST_BUDGET
-    assert all(len(request["topics"]) <= transform.MAX_BATCH for request in llm.requests)
-    assert all(len(batch) <= semantic.MAX_VALIDATION_BATCH for batch in validator.requests)
+    service.suggestions(db, settings(openai_api_key="sk-test"), static_deps(source), count=3, now=NOW)
+    # Question creation and validation are one call: at most 3 AI requests per pool, <= 20 topics each = 60 topics.
+    assert len(curator.requests) <= service.AI_REQUEST_BUDGET == 3
+    assert all(len(request) <= semantic.MAX_CURATION_BATCH == 20 for request in curator.requests)
+    assert sum(len(request) for request in curator.requests) <= 60
+    assert source.calls == 1
 
 
 # --- 9. Versioned invalidation (candidates only, provider caches kept) ----------------------

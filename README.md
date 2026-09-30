@@ -110,27 +110,38 @@ before the page opens; video generation never waits for it.
   video is compared with its own channel's recent uploads, never by absolute views), and
   Brave News for Germany (when the Brave key is configured). Competition is a bounded YouTube
   `search.list` estimate for the strongest candidates only.
-- **Topic → question** (`tq3`): with `CLIPFORGE_AI_MODE=openai`, one worker-model call rewrites a
-  batch of up to 20 raw topics into natural German questions and rates their suitability. Locally,
-  a deterministic step keeps real questions ("Beziehung: Wie gesund ist die Liebe?" → "Wie gesund ist
-  die Liebe?"), turns indirect clauses and "Darum/So/Das passiert"-headlines into direct questions,
-  strips channel suffixes, hashtags, ALL-CAPS emphasis and exclamation marks, and uses a concrete
-  template only where the encyclopedia says what a subject is - never a generic
-  "Was steckt eigentlich hinter X?". Every question is validated (German, a real question, no
-  embedded answer, no clickbait, no unsupported numbers).
-- **Raw-pool backfill**: discovery ranks the order of work, it is not a gate. Topics are evaluated in
-  batches through the already-discovered raw pool until 9 candidates clear every gate or 60 topics
-  were evaluated (at most 3 rewrite requests with OpenAI) - without new provider calls.
-- **Semantic validation** (`semantic-validator-v1`, `ti-score-v4`): questions that pass the local
-  gates are judged on meaning by the worker model - the question alone, without its source - on
-  self-contained clarity, clear factual payoff, universal 12+ relevance, freedom from prior knowledge,
-  natural spoken German and knowledge-short fit (0-10 each, plus issue codes such as
-  `unexplained_metaphor` or `rhetorical_or_opinion`). Any issue or any dimension below 6 rejects.
-  Batched (<= 20 per request), cached per question and validator version, and sharing one budget of at
-  most 3 AI requests per pool with question rewriting. It needs `OPENAI_API_KEY` (not the director's AI
-  mode; disable with `TOPIC_SEMANTIC_VALIDATION=false`). Without it, strict local rules apply: only
+- **AI curation** (`semantic-curator-v1`, `ti-score-v5`): one combined worker-model call per batch of
+  up to 20 raw topics creates the question *and* judges it - no separate rewrite and validation
+  requests, at most 3 requests (60 topics) per pool. The curator sees each topic with its source
+  evidence (titles, descriptions, kind) and, when there is one, the locally extracted question as a
+  hint. It turns a statement headline into a question only when the evidence supports it
+  ("Brustkrebsvorsorge in Zukunft mit einer einfachen Blutprobe?" → "Kann Brustkrebs künftig mit einem
+  einfachen Bluttest erkannt werden?") and never invents mechanisms, numbers, causes or contradictions
+  (an ungrounded question is rejected as `semantic_unsupported_premise`). It scores self-contained
+  clarity, clear factual payoff, universal 12+ relevance, freedom from prior knowledge, natural spoken
+  German and knowledge-short fit (0-10 each) plus issue codes (`unexplained_metaphor`,
+  `rhetorical_or_opinion`, `too_narrow_audience`, `demographic_subgroup_only`, ...). Understandable is
+  not the same as universal: product, brand, subgroup ("Was tun Männer ...?"), hobby or specialist
+  questions do not pass. Any issue or any dimension below 6 rejects; `scoring.py` still decides.
+  Results are cached per topic evidence, curator version and model. Topic AI is enabled by
+  `OPENAI_API_KEY` alone - independent of `CLIPFORGE_AI_MODE`, which keeps controlling video generation
+  only (disable with `TOPIC_SEMANTIC_VALIDATION=false`).
+- **Without a key** (`tq3` local questions): a deterministic step keeps real questions ("Beziehung:
+  Wie gesund ist die Liebe?" → "Wie gesund ist die Liebe?"), turns indirect clauses and
+  "Darum/So/Das passiert"-headlines into direct questions, strips channel suffixes, hashtags, ALL-CAPS
+  emphasis and exclamation marks, and uses a concrete template only where the encyclopedia says what a
+  subject is - never a generic "Was steckt eigentlich hinter X?". Strict local rules then apply: only
   why/how/what-if questions with a fully accessible premise and no clickbait-styled source - fewer
   suggestions, never unvetted ones.
+- **Deterministic checks** stay a prefilter, not the bottleneck: calendar pages are dropped before any
+  AI call (reported as `prefiltered`), and every question is checked for English, a missing question
+  mark, an embedded answer, clickbait and unsupported numbers.
+- **Raw-pool backfill**: discovery ranks the order of work, it is not a gate. Topics are evaluated in
+  batches through the already-discovered raw pool until 9 candidates clear every gate or 60 topics
+  were evaluated / 3 AI requests used - without new provider calls.
+- **Availability**: an accepted candidate stays available until the user picks or dismisses it; a
+  refill that finds nothing new never discards the shown chips. With only 1-2 strong candidates Home
+  shows exactly those ("Gerade nur 2 starke Vorschläge.").
 - **Universal 12+ gate** (since `ti-score-v3`): a question whose premise needs prior knowledge (title
   context, a brand or multi-word name, product-generation news, an institution or one specific
   event, a date or identifier, or an obscure entity leading the question) is rejected as
@@ -138,7 +149,7 @@ before the page opens; video generation never waits for it.
 - **Novelty** compares against projects, queued requests, uploaded videos and the Learning
   Archive with a light German-aware similarity (compounds, umlauts, synonyms), so rephrasings of an
   earlier video are rejected.
-- **Scoring**: one versioned authority (`topic_intelligence/scoring.py`, `ti-score-v4`) with
+- **Scoring**: one versioned authority (`topic_intelligence/scoring.py`, `ti-score-v5`) with
   documented weights. Mass-audience quality (suitability, broad appeal, accessibility without prior
   niche knowledge, question form) carries the score; a trend spike counts only as much as its
   corroboration and the topic's quality allow; date pages, identifiers, isolated events, acronyms,

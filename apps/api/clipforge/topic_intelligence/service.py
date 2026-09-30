@@ -81,13 +81,15 @@ from .transform import (
     MAX_BATCH,
     TRANSFORMATION_VERSION,
     Transformed,
+    curated_transform,
     deterministic_transform,
-    transform_topics,
 )
 
 SKIP_MEMORY = timedelta(hours=24)
 RETENTION = timedelta(days=14)
 PREFILTER_FLAGS = frozenset({"person", "tragedy", "disambiguation"})
+# Obvious garbage never reaches the curator (calendar pages have no story of their own).
+PREFILTER_TOPIC_FLAGS = frozenset({"date_page"})
 OBSCURE_ENTITY_FLAGS = frozenset({"identifier", "acronym", "compound_proper_name", "foreign_proper_name", "isolated_event", "date_page"})
 UNAVAILABLE_MESSAGE = "Topic discovery is temporarily unavailable."
 EXHAUSTED_MESSAGE = "No further topic candidates right now. Try again later or enter your own question."
@@ -282,7 +284,7 @@ def build_candidate(
             "researchability", research_value, confidence="medium" if has_article else confidence, method=method, encyclopedic_article=has_article,
         ),
         "own_performance": own_priors.get(niche, own_default),
-        "semantic": semantic.pending(),
+        "semantic": transformed.semantic or semantic.pending(),
     }
     features, feature_evidence = quality_signals(question, group.title, group.description(), niche, assessment, method, transformed.notes)
     signals.update(features)
@@ -440,11 +442,17 @@ def discover(
                 carried.append(record)
             elif record.rejection_reasons:
                 carried_rejected.append(record.candidate_id)
-    groups = [
-        group for group in group_topics(raw)
-        if group.key not in excluded_groups and not group.flags & PREFILTER_FLAGS
-    ]
-    if settings.clipforge_ai_mode == "openai" and settings.openai_api_key:
+    groups: list[TopicGroup] = []
+    prefiltered: list[str] = []
+    for group in group_topics(raw):
+        if group.key in excluded_groups or group.flags & PREFILTER_FLAGS:
+            continue
+        if topic_obscurity_flags(group.title, group.description()) & PREFILTER_TOPIC_FLAGS:
+            prefiltered.append(group.title)  # cheap deterministic prefilter: never worth an AI call
+            continue
+        groups.append(group)
+    if semantic.semantic_enabled(settings):
+        # The curator can turn statements into grounded questions: discovery signals order the work.
         groups.sort(key=lambda group: (-_preliminary(group), group.key))
     else:
         # Local mode: a topic without a locally derivable question can never pass, so topics that
@@ -456,31 +464,47 @@ def discover(
     candidates: list[TopicCandidate] = []
     extras: dict[str, tuple[list[str], list[str]]] = {}
     methods: list[str] = []
-    transform_errors: list[str] = []
     semantic_errors: list[str] = []
-    evaluated = transform_requests = validation_requests = validated = cached_validations = 0
+    evaluated = curation_requests = curated = cached_curations = 0
     ai_left = AI_REQUEST_BUDGET - (ai_requests_in(broaden_from) if broaden_from is not None else 0)
     semantic_on = semantic.semantic_enabled(settings)
     batch: list[TopicGroup] = []
     accepted = len(carried)
     queue = list(groups)
     # Backfill through the raw pool: the discovery pre-rank orders the work, it is not a gate.
-    # A round = question step -> deterministic gates -> semantic validation of the survivors.
+    # One round = <= 20 raw topics -> ONE curator request (question + judgement) -> scoring.
     while queue and evaluated < budget and accepted < TARGET_ACCEPTED:
         batch = queue[: min(MAX_BATCH, budget - evaluated)]
         queue = queue[len(batch):]
-        db.commit()  # no open transaction while the question step may wait on OpenAI
-        # Rewriting may use the AI only while one request stays free for validation.
-        allow_llm = ai_left >= (2 if semantic_on else 1)
-        transformed, method, transform_error = transform_topics(batch, settings, allow_llm=allow_llm)
-        methods.append(method)
-        used = method == "llm" or bool(transform_error)
-        transform_requests += used
-        ai_left -= used
-        if transform_error:
-            transform_errors.append(transform_error)
         evaluated += len(batch)
-        round_candidates: list[TopicCandidate] = []
+        transformed: list[Transformed] = []
+        if semantic_on:
+            outcome = semantic.curate(db, settings, batch, requests_left=ai_left, now=now)
+            curation_requests += outcome.requests
+            ai_left -= outcome.requests
+            cached_curations += outcome.cached
+            semantic_errors.extend(outcome.errors)
+            for group in batch:
+                status = outcome.statuses.get(group.key, "not_curated")
+                judgement = outcome.judgements.get(group.key)
+                if judgement is not None:
+                    transformed.append(curated_transform(group, judgement, semantic.curated_signal(judgement, status=status)))
+                    curated += status == "curated"
+                    methods.append("curator")
+                    continue
+                item = deterministic_transform(group)
+                item.semantic = (
+                    semantic.unavailable("semantic_curator_failed", status="failed") if status == "failed"
+                    else semantic.unavailable("ai_budget_exhausted", status="not_validated")
+                )
+                transformed.append(item)
+                methods.append("template")
+        else:
+            for group in batch:
+                item = deterministic_transform(group)
+                item.semantic = semantic.unavailable("semantic_curator_unavailable")
+                transformed.append(item)
+            methods.append("template")
         for group, item in zip(batch, transformed, strict=True):
             candidate = build_candidate(group, item, history=history, own_priors=own_priors, own_default=own_default, now=now, run_id=run.id)
             if candidate.candidate_id in excluded_ids:
@@ -488,25 +512,10 @@ def discover(
             extras[candidate.candidate_id] = (item.issues, item.flags)
             score_candidate(candidate, weights=weights, version=version, now=now, issues=item.issues, flags=item.flags, degraded_sources=degraded)
             candidates.append(candidate)
-            round_candidates.append(candidate)
-        survivors = {candidate.candidate_id: candidate.question for candidate in round_candidates if not candidate.rejected}
-        if survivors:
-            outcome = semantic.validate(db, settings, survivors, requests_left=ai_left, now=now)
-            validation_requests += outcome.requests
-            ai_left -= outcome.requests
-            cached_validations += outcome.cached
-            validated += sum(1 for signal in outcome.signals.values() if signal.available)
-            if outcome.error:
-                semantic_errors.append(outcome.error)
-            for candidate in round_candidates:
-                if candidate.candidate_id in outcome.signals:
-                    candidate.signals["semantic"] = outcome.signals[candidate.candidate_id]
-                    issues, flags = extras[candidate.candidate_id]
-                    score_candidate(candidate, weights=weights, version=version, now=now, issues=issues, flags=flags, degraded_sources=degraded)
         accepted = len(carried) + sum(1 for candidate in candidates if not candidate.rejected)
-    method = "llm" if "llm" in methods else "template"
+    method = "curator" if "curator" in methods else "template"
     run.transformation = f"{method}:{TRANSFORMATION_VERSION}"
-    transform_error = "; ".join(dict.fromkeys(transform_errors)) or None
+    transform_error = None
     # Competition probes: only for the strongest usable candidates, bounded per refresh.
     probe_report = SourceReport(deps.probe.name, "skipped", error=None if deps.probe.available else "YouTube is not connected")
     if deps.probe.available:
@@ -536,20 +545,20 @@ def discover(
         probe_report.quota_units = meter.quota_units - units_before
     reports.append(probe_report)
     reports.append(SourceReport(
-        EVALUATION_REPORT, "ok", items=evaluated, calls=transform_requests + validation_requests,
+        EVALUATION_REPORT, "ok", items=evaluated, calls=curation_requests,
         error=f"raw_groups={len(groups)} budget={budget} target={TARGET_ACCEPTED} accepted={accepted} remaining={len(queue)}",
-        detail={"ai_requests": transform_requests + validation_requests, "ai_request_budget": AI_REQUEST_BUDGET,
-                "rewrite_requests": transform_requests, "validation_requests": validation_requests,
-                "remaining_raw_groups": len(queue), "broadened_from": broaden_from.id if broaden_from is not None else None},
+        detail={"ai_requests": curation_requests, "ai_request_budget": AI_REQUEST_BUDGET, "curation_requests": curation_requests,
+                "remaining_raw_groups": len(queue), "prefiltered": len(prefiltered), "prefiltered_topics": prefiltered[:10],
+                "broadened_from": broaden_from.id if broaden_from is not None else None},
     ))
     reports.append(SourceReport(
         SEMANTIC_REPORT,
         "ok" if semantic_on and not semantic_errors else "failed" if semantic_errors else "unavailable",
         error="; ".join(dict.fromkeys(semantic_errors)) or (None if semantic_on else "No OpenAI key (or disabled): strict local acceptance"),
-        calls=validation_requests,
-        items=validated,
-        detail={"validator_version": semantic.SEMANTIC_VALIDATOR_VERSION, "enabled": semantic_on,
-                "validated": validated, "cached": cached_validations},
+        calls=curation_requests,
+        items=curated,
+        detail={"curator_version": semantic.SEMANTIC_CURATOR_VERSION, "enabled": semantic_on,
+                "curated": curated, "cached": cached_curations},
     ))
     if broaden_from is not None:
         reports.append(SourceReport(BROADENING_REPORT, "ok", items=evaluated))
@@ -597,7 +606,7 @@ def current_run(
         return None  # questions built by an older question step
     if version is not None and semantic_ready is not None:
         detail = semantic_report(run).get("detail") or {}
-        if detail.get("validator_version") != semantic.SEMANTIC_VALIDATOR_VERSION or bool(detail.get("enabled")) != semantic_ready:
+        if detail.get("curator_version") != semantic.SEMANTIC_CURATOR_VERSION or bool(detail.get("enabled")) != semantic_ready:
             return None  # judged by another validator version, or validation availability changed
     return run
 
@@ -1049,18 +1058,19 @@ def pool_summary(db: Session, run: TopicDiscoveryRun | None) -> dict[str, Any] |
         "evaluated": sum(evaluated_in(item) for item in chain),
         "ai_requests": sum(ai_requests_in(item) for item in chain),
         "ai_request_budget": AI_REQUEST_BUDGET,
-        "rewrite_requests": sum(int(_evaluation_detail(item).get("rewrite_requests") or 0) for item in chain),
-        "validation_requests": sum(int(_evaluation_detail(item).get("validation_requests") or 0) for item in chain),
+        "curation_requests": sum(int(_evaluation_detail(item).get("curation_requests") or 0) for item in chain),
         "remaining_raw_groups": _evaluation_detail(run).get("remaining_raw_groups"),
+        "prefiltered": int(_evaluation_detail(chain[-1]).get("prefiltered") or 0),
+        "prefiltered_topics": list(_evaluation_detail(chain[-1]).get("prefiltered_topics") or []),
         "broadened": parent is not None,
     }
     semantic_reports = [semantic_report(item) for item in chain if semantic_report(item)]
     semantic_summary = {
         "status": next((item["status"] for item in semantic_reports if item.get("status") != "ok"), semantic_reports[0]["status"] if semantic_reports else None),
-        "validator_version": semantic.SEMANTIC_VALIDATOR_VERSION,
+        "curator_version": semantic.SEMANTIC_CURATOR_VERSION,
         "enabled": any((item.get("detail") or {}).get("enabled") for item in semantic_reports),
         "requests": sum(int(item.get("calls") or 0) for item in semantic_reports),
-        "validated": sum(int((item.get("detail") or {}).get("validated") or 0) for item in semantic_reports),
+        "curated": sum(int((item.get("detail") or {}).get("curated") or 0) for item in semantic_reports),
         "cached": sum(int((item.get("detail") or {}).get("cached") or 0) for item in semantic_reports),
         "errors": [item["error"] for item in semantic_reports if item.get("error")],
     }
@@ -1137,9 +1147,9 @@ def discovery_status(db: Session, settings: Settings | None = None, *, now: date
         "warmup": dict(WARMUP),
         "config": None if report_settings is None else {
             "ai_mode": report_settings.clipforge_ai_mode,
-            "question_rewriting": "llm" if report_settings.clipforge_ai_mode == "openai" and report_settings.openai_api_key else "template",
-            "semantic_validation": "enabled" if semantic.semantic_enabled(report_settings) else "unavailable (strict local acceptance)",
-            "semantic_validator_version": semantic.SEMANTIC_VALIDATOR_VERSION,
+            "question_rewriting": "curator" if semantic.semantic_enabled(report_settings) else "template",
+            "topic_ai": "enabled (OpenAI key; independent of ai_mode)" if semantic.semantic_enabled(report_settings) else "unavailable (strict local acceptance)",
+            "semantic_curator_version": semantic.SEMANTIC_CURATOR_VERSION,
             "brave_configured": bool(report_settings.brave_search_api_key),
             "youtube_connected": active_connection(db) is not None,
         },

@@ -1,7 +1,8 @@
-"""Topic Intelligence: semantic question validation (semantic-validator-v1, ti-score-v4).
+"""Topic Intelligence: combined AI curation (semantic-curator-v1, ti-score-v5).
 
-Real Mac review of tq3/ti-score-v3: only 2/9 suggestions passed - deterministic
-rules checked form, not meaning.
+Real Mac (ti-score-v4, ai_mode=local): 96 raw topics, 60 evaluated, 52
+transformation failures, only 4 reached validation, rewrite_requests=0 -
+the AI was never used for question creation because CLIPFORGE_AI_MODE=local.
 """
 from __future__ import annotations
 
@@ -9,14 +10,14 @@ import ast
 from datetime import timedelta
 from pathlib import Path
 
-from sqlalchemy import func, select
-from test_topic_intelligence_local_questions import StaticSource, raw, static_deps
-from topic_support import NOW, FakeLLM, FakeValidator, bad, good_assessment, settings
+from sqlalchemy import select
+from test_topic_intelligence_local_questions import StaticSource, pool_of_96, raw, static_deps
+from topic_support import NOW, FakeCurator, bad, curated, settings
 
 from clipforge.models import GenerationJob, TopicCandidateRecord, TopicDiscoveryRun
-from clipforge.topic_intelligence import scoring, semantic, service, transform
+from clipforge.topic_intelligence import scoring, semantic, service
 
-KEY = {"openai_api_key": "sk-test"}  # validation needs a key; the director AI mode stays local
+KEY = {"openai_api_key": "sk-test"}  # CLIPFORGE_AI_MODE stays "local"
 
 QR = "Scannt ein selbstgemalter QR-Code?"
 SMARTWATCH = "Was weiß deine Smartwatch wirklich über dein biologisches Alter?"
@@ -25,21 +26,31 @@ KOPFHOERER = "Warum brauchen auch die besten Kopfhörer Nachhilfe?"
 PSEUDO = "Sind wir nur noch Pseudofreunde?"
 CARPLAY = "Kriegen wir Apple CarPlay beim virtuellen Cockpit installiert?"
 TALG = "Was kann Rindertalg-Creme wirklich?"
+MAENNER = "Was tun Männer am häufigsten für ihre Gesundheit?"
 SCHWINDEL = "Warum wird einem schwindelig, wenn man schnell aufsteht?"
+BRUST_TITLE = "Brustkrebsvorsorge in Zukunft mit einer einfachen Blutprobe?"
+BRUST = "Kann Brustkrebs künftig mit einem einfachen Bluttest erkannt werden?"
+HUNDE_TITLE = "Hundehirn: Studie zeigt, wie Konsonanten die Erkennung von Wortmustern prägen"
+HUNDE = "Verarbeiten Hunde Wörter ähnlicher wie Menschen als gedacht?"
 
-JUDGEMENTS = {
-    KOPFHOERER: bad(self_contained_clarity=3, clear_factual_payoff=3, natural_spoken_german=5,
-                    issues=["unexplained_metaphor", "unclear_payoff"], reason="Metapher ohne Erklärung"),
+BY_QUESTION = {
+    KOPFHOERER: bad(self_contained_clarity=3, clear_factual_payoff=3, natural_spoken_german=5, issues=["unexplained_metaphor", "unclear_payoff"]),
     PSEUDO: bad(clear_factual_payoff=3, knowledge_short_fit=3, issues=["rhetorical_or_opinion", "unclear_payoff"]),
     CARPLAY: bad(universal_12plus_relevance=2, prior_knowledge_free=3, issues=["too_narrow_audience", "niche_context_required"]),
     TALG: bad(universal_12plus_relevance=4, prior_knowledge_free=3, issues=["niche_context_required"]),
+    MAENNER: bad(universal_12plus_relevance=4, knowledge_short_fit=5, issues=["demographic_subgroup_only"]),
+}
+BY_TOPIC = {
+    BRUST_TITLE: curated(BRUST, "koerper_gesundheit"),
+    HUNDE_TITLE: curated(HUNDE, "natur_tiere"),
 }
 
 
-def run_pool(db, titles, *, validator=None, monkeypatch=None, config=None, now=NOW, count=9):
-    if validator is not None:
-        monkeypatch.setattr(semantic, "SEMANTIC_CLIENT_FACTORY", validator)
-    source = StaticSource([raw(title, trend=0.8 - index * 0.005) for index, title in enumerate(titles)])
+def run_pool(db, titles, *, curator=None, monkeypatch=None, config=None, now=NOW, count=9, kind="news"):
+    if curator is not None:
+        monkeypatch.setattr(semantic, "SEMANTIC_CLIENT_FACTORY", curator)
+    source = StaticSource([raw(title, trend=0.8 - index * 0.005, kind=kind, source="brave_news_de" if kind == "news" else "youtube_trending_de")
+                           for index, title in enumerate(titles)])
     result = service.suggestions(db, config or settings(**KEY), static_deps(source), count=count, now=now)
     return result, source
 
@@ -48,172 +59,199 @@ def record_for(db, question: str) -> TopicCandidateRecord:
     return next(record for record in db.scalars(select(TopicCandidateRecord)).all() if record.question == question)
 
 
-# --- The real Mac questions ---------------------------------------------------------------
+def real_curator() -> FakeCurator:
+    return FakeCurator(BY_TOPIC, by_question=BY_QUESTION)
 
 
-def test_real_mac_questions_are_judged_on_meaning(db, monkeypatch):
-    validator = FakeValidator(JUDGEMENTS)
-    result, _ = run_pool(db, [QR, SMARTWATCH, KOPFHOERER_TITLE, PSEUDO, CARPLAY, TALG, SCHWINDEL], validator=validator, monkeypatch=monkeypatch)
-    served = {item["question"] for item in result["candidates"]}
-    assert served == {QR, SMARTWATCH, SCHWINDEL}
-    kopf = record_for(db, KOPFHOERER).rejection_reasons
-    assert {"semantic_unexplained_metaphor", "semantic_not_self_contained", "semantic_unclear_payoff"} <= set(kopf)
+# --- Decoupled from the director AI mode -------------------------------------------------------
+
+
+def test_local_clipforge_mode_with_a_key_enables_topic_ai(db, monkeypatch):
+    config = settings(**KEY)
+    assert config.clipforge_ai_mode == "local"
+    assert semantic.semantic_enabled(config)
+    curator = real_curator()
+    result, _ = run_pool(db, [SCHWINDEL], curator=curator, monkeypatch=monkeypatch, config=config, count=1)
+    assert len(curator.requests) == 1 and result["candidates"][0]["question"] == SCHWINDEL
+    status = service.discovery_status(db, config, now=NOW)
+    assert status["config"]["ai_mode"] == "local" and status["config"]["topic_ai"].startswith("enabled")
+    assert status["config"]["question_rewriting"] == "curator"
+
+
+def test_no_key_means_no_topic_ai_even_in_openai_mode(db):
+    assert not semantic.semantic_enabled(settings(clipforge_ai_mode="openai", openai_api_key=None))
+    assert not semantic.semantic_enabled(settings(topic_semantic_validation=False, **KEY))
+
+
+# --- One combined, bounded call ------------------------------------------------------------------
+
+
+def test_sixty_raw_topics_are_curated_within_three_ai_calls(db, monkeypatch):
+    curator = FakeCurator(default=bad(clear_factual_payoff=2))  # nothing passes: worst case
+    source = StaticSource(pool_of_96())
+    monkeypatch.setattr(semantic, "SEMANTIC_CLIENT_FACTORY", curator)
+    service.suggestions(db, settings(**KEY), static_deps(source), count=9, now=NOW)
+    assert len(curator.requests) == 3
+    assert [len(request) for request in curator.requests] == [20, 20, 20]
+    assert source.calls == 1
+
+
+def test_question_creation_and_validation_happen_in_the_same_call(db, monkeypatch):
+    curator = real_curator()
+    run_pool(db, [BRUST_TITLE, HUNDE_TITLE, SCHWINDEL], curator=curator, monkeypatch=monkeypatch)
+    assert len(curator.requests) == 1  # no separate rewrite + validation requests
+    record = record_for(db, BRUST)
+    info = record.score_breakdown["quality"]["semantic"]
+    assert info["status"] == "curated" and info["curator_version"] == semantic.SEMANTIC_CURATOR_VERSION
+    assert set(info["dimensions"]) == set(semantic.DIMENSIONS)
+    assert record.provenance["transformation"] == "curator"
+
+
+def test_statement_headlines_become_grounded_questions(db, monkeypatch):
+    result, _ = run_pool(db, [BRUST_TITLE, HUNDE_TITLE], curator=real_curator(), monkeypatch=monkeypatch)
+    assert {item["question"] for item in result["candidates"]} == {BRUST, HUNDE}
+    for question in (BRUST, HUNDE):
+        assert record_for(db, question).score_breakdown["quality"]["semantic"]["grounded"] is True
+
+
+def test_evidence_reaches_the_curator_with_the_local_question_as_a_hint(db, monkeypatch):
+    curator = real_curator()
+    run_pool(db, [KOPFHOERER_TITLE, HUNDE_TITLE], curator=curator, monkeypatch=monkeypatch)
+    topics = {item["topic"]: item for item in curator.requests[0]}
+    assert topics[KOPFHOERER_TITLE]["local_question"] == KOPFHOERER
+    assert "local_question" not in topics[HUNDE_TITLE]  # a statement: the curator decides
+    assert topics[HUNDE_TITLE]["evidence"][0]["title"] == HUNDE_TITLE
+
+
+def test_unsupported_premise_is_rejected(db, monkeypatch):
+    curator = FakeCurator({BRUST_TITLE: curated("Heilt ein Bluttest künftig jeden Brustkrebs?", "koerper_gesundheit", grounded=False)})
+    run_pool(db, [BRUST_TITLE], curator=curator, monkeypatch=monkeypatch)
+    assert "semantic_unsupported_premise" in record_for(db, "Heilt ein Bluttest künftig jeden Brustkrebs?").rejection_reasons
+
+
+# --- Semantic gates on the real Mac questions ------------------------------------------------------
+
+
+def test_metaphor_rhetoric_niche_and_demographic_questions_are_rejected(db, monkeypatch):
+    titles = [QR, SMARTWATCH, KOPFHOERER_TITLE, PSEUDO, CARPLAY, TALG, MAENNER, SCHWINDEL]
+    result, _ = run_pool(db, titles, curator=real_curator(), monkeypatch=monkeypatch, kind="video")
+    assert {item["question"] for item in result["candidates"]} == {QR, SMARTWATCH, SCHWINDEL}
+    assert {"semantic_unexplained_metaphor", "semantic_not_self_contained"} <= set(record_for(db, KOPFHOERER).rejection_reasons)
     assert {"semantic_rhetorical_or_opinion", "semantic_unclear_payoff"} <= set(record_for(db, PSEUDO).rejection_reasons)
     assert {"semantic_too_narrow_audience", "semantic_not_universal"} <= set(record_for(db, CARPLAY).rejection_reasons)
-    assert {"semantic_niche_context_required", "semantic_prior_knowledge"} <= set(record_for(db, TALG).rejection_reasons)
+    assert "semantic_prior_knowledge" in record_for(db, TALG).rejection_reasons
+    assert {"semantic_demographic_subgroup_only", "semantic_not_universal"} <= set(record_for(db, MAENNER).rejection_reasons)
 
 
-def test_qr_and_smartwatch_pass_every_dimension(db, monkeypatch):
-    run_pool(db, [QR, SMARTWATCH], validator=FakeValidator(), monkeypatch=monkeypatch)
-    for question in (QR, SMARTWATCH):
-        record = record_for(db, question)
-        assert not record.rejection_reasons
-        info = record.score_breakdown["quality"]["semantic"]
-        assert info["status"] == "validated" and info["validator_version"] == semantic.SEMANTIC_VALIDATOR_VERSION
-        assert set(info["dimensions"]) == set(semantic.DIMENSIONS)
-        assert min(info["dimensions"].values()) >= scoring.SEMANTIC_DIMENSION_MIN
+def test_understandable_is_not_the_same_as_universal(db, monkeypatch):
+    # Clear and prior-knowledge-free, but only for one subgroup: still not a default suggestion.
+    judgement = bad(universal_12plus_relevance=5)
+    run_pool(db, [MAENNER], curator=FakeCurator(by_question={MAENNER: judgement}), monkeypatch=monkeypatch, kind="video")
+    record = record_for(db, MAENNER)
+    dims = record.score_breakdown["quality"]["semantic"]["dimensions"]
+    assert dims["self_contained_clarity"] >= 0.8 and dims["prior_knowledge_free"] >= 0.8
+    assert record.rejection_reasons == ["semantic_not_universal"]
 
 
-def test_strong_universal_factual_question_passes(db, monkeypatch):
-    result, _ = run_pool(db, [SCHWINDEL], validator=FakeValidator(), monkeypatch=monkeypatch, count=1)
-    assert [item["question"] for item in result["candidates"]] == [SCHWINDEL]
-    assert record_for(db, SCHWINDEL).score_version == "ti-score-v4"
+def test_gates_are_unchanged(db):
+    assert scoring.SCORE_VERSION == "ti-score-v5"
+    assert scoring.SEMANTIC_DIMENSION_MIN == 0.6 and scoring.QUALITY_FLOOR == 0.55 and scoring.PRIOR_KNOWLEDGE_GATE == 0.5
 
 
-def test_a_single_weak_dimension_rejects_even_without_issue_codes(db, monkeypatch):
-    run_pool(db, [SCHWINDEL], validator=FakeValidator({SCHWINDEL: bad(natural_spoken_german=5)}), monkeypatch=monkeypatch)
-    assert record_for(db, SCHWINDEL).rejection_reasons == ["semantic_unnatural_german"]
+# --- Backfill, availability, cache -------------------------------------------------------------------
 
 
-def test_obscure_source_passes_after_universal_reframing(db, monkeypatch):
-    llm = FakeLLM({"GICON-Höhenwindturm": good_assessment(
-        "Kann ein Windrad in großer Höhe deutlich mehr Strom erzeugen?", "technik", broad_appeal=8, accessibility=9)})
-    monkeypatch.setattr(transform, "TRANSFORM_CLIENT_FACTORY", llm)
-    validator = FakeValidator()
-    monkeypatch.setattr(semantic, "SEMANTIC_CLIENT_FACTORY", validator)
-    source = StaticSource([raw("GICON-Höhenwindturm", kind="article", source="wikipedia_pageviews",
-                               description="Windkraftanlage, die stärkeren Wind in großer Höhe nutzen soll")])
-    config = settings(clipforge_ai_mode="openai", **KEY)
-    result = service.suggestions(db, config, static_deps(source), count=1, now=NOW)
-    assert [item["question"] for item in result["candidates"]] == ["Kann ein Windrad in großer Höhe deutlich mehr Strom erzeugen?"]
-    assert validator.requests == [["Kann ein Windrad in großer Höhe deutlich mehr Strom erzeugen?"]]  # the question, not the source
+def test_backfill_continues_through_the_raw_pool_without_provider_calls(db, monkeypatch):
+    weak = [f"Pressemitteilung {name} zum Quartal" for name in ("Nord", "Süd", "West", "Ost", "Berg", "Tal", "Stern", "Blitz",
+                                                              "Wald", "Fluss", "Sonne", "Mond", "Wind", "Regen", "Feld",
+                                                              "Hafen", "Brücke", "Turm", "Markt", "Garten")]
+    curator = FakeCurator({**BY_TOPIC, **{title: {"usable": False, "question": ""} for title in weak}})
+    result, source = run_pool(db, [*weak, BRUST_TITLE, HUNDE_TITLE], curator=curator, monkeypatch=monkeypatch)
+    assert source.calls == 1
+    assert len(curator.requests) == 2  # the first 20 were unusable, curation continued in the same pool
+    assert {item["question"] for item in result["candidates"]} == {BRUST, HUNDE}
 
 
-def test_validator_sees_only_the_final_question(db, monkeypatch):
-    validator = FakeValidator(JUDGEMENTS)
-    run_pool(db, [KOPFHOERER_TITLE], validator=validator, monkeypatch=monkeypatch)
-    assert validator.requests == [[KOPFHOERER]]  # no source headline, no article context
-
-
-# --- Budget, batching, cache ---------------------------------------------------------------
-
-MANY = [f"Warum {verb} {noun} im Winter?" for noun in ("Katzen", "Hunde", "Vögel", "Bäume", "Fische", "Bienen", "Pferde", "Kühe")
-        for verb in ("frieren", "schlafen", "zittern", "wachsen", "schwimmen", "summen", "grasen", "wandern", "ruhen")]
-
-
-def test_batch_validation_stays_within_the_ai_budget(db, monkeypatch):
-    validator = FakeValidator(default=bad(clear_factual_payoff=2))  # nothing passes: worst case for requests
-    run_pool(db, MANY, validator=validator, monkeypatch=monkeypatch)
-    assert len(validator.requests) <= service.AI_REQUEST_BUDGET == 3
-    assert all(len(batch) <= semantic.MAX_VALIDATION_BATCH == 20 for batch in validator.requests)
+def test_accepted_candidates_stay_available_and_two_accepted_give_two_suggestions(db, monkeypatch):
+    curator = real_curator()
+    first, _ = run_pool(db, [BRUST_TITLE, HUNDE_TITLE, PSEUDO], curator=curator, monkeypatch=monkeypatch, count=9)
+    assert first["status"] == "partial" and len(first["candidates"]) == 2
+    ids = [item["candidate_id"] for item in first["candidates"]]
+    # Background refills ask for more while the two are shown: they must never be consumed by that.
+    for minute in (1, 2, 3):
+        service.suggestions(db, settings(**KEY), static_deps(StaticSource([])), count=7, exclude=ids, now=NOW + timedelta(minutes=minute))
+    assert {db.get(TopicCandidateRecord, candidate_id).status for candidate_id in ids} == {"proposed"}
     run = db.scalar(select(TopicDiscoveryRun).order_by(TopicDiscoveryRun.sequence.desc()))
-    runs = db.scalars(select(TopicDiscoveryRun)).all()
-    assert sum(service.ai_requests_in(item) for item in runs) <= service.AI_REQUEST_BUDGET
-    assert service.semantic_report(run)["detail"]["validator_version"] == semantic.SEMANTIC_VALIDATOR_VERSION
+    assert service.pool_summary(db, run)["available"] == 2
+    again = service.suggestions(db, settings(**KEY), static_deps(StaticSource([])), count=3, now=NOW + timedelta(minutes=4))
+    assert {item["candidate_id"] for item in again["candidates"]} == set(ids)
 
 
-def test_cached_validation_avoids_repeat_ai_calls(db, monkeypatch):
-    validator = FakeValidator()
-    run_pool(db, [QR, SMARTWATCH, SCHWINDEL], validator=validator, monkeypatch=monkeypatch, count=3)
-    assert len(validator.requests) == 1
-    # A new pool an hour later (pool expired) re-evaluates the same questions: all from cache.
+def test_only_an_explicit_dismissal_skips_a_candidate(db, monkeypatch):
+    first, _ = run_pool(db, [BRUST_TITLE, HUNDE_TITLE], curator=real_curator(), monkeypatch=monkeypatch, count=9)
+    dismissed = first["candidates"][0]["candidate_id"]
+    service.suggestions(db, settings(**KEY), static_deps(StaticSource([])), count=3, dismissed=[dismissed], now=NOW + timedelta(minutes=1))
+    assert db.get(TopicCandidateRecord, dismissed).status == "skipped"
+    assert db.get(TopicCandidateRecord, first["candidates"][1]["candidate_id"]).status == "proposed"
+
+
+def test_curation_is_cached_per_topic_and_curator_version(db, monkeypatch):
+    curator = real_curator()
+    run_pool(db, [BRUST_TITLE, HUNDE_TITLE], curator=curator, monkeypatch=monkeypatch)
+    assert len(curator.requests) == 1
     for record in db.scalars(select(TopicCandidateRecord)).all():
         record.status = "pooled"
     db.commit()
-    run_pool(db, [QR, SMARTWATCH, SCHWINDEL], validator=validator, monkeypatch=monkeypatch, count=3, now=NOW + timedelta(hours=1))
-    assert len(validator.requests) == 1
-    assert record_for(db, QR).score_breakdown["quality"]["semantic"]["status"] == "cached"
+    run_pool(db, [BRUST_TITLE, HUNDE_TITLE], curator=curator, monkeypatch=monkeypatch, now=NOW + timedelta(hours=1))
+    assert len(curator.requests) == 1  # a new pool, the same topics: nothing paid twice
+    assert record_for(db, BRUST).score_breakdown["quality"]["semantic"]["status"] == "cached"
 
 
-def test_semantic_rejection_triggers_raw_pool_backfill_without_provider_calls(db, monkeypatch):
-    rejected = MANY[:20]
-    later = [SCHWINDEL, "Warum können wir uns selbst nicht kitzeln?", "Warum schmeckt Essen im Flugzeug anders?"]
-    validator = FakeValidator({question: bad(universal_12plus_relevance=3) for question in rejected})
-    titles = rejected + later
-    result, source = run_pool(db, titles, validator=validator, monkeypatch=monkeypatch, count=3)
-    assert source.calls == 1  # the existing raw pool is reused
-    assert {item["question"] for item in result["candidates"]} == set(later)
-    assert len(validator.requests) >= 2  # the first batch was rejected, evaluation continued
+# --- Degradation and independence ------------------------------------------------------------------------
 
 
-# --- Local mode and failures ------------------------------------------------------------------
-
-
-def test_without_a_validator_local_mode_shows_fewer_stricter_suggestions(db):
-    titles = [QR, SMARTWATCH, KOPFHOERER_TITLE, PSEUDO, CARPLAY, TALG, SCHWINDEL, "Warum können wir uns selbst nicht kitzeln?"]
-    result, _ = run_pool(db, titles, config=settings())  # no key
-    served = {item["question"] for item in result["candidates"]}
-    assert served == {SCHWINDEL, "Warum können wir uns selbst nicht kitzeln?"}
-    assert result["status"] == "partial"
-    assert "unvalidated_weak_question_form" in record_for(db, PSEUDO).rejection_reasons
-    assert "unvalidated_clickbait_source" in record_for(db, KOPFHOERER).rejection_reasons
-    assert record_for(db, SCHWINDEL).score_breakdown["quality"]["semantic"]["status"] == "unavailable"
-    assert service.semantic_report(db.scalar(select(TopicDiscoveryRun)))["status"] == "unavailable"
-
-
-def test_validator_failure_falls_back_to_strict_local_rules_not_weaker_ones(db, monkeypatch):
-    result, _ = run_pool(db, [PSEUDO, TALG, SCHWINDEL], validator=FakeValidator(fail=True), monkeypatch=monkeypatch)
+def test_curator_failure_falls_back_to_strict_local_rules(db, monkeypatch):
+    result, _ = run_pool(db, [PSEUDO, TALG, SCHWINDEL], curator=FakeCurator(fail=True), monkeypatch=monkeypatch, kind="video")
     assert {item["question"] for item in result["candidates"]} == {SCHWINDEL}
     assert record_for(db, SCHWINDEL).score_breakdown["quality"]["semantic"]["status"] == "failed"
     assert service.semantic_report(db.scalar(select(TopicDiscoveryRun)))["status"] == "failed"
 
 
-def test_clickbait_extracted_question_is_never_accepted_without_semantic_validation(db):
-    run_pool(db, [KOPFHOERER_TITLE], config=settings())
+def test_without_a_key_local_mode_shows_fewer_stricter_suggestions(db):
+    result, _ = run_pool(db, [QR, PSEUDO, KOPFHOERER_TITLE, SCHWINDEL], config=settings(), kind="video")
+    assert {item["question"] for item in result["candidates"]} == {SCHWINDEL}
+    assert result["status"] == "partial"
     assert "unvalidated_clickbait_source" in record_for(db, KOPFHOERER).rejection_reasons
 
 
-def test_pool_is_rebuilt_when_validation_becomes_available(db, monkeypatch):
-    run_pool(db, [SCHWINDEL], config=settings())
-    runs_before = db.scalar(select(func.count()).select_from(TopicDiscoveryRun))
-    run_pool(db, [SCHWINDEL], validator=FakeValidator(), monkeypatch=monkeypatch, now=NOW + timedelta(minutes=2))
-    assert db.scalar(select(func.count()).select_from(TopicDiscoveryRun)) > runs_before
-
-
-# --- Generation independence --------------------------------------------------------------------
-
-
-def test_video_generation_never_waits_for_semantic_validation(db, monkeypatch):
+def test_video_generation_provider_and_latency_are_unchanged(db, monkeypatch):
     from clipforge.main import start_generation_job_route
     from clipforge.schemas import AdvancedOptions, ProjectCreate
 
     monkeypatch.setattr("clipforge.main.schedule_next_generation", lambda _settings: None)
-    assert service._FLIGHT.acquire(blocking=False)  # a discovery/validation round is "running"
+    config = settings(**KEY)
+    assert service._FLIGHT.acquire(blocking=False)  # a curation round is "running"
     try:
-        job = start_generation_job_route(ProjectCreate(prompt="Warum ist der Himmel blau?", options=AdvancedOptions(research="off")), db, settings(**KEY))
+        job = start_generation_job_route(ProjectCreate(prompt="Warum ist der Himmel blau?", options=AdvancedOptions(research="off")), db, config)
     finally:
         service._FLIGHT.release()
     assert db.get(GenerationJob, job["id"]).status == "queued"
+    assert config.clipforge_ai_mode == "local"  # the key enables topic curation only, not the director
     root = Path(__file__).resolve().parents[1] / "clipforge"
-    for module in ("main.py", "generation.py", "services.py", "pipeline.py"):
+    for module in ("main.py", "generation.py", "services.py", "pipeline.py", "ai.py"):
         tree = ast.parse((root / module).read_text())
         imported = {node.module or "" for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)}
-        assert not any("semantic" in name for name in imported), module
+        assert not any("semantic" in name or "topic_intelligence" == name.split(".")[-1] for name in imported if module != "main.py"), module
 
 
-# --- Diagnostics -------------------------------------------------------------------------------
-
-
-def test_diagnostics_show_the_semantic_breakdown(db, monkeypatch):
-    run_pool(db, [QR, CARPLAY], validator=FakeValidator(JUDGEMENTS), monkeypatch=monkeypatch)
+def test_diagnostics_show_the_curation_breakdown(db, monkeypatch):
+    run_pool(db, [QR, CARPLAY], curator=real_curator(), monkeypatch=monkeypatch, kind="video")
     report = service.discovery_status(db, settings(**KEY), now=NOW)
-    assert report["current_score_version"] == "ti-score-v4"
-    assert report["config"]["semantic_validation"] == "enabled"
-    assert report["config"]["semantic_validator_version"] == semantic.SEMANTIC_VALIDATOR_VERSION
+    assert report["current_score_version"] == "ti-score-v5"
+    assert report["config"]["semantic_curator_version"] == semantic.SEMANTIC_CURATOR_VERSION
     pool = report["pool"]
-    assert pool["semantic_validation"]["status"] == "ok"
+    assert pool["semantic_validation"]["status"] == "ok" and pool["semantic_validation"]["curated"] == 2
+    assert pool["evaluation"]["ai_requests"] == 1 and pool["evaluation"]["ai_request_budget"] == 3
     rows = {row["question"]: row for row in pool["accepted_candidates"] + pool["rejected_candidates"]}
-    carplay = rows[CARPLAY]["semantic"]
-    assert carplay["status"] == "validated" and carplay["dimensions"]["universal_12plus_relevance"] == 0.2
-    assert "too_narrow_audience" in carplay["issues"]
+    assert rows[CARPLAY]["semantic"]["dimensions"]["universal_12plus_relevance"] == 0.2
     assert "semantic_not_universal" in rows[CARPLAY]["reasons"]

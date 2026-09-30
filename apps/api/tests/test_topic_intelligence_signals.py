@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import pytest
-from topic_support import NOW, FakeLLM, good_assessment, settings, spike
+from topic_support import NOW, FakeCurator, curate_groups, curated, settings, spike
 
 from clipforge.topic_intelligence import scoring, transform
 from clipforge.topic_intelligence.candidate import (
@@ -161,38 +161,32 @@ def _group(title: str, kind: str = "article", description: str = "", flags: set[
     return TopicGroup(raw.key, [raw])
 
 
-def test_llm_transforms_a_raw_trend_into_a_natural_german_question(monkeypatch):
-    llm = FakeLLM({"Schlafträgheit": good_assessment(
+def test_curator_turns_a_raw_trend_into_a_natural_german_question(db):
+    curator = FakeCurator({"Schlafträgheit": curated(
         "Warum fühle ich mich nach einem kurzen Mittagsschlaf manchmal schlechter als vorher?", "koerper_gesundheit")})
-    monkeypatch.setattr(transform, "TRANSFORM_CLIENT_FACTORY", llm)
-    results, method, error = transform.transform_topics(
-        [_group("Schlafträgheit", description="Benommenheit nach dem Aufwachen")], settings(clipforge_ai_mode="openai", openai_api_key="sk-test"),
-    )
-    assert method == "llm" and error is None
+    results, outcome = curate_groups(db, [_group("Schlafträgheit", description="Benommenheit nach dem Aufwachen")], curator)
+    assert outcome.requests == 1 and outcome.statuses == {topic_key("Schlafträgheit"): "curated"}
     assert results[0].question.startswith("Warum fühle ich mich")
     assert results[0].issues == [] and results[0].assessment["curiosity_gap"] == 0.8
-    request = llm.requests[0]
-    assert request["market"] == {"language": "de", "region": "DE", "broader": "DACH"}
-    assert request["topics"][0]["topic"] == "Schlafträgheit"
+    assert results[0].semantic is not None and results[0].semantic.evidence["status"] == "curated"
+    request = curator.requests[0]
+    assert request[0]["topic"] == "Schlafträgheit" and request[0]["evidence"][0]["text"].startswith("Benommenheit")
 
 
-def test_llm_output_is_still_validated_deterministically(monkeypatch):
-    llm = FakeLLM({
-        "Polarlicht": good_assessment("Warum sieht man Polarlichter 300 Kilometer weiter südlich?", "weltraum"),
-        "Blue Moon": good_assessment("Why is it called a blue moon?", "weltraum"),
+def test_curator_output_is_still_validated_deterministically(db):
+    curator = FakeCurator({
+        "Polarlicht": curated("Warum sieht man Polarlichter 300 Kilometer weiter südlich?", "weltraum"),
+        "Blue Moon": curated("Why is it called a blue moon?", "weltraum"),
     })
-    monkeypatch.setattr(transform, "TRANSFORM_CLIENT_FACTORY", llm)
-    results, _method, _error = transform.transform_topics(
-        [_group("Polarlicht", description="Leuchterscheinung"), _group("Blue Moon")], settings(clipforge_ai_mode="openai", openai_api_key="sk-test"),
-    )
+    results, _ = curate_groups(db, [_group("Polarlicht", description="Leuchterscheinung"), _group("Blue Moon")], curator)
     assert "unsupported_number" in results[0].issues  # invented premise: number not in evidence
     assert "not_natural_german" in results[1].issues
 
 
-def test_llm_failure_falls_back_to_the_deterministic_path(monkeypatch):
-    monkeypatch.setattr(transform, "TRANSFORM_CLIENT_FACTORY", FakeLLM({}, fail=True))
-    results, method, error = transform.transform_topics([_group("Polarlicht")], settings(clipforge_ai_mode="openai", openai_api_key="sk-test"))
-    assert method == "template" and error and "OpenAIError" in error
+def test_curator_failure_falls_back_to_the_deterministic_path(db):
+    results, outcome = curate_groups(db, [_group("Polarlicht")], FakeCurator(fail=True))
+    assert outcome.errors and "OpenAIError" in outcome.errors[0]
+    assert outcome.statuses == {topic_key("Polarlicht"): "failed"}
     # No generic "Was steckt eigentlich hinter X?" fallback for a bare title.
     assert results[0].question == "" and results[0].issues == ["no_question_transformation"]
 
@@ -201,8 +195,7 @@ def test_deterministic_path_keeps_real_source_questions_and_never_templates_head
     video = _group("🔥 Warum fliegen Zugvögel im V? #shorts", kind="video")
     headline = _group("Forscher messen neuen Rekord", kind="news")
     person = _group("Max Mustermann", flags={"person"})
-    results, method, _ = transform.transform_topics([video, headline, person], settings())
-    assert method == "template"
+    results = [transform.deterministic_transform(group) for group in (video, headline, person)]
     assert results[0].question == "Warum fliegen Zugvögel im V?" and results[0].method == "source_question"
     assert results[1].method == "none" and results[1].issues == ["no_question_transformation"]
     assert "person_centric" in results[2].flags

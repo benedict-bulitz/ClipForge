@@ -1,22 +1,25 @@
-"""Semantic question validation (semantic-validator-v1).
+"""Semantic topic curation (semantic-curator-v1): question creation + validation in ONE call.
 
-Deterministic rules verify a question's FORM; they cannot judge its meaning
-(an unexplained metaphor, a rhetorical question, a niche term that looks like
-ordinary German, an unclear payoff).  This step asks the existing worker
-model - batched, cached, within the pool's AI budget - to rate each final
-QUESTION on its own, without the source headline:
+Deterministic rules verify a question's FORM; they cannot judge meaning, and
+they cannot honestly turn a statement headline into a question.  With an
+OpenAI key configured - independent of ClipForge's director AI mode - one
+batched worker-model request per <= 20 raw topics:
 
+    raw topic + evidence -> usable? -> grounded German question -> judged on
     self_contained_clarity, clear_factual_payoff, universal_12plus_relevance,
-    prior_knowledge_free, natural_spoken_german, knowledge_short_fit  (0-10)
+    prior_knowledge_free, natural_spoken_german, knowledge_short_fit (0-10)
+    + issue codes
 
-plus explicit issue codes.  It only supplies the ``semantic`` signal; accept /
-reject stays in ``scoring``.  Validation never runs during video generation.
+It only supplies signals (the question and the ``semantic`` signal); accept /
+reject stays in ``scoring``.  Results are cached per topic evidence + curator
+version + model, so the same topic is never paid for twice.  Nothing here runs
+during video generation.
 """
 from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -26,12 +29,13 @@ from sqlalchemy.orm import Session
 
 from ..config import Settings
 from ..models import TopicSourceCache
-from .candidate import Signal
+from .candidate import Signal, TopicGroup
+from .text import compact, extract_question
 
-SEMANTIC_VALIDATOR_VERSION = "semantic-validator-v1"
+SEMANTIC_CURATOR_VERSION = "semantic-curator-v1"
 SEMANTIC_CLIENT_FACTORY: Any = OpenAI
-MAX_VALIDATION_BATCH = 20
-CACHE_PROVIDER = "semantic_validator"
+MAX_CURATION_BATCH = 20
+CACHE_PROVIDER = "semantic_curator"
 CACHE_TTL = timedelta(days=14)
 
 DIMENSIONS = (
@@ -48,141 +52,177 @@ ISSUES = (
     "rhetorical_or_opinion",
     "niche_context_required",
     "too_narrow_audience",
+    "demographic_subgroup_only",
     "unnatural_or_headline_german",
+    "unsupported_premise",
 )
 
-VALIDATOR_INSTRUCTIONS = (
-    "You are the strict quality gate for ClipForge's default topic suggestions: German knowledge shorts (15-40 s) "
-    "for a broad German-speaking audience aged about 12 and older - general curiosity, not children's content. You see "
-    "ONLY the final question, exactly as a viewer would; judge it without any source headline or article. Rate 0-10: "
-    "self_contained_clarity (fully understandable on its own; no missing context, no word whose meaning depends on an "
-    "article), clear_factual_payoff (it is obvious which concrete, verifiable knowledge the video answers), "
-    "universal_12plus_relevance (an average viewer without a special hobby, product, brand or community would plausibly "
-    "want the answer), prior_knowledge_free (understanding the premise needs no niche product, company, event, community, "
-    "specialist term or trend first), natural_spoken_german (a real person would ask it like this; not a headline, teaser "
-    "or translation), knowledge_short_fit (a factual, satisfying explanation is possible; not opinion, rhetoric, advice for "
-    "one product or a survey result only). List issues with these codes only: unexplained_metaphor (a figurative phrase "
-    "carries the question and its literal meaning is unclear), unclear_payoff, rhetorical_or_opinion, "
-    "niche_context_required, too_narrow_audience, unnatural_or_headline_german. Be strict: when in doubt, score low. "
-    "A question about a specific product, brand setup or niche trend is not a broad default suggestion even if it is "
-    "grammatical. A question about a universal phenomenon is fine even if it came from a niche source. reason: at most 12 "
-    "words. Return the supplied id unchanged. Structured output only."
+CURATOR_INSTRUCTIONS = (
+    "You curate default topic suggestions for ClipForge: German knowledge shorts (15-40 s) for a broad German-speaking "
+    "audience aged about 12 and older - general curiosity, NOT children's content. For every raw topic you get its source "
+    "evidence (headlines, article snippets) and sometimes a local_question already extracted from a title. STEP 1: decide "
+    "whether an honest, broadly interesting knowledge question exists. STEP 2: if so, write ONE natural spoken German "
+    "question (at most 18 words, ending with '?'). You may reframe a headline or statement into a stronger question ONLY "
+    "when the evidence supports its premise - e.g. a headline about a blood test for breast-cancer screening may become "
+    "'Kann Brustkrebs künftig mit einem einfachen Bluttest erkannt werden?'. Never invent mechanisms, numbers, causal "
+    "claims or contradictions the evidence does not contain. Lead with the universal phenomenon, not with a niche name, "
+    "product, brand, event or study; the specific case may appear later in the video. The question must make complete "
+    "sense WITHOUT the headline: no metaphor or teaser wording, no 'das/dahinter' without a referent, no rhetorical or "
+    "opinion question, no headline fragment, no embedded answer. STEP 3: rate the FINAL question 0-10: "
+    "self_contained_clarity, clear_factual_payoff (it is obvious which concrete, verifiable knowledge the video delivers), "
+    "universal_12plus_relevance (would an average viewer care - NOT the same as understandable: a question limited to one "
+    "product, brand, demographic subgroup, niche hobby or specialist field scores low even if clear), prior_knowledge_free, "
+    "natural_spoken_german, knowledge_short_fit (a factual, satisfying short; not opinion, advice for one product, or one "
+    "survey's result), curiosity_gap, visual_potential (real footage can show it), dach_relevance. Also set grounded "
+    "(true only if the evidence supports every premise of the question). Issue codes, allowed values only: "
+    "unexplained_metaphor, unclear_payoff, rhetorical_or_opinion, niche_context_required, too_narrow_audience, "
+    "demographic_subgroup_only, unnatural_or_headline_german, unsupported_premise. Be strict; when in doubt, score low or "
+    "set usable=false. reason: at most 12 words. Return the supplied id unchanged. Structured output only."
 )
 
 
-class AISemanticJudgement(BaseModel):
+class AICuratedTopic(BaseModel):
     id: str
-    self_contained_clarity: int = Field(ge=0, le=10)
-    clear_factual_payoff: int = Field(ge=0, le=10)
-    universal_12plus_relevance: int = Field(ge=0, le=10)
-    prior_knowledge_free: int = Field(ge=0, le=10)
-    natural_spoken_german: int = Field(ge=0, le=10)
-    knowledge_short_fit: int = Field(ge=0, le=10)
+    usable: bool
+    question: str = Field(default="", max_length=240)
+    niche: str = "unknown"
+    self_contained_clarity: int = Field(default=0, ge=0, le=10)
+    clear_factual_payoff: int = Field(default=0, ge=0, le=10)
+    universal_12plus_relevance: int = Field(default=0, ge=0, le=10)
+    prior_knowledge_free: int = Field(default=0, ge=0, le=10)
+    natural_spoken_german: int = Field(default=0, ge=0, le=10)
+    knowledge_short_fit: int = Field(default=0, ge=0, le=10)
+    curiosity_gap: int = Field(default=5, ge=0, le=10)
+    visual_potential: int = Field(default=5, ge=0, le=10)
+    dach_relevance: int = Field(default=5, ge=0, le=10)
+    grounded: bool = False
     issues: list[str] = Field(default_factory=list)
     reason: str = Field(default="", max_length=200)
 
 
-class AISemanticBatch(BaseModel):
-    items: list[AISemanticJudgement]
+class AICuratedBatch(BaseModel):
+    items: list[AICuratedTopic]
 
 
 def semantic_enabled(settings: Settings) -> bool:
-    """Validation needs the OpenAI key; it is independent of the video director's AI mode."""
+    """Topic curation needs the OpenAI key only - never CLIPFORGE_AI_MODE=openai."""
     return bool(getattr(settings, "topic_semantic_validation", True)) and bool(settings.openai_api_key)
 
 
-def _cache_key(question: str) -> str:
-    normalized = " ".join(str(question or "").split()).casefold()
-    return f"{CACHE_PROVIDER}:{SEMANTIC_VALIDATOR_VERSION}:{hashlib.sha1(normalized.encode()).hexdigest()}"
-
-
-def _signal(judgement: dict[str, Any], *, status: str) -> Signal:
-    dims = {name: round(max(0, min(10, int(judgement.get(name, 0)))) / 10, 2) for name in DIMENSIONS}
-    issues = sorted({str(issue) for issue in judgement.get("issues") or [] if str(issue) in ISSUES})
-    return Signal(
-        round(sum(dims.values()) / len(dims), 4),
-        "medium",
-        {"status": status, "dimensions": dims, "issues": issues, "reason": str(judgement.get("reason") or "")[:200],
-         "validator_version": SEMANTIC_VALIDATOR_VERSION},
-        ["semantic_validator"],
-    )
-
-
 def pending() -> Signal:
-    """Not validated yet: deterministic gates only; never served in this state."""
-    return Signal.unavailable("pending_validation", status="pending", validator_version=SEMANTIC_VALIDATOR_VERSION)
+    """Not curated yet: deterministic gates only; never served in this state."""
+    return Signal.unavailable("pending_curation", status="pending", curator_version=SEMANTIC_CURATOR_VERSION)
 
 
 def unavailable(reason: str, *, status: str = "unavailable") -> Signal:
     """No semantic judgement: scoring applies the strict local acceptance rules."""
-    return Signal.unavailable(reason, status=status, validator_version=SEMANTIC_VALIDATOR_VERSION)
+    return Signal.unavailable(reason, status=status, curator_version=SEMANTIC_CURATOR_VERSION)
+
+
+def curated_signal(judgement: dict[str, Any], *, status: str) -> Signal:
+    dims = {name: round(max(0, min(10, int(judgement.get(name, 0)))) / 10, 2) for name in DIMENSIONS}
+    issues = {str(issue) for issue in judgement.get("issues") or [] if str(issue) in ISSUES}
+    if not judgement.get("grounded", False) and judgement.get("usable"):
+        issues.add("unsupported_premise")
+    return Signal(
+        round(sum(dims.values()) / len(dims), 4),
+        "medium",
+        {"status": status, "dimensions": dims, "issues": sorted(issues), "reason": str(judgement.get("reason") or "")[:200],
+         "grounded": bool(judgement.get("grounded", False)), "curator_version": SEMANTIC_CURATOR_VERSION},
+        ["semantic_curator"],
+    )
+
+
+def evidence(group: TopicGroup) -> list[dict[str, str]]:
+    return [
+        {"source": item.source, "kind": item.kind, "title": compact(item.title, 180), "text": compact(item.description, 320)}
+        for item in group.sightings[:3]
+    ]
+
+
+def local_question(group: TopicGroup) -> str | None:
+    for item in group.sightings:
+        question, _notes = extract_question(item.title)
+        if question:
+            return question
+    return None
+
+
+def _cache_key(group: TopicGroup, model: str) -> str:
+    identity = json.dumps([group.key, sorted(item.title for item in group.sightings)], ensure_ascii=False)
+    digest = hashlib.sha1(f"{model}|{identity}".encode()).hexdigest()
+    return f"{CACHE_PROVIDER}:{SEMANTIC_CURATOR_VERSION}:{digest}"
 
 
 @dataclass
-class ValidationOutcome:
-    signals: dict[str, Signal]
-    requests: int
-    cached: int
-    error: str | None = None
+class CurationOutcome:
+    judgements: dict[str, dict[str, Any]]  # group key -> raw judgement (usable, question, dims, ...)
+    statuses: dict[str, str]  # group key -> curated | cached | failed | not_curated
+    requests: int = 0
+    cached: int = 0
+    errors: list[str] = field(default_factory=list)
 
 
-def validate(
-    db: Session, settings: Settings, questions: dict[str, str], *, requests_left: int, now: datetime,
-) -> ValidationOutcome:
-    """Validate ``{candidate_id: question}``: cache first, then ONE batched request of <= 20 if allowed."""
-    signals: dict[str, Signal] = {}
-    cached = 0
-    missing: dict[str, str] = {}
-    for candidate_id, question in questions.items():
-        entry = db.get(TopicSourceCache, _cache_key(question))
+def curate(
+    db: Session, settings: Settings, groups: list[TopicGroup], *, requests_left: int, now: datetime,
+) -> CurationOutcome:
+    """Cache first, then ONE batched request for the uncached topics (<= 20) if the budget allows."""
+    model = settings.openai_worker_model
+    outcome = CurationOutcome({}, {})
+    missing: list[TopicGroup] = []
+    for group in groups:
+        entry = db.get(TopicSourceCache, _cache_key(group, model))
         expires = entry.expires_at if entry is not None else None
         if expires is not None and expires.tzinfo is None:
             expires = expires.replace(tzinfo=now.tzinfo)
         if entry is not None and expires is not None and expires > now:
-            signals[candidate_id] = _signal(entry.payload, status="cached")
-            cached += 1
+            outcome.judgements[group.key] = dict(entry.payload)
+            outcome.statuses[group.key] = "cached"
+            outcome.cached += 1
         else:
-            missing[candidate_id] = question
+            missing.append(group)
     if not missing:
-        return ValidationOutcome(signals, 0, cached)
-    if not semantic_enabled(settings):
-        signals.update({candidate_id: unavailable("semantic_validator_unavailable") for candidate_id in missing})
-        return ValidationOutcome(signals, 0, cached)
-    if requests_left <= 0:
-        signals.update({candidate_id: unavailable("ai_budget_exhausted", status="not_validated") for candidate_id in missing})
-        return ValidationOutcome(signals, 0, cached)
-    batch = list(missing.items())[:MAX_VALIDATION_BATCH]
-    for candidate_id, _question in list(missing.items())[MAX_VALIDATION_BATCH:]:
-        signals[candidate_id] = unavailable("batch_limit", status="not_validated")
+        return outcome
+    if requests_left <= 0 or not semantic_enabled(settings):
+        outcome.statuses.update({group.key: "not_curated" for group in missing})
+        return outcome
+    batch, rest = missing[:MAX_CURATION_BATCH], missing[MAX_CURATION_BATCH:]
+    outcome.statuses.update({group.key: "not_curated" for group in rest})
+    request = [
+        {"id": f"t{index}", "topic": group.title, "evidence": evidence(group), **({"local_question": q} if (q := local_question(group)) else {})}
+        for index, group in enumerate(batch)
+    ]
     db.commit()  # no open transaction while waiting on OpenAI
+    outcome.requests = 1
     try:
         response = SEMANTIC_CLIENT_FACTORY(api_key=settings.openai_api_key).responses.parse(
-            model=settings.openai_worker_model,
-            instructions=VALIDATOR_INSTRUCTIONS,
-            input=json.dumps({"questions": [{"id": f"q{index}", "question": question} for index, (_cid, question) in enumerate(batch)]}, ensure_ascii=False),
-            text_format=AISemanticBatch,
-            max_output_tokens=4000,
+            model=model,
+            instructions=CURATOR_INSTRUCTIONS,
+            input=json.dumps({"market": {"language": "de", "region": "DE", "broader": "DACH"}, "topics": request}, ensure_ascii=False),
+            text_format=AICuratedBatch,
+            max_output_tokens=8000,
             store=False,
         )
         parsed = response.output_parsed
-        if not isinstance(parsed, AISemanticBatch):
-            raise TypeError("no parsed semantic batch")
+        if not isinstance(parsed, AICuratedBatch):
+            raise TypeError("no parsed curation batch")
     except (OpenAIError, ValidationError, ValueError, TypeError) as exc:
-        error = f"{type(exc).__name__}: {str(exc)[:160]}"
-        signals.update({candidate_id: unavailable("semantic_validator_failed", status="failed") for candidate_id, _q in batch})
-        return ValidationOutcome(signals, 1, cached, error)
+        outcome.errors.append(f"{type(exc).__name__}: {str(exc)[:160]}")
+        outcome.statuses.update({group.key: "failed" for group in batch})
+        return outcome
     by_id = {item.id: item.model_dump() for item in parsed.items}
-    for index, (candidate_id, question) in enumerate(batch):
-        judgement = by_id.get(f"q{index}")
+    for index, group in enumerate(batch):
+        judgement = by_id.get(f"t{index}")
         if judgement is None:
-            signals[candidate_id] = unavailable("not_returned", status="failed")
+            outcome.statuses[group.key] = "failed"
             continue
-        signals[candidate_id] = _signal(judgement, status="validated")
-        key = _cache_key(question)
+        outcome.judgements[group.key] = judgement
+        outcome.statuses[group.key] = "curated"
+        key = _cache_key(group, model)
         entry = db.get(TopicSourceCache, key) or TopicSourceCache(key=key, provider=CACHE_PROVIDER)
-        entry.payload = {name: judgement[name] for name in (*DIMENSIONS, "issues", "reason")}
+        entry.payload = judgement
         entry.fetched_at = now
         entry.expires_at = now + CACHE_TTL
         db.add(entry)
     db.commit()
-    return ValidationOutcome(signals, 1, cached)
+    return outcome
