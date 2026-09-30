@@ -10,6 +10,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from .novelty import REDUNDANT_CATEGORIES, current_information_gain, refresh_information_gain
+
 _STOP = {
     "the", "and", "that", "this", "with", "from", "into", "for", "are", "was", "were",
     "have", "has", "not", "but", "der", "die", "das", "und", "mit", "für", "von", "ist",
@@ -127,10 +129,19 @@ def analyze_scene_quality(state: dict[str, Any]) -> dict[str, Any]:
         if isinstance(unit, dict) and not unit.get("may_be_omitted")
     }
 
+    # Information gain comes from the one content authority (novelty.py);
+    # the scene-local word measure is only the fallback for unassessed scenes.
+    gain_units = {
+        str(unit.get("block_id") or ""): unit
+        for unit in current_information_gain(state).get("units") or []
+        if unit.get("category") != "hook"
+    }
+
     for index, scene in enumerate(scenes):
         narration = str(scene.get("narration") or "")
         words = _words(narration)
         role = blocks.get(str(scene.get("block_id") or ""), "")
+        unit = gain_units.get(str(scene.get("block_id") or ""))
         # The story arc's final payoff marks delivery even when the writer did
         # not label that block "payoff".
         if scene.get("is_final_payoff"):
@@ -138,6 +149,8 @@ def analyze_scene_quality(state: dict[str, Any]) -> dict[str, Any]:
         if role == "payoff":
             payoff_seen = True
         gain = len(words - seen_words) / max(1, len(words))
+        if unit is not None and unit.get("information_gain_score") is not None:
+            gain = float(unit["information_gain_score"])
         visual_words = _words(_visual_text(scene))
         visual_value = len(words & visual_words) / max(1, len(words))
         actual_duration = _duration(scene)
@@ -163,6 +176,10 @@ def analyze_scene_quality(state: dict[str, Any]) -> dict[str, Any]:
             transition_weak=transition_weak,
             generic_outro=generic_outro,
         )
+        if unit is not None and unit.get("category") in REDUNDANT_CATEGORIES and recommendation == "KEEP" and role != "payoff":
+            filler = unit.get("category") == "filler"
+            recommendation, severity = ("TRIM" if filler else "MERGE_WITH_PREVIOUS"), "warning"
+            reasons = [str(unit.get("reason") or "It repeats earlier information.")]
         story_required = bool(set(scene.get("story_unit_ids") or []) & required_ids)
         if story_required and recommendation in {"TRIM", "SHORTEN_POST_PAYOFF"}:
             # Information the arc requires is shortened in wording, never removed.
@@ -181,6 +198,10 @@ def analyze_scene_quality(state: dict[str, Any]) -> dict[str, Any]:
                 "visual_value": round(visual_value, 3),
                 "pacing_quality": "compressed" if chaotic or caption_overload else ("lingering" if dead_air_risk else "earned"),
                 "redundancy_risk": round(1 - gain, 3),
+                "information_gain_category": unit.get("category") if unit else None,
+                "redundancy": unit.get("redundancy") if unit else None,
+                "new_information": unit.get("new_information") if unit else None,
+                "evidence": unit.get("evidence") if unit else None,
                 "dead_air_risk": dead_air_risk,
                 "payoff_relevance": "delivery" if role == "payoff" else ("after_payoff" if payoff_seen else "setup"),
                 "recommendation": recommendation,
@@ -232,6 +253,7 @@ def apply_safe_pacing_fixes(state: dict[str, Any], analysis: dict[str, Any]) -> 
 def analyze_pacing(state: dict[str, Any]) -> dict[str, Any]:
     """Persist a safe fallback result if pacing enrichment itself fails."""
     try:
+        refresh_information_gain(state)
         analysis = analyze_scene_quality(state)
         state["pacing_analysis"] = apply_safe_pacing_fixes(state, analysis)
     except Exception as exc:  # noqa: BLE001 - quality enrichment cannot block rendering

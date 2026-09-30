@@ -1,13 +1,38 @@
-"""Conservative research-only novelty planning.
+"""Content-level novelty and information gain: the one authority for "does
+this video tell the viewer something?".
 
-This module measures useful information relative to the evidence already
-collected for the current project.  It deliberately makes no claim about
-global internet-wide originality and never performs additional research.
+Three levels are kept apart:
+
+A. Topic novelty ("have we already made this video?") is NOT decided here:
+   Topic Intelligence (``topic_intelligence.history.novelty_signal``) owns it.
+B. Within-video information gain: every script unit must add supported
+   information instead of repeating the hook, the question or an earlier
+   unit (``assess_information_gain`` / ``prune_redundant_information``).
+C. Audience information value: the research evidence is classified before
+   writing (``build_novelty_plan``), and the finished script is checked for
+   at least one supported, non-obvious gain and a payoff that really answers.
+
+Everything is measured relative to the evidence already collected for the
+current project.  It deliberately makes no claim about global internet-wide
+originality, never performs additional research and never writes new text:
+repairs only remove, merge or trim what the writer already said.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from typing import Any
+
+from .story_arc import arc_units, comparison_sides
+from .verbal_hook import (
+    _NEGATED,
+    _numbers,
+    _related,
+    _rounded_from,
+    information_gain,
+    proposition_words,
+)
 
 _WORD_RE = re.compile(r"[a-zA-ZÀ-ÖØ-öø-ÿ0-9]+")
 _STOP_WORDS = {
@@ -211,3 +236,596 @@ def safe_novelty_plan(intent: dict[str, Any], facts: list[dict[str, Any]] | None
         fallback = _base_plan()
         fallback.update(status="fallback", novelty_risks=["planner_failure"], recommended_angle="Keep the core answer clear and supported.", error=f"{type(exc).__name__}: {str(exc)[:160]}")
         return fallback
+
+
+# ---------------------------------------------------------------------------
+# B + C on the written script: within-video information gain
+# ---------------------------------------------------------------------------
+# One classifier for every consumer (Pacing, local review, the pre-render
+# quality gate and the generation-time repair).  The hook -> first body
+# boundary uses the same primitive (``verbal_hook.information_gain``) as the
+# pipeline's hook transition, so there is exactly one notion of "new".
+
+GAIN_VERSION = 1
+_SUPPORTED_VERIFICATION = {"supported", "source_attributed", "source_snippet"}
+# Categories that add nothing; every other category adds information.
+REDUNDANT_CATEGORIES = {"restatement", "paraphrase", "repeated_fact", "filler"}
+_GAIN_CATEGORIES = ("mechanism", "quantitative", "contrast", "new_fact")
+_NOVELTY_GAIN_KEYS = ("explanatory_gain", "comparison_gain", "distinctive_facts")
+# Grammar of explanation (any topic): cause, mechanism, consequence.
+_MECHANISM = re.compile(
+    r"(?i),\s*(?:so|sodass)\s|\b(?:until|bis|because|since|therefore|thus|hence|so that|due to|caused?|causes|leads? to|results? in|"
+    r"which means|this means|that means|in order to|as a result|by \w+ing|so (?:the|it|its|your|you|they|there|less|more)|"
+    r"weil|denn|dadurch|deshalb|daher|darum|deswegen|sodass|so dass|führt zu|entsteht|entstehen|indem|damit)\b"
+)
+_CONTRAST_GAIN = re.compile(
+    r"(?i)\b(?:but|instead|rather than|unlike|whereas|while|versus|vs\.?|compared|than|"
+    r"aber|sondern|stattdessen|anders als|während|im vergleich|als)\b"
+)
+# Sentences that only announce, react or sign off (any topic).
+_FILLER = re.compile(
+    r"(?i)^\W*(?:(?:and|so|now|but|und|also|jetzt|aber)\s*,?\s+)?(?:"
+    r"let'?s\s+(?:find out|dive in|take a (?:closer )?look|see|break it down)|here'?s\s+(?:the thing|why|how|what happens)|"
+    r"you won'?t believe|now you know|pretty (?:cool|wild|crazy)|isn'?t (?:that|it) (?:amazing|crazy|cool|wild|interesting)|"
+    r"stick around|keep watching|but wait|there'?s more|the answer (?:might|may|will) surprise you|"
+    r"thanks? for watching|follow for more|like and subscribe|see you next time|"
+    r"lass(?:t)? uns (?:das )?(?:anschauen|herausfinden)|schauen wir mal|jetzt weißt du|ziemlich (?:cool|verrückt)|"
+    r"die antwort wird dich überraschen|danke fürs zuschauen|folge für mehr|like und abonniere|bis zum nächsten mal"
+    r")\b"
+)
+# Empty lead-ins that can be cut without touching the claim that follows.
+_EMPTY_LEAD_IN = re.compile(
+    r"(?i)^\s*(?:(?:and|so|now|well|okay|ok|und|also|nun)\s*,?\s+)?(?:"
+    r"believe it or not|here'?s the thing|the thing is|as it turns out|it turns out(?: that)?|so basically|basically|"
+    r"in other words|simply put|to put it simply|you see|interestingly(?: enough)?|fun fact|"
+    r"ob du es glaubst oder nicht|im grunde(?: genommen)?|mit anderen worten|anders gesagt|interessanterweise"
+    r")\s*[,:;—–-]?\s+"
+)
+
+
+def _text(block: dict[str, Any]) -> str:
+    return " ".join(str(block.get("text") or "").split())
+
+
+def _role(block: dict[str, Any]) -> str:
+    return str(block.get("role") or "").casefold()
+
+
+def _fact_ids(block: dict[str, Any]) -> list[str]:
+    return [str(value) for value in block.get("fact_ids") or [] if str(value)]
+
+
+def fact_is_supported(fact: dict[str, Any]) -> bool:
+    """Evidence the video may build on: sourced, attributed, not low-confidence."""
+    if not fact.get("sources") or str(fact.get("verification") or "") not in _SUPPORTED_VERIFICATION:
+        return False
+    confidence = fact.get("confidence")
+    return confidence is None or float(confidence) >= 0.5
+
+
+def strip_empty_lead_in(text: str) -> str:
+    """``text`` without an empty lead-in ("Believe it or not, ..."); unchanged if
+    nothing complete would remain."""
+    match = _EMPTY_LEAD_IN.match(text)
+    if not match:
+        return text
+    rest = text[match.end():].strip()
+    if len(rest.split()) < 3 or not rest[:1].isalnum():
+        return text
+    return rest[:1].upper() + rest[1:]
+
+
+def classify_gain(reference: str, sentence: str) -> dict[str, Any]:
+    """What ``sentence`` adds to everything in ``reference`` (the one classifier).
+
+    ``category`` is one of ``restatement`` (no new proposition), ``paraphrase``
+    (the same proposition with at most one swapped word), ``filler``, or a gain
+    category: ``mechanism``, ``quantitative``, ``contrast``, ``new_fact``.
+    """
+    said = proposition_words(sentence)
+    gain = information_gain(reference, sentence)
+    numbers = [item for item in gain if item.isdigit()]
+    flipped = "negation" in gain
+    words = [item for item in gain if item != "negation" and not item.isdigit()]
+    coverage = 1 - len(words) / len(said) if said else 1.0
+    lead_in = strip_empty_lead_in(sentence) != sentence
+    filler = _FILLER.search(sentence)
+    rest = sentence[: filler.start()] + sentence[filler.end():] if filler else sentence
+    if filler and not numbers and len(information_gain(reference, rest)) <= 1:
+        category = "filler"
+    elif not words and not numbers and not flipped:
+        category = "filler" if not said else "restatement"
+    elif not numbers and not flipped and len(words) <= 1 and coverage >= 0.75:
+        category = "paraphrase"
+    elif _MECHANISM.search(sentence):
+        category = "mechanism"
+    elif numbers:
+        category = "quantitative"
+    elif flipped or _CONTRAST_GAIN.search(sentence):
+        category = "contrast"
+    else:
+        category = "new_fact"
+    return {
+        "category": category,
+        "gain_terms": [*words[:8], *numbers[:4], *(["negation"] if flipped else [])],
+        "new_words": words,
+        "new_numbers": numbers,
+        "negation": flipped,
+        "coverage": round(coverage, 3),
+        "said_words": sorted(said),
+        "empty_lead_in": lead_in,
+    }
+
+
+def _score(result: dict[str, Any], novelty_class: str) -> float:
+    category = result["category"]
+    if category in {"restatement", "filler"}:
+        return 0.0
+    if category in {"paraphrase", "repeated_fact"}:
+        return 0.1
+    ratio = 1 - float(result["coverage"])
+    score = 0.35 + 0.4 * ratio
+    score += 0.15 if category == "mechanism" else 0.0
+    score += 0.15 if result["new_numbers"] else 0.0
+    score += 0.1 if category == "contrast" else 0.0
+    score += 0.15 if novelty_class in {"explanatory_gain", "comparison_gain", "distinctive"} else 0.0
+    return round(min(1.0, score), 3)
+
+
+def repeated_statements(sentences: list[str]) -> list[dict[str, Any]]:
+    """Sentences that add nothing to the sentences before them (for review)."""
+    found: list[dict[str, Any]] = []
+    for index, sentence in enumerate(sentences):
+        if index == 0 or not sentence.strip():
+            continue
+        result = classify_gain(" ".join(sentences[:index]), sentence)
+        if result["category"] in {"restatement", "paraphrase"}:
+            found.append({"index": index, "text": sentence, "category": result["category"]})
+    return found
+
+
+def _context(state: dict[str, Any]) -> dict[str, Any]:
+    intent = state.get("intent") if isinstance(state.get("intent"), dict) else {}
+    arc = state.get("story_arc") if isinstance(state.get("story_arc"), dict) else {}
+    plan = state.get("novelty_plan") if isinstance(state.get("novelty_plan"), dict) else {}
+    facts = [fact for fact in state.get("facts") or [] if isinstance(fact, dict) and fact.get("id")]
+    return {"intent": intent, "arc": arc, "plan": plan, "facts": facts}
+
+
+def _anchor_ids(arc: dict[str, Any]) -> set[str]:
+    anchors = {str(arc.get(key)) for key in ("primary_answer_id", "final_payoff_id") if arc.get(key)}
+    return anchors | {str(value) for value in (arc.get("hook") or {}).get("protected_ids") or []}
+
+
+def _novelty_class(plan: dict[str, Any], arc: dict[str, Any], fact_ids: list[str]) -> str:
+    for key, label in (("explanatory_gain", "explanatory_gain"), ("comparison_gain", "comparison_gain"),
+                       ("distinctive_facts", "distinctive"), ("core_expected_facts", "core"),
+                       ("common_context", "common"), ("redundant_candidates", "redundant")):
+        if set(fact_ids) & {str(item) for item in plan.get(key) or []}:
+            return label
+    units = arc_units(arc)
+    for fact_id in fact_ids:
+        category = str(units.get(fact_id, {}).get("novelty") or "")
+        if category in {"explanatory_gain", "comparison_gain", "distinctive"}:
+            return category
+    return ""
+
+
+def _evidence(
+    block: dict[str, Any], result: dict[str, Any], grounding: bool,
+    facts_by_id: dict[str, dict[str, Any]], supported_words: set[str], supported_claims: list[str],
+) -> dict[str, Any]:
+    fact_ids = _fact_ids(block)
+    sources = sorted({
+        str(source.get("url") or source.get("label") or "")
+        for fact_id in fact_ids for source in facts_by_id.get(fact_id, {}).get("sources") or []
+        if isinstance(source, dict) and (source.get("url") or source.get("label"))
+    })[:3]
+    base = {"fact_ids": fact_ids, "sources": sources}
+    if not grounding:
+        return {**base, "status": "not_applicable", "reason": "No research evidence applies to this project."}
+    text = _text(block)
+    cited = [fact_id for fact_id in fact_ids if fact_id in facts_by_id and fact_is_supported(facts_by_id[fact_id])]
+    cited_claims = [str(facts_by_id[fact_id].get("claim") or "") for fact_id in cited]
+    allowed_numbers = set().union(*(_numbers(claim) for claim in supported_claims)) if supported_claims else set()
+    unsupported_numbers = sorted(
+        number for number in _numbers(text)
+        if number not in allowed_numbers and not any(_rounded_from(text, claim) for claim in supported_claims)
+    )
+    if unsupported_numbers:
+        return {**base, "status": "unsupported", "reason": f"The figure(s) {', '.join(unsupported_numbers)} appear in no supported fact."}
+    said = set(result["said_words"])
+    new = set(result["new_words"])
+    if cited:
+        cited_words = set().union(*(proposition_words(claim) for claim in cited_claims))
+        if not said or _related(said, cited_words) or _numbers(text) & set().union(*(_numbers(claim) for claim in cited_claims)):
+            return {**base, "status": "supported", "reason": "Cites supported research facts."}
+        return {**base, "status": "unsupported", "reason": "Cites a research fact but states something the fact does not."}
+    if not new:
+        return {**base, "status": "derived", "reason": "Adds no new claim beyond what was already said."}
+    grounded = _related(new, supported_words)
+    if len(grounded) / len(new) >= 0.6:
+        return {**base, "status": "derived", "reason": "Every new term is found in the supported research."}
+    missing = sorted(new - grounded)[:5]
+    return {**base, "status": "unsupported", "reason": "New terms not found in any supported fact: " + ", ".join(missing) + "."}
+
+
+def _question(context: dict[str, Any]) -> str:
+    intent, arc = context["intent"], context["arc"]
+    return str(intent.get("question") or arc.get("primary_question") or intent.get("topic") or "")
+
+
+def _payoff_result(
+    units: list[dict[str, Any]], blocks: list[dict[str, Any]], context: dict[str, Any],
+) -> dict[str, Any]:
+    body = [unit for unit in units if unit["category"] != "hook"]
+    if not body:
+        return {"status": "missing", "result": "missing", "block_id": None, "reason": "The script has no body to pay off."}
+    arc = context["arc"]
+    final_id = str(arc.get("final_payoff_id") or "")
+    unit = next((item for item in reversed(body) if item["role"] == "payoff"), None)
+    unit = unit or next((item for item in reversed(body) if final_id and final_id in item["evidence"]["fact_ids"]), None)
+    unit = unit or body[-1]
+    text = unit["text"]
+    question = _question(context)
+    question_words = proposition_words(question)
+    said = proposition_words(text)
+    beyond = said - _related(said, question_words)
+    new_numbers = _numbers(text) - _numbers(question)
+    answers_choice = len(comparison_sides(question)) == 2 and "?" not in text
+    answers_negation = bool(_NEGATED.search(text)) != bool(_NEGATED.search(question))
+    base = {"block_id": unit["block_id"], "text": text, "category": unit["category"], "score": unit["information_gain_score"]}
+    if unit["category"] == "filler":
+        return {**base, "status": "fail", "result": "generic", "reason": "The payoff is a generic line, not a concrete answer."}
+    if unit["category"] in REDUNDANT_CATEGORIES:
+        return {**base, "status": "fail", "result": "repeats_earlier", "reason": "The payoff only repeats what the video already said."}
+    if question_words and not beyond and not new_numbers and not answers_choice and not answers_negation:
+        return {**base, "status": "fail", "result": "restates_question", "reason": "The payoff restates the question instead of answering it."}
+    if not unit["counts_as_gain"]:
+        return {**base, "status": "fail", "result": "unsupported", "reason": "The payoff's information is not supported by the research."}
+    strong = unit["category"] in {"mechanism", "quantitative", "contrast"} or unit["novelty_class"] in {"explanatory_gain", "comparison_gain", "distinctive"}
+    return {
+        **base, "status": "pass", "result": "strong" if strong else "adequate",
+        "reason": "The payoff resolves the question with specific, supported information.",
+    }
+
+
+def _signature(blocks: list[dict[str, Any]], state: dict[str, Any]) -> str:
+    payload = {
+        "blocks": [[str(block.get("id") or ""), _role(block), _text(block), _fact_ids(block)] for block in blocks],
+        "facts": [[fact.get("id"), fact.get("claim"), fact.get("verification"), bool(fact.get("sources"))] for fact in state.get("facts") or [] if isinstance(fact, dict)],
+        "arc": [str((state.get("story_arc") or {}).get(key) or "") for key in ("primary_answer_id", "final_payoff_id")] if isinstance(state.get("story_arc"), dict) else [],
+    }
+    return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode()).hexdigest()[:16]
+
+
+def assess_blocks(blocks: list[dict[str, Any]], state: dict[str, Any]) -> list[dict[str, Any]]:
+    """Per-unit assessment of ``blocks`` in order (pure; never mutates)."""
+    context = _context(state)
+    intent, arc, plan, facts = context["intent"], context["arc"], context["plan"], context["facts"]
+    facts_by_id = {str(fact["id"]): fact for fact in facts}
+    supported_claims = [str(fact.get("claim") or "") for fact in facts if fact_is_supported(fact)]
+    supported_words = set().union(*(proposition_words(claim) for claim in supported_claims)) if supported_claims else set()
+    supported_words |= proposition_words(_question(context))
+    grounding = bool(facts) and intent.get("research_required", True) is not False and intent.get("content_type") != "fictional_story"
+    anchors = _anchor_ids(arc)
+    units: list[dict[str, Any]] = []
+    hook_text = ""
+    told: set[str] = set()
+    for index, block in enumerate(blocks):
+        text, role = _text(block), _role(block)
+        fact_ids = _fact_ids(block)
+        block_id = str(block.get("id") or f"block_{index + 1:02d}")
+        if role == "hook":
+            hook_text = text
+            units.append({
+                "block_id": block_id, "index": index, "role": role, "text": text, "category": "hook",
+                "redundancy": "none", "repeats_block_id": None, "new_information": "", "gain_terms": [],
+                "information_gain_score": None, "counts_as_gain": False, "novelty_class": "",
+                "evidence": {"status": "not_applicable", "fact_ids": fact_ids, "sources": [], "reason": "The hook is judged by the hook selection."},
+                "protected": True, "empty_lead_in": False, "reason": "Opening hook (owned by hook selection).",
+            })
+            continue
+        earlier = [unit for unit in units if unit["text"]]
+        reference = " ".join(unit["text"] for unit in earlier)
+        result = classify_gain(reference, text)
+        category = result["category"]
+        if (
+            category not in REDUNDANT_CATEGORIES and fact_ids and set(fact_ids) <= told
+            and not result["new_numbers"] and not result["negation"]
+            and len(result["new_words"]) <= 1 and result["coverage"] >= 0.6
+        ):
+            # Its research fact was already told and the words barely differ.
+            category = "repeated_fact"
+        repeats = None
+        if category in REDUNDANT_CATEGORIES and category != "filler":
+            said = set(result["said_words"])
+            repeats = max(earlier, key=lambda unit: len(_related(said, proposition_words(unit["text"]))), default=None)
+        novelty_class = _novelty_class(plan, arc, fact_ids)
+        evidence = _evidence(block, result, grounding, facts_by_id, supported_words, supported_claims)
+        redundancy = "none"
+        if category == "filler":
+            redundancy = "filler"
+        elif category in REDUNDANT_CATEGORIES:
+            redundancy = "restates_hook" if repeats is not None and repeats["category"] == "hook" else ("repeated_fact" if category == "repeated_fact" else "restates_earlier")
+        gains = category not in REDUNDANT_CATEGORIES
+        counts = gains and evidence["status"] in {"supported", "derived", "not_applicable"}
+        if not gains:
+            reason = {
+                "filler": "Generic filler: announces or reacts instead of informing.",
+                "restatement": "Says nothing that was not already said.",
+                "paraphrase": "Paraphrases an earlier statement (at most one word differs).",
+                "repeated_fact": "Repeats a research fact that was already told.",
+            }[category]
+        elif not counts:
+            reason = "Would add information, but it is not grounded in the research: " + evidence["reason"]
+        else:
+            reason = {
+                "mechanism": "Explains a cause or mechanism.",
+                "quantitative": "Adds a supported figure.",
+                "contrast": "Adds a contrast or distinction.",
+                "new_fact": "Adds a new supported fact.",
+            }[category]
+        units.append({
+            "block_id": block_id, "index": index, "role": role, "text": text, "category": category,
+            "redundancy": redundancy, "repeats_block_id": repeats["block_id"] if repeats else None,
+            "new_information": ", ".join(result["gain_terms"]) if gains else "",
+            "gain_terms": result["gain_terms"],
+            "information_gain_score": _score({**result, "category": category}, novelty_class),
+            "counts_as_gain": counts, "novelty_class": novelty_class, "evidence": evidence,
+            "protected": bool(set(fact_ids) & anchors) or role in {"answer", "payoff"},
+            "empty_lead_in": result["empty_lead_in"], "reason": reason,
+        })
+        told |= set(fact_ids)
+    if hook_text:
+        for unit in units:
+            if unit["category"] != "hook":
+                unit["adds_to_hook"] = bool(information_gain(hook_text, unit["text"]))
+    return units
+
+
+def assess_information_gain(state: dict[str, Any]) -> dict[str, Any]:
+    """The canonical content-level information-gain report for ``state``."""
+    blocks = [block for block in (state.get("script") or {}).get("blocks") or [] if isinstance(block, dict)]
+    context = _context(state)
+    units = assess_blocks(blocks, state)
+    body = [unit for unit in units if unit["category"] != "hook"]
+    issues: list[dict[str, str]] = []
+
+    def issue(code: str, severity: str, message: str, block_id: str | None = None) -> None:
+        issues.append({"code": code, "severity": severity, "message": message, **({"block_id": block_id} if block_id else {})})
+
+    hook = next((unit for unit in units if unit["category"] == "hook"), None)
+    first = body[0] if body else None
+    if hook is None or first is None:
+        transition = {"status": "not_applicable", "block_id": first["block_id"] if first else None, "gain_terms": []}
+    else:
+        gain = information_gain(hook["text"], first["text"])
+        passed = bool(gain) and first["category"] not in REDUNDANT_CATEGORIES
+        transition = {"status": "pass" if passed else "fail", "block_id": first["block_id"], "gain_terms": gain[:8]}
+        if not passed:
+            issue("hook_body_no_information_gain", "warning", "The sentence after the hook adds no new information.", first["block_id"])
+    for unit in body:
+        if unit["redundancy"] == "filler":
+            issue("filler_segment", "warning", f"Generic filler: “{unit['text'][:80]}”", unit["block_id"])
+        elif unit["redundancy"] != "none":
+            issue("redundant_segment", "warning", f"Repeats earlier information: “{unit['text'][:80]}”", unit["block_id"])
+        elif not unit["counts_as_gain"]:
+            issue("unsupported_information", "warning", unit["reason"][:240], unit["block_id"])
+    payoff = _payoff_result(units, blocks, context)
+    if payoff["status"] == "fail":
+        issue(f"payoff_{payoff['result']}", "warning", payoff["reason"], payoff["block_id"])
+    counted = [unit for unit in body if unit["counts_as_gain"]]
+    redundant = [unit for unit in body if unit["redundancy"] != "none"]
+    unsupported = [unit for unit in body if unit["category"] not in REDUNDANT_CATEGORIES and not unit["counts_as_gain"]]
+    strongest = max(counted, key=lambda unit: unit["information_gain_score"] or 0.0, default=None)
+    plan = context["plan"]
+    if any(unit["category"] in {"mechanism", "quantitative", "contrast"} or unit["novelty_class"] in {"explanatory_gain", "comparison_gain", "distinctive"} for unit in counted):
+        audience_value = "strong"
+    elif counted:
+        audience_value = "basic"
+    else:
+        audience_value = "none"
+    used = {fact_id for unit in body for fact_id in unit["evidence"]["fact_ids"]}
+    available_gain = [str(item) for key in _NOVELTY_GAIN_KEYS for item in plan.get(key) or []]
+    unused_gain = [fact_id for fact_id in dict.fromkeys(available_gain) if fact_id not in used]
+    grounding = any(unit["evidence"]["status"] != "not_applicable" for unit in body)
+    if body and not counted and grounding:
+        issue("no_supported_information_gain", "error", "No part of the script adds supported information.")
+    elif audience_value == "basic" and unused_gain:
+        issue("supported_gain_unused", "info", "Only expected basics are told although the research supports a stronger explanatory or distinctive fact.")
+    scores = [float(unit["information_gain_score"] or 0.0) for unit in body]
+    density = round(len(counted) / len(body), 3) if body else 0.0
+    if not counted:
+        status = "empty"
+    elif redundant or unsupported:
+        status = "diluted"
+    elif len(counted) == 1 and len(body) == 1:
+        status = "thin"
+    else:
+        status = "dense"
+    return {
+        "version": GAIN_VERSION,
+        "status": status,
+        "signature": _signature(blocks, state),
+        "units": units,
+        "hook_transition": transition,
+        "payoff": payoff,
+        "summary": {
+            "body_units": len(body),
+            "gain_units": len(counted),
+            "redundant_units": len(redundant),
+            "unsupported_units": len(unsupported),
+            "density": density,
+            "score": round(100 * sum(scores) / len(scores), 1) if scores else 0.0,
+            "audience_value": audience_value,
+            "strongest": {key: strongest[key] for key in ("block_id", "text", "category", "information_gain_score", "novelty_class")} if strongest else None,
+            "evidence_thin": plan.get("status") == "low_confidence" or "sparse_research" in (plan.get("novelty_risks") or []),
+            "unused_supported_gain_fact_ids": unused_gain,
+        },
+        "issues": issues,
+    }
+
+
+def current_information_gain(state: dict[str, Any]) -> dict[str, Any]:
+    """The stored report when it still describes the script, else a fresh one."""
+    stored = state.get("information_gain") if isinstance(state.get("information_gain"), dict) else {}
+    blocks = [block for block in (state.get("script") or {}).get("blocks") or [] if isinstance(block, dict)]
+    try:
+        if stored.get("units") is not None and stored.get("signature") == _signature(blocks, state):
+            return stored
+        return assess_information_gain(state)
+    except Exception as exc:  # noqa: BLE001 - diagnostics must never block generation
+        return {"version": GAIN_VERSION, "status": "fallback", "units": [], "issues": [], "error": f"{type(exc).__name__}: {str(exc)[:160]}"}
+
+
+def refresh_information_gain(state: dict[str, Any]) -> dict[str, Any]:
+    """Recompute and persist ``state["information_gain"]`` (repairs are kept)."""
+    previous = state.get("information_gain") if isinstance(state.get("information_gain"), dict) else {}
+    report = {**current_information_gain(state), "repairs": list(previous.get("repairs") or [])}
+    state["information_gain"] = report
+    return report
+
+
+def information_gain_quality_issues(state: dict[str, Any]) -> list[dict[str, str]]:
+    return list(current_information_gain(state).get("issues") or [])
+
+
+# ---------------------------------------------------------------------------
+# Safe repair (generation time only; never adds or rewrites a claim)
+# ---------------------------------------------------------------------------
+
+def _dependencies(arc: dict[str, Any]) -> dict[str, set[str]]:
+    return {fact_id: {str(dep) for dep in unit.get("depends_on") or []} for fact_id, unit in arc_units(arc).items()}
+
+
+def _pre_reveal_body(blocks: list[dict[str, Any]], arc: dict[str, Any]) -> int | None:
+    """Body blocks before the protected reveal (``None``: no protected reveal)."""
+    if not (arc.get("curiosity_gap") or {}).get("withhold_answer"):
+        return None
+    primary = str(arc.get("primary_answer_id") or "")
+    for index, block in enumerate(blocks):
+        if (primary and primary in _fact_ids(block)) or _role(block) == "answer":
+            return sum(1 for item in blocks[:index] if _role(item) != "hook")
+    return None
+
+
+def _removal_blocked(blocks: list[dict[str, Any]], index: int, arc: dict[str, Any], anchors: set[str]) -> str | None:
+    block = blocks[index]
+    if _role(block) in {"hook", "answer", "payoff"}:
+        return "protected"
+    final = str(arc.get("final_payoff_id") or "")
+    for fact_id in set(_fact_ids(block)) & anchors:
+        # An anchor may only lose a repetition: the reveal keeps its first
+        # telling (an earlier unit), the final payoff its closing one (a later unit).
+        others = range(index + 1, len(blocks)) if fact_id == final else range(index)
+        if not any(fact_id in _fact_ids(blocks[position]) and _role(blocks[position]) != "hook" for position in others):
+            return "protected"
+    if sum(1 for item in blocks if _role(item) != "hook") <= 1:
+        return "last_body_unit"
+    reveal = _pre_reveal_body(blocks, arc)
+    if reveal is not None and reveal <= 1:
+        before = _pre_reveal_body(blocks[:index] + blocks[index + 1:], arc)
+        if before is not None and before < reveal:
+            return "reveal_timing"
+    return None
+
+
+def _merge_target(
+    blocks: list[dict[str, Any]], index: int, target_id: str | None, deps: dict[str, set[str]],
+) -> tuple[int | None, bool]:
+    """Where the removed unit's own facts go (index, possible)."""
+    own = set(_fact_ids(blocks[index]))
+    told_before = {fact_id for block in blocks[:index] if _role(block) != "hook" for fact_id in _fact_ids(block)}
+    for fact_id in own - told_before:
+        # A later telling takes over only if nothing in between needs the fact.
+        carrier = next((position for position in range(index + 1, len(blocks)) if fact_id in _fact_ids(blocks[position])), None)
+        if carrier is not None and any(fact_id in deps.get(other, set()) for block in blocks[index + 1: carrier] for other in _fact_ids(block)):
+            return None, False
+    elsewhere = {fact_id for position, block in enumerate(blocks) if position != index and _role(block) != "hook" for fact_id in _fact_ids(block)}
+    if own <= elsewhere:
+        return None, True
+    target = next((position for position, block in enumerate(blocks) if str(block.get("id") or "") == target_id), None)
+    if target is None or _role(blocks[target]) == "hook":
+        return None, False
+    told_by_target = {fact_id for block in blocks[: target + 1] for fact_id in _fact_ids(block)}
+    moving = own - elsewhere
+    # Facts move only to a unit whose own text already says them, and only if
+    # everything they depend on is told by then.
+    if any(deps.get(fact_id, set()) - told_by_target - moving for fact_id in moving):
+        return None, False
+    return target, True
+
+
+def prune_redundant_information(
+    blocks: list[dict[str, Any]], state: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Remove, merge and trim redundancy in the writer's own units.
+
+    Safe repairs only: an empty lead-in is cut, a unit that repeats earlier
+    information or is pure filler is removed (its research fact IDs move to
+    the unit that already says them), and a unit fully restated by the next,
+    richer unit gives way to it.  The hook, the answer/payoff units and any
+    unit carrying a protected or anchor fact are never removed or moved, the
+    protected reveal keeps at least one unit before it, and no text is ever
+    added.  Returns the new blocks and the applied repairs.
+    """
+    arc = state.get("story_arc") if isinstance(state.get("story_arc"), dict) else {}
+    anchors = _anchor_ids(arc)
+    deps = _dependencies(arc)
+    blocks = [dict(block) for block in blocks]
+    repairs: list[dict[str, Any]] = []
+    for block in blocks:
+        if _role(block) == "hook":
+            continue
+        trimmed = strip_empty_lead_in(_text(block))
+        if trimmed != _text(block):
+            repairs.append({"action": "trim_lead_in", "block_id": block.get("id"), "before": _text(block), "after": trimmed})
+            block["text"] = trimmed
+    for _round in range(len(blocks)):
+        units = assess_blocks(blocks, state)
+        changed = False
+        for unit in units:
+            index = unit["index"]
+            if unit["category"] not in REDUNDANT_CATEGORIES or _removal_blocked(blocks, index, arc, anchors):
+                continue
+            target, possible = _merge_target(blocks, index, unit["repeats_block_id"], deps)
+            if not possible:
+                continue
+            removed = blocks.pop(index)
+            moved: list[str] = []
+            if target is not None:
+                target -= 1 if target > index else 0
+                elsewhere = {fact_id for block in blocks for fact_id in _fact_ids(block)}
+                moved = [fact_id for fact_id in _fact_ids(removed) if fact_id not in elsewhere]
+                blocks[target]["fact_ids"] = [*_fact_ids(blocks[target]), *moved]
+            repairs.append({
+                "action": "remove_filler" if unit["category"] == "filler" else ("merge_redundant" if moved else "remove_redundant"),
+                "block_id": removed.get("id"), "text": _text(removed), "category": unit["category"],
+                "repeats_block_id": unit["repeats_block_id"], "moved_fact_ids": moved,
+            })
+            changed = True
+            break
+        if changed:
+            continue
+        # A unit whose every word the next, richer unit repeats gives way to it.
+        for index in range(len(blocks) - 1):
+            current, following = blocks[index], blocks[index + 1]
+            if _role(current) == "hook" or _role(following) == "hook" or set(_fact_ids(following)) & anchors:
+                continue
+            said = proposition_words(_text(current))
+            if len(said) < 2 or _related(said, proposition_words(_text(following))) != said or not information_gain(_text(current), _text(following)):
+                continue
+            if _numbers(_text(current)) - _numbers(_text(following)) or _removal_blocked(blocks, index, arc, anchors):
+                continue
+            removed = blocks.pop(index)
+            following["fact_ids"] = list(dict.fromkeys([*_fact_ids(removed), *_fact_ids(following)]))
+            repairs.append({
+                "action": "replace_with_stronger", "block_id": removed.get("id"), "text": _text(removed),
+                "category": "subsumed", "repeats_block_id": following.get("id"), "moved_fact_ids": _fact_ids(removed),
+            })
+            changed = True
+            break
+        if not changed:
+            break
+    return blocks, repairs

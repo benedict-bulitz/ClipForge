@@ -28,7 +28,7 @@ from .narration import (
     clean_script_blocks,
     contamination_issues,
 )
-from .novelty import safe_novelty_plan
+from .novelty import prune_redundant_information, safe_novelty_plan
 from .pacing import analyze_pacing
 from .payoff import (
     _is_protected_question,
@@ -1335,6 +1335,15 @@ def build_initial_state(
             block["id"] = f"voice_block_{index:02d}"
     # The sentence after the hook must advance the story (after ordering and fitting).
     blocks, hook_transition = _advance_after_hook(blocks, story_arc)
+    # Within-video information gain: what only repeats or fills is removed
+    # (never rewritten or replaced by new claims), so thin evidence yields a
+    # shorter video instead of padding.  Generation time only: later user
+    # edits are assessed, never pruned.
+    blocks, information_repairs = prune_redundant_information(
+        blocks, {"story_arc": story_arc, "facts": facts, "intent": intent, "novelty_plan": novelty_plan}
+    )
+    for index, block in enumerate(blocks, 1):
+        block["id"] = f"voice_block_{index:02d}"
     hook_block = next((block for block in blocks if _is_hook_block(block)), None)
     selected_hook = (
         selected_hook_candidate.text
@@ -1410,6 +1419,7 @@ def build_initial_state(
         },
         "format_plan": format_plan,
         "novelty_plan": novelty_plan,
+        "information_gain": {"repairs": information_repairs},
         "script": {
             "text": script_text,
             "word_count": word_count,

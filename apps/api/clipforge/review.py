@@ -14,7 +14,7 @@ from .format_intelligence import format_quality_issues
 from .hooks import hook_issues
 from .language import detect_text_language
 from .narration import begins_with_preamble, contamination_issues
-from .novelty import novelty_quality_issues
+from .novelty import information_gain_quality_issues, novelty_quality_issues, repeated_statements
 from .payoff import payoff_quality_issues
 from .pipeline import _apply_selected_hook, _normalise_blocks, _refresh_script_derivatives
 from .reactions import reaction_quality_issues
@@ -306,6 +306,22 @@ def local_review_items(state: dict[str, Any]) -> list[dict[str, str]]:
                 "message": f"Story-arc issue: {problem.replace('_', ' ')}.",
             }
         )
+    # Sentence-level repetition is reported once below; the content authority
+    # adds one finding per other kind of problem (per-unit detail stays in
+    # state["information_gain"]).
+    grouped: dict[str, list[dict[str, str]]] = {}
+    for problem in information_gain_quality_issues(state):
+        if problem["code"] != "redundant_segment" and problem["severity"] != "info":
+            grouped.setdefault(problem["code"], []).append(problem)
+    for code, problems in grouped.items():
+        message = problems[0]["message"] if len(problems) == 1 else f"{len(problems)} script units: {problems[0]['message']}"
+        items.append(
+            {
+                "check": "payoff" if code.startswith("payoff_") else ("research" if "supported" in code else ("hook" if code.startswith("hook_") else "repetition")),
+                "severity": problems[0]["severity"],
+                "message": f"Information gain: {message}"[:320],
+            }
+        )
     if len(first_sentence.split()) > 18:
         items.append(
             {
@@ -328,14 +344,8 @@ def local_review_items(state: dict[str, Any]) -> list[dict[str, str]]:
         for sentence in re.split(r"(?<=[.!?])\s+", script_text)
         if sentence.strip()
     ]
-    sentence_words = [_meaningful_words(sentence) for sentence in sentences]
-    repeated = any(
-        left
-        and right
-        and len(left & right) / max(1, min(len(left), len(right))) >= 0.8
-        for index, left in enumerate(sentence_words)
-        for right in sentence_words[index + 1 :]
-    )
+    # One notion of "repeats": the content information-gain authority.
+    repeated = bool(repeated_statements(sentences))
     if repeated:
         items.append(
             {
@@ -498,6 +508,13 @@ def pre_render_quality_gate(state: dict[str, Any]) -> dict[str, Any]:
         issues.append({"code": problem, "severity": "warning", "message": problem.replace("_", " ") + "."})
     for problem in story_quality_issues(state):
         issues.append({"code": f"story_{problem}", "severity": "warning", "message": "Story arc: " + problem.replace("_", " ") + "."})
+    for problem in information_gain_quality_issues(state):
+        if problem["severity"] == "info":
+            continue  # diagnostics only (state["information_gain"])
+        issues.append({**problem, "code": f"information_gain_{problem['code']}"})
+        if problem["severity"] == "error":
+            # Nothing supported to tell: fail rather than pad or invent.
+            severe.append(f"information_gain_{problem['code']}")
     pacing = state.get("pacing_analysis") if isinstance(state.get("pacing_analysis"), dict) else {}
     if pacing.get("status") == "fallback":
         issues.append({"code": "pacing_fallback", "severity": "warning", "message": "Pacing analysis fell back; existing scene timing is preserved."})

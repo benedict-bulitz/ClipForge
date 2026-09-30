@@ -923,8 +923,42 @@ _LIGHT = {
 _NEGATED = re.compile(r"(?i)\b(?:nicht|kein\w*|nie|niemals|not|no|never)\b|\w+n[’']t\b")
 
 
-def _proposition_words(text: str) -> set[str]:
-    return {word for word in _words(text) if word not in _LIGHT}
+# Words that carry no proposition in any topic: empty curiosity adjectives,
+# "something happens" verbs and nouns, intensifiers.  A sentence whose only
+# new words are these says nothing new ("does something strange" -> "reacts
+# strangely").
+_VAGUE = {
+    "something", "anything", "everything", "thing", "things", "stuff", "way", "ways", "kind", "too",
+    "strange", "strangely", "weird", "weirdly", "odd", "oddly", "unusual", "surprising", "surprisingly",
+    "interesting", "interestingly", "amazing", "incredible", "crazy", "fascinating", "curious",
+    "react", "reacts", "reacting", "reacted", "happen", "happens", "happened", "happening",
+    "occur", "occurs", "occurring", "goes", "going", "went", "gone", "comes", "came", "quite", "pretty", "simply", "basically", "literally", "indeed",
+    "etwas", "ding", "dinge", "seltsam", "seltsame", "seltsames", "merkwürdig", "merkwürdiges", "komisch",
+    "komisches", "erstaunlich", "interessant", "passiert", "passieren", "geschieht", "reagiert", "reagieren",
+    "ziemlich", "sozusagen", "quasi",
+}
+# Everyday paraphrase pairs (grammar-level, not topic vocabulary): each word
+# counts as its canonical form, so swapping one for the other adds nothing.
+# A canonical form in ``_STOP`` ("fast") drops the whole group.
+_SYNONYMS = {
+    "quick": "fast", "quickly": "fast", "rapid": "fast", "rapidly": "fast", "speedy": "fast", "swiftly": "fast",
+    "schnell": "fast", "rasch": "fast",
+    "large": "big", "huge": "big", "enormous": "big", "tiny": "small", "little": "small",
+    "glow": "light", "glows": "light", "glowing": "light", "shine": "light", "shines": "light",
+    "emit": "produce", "emits": "produce", "create": "produce", "creates": "produce",
+    "generate": "produce", "generates": "produce", "produces": "produce",
+    "begin": "start", "begins": "start", "starts": "start",
+}
+
+
+def proposition_words(text: object) -> set[str]:
+    """Content words that carry a proposition (light grammar, vague words and
+    paraphrase synonyms normalised away)."""
+    canonical = {_SYNONYMS.get(word, word) for word in _words(text)}
+    return {word for word in canonical if word not in _LIGHT and word not in _VAGUE and word not in _STOP}
+
+
+_proposition_words = proposition_words
 
 
 def information_gain(reference: str, sentence: str) -> list[str]:
