@@ -184,4 +184,3 @@ def test_short_worthiness_is_one_signal_and_only_scoring_decides():
     assert local.confidence == "low" and local.evidence["basis"] == "question_shape"
     assert "short_worthiness" in scoring.DEFAULT_WEIGHTS and abs(sum(scoring.DEFAULT_WEIGHTS.values()) - 1.0) < 1e-9
     assert semantic.SEMANTIC_CURATOR_VERSION == "semantic-curator-v2"
-

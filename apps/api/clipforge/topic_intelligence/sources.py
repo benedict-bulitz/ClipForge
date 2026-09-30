@@ -563,5 +563,3 @@ class YouTubeCompetitionProbe:
         query = self.query_for(question, topic)
         hit = get_or_fetch(ctx.db, self.name, f"{ctx.region}:{ctx.language}:{fold(query)}", lambda meter: self.fetch(ctx, meter, query), ctx.meter, now=ctx.now)
         return hit.payload, hit.cached
-
-
