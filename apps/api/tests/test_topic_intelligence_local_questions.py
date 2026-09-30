@@ -345,10 +345,10 @@ def test_curation_batches_topics_and_bounds_requests(db, monkeypatch):
     monkeypatch.setattr(semantic, "SEMANTIC_CLIENT_FACTORY", curator)
     source = StaticSource(pool_of_96())
     service.suggestions(db, settings(openai_api_key="sk-test"), static_deps(source), count=3, now=NOW)
-    # Question creation and validation are one call: at most 3 AI requests per pool, <= 20 topics each = 60 topics.
+    # Question creation and validation are one call: at most 3 AI requests per pool, <= 10 topics each.
     assert len(curator.requests) <= service.AI_REQUEST_BUDGET == 3
-    assert all(len(request) <= semantic.MAX_CURATION_BATCH == 20 for request in curator.requests)
-    assert sum(len(request) for request in curator.requests) <= 60
+    assert all(len(request) <= semantic.MAX_CURATION_BATCH == 10 for request in curator.requests)
+    assert sum(len(request) for request in curator.requests) <= 30
     assert source.calls == 1
 
 

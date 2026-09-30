@@ -69,6 +69,8 @@ class Settings(BaseSettings):
     # Semantic question validation (needs OPENAI_API_KEY; independent of the
     # director's AI mode). Off or unavailable -> strict local acceptance.
     topic_semantic_validation: bool = True
+    # Topics per curator request (bounded by the AI request budget; smaller = faster requests).
+    topic_curator_batch_size: int = 10
     render_root: Path = Path("./projects")
     downloads_root: Path | None = None
 

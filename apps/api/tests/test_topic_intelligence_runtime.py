@@ -140,17 +140,17 @@ def test_a_timed_out_provider_is_not_waited_on_again_in_the_same_refresh(db, gat
     assert hung.calls == 2
 
 
-def test_a_hung_curator_times_out_and_discovery_ends_with_strict_local_rules(db, gate, monkeypatch):
+def test_a_hung_curator_times_out_and_discovery_ends_without_unvalidated_filler(db, gate, monkeypatch):
     curator = HangingCurator(gate, db)
     monkeypatch.setattr(semantic, "SEMANTIC_CLIENT_FACTORY", curator)
     started = time.monotonic()
     result = service.suggestions(db, settings(**KEY), with_sources(static(SCHWINDEL, "Sind wir nur noch Pseudofreunde?")), count=3, now=NOW)
     assert time.monotonic() - started < 5
-    assert [item["question"] for item in result["candidates"]] == [SCHWINDEL]  # strict local fallback
+    assert result["candidates"] == []  # not evaluated: no strict-local filler
     assert result["summary"]["semantic_validation"]["status"] == "failed"
     assert "CallTimeout" in " ".join(result["summary"]["semantic_validation"]["errors"])
     assert curator.client_options == {"timeout": runtime.CURATOR_TIMEOUT_SECONDS, "max_retries": 0}
-    assert curator.transaction_open == [False]
+    assert set(curator.transaction_open) == {False} and len(curator.transaction_open) <= service.AI_REQUEST_BUDGET
     assert not runtime.FLIGHT.locked()
 
 
@@ -160,8 +160,9 @@ def test_no_new_curator_request_after_the_ai_deadline(db, monkeypatch):
     monkeypatch.setattr(runtime, "AI_DEADLINE_SECONDS", 0.0)
     result = service.suggestions(db, settings(**KEY), with_sources(static(SCHWINDEL)), count=3, now=NOW)
     assert curator.requests == []
-    assert [item["question"] for item in result["candidates"]] == [SCHWINDEL]
+    assert result["candidates"] == []  # the deadline leaves topics unevaluated - not served unvalidated
     assert "ai_deadline" in " ".join(result["summary"]["semantic_validation"]["errors"])
+    assert result["summary"]["evaluation"]["unevaluated"] == {"ai_deadline": 1}
 
 
 # --- Lock safety ----------------------------------------------------------------------------------

@@ -21,14 +21,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
 
-from openai import OpenAI, OpenAIError
+from openai import APITimeoutError, OpenAI, OpenAIError
 from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy.orm import Session
 
+from ..ai import _reasoning_options
 from ..config import Settings
 from ..models import TopicSourceCache
 from . import runtime
@@ -37,7 +39,12 @@ from .text import compact, extract_question
 
 SEMANTIC_CURATOR_VERSION = "semantic-curator-v2"
 SEMANTIC_CLIENT_FACTORY: Any = OpenAI
-MAX_CURATION_BATCH = 20
+# Topics per curator request.  semantic-curator-v2 asks 14 ratings + 14 issue codes per topic
+# (v1: 9 + 8): ~3,000 visible output tokens per 20 topics plus hidden reasoning ran past the
+# 60 s request timeout on the real Mac.  10 topics keep a request well inside it; after a
+# timeout the next requests halve again (never below MIN_CURATION_BATCH).
+MAX_CURATION_BATCH = 10
+MIN_CURATION_BATCH = 4
 CACHE_PROVIDER = "semantic_curator"
 CACHE_TTL = timedelta(days=14)
 
@@ -200,12 +207,30 @@ class CurationOutcome:
     requests: int = 0
     cached: int = 0
     errors: list[str] = field(default_factory=list)
+    timed_out: bool = False
+    # One entry per request: size, seconds, status, token usage, error (diagnostics only).
+    batches: list[dict[str, Any]] = field(default_factory=list)
+
+
+def _usage(response: Any) -> dict[str, int | None]:
+    usage = getattr(response, "usage", None)
+    details = getattr(usage, "output_tokens_details", None)
+    return {
+        "input_tokens": getattr(usage, "input_tokens", None),
+        "output_tokens": getattr(usage, "output_tokens", None),
+        "reasoning_tokens": getattr(details, "reasoning_tokens", None),
+    }
 
 
 def curate(
     db: Session, settings: Settings, groups: list[TopicGroup], *, requests_left: int, now: datetime,
+    batch_size: int = MAX_CURATION_BATCH,
 ) -> CurationOutcome:
-    """Cache first, then ONE batched request for the uncached topics (<= 20) if the budget allows."""
+    """Cache first, then ONE request for the first ``batch_size`` uncached topics if the budget allows.
+
+    A failed request (timeout, API or parse error) marks only its own topics ``failed`` -
+    not evaluated, never judged low quality - and nothing is cached for them.
+    """
     model = settings.openai_worker_model
     outcome = CurationOutcome({}, {})
     missing: list[TopicGroup] = []
@@ -225,7 +250,8 @@ def curate(
     if requests_left <= 0 or not semantic_enabled(settings):
         outcome.statuses.update({group.key: "not_curated" for group in missing})
         return outcome
-    batch, rest = missing[:MAX_CURATION_BATCH], missing[MAX_CURATION_BATCH:]
+    size = max(1, int(batch_size))
+    batch, rest = missing[:size], missing[size:]
     outcome.statuses.update({group.key: "not_curated" for group in rest})
     request = [
         {"id": f"t{index}", "topic": group.title, "evidence": evidence(group), **({"local_question": q} if (q := local_question(group)) else {})}
@@ -246,17 +272,28 @@ def curate(
             text_format=AICuratedBatch,
             max_output_tokens=8000,
             store=False,
+            # Like every other ClipForge structured call: low reasoning effort for a reasoning model
+            # (default effort spent the whole request budget thinking about 20 x 14 ratings).
+            **_reasoning_options(model),
         )
 
+    started = time.monotonic()
+    record: dict[str, Any] = {"size": len(batch), "topics": [group.title for group in batch][:10]}
+    outcome.batches.append(record)
     try:
         response = runtime.call_with_timeout(request_batch, runtime.CURATOR_TIMEOUT_SECONDS + runtime.CURATOR_GRACE_SECONDS, name="openai_curator")
+        record.update(_usage(response))
         parsed = response.output_parsed
         if not isinstance(parsed, AICuratedBatch):
             raise TypeError("no parsed curation batch")
     except (OpenAIError, ValidationError, ValueError, TypeError, runtime.CallTimeout) as exc:
-        outcome.errors.append(f"{type(exc).__name__}: {str(exc)[:160]}")
+        error = f"{type(exc).__name__}: {str(exc)[:160]}"
+        outcome.errors.append(error)
+        outcome.timed_out = isinstance(exc, APITimeoutError | runtime.CallTimeout)
+        record.update(status="timeout" if outcome.timed_out else "failed", error=error, seconds=round(time.monotonic() - started, 2))
         outcome.statuses.update({group.key: "failed" for group in batch})
         return outcome
+    record.update(status="ok", seconds=round(time.monotonic() - started, 2))
     by_id = {item.id: item.model_dump() for item in parsed.items}
     for index, group in enumerate(batch):
         judgement = by_id.get(f"t{index}")

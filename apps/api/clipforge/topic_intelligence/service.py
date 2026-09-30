@@ -32,11 +32,12 @@ from ..security.secrets import SecretStore
 from ..youtube.connection import access_token, active_connection
 from ..youtube.provider import YouTubeProvider, has_capability
 from . import history as history_module
-from . import runtime, semantic
+from . import runtime, scoring, semantic
 from .cache import CallMeter, prune_expired
 from .candidate import RawTopic, Signal, TopicCandidate, TopicGroup, candidate_id_for
 from .scoring import (
     RankedItem,
+    curation_priority,
     diversify,
     explain,
     rank,
@@ -45,6 +46,7 @@ from .scoring import (
     score_candidate,
 )
 from .signals import (
+    LOCAL_SHORT_BASE,
     accessibility,
     assessed,
     broad_appeal,
@@ -68,6 +70,8 @@ from .sources import (
 from .text import (
     BROAD_APPEAL_PRIORS,
     NICHE_PRIORS,
+    POOR_FIT_NICHES,
+    classify_niche,
     content_tokens,
     de_shout,
     extract_question,
@@ -107,12 +111,12 @@ BROADENING_REPORT = "broadening_pass"
 EVALUATION_REPORT = "candidate_evaluation"
 # Raw-pool backfill: keep evaluating already-discovered topics (no new provider
 # calls) until this many candidates clear every gate, within a hard budget per
-# pool (shared with its broadening pass).  With OpenAI enabled one batch = one
-# request, so the budget also bounds requests: ceil(60 / MAX_BATCH) = 3.
+# pool (shared with its broadening pass).  With the curator only JUDGED topics count:
+# 3 requests x 10 topics = the best ~30 raw topics (plus cached judgements), not 60 badly.
 TARGET_ACCEPTED = 9
 EVALUATION_BUDGET = 60
-# All AI requests of one pool (question rewriting + semantic validation), shared with its
-# broadening pass.  Each request carries up to 20 topics/questions.
+# All AI requests of one pool (combined curation), shared with its broadening pass - including
+# the one retry of a failed batch.  Each request carries ``topic_curator_batch_size`` topics.
 AI_REQUEST_BUDGET = 3
 SEMANTIC_REPORT = "semantic_validation"
 # Last startup warm-up (idle | running | done | failed), for diagnostics.
@@ -225,6 +229,36 @@ def _preliminary(group: TopicGroup) -> float:
     # Titles that already carry a question are cheap and likely to transform: try them earlier.
     question_like = any(extract_question(item.title)[0] for item in group.sightings)
     return round((trend.value or 0.0) + 0.5 * (max(outliers) if outliers else 0.0) + 0.1 * len(group.sources) + (0.3 if question_like else 0.0), 4)
+
+
+def _curation_priority(group: TopicGroup, history: list[history_module.HistoryItem], now: datetime) -> tuple[float, dict[str, Any]]:
+    """Which raw topics deserve the bounded AI curation first - cheap evidence only (see ``scoring``)."""
+    trend = merge_trend([item.trend for item in group.sightings if item.trend is not None])
+    outliers = [item.outlier.value or 0.0 for item in group.sightings if item.outlier is not None and item.outlier.available]
+    description = group.description()
+    niche, _strength = classify_niche(group.title, description)
+    question = next((q for q in (extract_question(item.title)[0] for item in group.sightings) if q), None)
+    novelty = history_module.novelty_signal(question or group.title, group.title, niche, history, now=now)
+    text = question or group.title
+    features = {
+        "demand": (trend.value or 0.0) + 0.5 * (max(outliers) if outliers else 0.0),
+        # A statement can still become a question - the curator decides; it just starts lower.
+        "question_strength": LOCAL_SHORT_BASE.get(question_mechanism(question), 0.45) if question else 0.45,
+        "universal": 1.0 if has_universal_subject(text) else 0.5,
+        "evidence": 1.0 if any(item.kind == "article" or len(item.description or "") >= 60 for item in group.sightings) else 0.4,
+        "mass_appeal": BROAD_APPEAL_PRIORS.get(niche, BROAD_APPEAL_PRIORS["unknown"]),
+        "corroboration": 1.0 if len(group.sources) >= 2 else 0.0,
+        "novelty": novelty.value if novelty.available and novelty.value is not None else 1.0,
+    }
+    penalties = {
+        "prior_knowledge": len(prior_knowledge_flags(text)),
+        "obscure_entity": len(topic_obscurity_flags(group.title, description) & OBSCURE_ENTITY_FLAGS),
+        "poor_fit_niche": niche in POOR_FIT_NICHES or bool(group.flags & {"politics", "entertainment_or_sport"}),
+        "weak_question_shape": bool(question and short_shape_flags(question)),
+        "duplicate_of_previous_topic": history_module.is_duplicate(novelty),
+    }
+    value, applied = curation_priority(features, penalties)
+    return value, {"features": {name: round(float(v), 3) for name, v in features.items()}, "penalties": applied, "niche": niche}
 
 
 def _best_outlier(group: TopicGroup) -> Signal:
@@ -525,15 +559,19 @@ def _discover(
             prefiltered.append(group.title)  # cheap deterministic prefilter: never worth an AI call
             continue
         groups.append(group)
-    if semantic.semantic_enabled(settings):
-        # The curator can turn statements into grounded questions: discovery signals order the work.
-        groups.sort(key=lambda group: (-_preliminary(group), group.key))
+    budget = EVALUATION_BUDGET - (evaluated_in(broaden_from) if broaden_from is not None else 0)
+    history = history_module.load_history(db)
+    semantic_on = semantic.semantic_enabled(settings)
+    priorities: dict[str, tuple[float, dict[str, Any]]] = {}
+    if semantic_on:
+        # The AI budget is bounded: the most promising raw topics are curated first
+        # (cheap evidence only - demand, audience, evidence, question hint; garbage last).
+        priorities = {group.key: _curation_priority(group, history, now) for group in groups}
+        groups.sort(key=lambda group: (-priorities[group.key][0], group.key))
     else:
         # Local mode: a topic without a locally derivable question can never pass, so topics that
         # can become one are evaluated first (ordering only - the rest still follow within budget).
         groups.sort(key=lambda group: (deterministic_transform(group).method == "none", -_preliminary(group), group.key))
-    budget = EVALUATION_BUDGET - (evaluated_in(broaden_from) if broaden_from is not None else 0)
-    history = history_module.load_history(db)
     own_priors, own_default = history_module.own_performance_priors(db, settings)
     candidates: list[TopicCandidate] = []
     extras: dict[str, tuple[list[str], list[str]]] = {}
@@ -541,60 +579,47 @@ def _discover(
     semantic_errors: list[str] = []
     evaluated = curation_requests = curated = cached_curations = 0
     ai_left = AI_REQUEST_BUDGET - (ai_requests_in(broaden_from) if broaden_from is not None else 0)
-    semantic_on = semantic.semantic_enabled(settings)
     batch: list[TopicGroup] = []
     accepted = len(carried)
     queue = list(groups)
-    # Backfill through the raw pool: the discovery pre-rank orders the work, it is not a gate.
-    # One round = <= 20 raw topics -> ONE curator request (question + judgement) -> scoring.
-    while queue and evaluated < budget and accepted < TARGET_ACCEPTED:
-        batch = queue[: min(MAX_BATCH, budget - evaluated)]
-        queue = queue[len(batch):]
-        evaluated += len(batch)
-        transformed: list[Transformed] = []
-        _FLIGHT.stage("curation_batch", "openai_curator" if semantic_on else "local_rules")
-        if semantic_on and ai_left > 0 and time.monotonic() + runtime.CURATOR_TIMEOUT_SECONDS > ai_deadline:
-            # A slow model must not stretch the refresh: no new request past the deadline
-            # (cached judgements still apply; the rest falls back to strict local rules).
-            semantic_errors.append(f"ai_deadline: no new curator request after {runtime.AI_DEADLINE_SECONDS:g}s")
-            ai_left = 0
-        if semantic_on:
-            outcome = semantic.curate(db, settings, batch, requests_left=ai_left, now=now)
-            curation_requests += outcome.requests
-            ai_left -= outcome.requests
-            cached_curations += outcome.cached
-            semantic_errors.extend(outcome.errors)
-            for group in batch:
-                status = outcome.statuses.get(group.key, "not_curated")
-                judgement = outcome.judgements.get(group.key)
-                if judgement is not None:
-                    transformed.append(curated_transform(group, judgement, semantic.curated_signal(judgement, status=status)))
-                    curated += status == "curated"
-                    methods.append("curator")
-                    continue
-                item = deterministic_transform(group)
-                item.semantic = (
-                    semantic.unavailable("semantic_curator_failed", status="failed") if status == "failed"
-                    else semantic.unavailable("ai_budget_exhausted", status="not_validated")
-                )
-                transformed.append(item)
-                methods.append("template")
-        else:
-            for group in batch:
-                item = deterministic_transform(group)
-                item.semantic = semantic.unavailable("semantic_curator_unavailable")
-                transformed.append(item)
-            methods.append("template")
+    curation_batches: list[dict[str, Any]] = []
+    unevaluated: dict[str, tuple[str, str]] = {}  # group key -> (topic, reason): NOT judged, never "low quality"
+
+    def evaluate(pairs: list[tuple[TopicGroup, Transformed]]) -> None:
+        nonlocal accepted
         _FLIGHT.stage("scoring")
-        for group, item in zip(batch, transformed, strict=True):
+        for group, item in pairs:
             candidate = build_candidate(group, item, history=history, own_priors=own_priors, own_default=own_default, now=now, run_id=run.id)
             if candidate.candidate_id in excluded_ids:
                 continue
+            if group.key in priorities:
+                candidate.provenance["curation_priority"] = priorities[group.key][0]
             extras[candidate.candidate_id] = (item.issues, item.flags)
             score_candidate(candidate, weights=weights, version=version, now=now, issues=item.issues, flags=item.flags, degraded_sources=degraded)
             candidates.append(candidate)
         accepted = len(carried) + sum(1 for candidate in candidates if not candidate.rejected)
-    method = "curator" if "curator" in methods else "template"
+
+    if semantic_on:
+        queue, evaluated, curation_requests, curated, cached_curations, ai_left = _curate_pool(
+            db, settings, queue, now=now, budget=budget, ai_left=ai_left, ai_deadline=ai_deadline,
+            evaluate=evaluate, target_left=lambda: TARGET_ACCEPTED - accepted,
+            batches=curation_batches, unevaluated=unevaluated, errors=semantic_errors, methods=methods,
+        )
+    # Local mode: backfill through the raw pool with the deterministic question step.
+    # The discovery pre-rank orders the work, it is not a gate.
+    while not semantic_on and queue and evaluated < budget and accepted < TARGET_ACCEPTED:
+        batch = queue[: min(MAX_BATCH, budget - evaluated)]
+        queue = queue[len(batch):]
+        evaluated += len(batch)
+        transformed: list[Transformed] = []
+        _FLIGHT.stage("curation_batch", "local_rules")
+        for group in batch:
+            item = deterministic_transform(group)
+            item.semantic = semantic.unavailable("semantic_curator_unavailable")
+            transformed.append(item)
+        methods.append("template")
+        evaluate(list(zip(batch, transformed, strict=True)))
+    method = "curator" if semantic_on or "curator" in methods else "template"
     run.transformation = f"{method}:{TRANSFORMATION_VERSION}"
     transform_error = None
     # Competition probes: only for the strongest usable candidates, bounded per refresh.
@@ -631,16 +656,25 @@ def _discover(
         error=f"raw_groups={len(groups)} budget={budget} target={TARGET_ACCEPTED} accepted={accepted} remaining={len(queue)}",
         detail={"ai_requests": curation_requests, "ai_request_budget": AI_REQUEST_BUDGET, "curation_requests": curation_requests,
                 "remaining_raw_groups": len(queue), "prefiltered": len(prefiltered), "prefiltered_topics": prefiltered[:10],
+                "curator_batch_size": int(getattr(settings, "topic_curator_batch_size", semantic.MAX_CURATION_BATCH)) if semantic_on else None,
+                # Not judged (timeout, budget, deadline) - "not evaluated", never "low quality".
+                "unevaluated": dict(Counter(reason for _topic, reason in unevaluated.values())),
+                "unevaluated_topics": [{"topic": topic, "reason": reason} for topic, reason in list(unevaluated.values())[:20]],
+                "curation_order": [
+                    {"topic": group.title, "priority": priorities[group.key][0], **priorities[group.key][1]}
+                    for group in groups[:12] if group.key in priorities
+                ],
                 "broadened_from": broaden_from.id if broaden_from is not None else None},
     ))
     reports.append(SourceReport(
         SEMANTIC_REPORT,
-        "ok" if semantic_on and not semantic_errors else "failed" if semantic_errors else "unavailable",
+        # partial: some requests failed, but judged topics exist (their results are kept)
+        "unavailable" if not semantic_on else "ok" if not semantic_errors else "partial" if curated + cached_curations else "failed",
         error="; ".join(dict.fromkeys(semantic_errors)) or (None if semantic_on else "No OpenAI key (or disabled): strict local acceptance"),
         calls=curation_requests,
         items=curated,
         detail={"curator_version": semantic.SEMANTIC_CURATOR_VERSION, "enabled": semantic_on,
-                "curated": curated, "cached": cached_curations},
+                "curated": curated, "cached": cached_curations, "batches": curation_batches},
     ))
     if broaden_from is not None:
         reports.append(SourceReport(BROADENING_REPORT, "ok", items=evaluated))
@@ -674,6 +708,102 @@ def _discover(
 # ---------------------------------------------------------------------------
 # Proposals ("Generate Next Video" / "Try another")
 # ---------------------------------------------------------------------------
+
+
+def _curate_pool(
+    db: Session,
+    settings: Settings,
+    queue: list[TopicGroup],
+    *,
+    now: datetime,
+    budget: int,
+    ai_left: int,
+    ai_deadline: float,
+    evaluate: Any,
+    target_left: Any,
+    batches: list[dict[str, Any]],
+    unevaluated: dict[str, tuple[str, str]],
+    errors: list[str],
+    methods: list[str],
+) -> tuple[list[TopicGroup], int, int, int, int, int]:
+    """Curate the prioritized raw pool within the AI budget.
+
+    Cached judgements first (free), then one request per ``topic_curator_batch_size``
+    topics in priority order.  A failed request (e.g. a timeout) marks only its own
+    topics as NOT evaluated: they are retried once - first, before lower-ranked topics,
+    in a smaller batch after a timeout - and never become low-quality rejections or
+    unvalidated local filler.  Returns (remaining raw groups, evaluated, requests,
+    curated, cached, ai requests left).
+    """
+    evaluated = requests = curated = cached = 0
+    _FLIGHT.stage("curation_cache", "openai_curator")
+    lookup = semantic.curate(db, settings, queue, requests_left=0, now=now)
+    fresh: list[TopicGroup] = []
+    pairs: list[tuple[TopicGroup, Transformed]] = []
+    for group in queue:
+        judgement = lookup.judgements.get(group.key)
+        if judgement is None or evaluated >= budget:
+            fresh.append(group)
+            continue
+        pairs.append((group, curated_transform(group, judgement, semantic.curated_signal(judgement, status="cached"))))
+        evaluated += 1
+        cached += 1
+    if pairs:
+        methods.append("curator")
+        evaluate(pairs)
+    batch_size = max(1, min(20, int(getattr(settings, "topic_curator_batch_size", semantic.MAX_CURATION_BATCH) or semantic.MAX_CURATION_BATCH)))
+    retried: set[str] = set()
+    failed: list[TopicGroup] = []
+    stop_reason = ""
+    while fresh and evaluated < budget and target_left() > 0:
+        if ai_left <= 0:
+            stop_reason = "ai_budget_exhausted"
+            break
+        if time.monotonic() + runtime.CURATOR_TIMEOUT_SECONDS > ai_deadline:
+            # A slow model must not stretch the refresh: no new request past the deadline.
+            errors.append(f"ai_deadline: no new curator request after {runtime.AI_DEADLINE_SECONDS:g}s")
+            stop_reason = "ai_deadline"
+            break
+        _FLIGHT.stage("curation_batch", "openai_curator")
+        size = min(batch_size, budget - evaluated)
+        batch, fresh = fresh[:size], fresh[size:]
+        outcome = semantic.curate(db, settings, batch, requests_left=ai_left, now=now, batch_size=size)
+        requests += outcome.requests
+        ai_left -= outcome.requests
+        errors.extend(outcome.errors)
+        batches.extend({**item, "retry": any(group.key in retried for group in batch)} for item in outcome.batches)
+        pairs, retry = [], []
+        for group in batch:
+            status = outcome.statuses.get(group.key, "not_curated")
+            judgement = outcome.judgements.get(group.key)
+            if judgement is not None:
+                pairs.append((group, curated_transform(group, judgement, semantic.curated_signal(judgement, status=status))))
+                evaluated += 1
+                curated += status == "curated"
+                cached += status == "cached"
+            elif status == "failed" and group.key not in retried:
+                retry.append(group)
+            elif status == "failed":
+                failed.append(group)
+                unevaluated[group.key] = (group.title, "curator_failed")
+            else:
+                fresh.insert(0, group)  # not sent: still waiting, in priority order
+        if pairs:
+            methods.append("curator")
+            evaluate(pairs)
+        if retry:
+            # The highest-ranked unresolved topics go first again ...
+            retried.update(group.key for group in retry)
+            fresh = retry + fresh
+        if outcome.timed_out:
+            # ... and after a timeout every following request is smaller.
+            batch_size = max(semantic.MIN_CURATION_BATCH, batch_size // 2)
+    for group in fresh:
+        if group.key in retried:
+            unevaluated[group.key] = (group.title, "curator_failed")
+        elif stop_reason:
+            unevaluated[group.key] = (group.title, stop_reason)
+    return fresh + failed, evaluated, requests, curated, cached, ai_left
 
 
 def current_run(
@@ -936,6 +1066,8 @@ def _suggestions_locked(
     if (
         len(records) < count and not was_broadened(run) and evaluated_in(run) < EVALUATION_BUDGET
         and _evaluation_detail(run).get("remaining_raw_groups", 1) > 0
+        # With the curator, a pass without AI budget left could judge nothing new.
+        and not (semantic.semantic_enabled(settings) and ai_requests_in(run) >= AI_REQUEST_BUDGET)
     ):
         # Too few candidates clear the quality floor: evaluate the next raw
         # topics once per pool, rather than serving weak filler.
@@ -1149,6 +1281,62 @@ def diagnostics(
     }
 
 
+def curation_calibration(db: Session, run: TopicDiscoveryRun | None) -> dict[str, Any] | None:
+    """Every CURATED candidate of a pool with all v2 dimensions, short-worthiness, issues and the
+    hard gates that rejected it - a reliable sample before any threshold is changed.
+
+    ``sole_gate``: candidates rejected by exactly one gate (those a single threshold decides);
+    ``gate_counts``: how often each gate fired.  Diagnostics only; nothing here changes a score.
+    """
+    if run is None:
+        return None
+    rows: list[dict[str, Any]] = []
+    gate_counts: Counter[str] = Counter()
+    sole_gate: Counter[str] = Counter()
+    gates_per_candidate: Counter[int] = Counter()
+    for candidate_id in run.ranked_candidate_ids or []:
+        record = db.get(TopicCandidateRecord, candidate_id)
+        if record is None:
+            continue
+        quality = (record.score_breakdown or {}).get("quality") or {}
+        sem = quality.get("semantic") or {}
+        if sem.get("status") not in {"curated", "cached"}:
+            continue
+        short = quality.get("short_worthiness") or {}
+        gates = list(record.rejection_reasons or [])
+        gate_counts.update(gates)
+        gates_per_candidate[min(len(gates), 3)] += 1
+        if len(gates) == 1:
+            sole_gate[gates[0]] += 1
+        rows.append({
+            "question": record.question,
+            "topic": record.topic,
+            "final_score": record.final_score,
+            "dimensions": sem.get("dimensions") or {},
+            "short_dimensions": short.get("dimensions") or {},
+            "short_worthiness": short.get("value"),
+            "short_penalties": short.get("penalties") or {},
+            "issues": sem.get("issues") or [],
+            "grounded": sem.get("grounded"),
+            "gates": gates,
+            "accepted": not gates,
+        })
+    return {
+        "curated": len(rows),
+        "accepted": sum(1 for row in rows if row["accepted"]),
+        "gates_per_candidate": {("3+" if key == 3 else str(key)): value for key, value in sorted(gates_per_candidate.items())},
+        "gate_counts": dict(gate_counts.most_common()),
+        "sole_gate": dict(sole_gate.most_common()),
+        "thresholds": {
+            "semantic_dimension_min": scoring.SEMANTIC_DIMENSION_MIN,
+            "short_worthiness_floor": scoring.SHORT_WORTHINESS_FLOOR,
+            "single_question_focus_min": scoring.SINGLE_QUESTION_FOCUS_MIN,
+            "quality_floor": scoring.QUALITY_FLOOR,
+        },
+        "candidates": rows,
+    }
+
+
 def pool_summary(db: Session, run: TopicDiscoveryRun | None) -> dict[str, Any] | None:
     """Accepted vs. rejected candidates of one pool, with rejection reasons counted."""
     if run is None:
@@ -1171,6 +1359,7 @@ def pool_summary(db: Session, run: TopicDiscoveryRun | None) -> dict[str, Any] |
             "prior_knowledge": quality.get("prior_knowledge") or [],
             "mass_audience_quality": quality.get("mass_audience"),
             "semantic": quality.get("semantic") or {},
+            "short_worthiness": quality.get("short_worthiness") or {},
             "sources": sorted({str(item.get("source")) for item in record.source_signals or []}),
             "transformation": (record.provenance or {}).get("transformation"),
         }
@@ -1192,11 +1381,19 @@ def pool_summary(db: Session, run: TopicDiscoveryRun | None) -> dict[str, Any] |
         "remaining_raw_groups": _evaluation_detail(run).get("remaining_raw_groups"),
         "prefiltered": int(_evaluation_detail(chain[-1]).get("prefiltered") or 0),
         "prefiltered_topics": list(_evaluation_detail(chain[-1]).get("prefiltered_topics") or []),
+        # Not judged in the latest pass (timeout / budget / deadline): "not evaluated", never "low quality".
+        "unevaluated": dict(_evaluation_detail(run).get("unevaluated") or {}),
+        "unevaluated_topics": list(_evaluation_detail(run).get("unevaluated_topics") or []),
+        "curator_batch_size": _evaluation_detail(run).get("curator_batch_size"),
+        # The work order the AI budget followed (first pass): cheap evidence only.
+        "curation_order": list(_evaluation_detail(chain[-1]).get("curation_order") or []),
         "broadened": parent is not None,
     }
     semantic_reports = [semantic_report(item) for item in chain if semantic_report(item)]
     semantic_summary = {
         "status": next((item["status"] for item in semantic_reports if item.get("status") != "ok"), semantic_reports[0]["status"] if semantic_reports else None),
+        # Every curator request of this pool, oldest first: size, seconds, ok/timeout/failed, tokens.
+        "batches": [batch for item in reversed(semantic_reports) for batch in (item.get("detail") or {}).get("batches") or []],
         "curator_version": semantic.SEMANTIC_CURATOR_VERSION,
         "enabled": any((item.get("detail") or {}).get("enabled") for item in semantic_reports),
         "requests": sum(int(item.get("calls") or 0) for item in semantic_reports),
@@ -1250,6 +1447,8 @@ def diagnose(db: Session, settings: Settings, *, now: datetime | None = None) ->
     summary = pool_summary(db, run) or {}
     if not summary.get("available"):
         reasons = summary.get("rejection_reasons") or {}
+        if (summary.get("evaluation") or {}).get("unevaluated", {}).get("curator_failed") and not summary.get("rejected"):
+            return "curator_failed"  # nothing was judged: not evaluated, not "no good topics"
         rejected = max(1, int(summary.get("rejected") or 0))
         if reasons.get("question_no_question_transformation", 0) * 2 >= rejected:
             return "question_transformation_failed"
@@ -1292,6 +1491,8 @@ def discovery_status(db: Session, settings: Settings | None = None, *, now: date
             "youtube_connected": active_connection(db) is not None,
         },
         "pool": pool_summary(db, run),
+        # Curated sample for threshold calibration (per-candidate rows: diagnostics --curated).
+        "calibration": {key: value for key, value in (curation_calibration(db, run) or {}).items() if key != "candidates"} or None,
         "semantic_cache_entries": int(semantic_cached),
         "run": None if run is None else {
             **_pool_info(db, run),

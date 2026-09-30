@@ -536,6 +536,44 @@ def score_candidate(
     return candidate
 
 
+# ---------------------------------------------------------------------------
+# Curation priority: the WORK ORDER before the (bounded, paid) AI curation - never a candidate score.
+# Only cheap evidence that exists before curation; no semantic judgement.
+# ---------------------------------------------------------------------------
+
+CURATION_PRIORITY_WEIGHTS: dict[str, float] = {
+    "demand": 0.20,  # trend + outlier of the raw sightings
+    "question_strength": 0.20,  # curiosity structure of a question already in a title (statement: neutral-low)
+    "universal": 0.20,  # about people / the viewer / the everyday or physical world
+    "evidence": 0.15,  # an article / description the curator can ground a question on
+    "mass_appeal": 0.10,  # broad-appeal prior of the topic's niche (a coarse keyword guess)
+    "corroboration": 0.05,  # seen by two or more sources (demand already counts it once)
+    "novelty": 0.10,  # not close to an earlier ClipForge topic
+}
+CURATION_PRIORITY_PENALTIES: dict[str, float] = {
+    "prior_knowledge": 0.15,  # per flag: brand, product news, institution, specific event, name
+    "obscure_entity": 0.10,  # per flag: identifier, acronym, isolated event, proper-name compound
+    "poor_fit_niche": 0.25,  # politics, sport, entertainment, celebrities, tragedy
+    "weak_question_shape": 0.20,  # multi-part / list / advice / survey title question
+    "duplicate_of_previous_topic": 1.0,  # already covered by ClipForge
+}
+MAX_OBSCURE_PRIORITY_PENALTY = 0.3
+
+
+def curation_priority(features: dict[str, float], penalties: dict[str, int | bool]) -> tuple[float, dict[str, float]]:
+    """(priority, applied penalties) for ordering raw topics before curation."""
+    value = sum(weight * clamp(float(features.get(name, 0.0))) for name, weight in CURATION_PRIORITY_WEIGHTS.items())
+    applied: dict[str, float] = {}
+    for name, amount in penalties.items():
+        if not amount:
+            continue
+        if name in {"obscure_entity", "prior_knowledge"}:
+            applied[name] = min(MAX_OBSCURE_PRIORITY_PENALTY, CURATION_PRIORITY_PENALTIES[name] * int(amount))
+        else:
+            applied[name] = CURATION_PRIORITY_PENALTIES[name]
+    return round(value - sum(applied.values()), 4), applied
+
+
 def rank_key(rejected: bool, final_score: float, candidate_id: str) -> tuple[bool, float, str]:
     """The one ordering: usable first, then score, then the stable candidate id."""
     return (rejected, -final_score, candidate_id)

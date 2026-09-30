@@ -6,6 +6,7 @@ written and no external call is made.
 
     PYTHONPATH=. python scripts/topic_diagnostics.py --status       # which state Home is in, and why
     PYTHONPATH=. python scripts/topic_diagnostics.py --status --live  # + live stage of the running API
+    PYTHONPATH=. python scripts/topic_diagnostics.py --curated        # every curated candidate + rejecting gates
     PYTHONPATH=. python scripts/topic_diagnostics.py                # latest pool, top 20
     PYTHONPATH=. python scripts/topic_diagnostics.py --shown 9      # what Home was served, in order
     PYTHONPATH=. python scripts/topic_diagnostics.py --rescore      # + score with the current version
@@ -15,8 +16,11 @@ written and no external call is made.
 import argparse
 import json
 
+from sqlalchemy import select
+
 from clipforge.config import get_settings
 from clipforge.database import SessionLocal, prepare_schema
+from clipforge.models import TopicDiscoveryRun
 from clipforge.topic_intelligence import service
 
 COLUMNS = (
@@ -83,6 +87,24 @@ DIAGNOSES = {
 }
 
 
+def print_calibration(report: dict | None) -> None:
+    if not report:
+        print("no pool yet")
+        return
+    print(f"curated: {report['curated']} accepted: {report['accepted']} gates per candidate: {report['gates_per_candidate']}")
+    print(f"thresholds: {report['thresholds']}")
+    print(f"gate counts: {report['gate_counts']}")
+    print(f"sole gate (one threshold decides): {report['sole_gate']}")
+    for row in report["candidates"]:
+        mark = "ACCEPTED" if row["accepted"] else "REJECTED"
+        dims = " ".join(f"{name}={value}" for name, value in row["dimensions"].items())
+        short = " ".join(f"{name}={value}" for name, value in row["short_dimensions"].items())
+        print(f"\n[{mark}] {row['final_score']:.3f} {row['question']}\n    topic: {row['topic']}")
+        print(f"    semantic: {dims}")
+        print(f"    short: {short} -> short_worthiness={row['short_worthiness']} penalties={row['short_penalties']}")
+        print(f"    issues={row['issues']} grounded={row['grounded']} gates={row['gates']}")
+
+
 def status_report(settings, live: str | None) -> dict:
     """The running API's view (``--live``: flight, stage, warm-up live) or this process's DB-only view."""
     if live:
@@ -132,6 +154,17 @@ def print_status(settings, live: str | None = None) -> None:
     if sem:
         print(f"semantic curation: {sem.get('status')} enabled={sem.get('enabled')} version={sem.get('curator_version')} "
               f"requests={sem.get('requests')} curated={sem.get('curated')} cached={sem.get('cached')} {'; '.join(sem.get('errors') or [])}")
+        for index, batch in enumerate(sem.get("batches") or [], 1):
+            print(f"  curator request {index}: {batch.get('status')} size={batch.get('size')} {batch.get('seconds')}s "
+                  f"tokens in/out/reasoning={batch.get('input_tokens')}/{batch.get('output_tokens')}/{batch.get('reasoning_tokens')} "
+                  f"retry={batch.get('retry')} {batch.get('error') or ''}")
+    if evaluation.get("unevaluated"):
+        print(f"not evaluated (never 'low quality'): {evaluation['unevaluated']} "
+              f"{[item['topic'] for item in evaluation.get('unevaluated_topics') or []][:8]}")
+    if evaluation.get("curation_order"):
+        print(f"curation order (batch size {evaluation.get('curator_batch_size')}):")
+        for item in evaluation["curation_order"]:
+            print(f"  {item['priority']:6.3f} {item['topic'][:70]} {item.get('penalties') or ''}")
     print(f"rejection reasons: {pool.get('rejection_reasons')}")
 
     def semantic_line(item: dict) -> str:
@@ -168,11 +201,23 @@ def main() -> None:
     parser.add_argument("--rescore", action="store_true", help="also score with the current scoring version")
     parser.add_argument("--status", action="store_true", help="diagnosis, sources, pool, rejections, caches")
     parser.add_argument("--json", action="store_true")
+    parser.add_argument("--curated", action="store_true",
+                        help="every curated candidate: all v2 dimensions, short-worthiness, issues, rejecting gates")
     parser.add_argument("--live", nargs="?", const="http://localhost:8000", metavar="API_URL",
                         help="with --status: read the running API (live discovery stage, warm-up, lock)")
     args = parser.parse_args()
     prepare_schema()
     settings = get_settings()
+    if args.curated:
+        with SessionLocal() as db:
+            run = db.scalar(select(TopicDiscoveryRun).where(TopicDiscoveryRun.status.not_in(("failed", "running")))
+                            .order_by(TopicDiscoveryRun.sequence.desc()).limit(1))
+            report = service.curation_calibration(db, run)
+        if args.json:
+            print(json.dumps(report, default=str, ensure_ascii=False, indent=2))
+        else:
+            print_calibration(report)
+        return
     if args.status:
         if args.json:
             print(json.dumps(status_report(settings, args.live), default=str, ensure_ascii=False, indent=2))

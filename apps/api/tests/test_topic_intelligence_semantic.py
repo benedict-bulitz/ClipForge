@@ -86,13 +86,14 @@ def test_no_key_means_no_topic_ai_even_in_openai_mode(db):
 # --- One combined, bounded call ------------------------------------------------------------------
 
 
-def test_sixty_raw_topics_are_curated_within_three_ai_calls(db, monkeypatch):
+def test_the_best_thirty_raw_topics_are_curated_within_three_ai_calls(db, monkeypatch):
     curator = FakeCurator(default=bad(clear_factual_payoff=2))  # nothing passes: worst case
     source = StaticSource(pool_of_96())
     monkeypatch.setattr(semantic, "SEMANTIC_CLIENT_FACTORY", curator)
     service.suggestions(db, settings(**KEY), static_deps(source), count=9, now=NOW)
     assert len(curator.requests) == 3
-    assert [len(request) for request in curator.requests] == [20, 20, 20]
+    # 10 per request (v2's 20 timed out on the real Mac): the top ~30 of the pool, not 60 badly.
+    assert [len(request) for request in curator.requests] == [10, 10, 10]
     assert source.calls == 1
 
 
@@ -168,7 +169,7 @@ def test_backfill_continues_through_the_raw_pool_without_provider_calls(db, monk
     curator = FakeCurator({**BY_TOPIC, **{title: {"usable": False, "question": ""} for title in weak}})
     result, source = run_pool(db, [*weak, BRUST_TITLE, HUNDE_TITLE], curator=curator, monkeypatch=monkeypatch)
     assert source.calls == 1
-    assert len(curator.requests) == 2  # the first 20 were unusable, curation continued in the same pool
+    assert [len(request) for request in curator.requests] == [10, 10, 2]  # 20 unusable, curation continued in the same pool
     assert {item["question"] for item in result["candidates"]} == {BRUST, HUNDE}
 
 
@@ -210,11 +211,15 @@ def test_curation_is_cached_per_topic_and_curator_version(db, monkeypatch):
 # --- Degradation and independence ------------------------------------------------------------------------
 
 
-def test_curator_failure_falls_back_to_strict_local_rules(db, monkeypatch):
+def test_curator_failure_serves_no_unvalidated_filler(db, monkeypatch):
+    # With the curator enabled, a topic it could not judge is "not evaluated": never served as a
+    # strict-local fallback question, never persisted as a low-quality rejection.
     result, _ = run_pool(db, [PSEUDO, TALG, SCHWINDEL], curator=FakeCurator(fail=True), monkeypatch=monkeypatch, kind="video")
-    assert {item["question"] for item in result["candidates"]} == {SCHWINDEL}
-    assert record_for(db, SCHWINDEL).score_breakdown["quality"]["semantic"]["status"] == "failed"
-    assert service.semantic_report(db.scalar(select(TopicDiscoveryRun)))["status"] == "failed"
+    assert result["candidates"] == []
+    assert db.scalars(select(TopicCandidateRecord)).all() == []
+    run = db.scalar(select(TopicDiscoveryRun).order_by(TopicDiscoveryRun.sequence))
+    assert service.semantic_report(run)["status"] == "failed"
+    assert service.pool_summary(db, run)["evaluation"]["unevaluated"] == {"curator_failed": 3}
 
 
 def test_without_a_key_local_mode_shows_fewer_stricter_suggestions(db):

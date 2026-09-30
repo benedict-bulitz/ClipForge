@@ -139,6 +139,18 @@ before the page opens; video generation never waits for it.
 - **Raw-pool backfill**: discovery ranks the order of work, it is not a gate. Topics are evaluated in
   batches through the already-discovered raw pool until 9 candidates clear every gate or 60 topics
   were evaluated / 3 AI requests used - without new provider calls.
+- **Curator reliability**: the AI budget (3 requests per pool) goes to the most promising raw
+  topics first - ordered by cheap evidence only (demand, a well-formed question already in a title,
+  a universal subject, grounding evidence, audience prior, novelty; minus brand/product/institution
+  wording, obscure entities, poor-fit niches, weak question shapes and repeats of earlier videos).
+  Each request carries 10 topics (`TOPIC_CURATOR_BATCH_SIZE`; v2's 20 per request timed out) at low
+  reasoning effort, like every other ClipForge structured call. A failed request marks only its own
+  topics as *not evaluated* (`curator_failed`) - never low quality: they are retried first, in a
+  smaller batch after a timeout, within the same budget, and judged topics of other batches are kept.
+  Topics the curator could not judge are never served as unvalidated local filler; Home shows fewer
+  suggestions instead. `topic_diagnostics.py --status` lists every request (size, seconds, tokens,
+  ok/timeout), the curation order and what stayed unevaluated; `--curated` lists every curated
+  candidate with all dimensions, short-worthiness, issue codes and the gates that rejected it.
 - **Short-worthiness** (`ti-score-v6`, `semantic-curator-v2`): clear, factual and broad is not enough
   - a default suggestion must make a strong short. The curator also rates curiosity strength, payoff
   specificity, reveal potential, concreteness and single-question focus; together with knowledge-short
