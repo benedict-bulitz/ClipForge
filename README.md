@@ -94,12 +94,15 @@ cd apps/api && PYTHONPATH=. ../../.venv/bin/python scripts/youtube_diagnostics.p
 Due analytics snapshots (~1 h, 6 h, 24 h, 72 h, 7 d after publication) are taken by
 **Refresh analytics** or `POST /api/youtube/analytics/sync-due`, which is safe to call from cron.
 
-## Generate Next Video (Topic Intelligence V1)
+## Live topic suggestions (Topic Intelligence V1)
 
-Next to the unchanged manual prompt, **Generate Next Video** lets ClipForge propose the next
-German knowledge short. It discovers candidates, scores them, shows the strongest one with a
-compact "Why this topic" explanation, and waits: **Generate video**, **Try another** or **Edit
-topic**. Nothing is generated, uploaded or published without that confirmation.
+The three suggestion chips under the prompt are live German Topic Intelligence questions.
+Clicking one only copies it into the prompt (generation still starts with the normal
+**Generate** button) and immediately replaces that one chip from a prefetched reserve; the other
+two stay. **Neue Vorschläge** replaces all three without touching the prompt. Visible chips never
+change on their own: the set is persisted in the browser, and only a hidden reserve is refilled in
+the background. Discovery also warms up when the API starts, so suggestions are usually ready
+before the page opens; video generation never waits for it.
 
 - **Sources** (official APIs only, each behind one small `TopicSource` interface): German
   Wikipedia pageviews (recent interest vs. the article's own median), YouTube's German
@@ -122,13 +125,13 @@ topic**. Nothing is generated, uploaded or published without that confirmation.
   `TOPIC_POOL_TTL_MINUTES` (45), refreshes are single-flight, and each refresh has a hard YouTube
   quota budget (`TOPIC_YOUTUBE_QUOTA_BUDGET`, 400 units; at most `TOPIC_YOUTUBE_SEARCH_PROBES`=2
   searches).
-- **Handoff**: a confirmed topic goes through the same `POST /api/generation-jobs` as a typed
-  question. `topic_source` (`manual` | `topic_intelligence`), the candidate id, score version, score
+- **Handoff**: a question taken from a chip goes through the same `POST /api/generation-jobs` as a
+  typed question. `topic_source` (`manual` | `topic_intelligence`), the candidate id, score version, score
   breakdown, signals used and selection time are stored with the request, the project state and
   the production fingerprint for later analytics learning.
 
-If every discovery source fails, the UI says "Topic discovery is temporarily unavailable." and the
-manual prompt keeps working; if only some fail, the remaining sources are used with lower
+If every discovery source fails and no chips are cached, Home says "Topic discovery is temporarily
+unavailable." and the manual prompt keeps working; if only some fail, the remaining sources are used with lower
 confidence. `GET /api/topic-intelligence/status` shows pool and cache freshness.
 
 ## Verify
@@ -152,8 +155,9 @@ The API tests run from the repository virtualenv installed by bootstrap:
 | `GET` | `/api/projects/{id}` | Load the current revision |
 | `POST` | `/api/projects/{id}/edits` | Apply a natural-language change |
 | `POST` | `/api/projects/{id}/undo` | Move to the previous revision |
-| `POST` | `/api/topic-intelligence/next` | Propose the next German topic (reuses the fresh pool) |
-| `POST` | `/api/topic-intelligence/candidates/{id}/skip` | Try another candidate |
+| `POST` | `/api/topic-intelligence/suggestions` | Ranked chip suggestions, excluding what is shown |
+| `POST` | `/api/topic-intelligence/next` | Propose the single next topic (reuses the fresh pool) |
+| `POST` | `/api/topic-intelligence/candidates/{id}/skip` | Skip a candidate and propose the next |
 | `GET` | `/api/topic-intelligence/status` | Discovery pool and cache freshness |
 
 See [architecture notes](./docs/ARCHITECTURE.md) for state flow and the provider-backed production slices.

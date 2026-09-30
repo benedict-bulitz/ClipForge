@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from ..config import Settings, get_settings
 from ..database import get_db
 from ..integrations import get_secret_store
-from ..schemas import TopicProposalRequest
+from ..schemas import TopicProposalRequest, TopicSuggestionsRequest
 from ..security.secrets import SecretStore
 from ..youtube.provider import YouTubeProvider
 from ..youtube.routes import get_youtube_provider
@@ -42,6 +42,14 @@ def skip_topic_route(candidate_id: str, db: DbSession, config: SettingsDep, deps
         return service.skip_topic(db, config, deps, candidate_id)
     except service.TopicHandoffError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"status": exc.code, "message": exc.message}) from exc
+
+
+@router.post("/suggestions")
+def suggestions_route(payload: TopicSuggestionsRequest, db: DbSession, config: SettingsDep, deps: DepsDep) -> dict:
+    """Home chips: ranked candidates from the pool, excluding what is already shown."""
+    return service.suggestions(
+        db, config, deps, count=payload.count, exclude=payload.exclude, picked=payload.picked, dismissed=payload.dismissed,
+    )
 
 
 @router.get("/status")

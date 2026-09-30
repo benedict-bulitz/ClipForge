@@ -116,3 +116,13 @@ def forbid_real_topic_transformation(monkeypatch):
         raise AssertionError("Real OpenAI topic transformation is forbidden in the test suite.")
 
     monkeypatch.setattr(transform, "TRANSFORM_CLIENT_FACTORY", forbidden)
+
+
+@pytest.fixture(autouse=True)
+def no_topic_warmup(monkeypatch):
+    """App startup must not reach real discovery providers from the test suite."""
+    from clipforge.topic_intelligence import service
+
+    started: list[object] = []
+    monkeypatch.setattr(service, "warm_pool_in_background", lambda *args, **kwargs: started.append(args))
+    return started

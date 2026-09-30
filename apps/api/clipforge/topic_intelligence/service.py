@@ -5,12 +5,16 @@
   candidate.  Asking again returns the same proposal until it is skipped or used.
 * ``skip_topic`` ("Try another"): remember the skip, propose the next
   candidate; an exhausted pool triggers one refresh.
+* ``suggestions``: the Home chips - a batch of ranked candidates excluding
+  what the client already shows; picked/replaced chips are remembered.
+* ``warm_pool_in_background``: discovery at startup, beside the app.
 * ``resolve_topic_provenance`` / ``mark_topic_used``: the only coupling to
   generation.  A confirmed topic goes through the existing
   ``POST /api/generation-jobs`` like a typed question, with provenance attached.
 """
 from __future__ import annotations
 
+import logging
 import threading
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -49,6 +53,7 @@ PREFILTER_FLAGS = frozenset({"person", "tragedy", "disambiguation"})
 UNAVAILABLE_MESSAGE = "Topic discovery is temporarily unavailable."
 EXHAUSTED_MESSAGE = "No further topic candidates right now. Try again later or enter your own question."
 _FLIGHT = threading.Lock()
+logger = logging.getLogger(__name__)
 
 
 class TopicHandoffError(ValueError):
@@ -225,8 +230,8 @@ def _recent_status_keys(db: Session, now: datetime) -> tuple[set[str], set[str]]
     """(candidate ids to keep out, group keys to keep out): used ever, skipped within 24 h."""
     ids: set[str] = set()
     groups: set[str] = set()
-    for record in db.scalars(select(TopicCandidateRecord).where(TopicCandidateRecord.status.in_(("used", "skipped")))).all():
-        if record.status == "skipped" and (_utc(record.skipped_at) or now) < now - SKIP_MEMORY:
+    for record in db.scalars(select(TopicCandidateRecord).where(TopicCandidateRecord.status.in_(("used", "skipped", "picked")))).all():
+        if record.status in {"skipped", "picked"} and (_utc(record.skipped_at) or now) < now - SKIP_MEMORY:
             continue
         ids.add(record.candidate_id)
         key = (record.provenance or {}).get("group_key")
@@ -246,7 +251,7 @@ def _persist(db: Session, run_id: str, candidates: list[TopicCandidate], now: da
             record = TopicCandidateRecord(candidate_id=candidate.candidate_id, topic=candidate.topic[:300], discovered_at=now)
             db.add(record)
         keep_status = record.status == "used" or (
-            record.status == "skipped" and (_utc(record.skipped_at) or now) >= now - SKIP_MEMORY
+            record.status in {"skipped", "picked"} and (_utc(record.skipped_at) or now) >= now - SKIP_MEMORY
         )
         record.run_id = run_id
         record.topic = candidate.topic[:300]
@@ -311,6 +316,7 @@ def discover(db: Session, settings: Settings, deps: DiscoveryDeps, *, now: datet
     ]
     groups.sort(key=lambda group: (-_preliminary(group), group.key))
     batch = groups[:MAX_BATCH]
+    db.commit()  # no open transaction while the question step may wait on OpenAI
     transformed, method, transform_error = transform_topics(batch, settings)
     run.transformation = method
     history = history_module.load_history(db)
@@ -489,6 +495,112 @@ def skip_topic(
         record.skipped_at = now
         db.commit()
     return next_topic(db, settings, deps, now=now)
+
+
+# ---------------------------------------------------------------------------
+# Home suggestions: 3 visible chips + a hidden reserve, served from the pool
+# ---------------------------------------------------------------------------
+
+MAX_SUGGESTIONS = 12
+
+
+def _mark(db: Session, candidate_ids: list[str], status: str, now: datetime) -> None:
+    """Remember chips the user picked or replaced so they are not suggested again soon."""
+    for candidate_id in dict.fromkeys(candidate_ids):
+        record = db.get(TopicCandidateRecord, candidate_id)
+        if record is not None and record.status in {"pooled", "proposed"}:
+            record.status = status
+            record.skipped_at = now
+    db.commit()
+
+
+def _available_records(db: Session, run: TopicDiscoveryRun, exclude: set[str]) -> list[TopicCandidateRecord]:
+    """Ranked, usable, not excluded and not a near-duplicate of anything excluded or already chosen."""
+    taken = [record.question for record in (db.get(TopicCandidateRecord, item) for item in exclude) if record is not None]
+    chosen: list[TopicCandidateRecord] = []
+    for candidate_id in run.ranked_candidate_ids or []:
+        if candidate_id in exclude:
+            continue
+        record = db.get(TopicCandidateRecord, candidate_id)
+        if record is None or record.status not in {"pooled", "proposed"} or record.rejection_reasons:
+            continue
+        if any(similarity(record.question, other) >= history_module.DUPLICATE_THRESHOLD for other in taken):
+            continue
+        chosen.append(record)
+        taken.append(record.question)
+    return chosen
+
+
+def suggestions(
+    db: Session,
+    settings: Settings,
+    deps: DiscoveryDeps,
+    *,
+    count: int,
+    exclude: list[str] | None = None,
+    picked: list[str] | None = None,
+    dismissed: list[str] | None = None,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Up to ``count`` ranked candidates for the Home chips, excluding what the client shows.
+
+    Served from the fresh pool; a refresh runs only when the pool expired or
+    ran out (provider caches and quota budgets still apply).  Nothing here
+    starts generation.
+    """
+    now = now or _now()
+    count = max(1, min(MAX_SUGGESTIONS, int(count)))
+    excluded = set(exclude or []) | set(picked or []) | set(dismissed or [])
+    with _FLIGHT:
+        _mark(db, list(picked or []), "picked", now)
+        _mark(db, list(dismissed or []), "skipped", now)
+        run = current_run(db, now)
+        fresh = run is None
+        if run is None:
+            run = discover(db, settings, deps, now=now)
+            if run.status == "unavailable":
+                return {**_unavailable(run), "candidates": []}
+        records = _available_records(db, run, excluded)
+        if len(records) < count and not fresh:
+            refreshed = discover(db, settings, deps, now=now)
+            if refreshed.status != "unavailable":
+                run = refreshed
+                records = _available_records(db, run, excluded)
+        records = records[:count]
+        for record in records:
+            if record.status == "pooled":
+                record.status = "proposed"  # displayed (visible chip or reserve)
+                record.proposed_at = now
+        db.commit()
+        return {
+            "status": "ok" if records else "exhausted",
+            "message": None if records else EXHAUSTED_MESSAGE,
+            "candidates": [serialize_candidate(record) for record in records],
+            "pool": _pool_info(db, run),
+        }
+
+
+def warm_pool(session_factory: Any, settings: Settings, deps_factory: Any, *, now: datetime | None = None) -> str | None:
+    """Fill the candidate pool ahead of the first Home visit (no-op while it is fresh)."""
+    with session_factory() as db:
+        now = now or _now()
+        with _FLIGHT:
+            if current_run(db, now) is not None:
+                return None
+            return discover(db, settings, deps_factory(db), now=now).status
+
+
+def warm_pool_in_background(session_factory: Any, settings: Settings, deps_factory: Any) -> threading.Thread:
+    """Topic research runs beside the app; video generation never waits for it."""
+    def work() -> None:
+        try:
+            warm_pool(session_factory, settings, deps_factory)
+        except Exception:  # discovery must never affect the app
+            logger.exception("Topic Intelligence warm-up failed")
+
+    thread = threading.Thread(target=work, name="topic-intelligence-warmup", daemon=True)
+    thread.start()
+    return thread
 
 
 def discovery_status(db: Session, *, now: datetime | None = None) -> dict[str, Any]:

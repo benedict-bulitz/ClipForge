@@ -16,7 +16,7 @@ import type {
   BulkProjectDeleteResult,
   MusicTrack,
 } from "./types";
-import type { TopicGenerationSource, TopicProposal } from "./topic-intelligence";
+import type { TopicGenerationSource, TopicSuggestionsRequest, TopicSuggestionsResponse } from "./topic-suggestions";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api";
 export const API_ORIGIN = API_URL.replace(/\/api\/?$/, "");
@@ -107,18 +107,12 @@ export function startGeneration(
   });
 }
 
-/** Generate Next Video: the best unused German topic (the backend reuses its fresh pool). */
-export function proposeNextTopic(refresh = false) {
-  return request<TopicProposal>("/topic-intelligence/next", {
+/** Home suggestion chips: ranked candidates from the Topic Intelligence pool (never starts generation). */
+export function loadTopicSuggestions(body: TopicSuggestionsRequest, signal?: AbortSignal) {
+  return request<TopicSuggestionsResponse>("/topic-intelligence/suggestions", {
     method: "POST",
-    body: JSON.stringify({ refresh }),
-  });
-}
-
-/** Try another: skip this candidate and propose the next-ranked one. */
-export function tryAnotherTopic(candidateId: string) {
-  return request<TopicProposal>(`/topic-intelligence/candidates/${encodeURIComponent(candidateId)}/skip`, {
-    method: "POST",
+    body: JSON.stringify(body),
+    signal,
   });
 }
 

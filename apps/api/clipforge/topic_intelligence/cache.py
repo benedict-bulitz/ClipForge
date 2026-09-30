@@ -82,6 +82,9 @@ def get_or_fetch(
         entry = db.get(TopicSourceCache, cache_key)
         if entry is not None and _utc(entry.expires_at) > now:
             return CacheHit(dict(entry.payload), True, _utc(entry.fetched_at), 0, 0)
+        # End the read transaction before waiting on the network: an open SQLite
+        # transaction would hold up writers such as a new generation job.
+        db.commit()
         before_calls, before_units = meter.calls, meter.quota_units
         payload = fetch(meter)
         calls, units = meter.calls - before_calls, meter.quota_units - before_units

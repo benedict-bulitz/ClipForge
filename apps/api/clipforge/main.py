@@ -115,6 +115,11 @@ async def lifespan(_app: FastAPI):
         mark_interrupted_generation_jobs(db)
         mark_interrupted_uploads(db)
     schedule_next_generation(settings)
+    # Home suggestions are researched beside the app; generation never waits for it.
+    topic_intelligence.warm_pool_in_background(
+        SessionLocal, settings,
+        lambda db: topic_intelligence.default_deps(db, settings, get_secret_store(), get_youtube_provider()),
+    )
     yield
 
 

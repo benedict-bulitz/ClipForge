@@ -91,6 +91,17 @@ class TopicProposalRequest(BaseModel):
     refresh: bool = False
 
 
+class TopicSuggestionsRequest(BaseModel):
+    """Home chips: how many candidates, what the client shows, what it picked or replaced."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    count: int = Field(default=3, ge=1, le=12)
+    exclude: list[str] = Field(default_factory=list, max_length=100)
+    picked: list[str] = Field(default_factory=list, max_length=12)
+    dismissed: list[str] = Field(default_factory=list, max_length=12)
+
+
 class ThumbnailSelectionUpdate(BaseModel):
     base_revision: int
     variant_id: str = Field(min_length=1, max_length=160)
