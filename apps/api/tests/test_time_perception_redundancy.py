@@ -362,11 +362,16 @@ def test_generation_compresses_the_real_script(monkeypatch, tmp_path):
     blocks = state["script"]["blocks"]
     body = [block for block in blocks if block["role"] != "hook"]
     body_texts = [block["text"] for block in body]
+    # The run's hook said the mechanism before the body could explain it: it
+    # is rejected, the opening is the observation and the mechanism stays in
+    # the body (test_retention_script_quality covers an honest AI opening).
+    assert blocks[0]["role"] == "hook" and blocks[0]["text"] == S_ANSWER
     assert set(body_texts) <= set(REAL_SCRIPT)  # nothing invented
     assert len(body_texts) < len(REAL_SCRIPT)
-    assert S_EXPLANATION not in body_texts and S_SUPPORT not in body_texts and S_PAYOFF not in body_texts
-    assert {S_ANSWER, S_NUANCE, S_ROUTINE} <= set(body_texts)
+    assert S_SUPPORT not in body_texts and S_PAYOFF not in body_texts
+    assert body_texts == [S_NUANCE, S_EXPLANATION, S_ROUTINE]
     assert body[-1]["text"] == S_ROUTINE and body[-1]["role"] == "payoff"
     gain = state["information_gain"]
     assert gain["payoff"]["status"] == "pass" and gain["summary"]["redundant_units"] == 0
-    assert {fact_id for block in body for fact_id in block.get("fact_ids") or []} == {"fact_01", "fact_02", "fact_03", "fact_04"}
+    # The survey fact only restated the opening; the arc marks it optional.
+    assert {fact_id for block in body for fact_id in block.get("fact_ids") or []} == {"fact_01", "fact_02", "fact_04"}

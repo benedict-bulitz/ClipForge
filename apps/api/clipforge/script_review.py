@@ -43,6 +43,7 @@ class ScriptReviewRequest:
     facts: list[ScriptWriterFact]
     target_duration: dict[str, int | None] | None = None
     writing_requirements: list[str] | None = None
+    story_arc: dict | None = None
 
     def model_input(self) -> dict:
         return {
@@ -55,6 +56,7 @@ class ScriptReviewRequest:
             "facts": [fact.model_dump(mode="json") for fact in self.facts],
             "target_duration": self.target_duration,
             "writing_requirements": self.writing_requirements or [],
+            "story_arc": self.story_arc or {},
         }
 
 
@@ -87,7 +89,7 @@ SCRIPT_REVIEW_V2_INSTRUCTIONS = (
     "a complete revised draft using only answer, explanation, support, and payoff roles. Preserve "
     "valid fact IDs for every factual block. Do not add hooks, sources, URLs, HTML, Markdown, or "
     "source attribution. Return only the requested structured output. "
-    "Explicit readability check: would a typical 10–14 year old understand each sentence on first "
+    "Explicit readability check: would a typical 10–12 year old understand each sentence on first "
     "listen, without prior knowledge? Rewrite unnecessarily difficult words, unexplained jargon, "
     "abstract academic phrasing, long noun constructions, and long or nested sentences into "
     "everyday German when the requested language is German. Prefer short natural active sentences, "
@@ -96,7 +98,14 @@ SCRIPT_REVIEW_V2_INSTRUCTIONS = (
     "language, not facts: preserve scientific distinctions, factual meaning, and fact IDs. "
     "Do not add filler, reassurance, tangents, or extra length to explain familiar ideas. Keep "
     "already simple, accurate wording unchanged; do not rewrite merely for variety or impose "
-    "fixed templates. This readability review remains body-only; do not create or revise hooks."
+    "fixed templates. This readability review remains body-only; do not create or revise hooks. "
+    "Retention check against story_arc.question_contract: remove every block that does not help answer "
+    "core_question, including true facts that are merely about the same subject or facts marked "
+    "serves_question false. The first block must add a useful new clue immediately. Every later block must "
+    "move the viewer forward with something new; merge or cut blocks that only rephrase, elaborate or repeat. "
+    "The final block must resolve the question with a clear 'that is why' connection. If cutting leaves a "
+    "short script, keep it short: never pad, never invent a fact to fill a gap, and never move the protected "
+    "answer earlier."
 )
 
 

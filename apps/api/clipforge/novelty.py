@@ -24,15 +24,17 @@ import json
 import re
 from typing import Any
 
-from .story_arc import arc_units, comparison_sides
+from .story_arc import arc_units, comparison_sides, mechanism_claims
 from .verbal_hook import (
     _NEGATED,
     _numbers,
     _related,
     _rounded_from,
+    explains_mechanism,
     information_gain,
     is_salient_concept,
     proposition_words,
+    spoken_simplicity,
 )
 
 _WORD_RE = re.compile(r"[a-zA-ZÀ-ÖØ-öø-ÿ0-9]+")
@@ -513,6 +515,137 @@ def _shared_weight(said: set[str], unit: dict[str, Any]) -> tuple[int, int]:
     return sum(2 if is_salient_concept(word) else 1 for word in common), unit["index"]
 
 
+# Beat classes (one per body unit): what the beat does for the viewer.
+BEAT_CLASSES = ("useful_gain", "redundant", "off_chain", "unsupported", "weak_value")
+# A beat that is mostly old words with one small addition: an elaboration,
+# not progress (``_score`` gives 0.35 + 0.4 * the new share).
+WEAK_GAIN_SCORE = 0.5
+# Spoken clarity of a body sentence below this needs simpler words.
+COMPLEX_LANGUAGE_SCORE = 0.45
+# Grammar that explains a term right where it is used ("..., also ...",
+# "das nennt man ...", "which means ..."): the term is then not a barrier.
+_EXPLAINED_TERM = re.compile(
+    r"(?i)\b(?:also|das heißt|d\. ?h\.|nennt man|heißt|bedeutet|sprich|that is|i\. ?e\.|which means|means|called|known as)\b|[–—:(]"
+)
+
+
+def _bare(words: set[str]) -> set[str]:
+    return {word.lstrip("+-") for word in words}
+
+
+def _core_terms(context: dict[str, Any], hook_text: str) -> tuple[set[str], set[str]]:
+    """(subject, core): what the core question, its answer, its resolution and the hook are about."""
+    arc = context["arc"]
+    units = arc_units(arc)
+    contract = arc.get("question_contract") if isinstance(arc.get("question_contract"), dict) else {}
+    subject = {str(word).lstrip("+-") for word in contract.get("subject_terms") or []}
+    texts = [_question(context), hook_text]
+    texts += [str(units.get(str(arc.get(key) or ""), {}).get("claim") or "") for key in ("primary_answer_id", "final_payoff_id")]
+    core = _bare(set().union(*(proposition_words(text) for text in texts if text)))
+    return subject, core - _related(core, subject)
+
+
+def _chain_role(fact_ids: list[str], arc: dict[str, Any]) -> str:
+    units = arc_units(arc)
+    if not fact_ids:
+        return "none"
+    if str(arc.get("primary_answer_id") or "") in fact_ids:
+        return "answer"
+    if str(arc.get("final_payoff_id") or "") in fact_ids:
+        return "payoff"
+    chain = set((arc.get("question_contract") or {}).get("essential_explanation_chain") or [])
+    if set(fact_ids) & chain:
+        return "chain"
+    known = [fact_id for fact_id in fact_ids if fact_id in units]
+    if known and all(units[fact_id].get("off_question") for fact_id in known):
+        return "off_question"
+    return "optional"
+
+
+def _language(text: str, context: dict[str, Any]) -> dict[str, Any]:
+    """Spoken clarity of one body unit (the hook rubric's primitive, body thresholds)."""
+    claims = {str(fact.get("id")): str(fact.get("claim") or "") for fact in context["facts"]}
+    score, codes = spoken_simplicity(text, {"sides": comparison_sides(_question(context)), "claims": claims})
+    if _EXPLAINED_TERM.search(text) and set(codes) & {"long_words", "unfamiliar_term"}:
+        # A necessary term explained on the spot is fine for a 10-12 year old.
+        codes = [code for code in codes if code not in {"long_words", "unfamiliar_term"}]
+        score = min(1.0, score + 0.2)
+    hard = score < COMPLEX_LANGUAGE_SCORE or "bureaucratic_wording" in codes
+    return {"score": score, "codes": codes, "status": "complex" if hard else "clear"}
+
+
+def _audit_beats(units: list[dict[str, Any]], context: dict[str, Any]) -> None:
+    """Relevance, beat class, language and viewer momentum per body unit (in place)."""
+    arc = context["arc"]
+    hook = next((unit for unit in units if unit["category"] == "hook"), None)
+    subject, core = _core_terms(context, hook["text"] if hook else "")
+    question = _question(context)
+    body = [unit for unit in units if unit["category"] != "hook"]
+    payoff_index = next((unit["index"] for unit in body if unit.get("is_payoff")), body[-1]["index"] if body else -1)
+    learned: list[str] = []
+    for unit in body:
+        fact_ids = unit["evidence"]["fact_ids"]
+        chain = _chain_role(fact_ids, arc)
+        said = _bare(proposition_words(unit["text"]))
+        own = said - _related(said, subject)
+        # Off the question: its facts are same-subject tangents and its own
+        # wording does not tie it back to the question, answer or hook.
+        off = chain == "off_question" and not _related(own, core)
+        if unit["category"] in REDUNDANT_CATEGORIES:
+            beat = "redundant"
+        elif off:
+            beat = "off_chain"
+        elif not unit["counts_as_gain"]:
+            beat = "unsupported"
+        elif (
+            unit["category"] == "new_fact" and not unit.get("is_payoff") and unit["role"] != "answer"
+            and float(unit["information_gain_score"] or 0.0) < WEAK_GAIN_SCORE
+            and unit["novelty_class"] not in {"explanatory_gain", "comparison_gain", "distinctive"}
+        ):
+            beat = "weak_value"
+        else:
+            beat = "useful_gain"
+        new = list(unit["gain_terms"][:6]) if beat == "useful_gain" else []
+        resolved = unit["index"] >= payoff_index
+        if unit["index"] > payoff_index:
+            reason = "none: the question is already resolved"
+        elif resolved:
+            reason = "none needed: this beat resolves the question"
+        elif beat == "useful_gain":
+            reason = "the question is still open and this beat moved it forward"
+        else:
+            reason = "weak: the question is still open, but this beat adds nothing toward it"
+        unit.update(
+            chain_role=chain,
+            beat_class=beat,
+            language=_language(unit["text"], context),
+            momentum={
+                "viewer_knows_before": learned[-6:],
+                "new_information": new,
+                "viewer_understands_after": (learned + new)[-6:],
+                "unresolved_question": "" if resolved else question,
+                "reason_to_continue": reason,
+            },
+        )
+        learned += [term for term in new if term not in learned]
+
+
+def _plateaus(body: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+    """Runs of two or more consecutive beats that move the viewer nowhere."""
+    runs: list[list[dict[str, Any]]] = []
+    current: list[dict[str, Any]] = []
+    for unit in body:
+        if unit.get("beat_class") in {"redundant", "weak_value", "off_chain"} and not unit.get("is_payoff"):
+            current.append(unit)
+            continue
+        if len(current) >= 2:
+            runs.append(current)
+        current = []
+    if len(current) >= 2:
+        runs.append(current)
+    return runs
+
+
 def assess_blocks(blocks: list[dict[str, Any]], state: dict[str, Any]) -> list[dict[str, Any]]:
     """Per-unit assessment of ``blocks`` in order (pure; never mutates)."""
     context = _context(state)
@@ -611,6 +744,7 @@ def assess_blocks(blocks: list[dict[str, Any]], state: dict[str, Any]) -> list[d
                 counts_as_gain=payoff["evidence"]["status"] in {"supported", "derived", "not_applicable"},
                 reason="Resolves the question by drawing the established mechanism together.",
             )
+    _audit_beats(units, context)
     return units
 
 
@@ -681,6 +815,17 @@ def assess_information_gain(state: dict[str, Any]) -> dict[str, Any]:
         transition = {"status": "pass" if passed else "fail", "block_id": first["block_id"], "gain_terms": gain[:8]}
         if not passed:
             issue("hook_body_no_information_gain", "warning", "The sentence after the hook adds no new information.", first["block_id"])
+    if hook is not None:
+        spent = explains_mechanism(hook["text"], _question(context), mechanism_claims(context["arc"]))
+        if spent:
+            issue("hook_explains_mechanism", "warning", "The hook already states the explanation (" + ", ".join(spent[:4]) + "); it should open the question, not finish it.", hook["block_id"])
+    for unit in body:
+        if unit.get("beat_class") == "off_chain":
+            issue("off_question_segment", "warning", f"Same subject, different question: “{unit['text'][:80]}”", unit["block_id"])
+        if (unit.get("language") or {}).get("status") == "complex":
+            issue("complex_language", "warning", f"Hard to follow on first listen ({', '.join(unit['language']['codes'][:3]) or 'difficult wording'}): “{unit['text'][:80]}”", unit["block_id"])
+    for run in _plateaus(body):
+        issue("information_plateau", "warning", f"{len(run)} beats in a row add nothing new: “{run[0]['text'][:60]}” …", run[0]["block_id"])
     for unit in body:
         if unit["redundancy"] == "filler":
             issue("filler_segment", "warning", f"Generic filler: “{unit['text'][:80]}”", unit["block_id"])
@@ -706,8 +851,12 @@ def assess_information_gain(state: dict[str, Any]) -> dict[str, Any]:
     available_gain = [str(item) for key in _NOVELTY_GAIN_KEYS for item in plan.get(key) or []]
     unused_gain = [fact_id for fact_id in dict.fromkeys(available_gain) if fact_id not in used]
     grounding = any(unit["evidence"]["status"] != "not_applicable" for unit in body)
+    on_question = [unit for unit in counted if unit.get("beat_class") != "off_chain"]
     if body and not counted and grounding:
         issue("no_supported_information_gain", "error", "No part of the script adds supported information.")
+    elif body and counted and not on_question and grounding:
+        # Only same-subject tangents: tighter research is needed, never padding.
+        issue("no_question_relevant_information", "error", "The script only tells facts about the subject that do not answer the question; research must be tightened.")
     elif audience_value == "basic" and unused_gain:
         issue("supported_gain_unused", "info", "Only expected basics are told although the research supports a stronger explanatory or distinctive fact.")
     scores = [float(unit["information_gain_score"] or 0.0) for unit in body]
@@ -738,6 +887,13 @@ def assess_information_gain(state: dict[str, Any]) -> dict[str, Any]:
             "strongest": {key: strongest[key] for key in ("block_id", "text", "category", "information_gain_score", "novelty_class")} if strongest else None,
             "evidence_thin": plan.get("status") == "low_confidence" or "sparse_research" in (plan.get("novelty_risks") or []),
             "unused_supported_gain_fact_ids": unused_gain,
+            "beat_classes": {name: sum(1 for unit in body if unit.get("beat_class") == name) for name in BEAT_CLASSES},
+            "plateaus": len(_plateaus(body)),
+        },
+        "question_contract": {
+            **{key: value for key, value in ((context["arc"].get("question_contract") or {}) if isinstance(context["arc"].get("question_contract"), dict) else {}).items()},
+            "core_question": _question(context),
+            "hook_promise": hook["text"] if hook else ((context["arc"].get("question_contract") or {}).get("hook_promise") if isinstance(context["arc"].get("question_contract"), dict) else ""),
         },
         "issues": issues,
     }
@@ -819,6 +975,7 @@ def _removal_blocked(
 
 def _merge_target(
     blocks: list[dict[str, Any]], index: int, target_id: str | None, deps: dict[str, set[str]],
+    optional: set[str] | None = None,
 ) -> tuple[int | None, bool]:
     """Where the removed unit's own facts go (index, possible)."""
     own = set(_fact_ids(blocks[index]))
@@ -833,7 +990,12 @@ def _merge_target(
         return None, True
     target = next((position for position, block in enumerate(blocks) if str(block.get("id") or "") == target_id), None)
     if target is None or _role(blocks[target]) == "hook":
-        return None, False
+        # Nothing can carry its facts (the hook carries none): it may only go
+        # when the arc marks every fact it alone tells as optional.
+        dropped = own - elsewhere
+        needed = any(dropped & deps.get(fact_id, set()) for fact_id in elsewhere)
+        return None, bool(optional) and dropped <= optional and not needed
+
     told_by_target = {fact_id for block in blocks[: target + 1] for fact_id in _fact_ids(block)}
     moving = own - elsewhere
     # Facts move only to a unit whose own text already says them, and only if
@@ -893,6 +1055,41 @@ def _hand_over_payoff(
     return True
 
 
+def _drop_beat(
+    blocks: list[dict[str, Any]], units: list[dict[str, Any]], arc: dict[str, Any], anchors: set[str],
+    deps: dict[str, set[str]], optional: set[str], repairs: list[dict[str, Any]],
+) -> bool:
+    """Remove one beat that does not move the viewer toward the answer.
+
+    An off-question beat (a same-subject tangent) always qualifies; a weak
+    elaboration only inside a plateau and only when every fact it alone
+    tells is optional.  Never the hook, answer, payoff or an anchor, never a
+    fact something else builds on, and nothing is added in its place.
+    """
+    body = [unit for unit in units if unit["category"] != "hook"]
+    weak = {id(unit) for run in _plateaus(body) for unit in run if unit.get("beat_class") == "weak_value"}
+    for unit in body:
+        tangent = unit.get("beat_class") == "off_chain"
+        if unit.get("is_payoff") or not (tangent or id(unit) in weak):
+            continue
+        index = unit["index"]
+        own = set(_fact_ids(blocks[index]))
+        elsewhere = {fact_id for position, block in enumerate(blocks) if position != index for fact_id in _fact_ids(block)}
+        dropped = own - elsewhere
+        if not tangent and not dropped <= optional:
+            continue
+        if any(dropped & deps.get(fact_id, set()) for fact_id in elsewhere) or _removal_blocked(blocks, index, arc, anchors):
+            continue
+        removed = blocks.pop(index)
+        repairs.append({
+            "action": "remove_off_question" if tangent else "remove_weak_value",
+            "block_id": removed.get("id"), "text": _text(removed), "category": unit["beat_class"],
+            "repeats_block_id": None, "moved_fact_ids": [], "dropped_fact_ids": sorted(dropped),
+        })
+        return True
+    return False
+
+
 def prune_redundant_information(
     blocks: list[dict[str, Any]], state: dict[str, Any],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -909,6 +1106,7 @@ def prune_redundant_information(
     arc = state.get("story_arc") if isinstance(state.get("story_arc"), dict) else {}
     anchors = _anchor_ids(arc)
     deps = _dependencies(arc)
+    optional = {fact_id for fact_id, unit in arc_units(arc).items() if unit.get("may_be_omitted")} - anchors
     blocks = [dict(block) for block in blocks]
     repairs: list[dict[str, Any]] = []
     for block in blocks:
@@ -925,7 +1123,7 @@ def prune_redundant_information(
             index = unit["index"]
             if unit["category"] not in REDUNDANT_CATEGORIES or unit.get("is_payoff"):
                 continue
-            target, possible = _merge_target(blocks, index, unit["repeats_block_id"], deps)
+            target, possible = _merge_target(blocks, index, unit["repeats_block_id"], deps, optional)
             if not possible or _removal_blocked(blocks, index, arc, anchors, target):
                 continue
             removed = blocks.pop(index)
@@ -935,14 +1133,18 @@ def prune_redundant_information(
                 elsewhere = {fact_id for block in blocks for fact_id in _fact_ids(block)}
                 moved = [fact_id for fact_id in _fact_ids(removed) if fact_id not in elsewhere]
                 blocks[target]["fact_ids"] = [*_fact_ids(blocks[target]), *moved]
+            remaining = {fact_id for block in blocks for fact_id in _fact_ids(block)}
             repairs.append({
                 "action": "remove_filler" if unit["category"] == "filler" else ("merge_redundant" if moved else "remove_redundant"),
                 "block_id": removed.get("id"), "text": _text(removed), "category": unit["category"],
                 "repeats_block_id": unit["repeats_block_id"], "moved_fact_ids": moved,
+                "dropped_fact_ids": sorted(set(_fact_ids(removed)) - remaining),
             })
             changed = True
             break
         if changed:
+            continue
+        if _drop_beat(blocks, units, arc, anchors, deps, optional, repairs):
             continue
         if _hand_over_payoff(blocks, units, arc, anchors, deps, repairs):
             continue

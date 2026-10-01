@@ -16,7 +16,9 @@ DIRECTOR_INSTRUCTIONS = (
     "You are ClipForge's short-form director. Write the shortest complete explanation that answers "
     "the user's question well. Identify a compact story_arc over the research evidence (1-based fact_index): "
     "give each fact a role (primary_answer, essential_context, evidence, comparison, supporting_fact, "
-    "explanation, secondary_insight, ranked_item), what it depends_on, and whether it may_appear_in_hook; name "
+    "explanation, secondary_insight, ranked_item), what it depends_on, whether it may_appear_in_hook, and whether "
+    "it serves_question: false for a fact that is merely about the same subject but does not help answer this "
+    "exact question (a true detail about the same app, animal or place that answers a different question); name "
     "primary_answer_index (the fact that actually answers the question) and final_payoff_index (the last "
     "meaningful beat, which may differ from the answer). A related but different insight is secondary_insight, "
     "never the answer. State the concrete curiosity_gap the viewer has. "
@@ -43,7 +45,7 @@ DIRECTOR_INSTRUCTIONS = (
     "target key whose imagery would reveal hook_must_not_reveal, or empty when nothing is protected. "
     "A visual goal must describe what should appear on screen, never conversational uncertainty, research prose, or meta commentary. "
     "The hook must be honest, usually no more than fourteen words, and must not delay the useful answer. "
-    "For every hook candidate and the selected opening, ask: would a typical 10–14 year old "
+    "For every hook candidate and the selected opening, ask: would a typical 10–12 year old "
     "understand this on first listen without prior knowledge? Use everyday German when writing "
     "German: short, concrete, natural spoken wording, no unexplained jargon, abstract academic "
     "phrasing, unnecessarily clever wording, fake sensationalism, or rigid hook templates. "
@@ -135,6 +137,8 @@ class AIStoryUnit(BaseModel):
     role: str = Field(min_length=1, max_length=40)
     depends_on: list[int] = Field(default_factory=list, max_length=6)
     may_appear_in_hook: bool = True
+    # False: true and about the same subject, but it does not help answer the question.
+    serves_question: bool | None = None
 
 
 class AIStoryArc(BaseModel):
@@ -249,7 +253,7 @@ class AITripleHookJudgement(BaseModel):
     production_feasibility: int = Field(ge=0, le=10)
     veto: Literal[
         "none", "leaks_answer", "payoff_mismatch", "impossible_visual", "redundant_channels",
-        "cheap_clickbait", "contradicts_story",
+        "cheap_clickbait", "contradicts_story", "spends_explanation",
     ] = "none"
     reason_codes: list[str] = Field(default_factory=list, max_length=5)
 
@@ -356,13 +360,16 @@ HOOK_GENERATION_INSTRUCTIONS = (
     "withhold_answer is false, do not invent mystery, and the hook must still not simply state the primary answer. "
     "A protected fact may inspire a hook only without naming its subject (e.g. 'one of the two countries ...'). "
     "Every promise must be paid off by the body: promised_payoff names the arc fact that answers it and "
-    "payoff_fact_id its id. HARD RULE: an average 14-year-old must understand the spoken hook on first listen — "
+    "payoff_fact_id its id. OPEN, DO NOT FINISH: the hook opens the question the body answers; it never states the "
+    "mechanism the body explains as a finished cause -> effect statement ('the fewer X, the faster Y feels', 'X "
+    "happens because Y'). Name the observation, the contradiction or the surprising consequence instead and leave "
+    "the why for the body, so the viewer has a reason to keep watching. HARD RULE: an average 12-year-old must understand the spoken hook on first listen — "
     "common everyday words, short spoken units, concrete wording, one idea at a time, natural speech; replace any "
     "specialist, academic or bureaucratic term and any abstract noun chain with ordinary words; say long numbers as "
     "a true rounded figure ('rund 270.000', 'about 270,000'); a slightly simpler hook beats a more sophisticated one. "
     "Verbal hook rules from the document: useful specific information first, exact relevance "
     "to the question, immediate attention, factual defensibility (every number, trend or prevalence claim must be in "
-    "the supplied facts with the same value and context), natural spoken language a 10-14 year old understands on "
+    "the supplied facts with the same value and context), natural spoken language a 10-12 year old understands on "
     "first listen, brevity, and a clean transition: it leads into first_body_sentence without repeating it. Write it as "
     "a native speaker would say it aloud: a complete sentence with its subject and complement, and when you compare, "
     "say with what. A strategy is a rhetorical function, not a template: a curiosity gap may also be an unexplained "
@@ -388,7 +395,7 @@ HOOK_GENERATION_INSTRUCTIONS = (
 TRIPLE_HOOK_JUDGE_INSTRUCTIONS = (
     "You are ClipForge's opening judge. Score each COMPLETE opening candidate (verbal hook, visual, on-screen text "
     "together) from 0 to 10 on every rubric dimension. Judge the triple, not the best sentence. The verbal "
-    "dimensions are the documented hook rubric in priority order: spoken_simplicity (would an average 14-year-old "
+    "dimensions are the documented hook rubric in priority order: spoken_simplicity (would an average 12-year-old "
     "understand it on first listen? a harder hook loses to a slightly simpler equivalent), useful_information, topic_relevance, "
     "attention_value, factual_defensibility, natural_language, brevity, body_transition, curiosity, insight, "
     "non_repetition; strategy_fit rates whether the documented strategy is supported by the research and whether the "
@@ -402,7 +409,9 @@ TRIPLE_HOOK_JUDGE_INSTRUCTIONS = (
     "story arc) must get veto leaks_answer; a promise the supplied story cannot pay off gets payoff_mismatch; a "
     "visual that cannot realistically be sourced or generated gets impossible_visual; voice, image and text that "
     "repeat the same statement get redundant_channels; empty sensational bait gets cheap_clickbait; anything "
-    "contradicting the story arc gets contradicts_story. complementarity rewards channels that each add a different "
+    "contradicting the story arc gets contradicts_story; a verbal hook that already explains the mechanism the body "
+    "explains (a finished cause -> effect statement that leaves the viewer nothing to wait for) gets spends_explanation "
+    "- a hook must open the question, not finish it. complementarity rewards channels that each add a different "
     "signal; on_screen_quality rewards short complete text that adds one dimension and treats an empty on-screen "
     "hook as acceptable (5) rather than bad. Prefer concrete, specific, credible and immediately understandable "
     "openings that fit the selected format. Return short snake_case reason_codes only, never explanations or "

@@ -41,7 +41,7 @@ from .hooks import (
 from .media import _mentions, _visual_query_tokens, visual_target_key
 from .narration import clean_narration_text
 from .payoff import _protected_answer, reveals_protected_payoff
-from .story_arc import arc_units, comparison_sides, hook_safe_facts
+from .story_arc import arc_units, comparison_sides, hook_safe_facts, mechanism_claims
 
 _STOP = {
     "the", "and", "for", "with", "that", "this", "from", "what", "which", "who", "why", "how", "are", "is", "was",
@@ -176,7 +176,7 @@ VERBAL_DIMENSIONS = (
 )
 # The document's priority order: useful specific information first.
 VERBAL_WEIGHTS = {
-    # A 14-year-old must understand the hook on first listen.
+    # A 12-year-old must understand the hook on first listen.
     "spoken_simplicity": 1.6,
     "useful_information": 1.6, "topic_relevance": 1.5, "attention_value": 1.4, "factual_defensibility": 1.4,
     # Said aloud as a person would say it: as important as being easy.
@@ -328,6 +328,7 @@ def hook_context(
             sentence for block in body
             for sentence in re.split(r"(?<=[.!?])\s+", _plain(block.get("text"))) if sentence.strip()
         ],
+        "mechanisms": mechanism_claims(arc),
         "distinctive_words": set().union(*(_words(claims.get(fact_id, "")) for fact_id in distinctive)) if distinctive else set(),
         "payoff_plan": plan,
         "protected_target": (visual_target_key(protected_target) or visual_target_key(plan.get("protected_visual_target"))) if withhold else "",
@@ -492,7 +493,7 @@ def strategy_signals(context: dict[str, Any]) -> dict[str, dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 def _speakable(item: dict[str, str], language: str) -> str:
-    """A figure as a 14-year-old hears it: long numbers as a true hedged rounding."""
+    """A figure as a 12-year-old hears it: long numbers as a true hedged rounding."""
     value = parse_number(item["value"])
     digits = re.sub(r"\D", "", item["value"]).rstrip("0")
     if value is None or value < 10_000 or len(digits) <= 2 or "%" in item["value"]:
@@ -669,6 +670,11 @@ def assess_verbal(
     if spends_payoff:
         # The last meaningful beat of the arc would be spent in the first second.
         codes.append("spends_final_payoff")
+    mechanism = explains_mechanism(verbal, context["question"], context.get("mechanisms") or [])
+    if mechanism:
+        # The opening already says *why*: the video's explanation (its payoff)
+        # is spent before the body starts.  Open the gap, do not close it.
+        hard.append("explains_mechanism")
     first = _words(context["first_body"])
     same_as_first = " ".join(verbal.casefold().split()).rstrip(".!?") == " ".join(context["first_body"].casefold().split()).rstrip(".!?")
     # Duplication: a statement that covers most of the first body sentence.
@@ -817,6 +823,38 @@ def assess_verbal(
     }
 
 
+# Cause -> effect grammar (no topic vocabulary): a statement built this way
+# delivers a mechanism instead of opening a question about it.
+_MECHANISM_GRAMMAR = re.compile(
+    r"(?i)\bje\b[^.!?]*\b(?:desto|umso)\b|\bthe (?:more|less|fewer|longer|older|bigger|smaller)\b[^.!?]*,\s*the\b|"
+    r"\b(?:weil|because|deshalb|daher|darum|deswegen|dadurch|sodass|so dass|liegt daran|kommt daher|führt dazu|"
+    r"führt zu|leads? to|causes?|caused by|due to|that's why|that is why|das ist der grund)\b"
+)
+
+
+def explains_mechanism(text: object, question: object, mechanisms: list[str]) -> list[str]:
+    """Concepts of a story mechanism a hook already states (empty: it opens, not finishes).
+
+    Only a statement with cause -> effect grammar qualifies, and only when it
+    says what a mechanism claim says beyond the question itself (two shared
+    concepts, a salient relation among them or most of what the hook says).
+    A question, an observation or a contradiction opens the gap.
+    """
+    verbal = _clean(text)
+    if not verbal or "?" in verbal or not _MECHANISM_GRAMMAR.search(verbal):
+        return []
+    asked = proposition_words(question)
+    said = proposition_words(verbal)
+    said -= _related(said, asked)
+    for claim in mechanisms:
+        mechanism = proposition_words(claim)
+        mechanism -= _related(mechanism, asked)
+        shared = _related(said, mechanism)
+        if len(shared) >= 2 and (any(is_salient_concept(word) for word in shared) or len(shared) >= 0.6 * len(said)):
+            return sorted(shared)
+    return []
+
+
 # Spoken-clarity grammar (no topic vocabulary): abstract noun endings, office
 # language and clause connectors that make a sentence hard to follow by ear.
 _ABSTRACT_NOUN = re.compile(r"(?i)^\w{4,}(?:ung|heit|keit|tion|ität|ismus|ierung|schaft|ance|ence|ment|ity|ness)(?:en|s)?$")
@@ -834,13 +872,13 @@ SPOKEN_UNIT_WORDS = 12
 
 
 def spoken_simplicity(text: str, context: dict[str, Any]) -> tuple[float, list[str]]:
-    """How easily an average 14-year-old follows the hook on first listen (0..1).
+    """How easily an average 12-year-old follows the hook on first listen (0..1).
 
     Spoken clarity, not a school-grade formula: short spoken units, common
     words, one idea at a time.  Long, rare or research terms, abstract noun
     chains, office language, long spoken numbers and stacked clauses cost
     points — also when the user's own question used them: how technically
-    the user asked says nothing about what a 14-year-old understands.  A
+    the user asked says nothing about what a 12-year-old understands.  A
     necessary term may stay; it is simply counted.  Only the names of the
     compared subjects (the question's sides) are exempt: they are the topic,
     not a wording choice.

@@ -127,6 +127,102 @@ def comparison_sides(question: str) -> list[set[str]]:
     return [side for side in (left_words, right_words) if side]
 
 
+ISOLATED_MIN_CONCEPTS = 3
+# Words that frame a question (who asks, concession) without naming what it
+# asks about: "Warum öffnen *wir* TikTok, *obwohl* ..." asks about opening.
+_FRAME = {
+    "ich", "du", "wir", "man", "uns", "you", "we", "obwohl", "although", "even", "gar", "eigentlich",
+    "überhaupt", "really", "actually", "keep", "immer", "trotzdem", "still",
+}
+
+
+def _concepts(text: object) -> set[str]:
+    """Proposition concepts of a sentence (the shared primitive; lazy: verbal_hook imports this module)."""
+    from .verbal_hook import proposition_words
+
+    return {word for word in proposition_words(text) if word not in _FRAME and not word.isdigit()}
+
+
+def _without(words: set[str], removed: set[str]) -> set[str]:
+    return {word for word in words if not any(_same_word(word, other) for other in removed)}
+
+
+def question_terms(question: object, claims: list[set[str]]) -> tuple[set[str], set[str]]:
+    """(subject, predicate) concepts of the question.
+
+    The subject is what nearly every researched fact mentions ("TikTok"):
+    sharing it says nothing about relevance.  The predicate is what the
+    question asks about that subject ("öffnen", "nicht wollen").
+    """
+    asked = _concepts(question)
+    if len(claims) < 3:
+        return set(), asked
+    needed = max(2, (len(claims) + 1) // 2)
+    # The alternatives of an "A or B" question are what it asks about, never mere subject.
+    sides = set().union(*comparison_sides(str(question or ""))) if comparison_sides(str(question or "")) else set()
+    subject = {
+        word for word in asked
+        if not _overlap({word}, sides) and sum(1 for claim in claims if _overlap({word}, claim)) >= needed
+    }
+    return subject, asked - subject
+
+
+def _question_links(units: dict[str, dict[str, Any]], question: str, primary: str | None) -> dict[str, Any]:
+    """How each fact connects to the core question (grammar and shared concepts only).
+
+    A fact links when it shares a non-subject concept with the question, the
+    primary answer, or (transitively) with a fact that links.  Lexical links
+    miss paraphrases, so an unlinked fact only becomes optional; only an
+    *isolated* one - sharing nothing but the subject with the question, the
+    answer or any other fact ("TikTok speichert Videos im Cache" for "Warum
+    öffnen wir TikTok, obwohl ...") - is a same-subject tangent.  The
+    planner's semantic judgement (``serves_question``) wins either way, and
+    the build keeps every fact the answer or the final payoff needs.
+    """
+    claims = {fact_id: _concepts(unit["claim"]) for fact_id, unit in units.items()}
+    subject, predicate = question_terms(question, list(claims.values()))
+    # Polarity does not matter for relevance: "vertraut" and "ungewohnt" are about the same thing.
+    own = {fact_id: {word.lstrip("+-") for word in _without(words, subject)} for fact_id, words in claims.items()}
+    predicate = {word.lstrip("+-") for word in predicate}
+    links: dict[str, str] = {}
+    if primary in units:
+        links[primary] = "answer"
+    if predicate:
+        for fact_id in units:
+            if fact_id in links:
+                continue
+            if _overlap(own[fact_id], predicate):
+                links[fact_id] = "question"
+            elif not own[fact_id]:
+                # Says nothing beyond the question's subject (a figure about it).
+                links[fact_id] = "subject"
+        changed = True
+        while changed:
+            changed = False
+            for fact_id in units:
+                if fact_id not in links and any(_overlap(own[fact_id], own[other]) for other in links):
+                    links[fact_id] = "chain"
+                    changed = True
+        for fact_id in units:
+            if fact_id not in links:
+                shares = any(_overlap(own[fact_id], own[other]) for other in units if other != fact_id)
+                # Isolation needs content of its own: one sparse concept is no evidence.
+                links[fact_id] = "isolated" if not shares and len(own[fact_id]) >= ISOLATED_MIN_CONCEPTS else "unlinked"
+    for fact_id, unit in units.items():
+        planner = unit.pop("planner_serves_question", None)
+        if unit["role"] == "ranked_item":
+            links[fact_id] = "ranked"  # every ranked item answers a ranking question
+        elif planner is True:
+            links[fact_id] = "planner" if links.get(fact_id) in {None, "unlinked", "isolated"} else links[fact_id]
+        elif planner is False and fact_id != primary:
+            links[fact_id] = "off_question"
+        unit["question_link"] = links.get(fact_id, "unjudged")
+        unit["off_question"] = unit["question_link"] in {"isolated", "off_question"}
+        if unit["off_question"]:
+            unit["may_be_omitted"] = True
+    return {"subject_terms": sorted(subject), "question_terms": sorted(predicate)}
+
+
 def _novelty_category(novelty: dict[str, Any], fact_id: str) -> str:
     for key, name in (
         ("redundant_candidates", "redundant"),
@@ -304,6 +400,8 @@ def _apply_supplied(
         if item.get("may_appear_in_hook") is False:
             units[target]["may_appear_in_hook"] = False
             units[target]["planner_hook_block"] = True
+        if isinstance(item.get("serves_question"), bool):
+            units[target]["planner_serves_question"] = item["serves_question"]
     primary = fact_id(supplied.get("primary_answer_index"))
     final = fact_id(supplied.get("final_payoff_index"))
     if supplied.get("primary_answer_index") is not None and primary is None:
@@ -419,6 +517,9 @@ def build_story_arc(
         if unit["id"] != primary and unit["role"] == "primary_answer":
             unit["role"] = "supporting_fact"
             repairs.append("duplicate_primary_answer_demoted")
+    # Core question relevance: same-subject tangents become optional and
+    # never join the causal chain or close the video.
+    terms = _question_links(units, question, primary) if units else {"subject_terms": [], "question_terms": []}
 
     # Dependencies (planner-supplied ones are kept; the structure fills gaps).
     withhold = structure in {"reveal", "ranked_progression"}
@@ -440,13 +541,16 @@ def build_story_arc(
             unit["depends_on"] = [primary]
     # A causal chain keeps its research order: each explanation follows the previous one.
     explanations = [unit for unit in units.values() if unit["role"] == "explanation"]
+    # A tangent never joins the causal chain or closes the video while an
+    # explanation of the question itself exists.
+    explanations = [unit for unit in explanations if not unit.get("off_question")] or explanations
     for previous, current in pairwise(explanations):
         if not current.get("planner_dependencies") and previous["id"] not in current["depends_on"]:
             current["depends_on"].append(previous["id"])
     _break_cycles(units, repairs)
 
     # Final payoff: may differ from the primary answer.
-    secondary = [unit for unit in units.values() if unit["role"] == "secondary_insight" and unit["id"] != primary]
+    secondary = [unit for unit in units.values() if unit["role"] == "secondary_insight" and unit["id"] != primary and not unit.get("off_question")]
     key_surprise = max(secondary, key=lambda unit: (unit["surprise_value"], unit["importance"]), default=None)
     if supplied_final and supplied_final in units:
         final = supplied_final
@@ -500,6 +604,10 @@ def build_story_arc(
         stack.extend(units[current]["depends_on"])
     for fact_id in required:
         units[fact_id]["may_be_omitted"] = False
+        if units[fact_id].get("off_question"):
+            # The answer or the final payoff builds on it: part of the chain.
+            units[fact_id]["off_question"] = False
+            repairs.append(f"required_fact_kept_on_question:{fact_id}")
     for unit in units.values():
         unit["must_not_appear_before"] = list(unit["depends_on"])
         unit.pop("planner_dependencies", None)
@@ -543,8 +651,44 @@ def build_story_arc(
         "units": [units[fact_id] for fact_id in order],
         "repairs": repairs,
     }
+    arc["question_contract"] = question_contract(arc, terms, supplied_gap)
     arc["issues"] = story_arc_issues(arc)
     return arc
+
+
+def question_contract(arc: dict[str, Any], terms: dict[str, Any] | None = None, hook_promise: str = "") -> dict[str, Any]:
+    """The one canonical statement of what the video owes the viewer.
+
+    ``core_question`` is what the viewer wants to know, ``hook_promise`` the
+    gap the opening opens (the selected hook replaces the planner's text),
+    ``final_resolution`` the beat that closes it and the
+    ``essential_explanation_chain`` every fact needed to get there, in story
+    order.  Every body beat must serve this chain; a fact that only shares
+    the subject is listed in ``off_question_ids``.
+    """
+    units = arc_units(arc)
+    primary, final = arc.get("primary_answer_id"), arc.get("final_payoff_id")
+    required: set[str] = set()
+    stack = [fact_id for fact_id in (primary, final) if fact_id]
+    while stack:
+        current = stack.pop()
+        if current in required or current not in units:
+            continue
+        required.add(current)
+        stack.extend(units[current].get("depends_on") or [])
+    chain = [fact_id for fact_id in arc.get("order") or [] if fact_id in required or (fact_id in units and not units[fact_id].get("may_be_omitted"))]
+    terms = terms or {}
+    return {
+        "core_question": arc.get("primary_question") or "",
+        "hook_promise": hook_promise or (arc.get("curiosity_gap") or {}).get("planner_text") or arc.get("primary_question") or "",
+        "primary_answer_id": primary,
+        "final_resolution_id": final,
+        "final_resolution": str(units.get(str(final), {}).get("claim") or ""),
+        "essential_explanation_chain": chain,
+        "off_question_ids": [fact_id for fact_id in arc.get("order") or [] if units.get(fact_id, {}).get("off_question")],
+        "subject_terms": list(terms.get("subject_terms") or []),
+        "question_terms": list(terms.get("question_terms") or []),
+    }
 
 
 def fallback_story_arc(
@@ -622,6 +766,23 @@ def hook_safe_facts(facts: list[dict[str, Any]], arc: dict[str, Any] | None) -> 
     return [fact for fact in facts if str(fact.get("id") or "") not in blocked]
 
 
+def mechanism_claims(arc: dict[str, Any] | None) -> list[str]:
+    """Claims that explain *why*: the payoff a hook must open, not spend.
+
+    Explanation units on the question and the final payoff when it is not the
+    primary answer (an answer-first hook that states the answer is judged as
+    stating the answer, not here).
+    """
+    if not isinstance(arc, dict):
+        return []
+    primary, final = arc.get("primary_answer_id"), arc.get("final_payoff_id")
+    claims = [
+        str(unit.get("claim") or "") for fact_id, unit in arc_units(arc).items()
+        if fact_id != primary and not unit.get("off_question") and (unit.get("role") == "explanation" or fact_id == final)
+    ]
+    return [claim for claim in claims if claim.strip()]
+
+
 def omittable_fact_ids(arc: dict[str, Any] | None) -> set[str]:
     return {fact_id for fact_id, unit in arc_units(arc).items() if unit.get("may_be_omitted")}
 
@@ -643,6 +804,10 @@ def story_brief(arc: dict[str, Any] | None) -> dict[str, Any]:
         "final_payoff_id": arc.get("final_payoff_id"),
         "key_surprise_id": arc.get("key_surprise_id"),
         "curiosity_gap": arc.get("curiosity_gap"),
+        "question_contract": {
+            key: value for key, value in (arc.get("question_contract") or {}).items()
+            if key in {"core_question", "hook_promise", "primary_answer_id", "final_resolution_id", "essential_explanation_chain", "off_question_ids"}
+        },
         "information_order": [
             {
                 "fact_id": fact_id,
@@ -650,6 +815,8 @@ def story_brief(arc: dict[str, Any] | None) -> dict[str, Any]:
                 "depends_on": units[fact_id]["depends_on"],
                 "may_appear_in_hook": units[fact_id]["may_appear_in_hook"],
                 "may_be_omitted": units[fact_id]["may_be_omitted"],
+                # true / false / "unclear" (no lexical link; the writer judges).
+                "serves_question": False if units[fact_id].get("off_question") else ("unclear" if units[fact_id].get("question_link") == "unlinked" else True),
             }
             for fact_id in arc.get("order") or []
             if fact_id in units

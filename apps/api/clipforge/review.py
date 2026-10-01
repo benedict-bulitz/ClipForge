@@ -20,6 +20,14 @@ from .pipeline import _apply_selected_hook, _normalise_blocks, _refresh_script_d
 from .reactions import reaction_quality_issues
 from .story_arc import story_quality_issues
 
+# Information-gain codes whose review check is not derived from their prefix.
+_GAIN_CHECKS = {
+    "off_question_segment": "relevance",
+    "no_question_relevant_information": "relevance",
+    "complex_language": "accessibility",
+    "information_plateau": "script",
+}
+
 
 class ReviewFinding(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -317,7 +325,7 @@ def local_review_items(state: dict[str, Any]) -> list[dict[str, str]]:
         message = problems[0]["message"] if len(problems) == 1 else f"{len(problems)} script units: {problems[0]['message']}"
         items.append(
             {
-                "check": "payoff" if code.startswith("payoff_") else ("research" if "supported" in code else ("hook" if code.startswith("hook_") else "repetition")),
+                "check": _GAIN_CHECKS.get(code) or ("payoff" if code.startswith("payoff_") else ("research" if "supported" in code else ("hook" if code.startswith("hook_") else "repetition"))),
                 "severity": problems[0]["severity"],
                 "message": f"Information gain: {message}"[:320],
             }

@@ -154,6 +154,22 @@ def _fiction_plan(prompt: str, intent: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+# What keeps a viewer watching, stated once for the writer and the review.
+RETENTION_REQUIREMENTS = (
+    (
+        "Every block must help answer story_arc.question_contract.core_question; leave out facts marked "
+        "serves_question false and anything that is merely about the same subject."
+    ),
+    "The first block must give a useful new clue at once, not background or a restatement of the question.",
+    (
+        "Each block must tell the viewer something they did not know a moment ago and leave one concrete thing "
+        "still open; never two blocks in a row that only rephrase or elaborate the same point."
+    ),
+    "Save the clearest 'that is why' connection for the final block, then stop.",
+    "Use words a 10-12 year old understands on first listen; prefer a concrete example over an abstract term.",
+)
+
+
 def _story_blocks(
     intent: dict[str, Any], facts: list[dict[str, Any]], story_arc: dict[str, Any]
 ) -> list[dict[str, Any]]:
@@ -172,7 +188,7 @@ def _story_blocks(
         if unit is None or fact is None:
             continue
         valuable = unit.get("novelty") in {"distinctive", "explanatory", "comparison", "core"}
-        if fact_id not in required and not valuable:
+        if fact_id not in required and (not valuable or unit.get("off_question")):
             continue
         claim = clean_research_claim(fact.get("claim"))
         if not claim:
@@ -425,6 +441,7 @@ def _generate_body_with_v2_or_fallback(
             },
             writing_requirements=[
                 "Write a body-only explanation; do not create a hook.",
+                *RETENTION_REQUIREMENTS,
                 "Stop when the explanation is complete.",
             ],
             payoff_plan=payoff_plan,
@@ -480,7 +497,9 @@ def _generate_body_with_v2_or_fallback(
             "Preserve complete causal context needed to understand the answer.",
             "Keep the body concise without optimizing for the shortest possible version.",
             "Respect the payoff plan; do not add a generic post-payoff outro.",
+            *RETENTION_REQUIREMENTS,
         ],
+        story_arc=story_brief(story_arc) or None,
     )
     try:
         review_result = review_script_v2(review_request, selected_review_provider)

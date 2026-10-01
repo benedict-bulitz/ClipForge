@@ -80,7 +80,7 @@ _WEIGHTS = {
 }
 # Safety dimensions: the judge may lower them, never raise them above the checks.
 _SAFETY = {"reveal_safety", "factual_defensibility", "clickbait_free"}
-_JUDGE_VETOES = {"leaks_answer", "payoff_mismatch", "impossible_visual", "redundant_channels", "cheap_clickbait", "contradicts_story"}
+_JUDGE_VETOES = {"leaks_answer", "payoff_mismatch", "impossible_visual", "redundant_channels", "cheap_clickbait", "contradicts_story", "spends_explanation"}
 _REVEAL_CODES = REVEAL_CODES
 _FEASIBILITY = {"real_media_likely": 1.0, "generated_image_ok": 0.8, "hard_to_source": 0.4, "impossible": 0.0}
 

@@ -233,7 +233,7 @@ def test_openai_provider_uses_director_model_and_source_free_contract() -> None:
 
 
 @pytest.mark.parametrize("requirement", [
-    "10–14 year old", "first listen", "everyday German", "one idea at a time",
+    "10–12 year old", "first listen", "everyday German", "one idea at a time",
     "technical term immediately", "explain the idea first", "scientific distinctions",
     "not facts", "nested clauses", "not from fixed templates",
 ])
@@ -245,7 +245,7 @@ def test_hook_readability_is_in_actual_director_prompt() -> None:
     from clipforge.ai import DIRECTOR_INSTRUCTIONS
 
     for requirement in (
-        "every hook candidate", "10–14 year old", "first listen", "everyday German",
+        "every hook candidate", "10–12 year old", "first listen", "everyday German",
         "no unexplained jargon", "Simplify a difficult question", "factual meaning",
         "clarity takes priority", "rigid hook templates",
     ):
