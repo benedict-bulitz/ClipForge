@@ -310,9 +310,10 @@ def test_sorting(db, settings, store, fake):
     def order(sort):
         return [item["id"] for item in library_page(client, sort=sort)["items"]]
 
-    # Newest publication/upload first: published at 2026-09-10 11:00, then uploads.
-    assert order("newest") == [published.id, scheduled.id, private.id]
-    assert order("oldest") == [private.id, scheduled.id, published.id]
+    # One chronological feed by effective date (YouTube Studio's Date column):
+    # scheduled for 2030-01-01, published 2026-09-10 11:00, private uploaded 2026-09-08.
+    assert order("newest") == [scheduled.id, published.id, private.id]
+    assert order("oldest") == [private.id, published.id, scheduled.id]
     # Only videos that have been public rank by live views; never-public counters do not.
     assert order("views") == [published.id, scheduled.id, private.id]
     # Only videos with the metric are ranked; the rest follow newest first.
@@ -355,7 +356,7 @@ def test_pagination_is_bounded(db, settings, store, fake):
     published, scheduled, private = three_videos(db, settings, store, fake)
     client = api_client(db, settings, store, fake)
     first = library_page(client, limit=2)
-    assert [item["id"] for item in first["items"]] == [published.id, scheduled.id]
+    assert [item["id"] for item in first["items"]] == [scheduled.id, published.id]  # newest effective date first
     assert first["total"] == 3 and first["next_offset"] == 2
     second = library_page(client, limit=2, offset=2)
     assert [item["id"] for item in second["items"]] == [private.id] and second["next_offset"] is None
@@ -622,3 +623,86 @@ def test_bulk_delete_clears_all_history_and_keeps_the_learning_record(db, settin
     assert db.scalars(select(YouTubeAnalyticsSnapshot)).all() and db.scalars(select(YouTubeRetentionPoint)).all()
     detail = client.get(f"/api/videos/{row.id}").json()
     assert detail["performance"]["status"] == "ready" and detail["retention_curve"] and detail["production"]["hook_strategy"]
+
+
+# ---------------------------------------------------------------------------
+# "Newest" = effective date (scheduled_at / published_at), like YouTube Studio
+# ---------------------------------------------------------------------------
+
+
+def _video(name: str, *, published: datetime | None = None, scheduled: datetime | None = None,
+           remote_scheduled: datetime | None = None, uploaded: datetime | None = None, created: datetime | None = None,
+           views: int | None = None) -> YouTubeUpload:
+    return YouTubeUpload(
+        id=name, project_id="p", channel_id="c", youtube_video_id=f"v-{name}", state="succeeded",
+        privacy_status="public" if published else "private", published_at=published,
+        publish_at=scheduled, schedule_status="scheduled" if scheduled else "none",
+        remote_publish_at=remote_scheduled, remote_status_checked_at=(NOW if remote_scheduled else None),
+        uploaded_at=uploaded, created_at=created, remote_view_count=views,
+    )
+
+
+def _newest(*videos: YouTubeUpload, sort: str = "newest") -> list[str]:
+    return [row.id for row, _summary in library._order([(video, None) for video in videos], sort, NOW)]
+
+
+def _at(day: int, hour: int = 12, month: int = 10) -> datetime:
+    return datetime(2026, month, day, hour, tzinfo=UTC)
+
+
+def test_newest_future_scheduled_video_is_above_todays_published_video():
+    published_today = _video("published", published=_at(1, 9), uploaded=_at(1, 8))
+    # Uploaded days earlier, scheduled for tomorrow: its date is the scheduled time, not the upload.
+    scheduled = _video("scheduled", scheduled=_at(2, 10), uploaded=_at(28, 12, month=9))
+    assert _newest(published_today, scheduled) == ["scheduled", "published"]
+
+
+def test_newest_scheduled_videos_follow_their_scheduled_time():
+    later = _video("later", scheduled=_at(2, 8), uploaded=_at(20, 9, month=9))
+    evening = _video("evening", scheduled=_at(1, 20), uploaded=_at(29, 9, month=9))
+    # Once checked, YouTube's own scheduled time is the authority.
+    remote = _video("remote", scheduled=_at(5, 8), remote_scheduled=_at(1, 21), uploaded=_at(30, 9, month=9))
+    assert _newest(evening, later, remote) == ["later", "remote", "evening"]
+
+
+def test_newest_published_videos_follow_their_publication_time():
+    morning = _video("morning", published=_at(1, 9), uploaded=_at(1, 23))
+    evening = _video("evening", published=_at(1, 18), uploaded=_at(1, 1))
+    yesterday = _video("yesterday", published=_at(30, 20, month=9), uploaded=_at(2, 1))
+    # Actual timestamps decide within one calendar day; uploads never do.
+    assert _newest(morning, yesterday, evening) == ["evening", "morning", "yesterday"]
+
+
+def test_newest_mixes_scheduled_and_published_as_one_feed():
+    rows = [
+        _video("pub_oct1_a", published=_at(1, 15)),
+        _video("sched_oct1_20", scheduled=_at(1, 20)),
+        _video("pub_sep30", published=_at(30, 12, month=9)),
+        _video("sched_oct2", scheduled=_at(2, 9)),
+        _video("pub_oct1_b", published=_at(1, 7)),
+    ]
+    # Oct 2 scheduled, Oct 1 20:00 scheduled, Oct 1 published x2, Sep 30 published.
+    assert _newest(*rows) == ["sched_oct2", "sched_oct1_20", "pub_oct1_a", "pub_oct1_b", "pub_sep30"]
+    assert _newest(*rows, sort="oldest") == list(reversed(_newest(*rows)))
+
+
+def test_newest_missing_dates_fall_back_deterministically():
+    uploaded_only = _video("uploaded", uploaded=_at(1, 12))
+    created_only = _video("created", created=_at(1, 11))
+    no_dates_b = _video("b-none")
+    no_dates_a = _video("a-none")
+    published = _video("published", published=_at(1, 13))
+    order = _newest(no_dates_a, created_only, published, no_dates_b, uploaded_only)
+    assert order == ["published", "uploaded", "created", "b-none", "a-none"]
+    assert order == _newest(uploaded_only, no_dates_b, published, created_only, no_dates_a)  # input order is irrelevant
+
+
+def test_non_newest_sorts_keep_their_rules():
+    viewed = _video("viewed", published=_at(1, 9), views=500)
+    popular = _video("popular", published=_at(28, 9, month=9), views=9000)
+    scheduled = _video("scheduled", scheduled=_at(3, 9), views=0)
+    rows = (viewed, popular, scheduled)
+    # Metric sorts rank by the metric; videos without it (never public) follow in effective-date order.
+    assert _newest(*rows, sort="views") == ["popular", "viewed", "scheduled"]
+    assert _newest(*rows, sort="average_view_percentage") == ["scheduled", "viewed", "popular"]  # no metrics: newest order
+    assert _newest(*rows, sort="oldest") == ["popular", "viewed", "scheduled"]

@@ -14,12 +14,23 @@ from .schemas import AdvancedOptions
 
 DIRECTOR_INSTRUCTIONS = (
     "You are ClipForge's short-form director. Write the shortest complete explanation that answers "
-    "the user's question well. Identify a compact story_arc over the research evidence (1-based fact_index): "
+    "the user's question well. First interpret the question as a whole sentence, not as keywords: return "
+    "question_intent with a meaning-preserving intended_question, question_type, the acting person or thing "
+    "(grammatical agency: 'why do WE open the app although we did not want to' asks about human behaviour; 'why "
+    "does the app open although I clicked nothing' asks about technology), the target phenomenon, the key contrast or "
+    "condition, the expected explanation domain and the interpretations that are explicitly excluded. The supplied "
+    "question_intent is a grammatical first reading: confirm or correct it; never replace the user's question. Only "
+    "use confidence low when two materially different readings stay plausible. Facts that answer an excluded "
+    "interpretation get serves_question false. Identify a compact story_arc over the research evidence (1-based fact_index): "
     "give each fact a role (primary_answer, essential_context, evidence, comparison, supporting_fact, "
-    "explanation, secondary_insight, ranked_item), what it depends_on, and whether it may_appear_in_hook; name "
+    "explanation, secondary_insight, ranked_item), what it depends_on, whether it may_appear_in_hook, and whether "
+    "it serves_question: false for a fact that is merely about the same subject but does not help answer this "
+    "exact question (a true detail about the same app, animal or place that answers a different question); name "
     "primary_answer_index (the fact that actually answers the question) and final_payoff_index (the last "
     "meaningful beat, which may differ from the answer). A related but different insight is secondary_insight, "
-    "never the answer. State the concrete curiosity_gap the viewer has. "
+    "never the answer. State the concrete curiosity_gap the viewer has. For a why/how question set answers_why: "
+    "true only if the facts state the cause or mechanism (for a condition such as 'the older you get', a mechanism "
+    "tied to that condition), false if they only describe the phenomenon or related details. "
     "Identify a compact payoff_plan with the central curiosity, actual payoff, "
     "supporting information, desired viewer reaction, and whether the hook must withhold the payoff. "
     "Start with one very short curiosity hook or setup that makes sense to a viewer who never saw the "
@@ -43,7 +54,7 @@ DIRECTOR_INSTRUCTIONS = (
     "target key whose imagery would reveal hook_must_not_reveal, or empty when nothing is protected. "
     "A visual goal must describe what should appear on screen, never conversational uncertainty, research prose, or meta commentary. "
     "The hook must be honest, usually no more than fourteen words, and must not delay the useful answer. "
-    "For every hook candidate and the selected opening, ask: would a typical 10–14 year old "
+    "For every hook candidate and the selected opening, ask: would a typical 10–12 year old "
     "understand this on first listen without prior knowledge? Use everyday German when writing "
     "German: short, concrete, natural spoken wording, no unexplained jargon, abstract academic "
     "phrasing, unnecessarily clever wording, fake sensationalism, or rigid hook templates. "
@@ -135,6 +146,8 @@ class AIStoryUnit(BaseModel):
     role: str = Field(min_length=1, max_length=40)
     depends_on: list[int] = Field(default_factory=list, max_length=6)
     may_appear_in_hook: bool = True
+    # False: true and about the same subject, but it does not help answer the question.
+    serves_question: bool | None = None
 
 
 class AIStoryArc(BaseModel):
@@ -142,6 +155,21 @@ class AIStoryArc(BaseModel):
     primary_answer_index: int | None = Field(default=None, ge=1, le=10)
     final_payoff_index: int | None = Field(default=None, ge=1, le=10)
     curiosity_gap: str = Field(default="", max_length=240)
+    # Why/how questions: do the facts explain the cause or mechanism, not only the phenomenon?
+    answers_why: bool | None = None
+
+
+class AIQuestionIntent(BaseModel):
+    """The planner's reading of what the user actually asks (confirms or corrects the grammar)."""
+
+    intended_question: str = Field(default="", max_length=400)
+    question_type: Literal["behavioral_why", "technical_why", "causal_why", "how", "comparison", "factual"] = "causal_why"
+    actor: str = Field(default="", max_length=80)
+    target_phenomenon: str = Field(default="", max_length=240)
+    key_contrast_or_condition: str = Field(default="", max_length=240)
+    expected_explanation_domain: str = Field(default="", max_length=240)
+    explicitly_excluded_interpretations: list[str] = Field(default_factory=list, max_length=4)
+    confidence: Literal["high", "medium", "low"] = "medium"
 
 
 class AIProjectPlan(BaseModel):
@@ -156,6 +184,7 @@ class AIProjectPlan(BaseModel):
     visual_intents: list[AIVisualIntent] = Field(default_factory=list, max_length=8)
     payoff_plan: AIPayoffPlan | None = None
     story_arc: AIStoryArc | None = None
+    question_intent: AIQuestionIntent | None = None
 
 
 # The documented Hook Strategy framework in canonical form (hooks.CANONICAL_STRATEGIES).
@@ -249,7 +278,7 @@ class AITripleHookJudgement(BaseModel):
     production_feasibility: int = Field(ge=0, le=10)
     veto: Literal[
         "none", "leaks_answer", "payoff_mismatch", "impossible_visual", "redundant_channels",
-        "cheap_clickbait", "contradicts_story",
+        "cheap_clickbait", "contradicts_story", "spends_explanation",
     ] = "none"
     reason_codes: list[str] = Field(default_factory=list, max_length=5)
 
@@ -347,7 +376,8 @@ HOOK_GENERATION_INSTRUCTIONS = (
     "overlay). strategy must be the planned documented strategy the wording really uses; supported_by_fact_ids "
     "names the facts it rests on; reason_codes are short snake_case codes (e.g. strong_sourced_number, "
     "protected_answer_safe, specific), never reasoning. "
-    "The supplied story_arc is authoritative: primary question, primary answer, final payoff, fact roles, "
+    "The hook opens story_arc.question_contract.intended_question (what the user means), never an excluded "
+    "interpretation. The supplied story_arc is authoritative: primary question, primary answer, final payoff, fact roles, "
     "dependencies and which facts may appear in a hook (may_appear_in_hook). When withhold_answer is true no channel "
     "may reveal the protected answer (payoff_plan.hook_must_not_reveal) or imply it by elimination; name the "
     "protected subject only as one open option of a question. A number of a protected fact may be spoken only "
@@ -356,13 +386,19 @@ HOOK_GENERATION_INSTRUCTIONS = (
     "withhold_answer is false, do not invent mystery, and the hook must still not simply state the primary answer. "
     "A protected fact may inspire a hook only without naming its subject (e.g. 'one of the two countries ...'). "
     "Every promise must be paid off by the body: promised_payoff names the arc fact that answers it and "
-    "payoff_fact_id its id. HARD RULE: an average 14-year-old must understand the spoken hook on first listen — "
+    "payoff_fact_id its id. OPEN, DO NOT FINISH: the hook opens the question the body answers; it never states the "
+    "mechanism the body explains as a finished cause -> effect statement ('the fewer X, the faster Y feels', 'X "
+    "happens because Y'). Name the observation, the contradiction or the surprising consequence instead and leave "
+    "the why for the body, so the viewer has a reason to keep watching. The hook creates one concrete unresolved "
+    "tension: not a restatement of the answer, not a reframing the body then only repeats, and not so abstract that "
+    "nothing specific is open. A curiosity hook gets no licence to invent a plausible cause: every cause, error or "
+    "reason it names must be stated by the supplied facts. HARD RULE: an average 12-year-old must understand the spoken hook on first listen — "
     "common everyday words, short spoken units, concrete wording, one idea at a time, natural speech; replace any "
     "specialist, academic or bureaucratic term and any abstract noun chain with ordinary words; say long numbers as "
     "a true rounded figure ('rund 270.000', 'about 270,000'); a slightly simpler hook beats a more sophisticated one. "
     "Verbal hook rules from the document: useful specific information first, exact relevance "
     "to the question, immediate attention, factual defensibility (every number, trend or prevalence claim must be in "
-    "the supplied facts with the same value and context), natural spoken language a 10-14 year old understands on "
+    "the supplied facts with the same value and context), natural spoken language a 10-12 year old understands on "
     "first listen, brevity, and a clean transition: it leads into first_body_sentence without repeating it. Write it as "
     "a native speaker would say it aloud: a complete sentence with its subject and complement, and when you compare, "
     "say with what. A strategy is a rhetorical function, not a template: a curiosity gap may also be an unexplained "
@@ -388,7 +424,7 @@ HOOK_GENERATION_INSTRUCTIONS = (
 TRIPLE_HOOK_JUDGE_INSTRUCTIONS = (
     "You are ClipForge's opening judge. Score each COMPLETE opening candidate (verbal hook, visual, on-screen text "
     "together) from 0 to 10 on every rubric dimension. Judge the triple, not the best sentence. The verbal "
-    "dimensions are the documented hook rubric in priority order: spoken_simplicity (would an average 14-year-old "
+    "dimensions are the documented hook rubric in priority order: spoken_simplicity (would an average 12-year-old "
     "understand it on first listen? a harder hook loses to a slightly simpler equivalent), useful_information, topic_relevance, "
     "attention_value, factual_defensibility, natural_language, brevity, body_transition, curiosity, insight, "
     "non_repetition; strategy_fit rates whether the documented strategy is supported by the research and whether the "
@@ -402,7 +438,9 @@ TRIPLE_HOOK_JUDGE_INSTRUCTIONS = (
     "story arc) must get veto leaks_answer; a promise the supplied story cannot pay off gets payoff_mismatch; a "
     "visual that cannot realistically be sourced or generated gets impossible_visual; voice, image and text that "
     "repeat the same statement get redundant_channels; empty sensational bait gets cheap_clickbait; anything "
-    "contradicting the story arc gets contradicts_story. complementarity rewards channels that each add a different "
+    "contradicting the story arc gets contradicts_story; a verbal hook that already explains the mechanism the body "
+    "explains (a finished cause -> effect statement that leaves the viewer nothing to wait for) gets spends_explanation "
+    "- a hook must open the question, not finish it. complementarity rewards channels that each add a different "
     "signal; on_screen_quality rewards short complete text that adds one dimension and treats an empty on-screen "
     "hook as acceptable (5) rather than bad. Prefer concrete, specific, credible and immediately understandable "
     "openings that fit the selected format. Return short snake_case reason_codes only, never explanations or "
@@ -593,6 +631,7 @@ def plan_with_openai(
     *,
     evidence: list[str] | None = None,
     novelty_plan: dict[str, Any] | None = None,
+    question_intent: dict[str, Any] | None = None,
 ) -> AIPlanResult:
     """Create a schema-validated semantic plan and report provider failure explicitly."""
     if settings.clipforge_ai_mode != "openai":
@@ -606,6 +645,7 @@ def plan_with_openai(
         "options": options.model_dump(mode="json", exclude_none=True),
         "research_evidence": [clean_research_claim(item) for item in (evidence or []) if item],
         "novelty_plan": novelty_plan or {},
+        "question_intent": {key: value for key, value in (question_intent or {}).items() if key not in {"candidates", "version"}},
         "hook_playbook": generation_playbook([
             {
                 "claim": clean_research_claim(item),

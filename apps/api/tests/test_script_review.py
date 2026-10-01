@@ -224,7 +224,7 @@ def test_openai_review_uses_worker_model_and_structured_output(monkeypatch) -> N
 
 def test_reviewer_readability_contract_preserves_facts_and_simple_wording() -> None:
     for requirement in (
-        "10–14 year old", "first listen", "Rewrite unnecessarily difficult words",
+        "10–12 year old", "first listen", "Rewrite unnecessarily difficult words",
         "nested sentences", "everyday German", "idea first, term second",
         "scientific distinctions", "factual meaning, and fact IDs",
         "Do not add filler, reassurance, tangents", "already simple, accurate wording unchanged",

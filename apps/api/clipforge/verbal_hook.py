@@ -41,7 +41,7 @@ from .hooks import (
 from .media import _mentions, _visual_query_tokens, visual_target_key
 from .narration import clean_narration_text
 from .payoff import _protected_answer, reveals_protected_payoff
-from .story_arc import arc_units, comparison_sides, hook_safe_facts
+from .story_arc import arc_units, comparison_sides, hook_safe_facts, mechanism_claims
 
 _STOP = {
     "the", "and", "for", "with", "that", "this", "from", "what", "which", "who", "why", "how", "are", "is", "was",
@@ -176,7 +176,7 @@ VERBAL_DIMENSIONS = (
 )
 # The document's priority order: useful specific information first.
 VERBAL_WEIGHTS = {
-    # A 14-year-old must understand the hook on first listen.
+    # A 12-year-old must understand the hook on first listen.
     "spoken_simplicity": 1.6,
     "useful_information": 1.6, "topic_relevance": 1.5, "attention_value": 1.4, "factual_defensibility": 1.4,
     # Said aloud as a person would say it: as important as being easy.
@@ -328,6 +328,7 @@ def hook_context(
             sentence for block in body
             for sentence in re.split(r"(?<=[.!?])\s+", _plain(block.get("text"))) if sentence.strip()
         ],
+        "mechanisms": mechanism_claims(arc),
         "distinctive_words": set().union(*(_words(claims.get(fact_id, "")) for fact_id in distinctive)) if distinctive else set(),
         "payoff_plan": plan,
         "protected_target": (visual_target_key(protected_target) or visual_target_key(plan.get("protected_visual_target"))) if withhold else "",
@@ -492,7 +493,7 @@ def strategy_signals(context: dict[str, Any]) -> dict[str, dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 def _speakable(item: dict[str, str], language: str) -> str:
-    """A figure as a 14-year-old hears it: long numbers as a true hedged rounding."""
+    """A figure as a 12-year-old hears it: long numbers as a true hedged rounding."""
     value = parse_number(item["value"])
     digits = re.sub(r"\D", "", item["value"]).rstrip("0")
     if value is None or value < 10_000 or len(digits) <= 2 or "%" in item["value"]:
@@ -669,6 +670,17 @@ def assess_verbal(
     if spends_payoff:
         # The last meaningful beat of the arc would be spent in the first second.
         codes.append("spends_final_payoff")
+    if narrates_failure(verbal):
+        hard.append("narrates_failure")
+    unsupported_cause = ungrounded_cause(verbal, context)
+    if unsupported_cause:
+        # A curiosity hook gets no licence to invent a plausible cause.
+        hard.append("unsupported_cause")
+    mechanism = explains_mechanism(verbal, context["question"], context.get("mechanisms") or [])
+    if mechanism:
+        # The opening already says *why*: the video's explanation (its payoff)
+        # is spent before the body starts.  Open the gap, do not close it.
+        hard.append("explains_mechanism")
     first = _words(context["first_body"])
     same_as_first = " ".join(verbal.casefold().split()).rstrip(".!?") == " ".join(context["first_body"].casefold().split()).rstrip(".!?")
     # Duplication: a statement that covers most of the first body sentence.
@@ -817,6 +829,131 @@ def assess_verbal(
     }
 
 
+# Cause -> effect grammar (no topic vocabulary): a statement built this way
+# delivers a mechanism instead of opening a question about it.
+_MECHANISM_GRAMMAR = re.compile(
+    r"(?i)\bje\b[^.!?]*\b(?:desto|umso)\b|\bthe (?:more|less|fewer|longer|older|bigger|smaller)\b[^.!?]*,\s*the\b|"
+    r"\b(?:weil|because|deshalb|daher|darum|deswegen|dadurch|sodass|so dass|liegt daran|kommt daher|führt dazu|"
+    r"führt zu|leads? to|causes?|caused by|due to|that's why|that is why|das ist der grund)\b"
+)
+
+
+# Grammar that attributes a cause ("weil ...", "steckt ... dahinter", "liegt
+# an ...", "because", "is behind it") and words that only frame it.
+_ATTRIBUTION = re.compile(
+    r"(?i)\b(?:weil|denn|dahinter|steckt|stecken|liegt (?:daran|an)|schuld|grund|ursache|verursach\w*|"
+    r"because|caused?|causes|behind|due to|reason|blame\w*)\b"
+)
+_ATTRIBUTION_FRAME = {
+    "weil", "denn", "dahinter", "steckt", "stecken", "liegt", "daran", "schuld", "grund", "ursache", "because",
+    "cause", "caused", "causes", "behind", "due", "reason", "blame", "manchmal", "immer", "oft", "häufig",
+    "selten", "wieder", "nur", "eigentlich", "sometimes", "always", "often", "never", "again", "only", "just",
+}
+
+
+def ungrounded_cause(text: object, context: dict[str, Any]) -> list[str]:
+    """Words of a cause the hook asserts that no researched fact (or the question) contains.
+
+    Only a statement's cause clause counts; a question opens the gap and
+    projects without research evidence are not judged here.
+    """
+    verbal = _clean(text)
+    sourced = [_plain(fact.get("claim")) for fact in context.get("sourced_facts") or [] if _plain(fact.get("claim"))]
+    if not verbal or not sourced:
+        return []
+    grounded = set().union(*(proposition_words(claim) for claim in sourced)) | proposition_words(context.get("question"))
+    missing: list[str] = []
+    for clause in re.split(r"\s*[,;:–—]\s*|\s-\s|(?<=[.!])\s+", verbal):
+        if "?" in clause or not _ATTRIBUTION.search(clause):
+            continue
+        said = {word for word in proposition_words(clause) if word[:1] not in "+-" and word not in _ATTRIBUTION_FRAME and len(word) >= 3}
+        missing += sorted(said - _related(said, grounded))
+    return missing
+
+
+def explains_mechanism(text: object, question: object, mechanisms: list[str]) -> list[str]:
+    """Concepts of a story mechanism a hook already states (empty: it opens, not finishes).
+
+    Only a statement with cause -> effect grammar qualifies, and only when it
+    says what a mechanism claim says beyond the question itself (two shared
+    concepts, a salient relation among them or most of what the hook says).
+    A question, an observation or a contradiction opens the gap.
+    """
+    verbal = _clean(text)
+    if not verbal or "?" in verbal or not _MECHANISM_GRAMMAR.search(verbal):
+        return []
+    asked = proposition_words(question)
+    said = proposition_words(verbal)
+    said -= _related(said, asked)
+    for claim in mechanisms:
+        mechanism = proposition_words(claim)
+        mechanism -= _related(mechanism, asked)
+        shared = _related(said, mechanism)
+        if len(shared) >= 2 and (any(is_salient_concept(word) for word in shared) or len(shared) >= 0.6 * len(said)):
+            return sorted(shared)
+    return []
+
+
+# A sentence about the video's own evidence failing ("Diese Fakten erklären
+# aber nicht, warum ...", "Die Recherche reicht dafür nicht aus"): an
+# internal diagnostic, never narration.  Grammar only: a determiner pointing
+# at the evidence itself, a negation or insufficiency, and an explain/answer
+# verb.  "Studien zeigen keinen Zusammenhang" (a finding) is not one.
+_EVIDENCE_REFERENCE = re.compile(
+    r"(?i)\b(?:diese[nrs]?|die|den|der|unsere[nrs]?|vorliegende[nrs]?|verfügbare[nrs]?|bisherige[nrs]?|"
+    r"these|those|the|our|available|current)\s+(?:\w+\s+)?(?:fakten|fakt|befunde?|befunden|quellen?|"
+    r"recherche\w*|daten|studien|studie|informationen|belege?|ergebnisse\w*|facts?|findings?|sources?|"
+    r"research|data|studies|evidence|information|results)\b"
+)
+_INSUFFICIENT = re.compile(
+    r"(?i)\b(?:nicht|kein\w*|unvollständig\w*|not|no|cannot|can't|don't|doesn't|insufficient|incomplete)\b"
+)
+_EXPLAIN_VERB = re.compile(
+    r"(?i)\b(?:erklär\w*|beantwort\w*|klär\w*|ausreich\w*|reich\w*|belegen|explain\w*|answer\w*|"
+    r"clarif\w*|suffic\w*|enough)\b"
+)
+
+
+def narrates_failure(text: object) -> bool:
+    """The sentence reports that the video's evidence cannot answer (diagnostic, not content)."""
+    sentence = re.sub(r"(?i)\b(?:nicht nur|not only|not just)\b", " ", str(text or ""))
+    return bool(_EVIDENCE_REFERENCE.search(sentence) and _INSUFFICIENT.search(sentence) and _EXPLAIN_VERB.search(sentence))
+
+
+# A sentence saying a question is still unanswered ("warum ..., bleibt
+# offen", "ist noch unklar", "wissen wir nicht genau", "the reason remains
+# unclear").  Grammar families, not phrases: an open-state predicate (open,
+# unclear, unknown, unexplained, not known/understood/clarified) plus a
+# reference to a reason or a "why/how" question.
+_OPEN_STATE = re.compile(
+    r"(?i)\b(?:bleib\w*|ist|sind|war|scheint|remains?|is|are|stays?)\s+(?:\w+\s+){0,3}?"
+    r"(?:offen|unklar|ungeklärt|unbekannt|unerforscht|rätselhaft|ein rätsel|umstritten|open|unclear|unknown|"
+    r"unexplained|uncertain|a mystery|debated|not (?:yet )?(?:known|clear|understood|explained|settled))\b"
+    r"|\b(?:noch\s+)?(?:nicht|kaum)\s+(?:\w+\s+){0,2}(?:geklärt|bekannt|erforscht|verstanden|erklärt|klar)\b"
+    r"|\b(?:weiß|wissen|weiss)\s+(?:man|wir|forscher\w*|fachleute|niemand|die forschung)\s+(?:\w+\s+){0,3}?"
+    r"(?:nicht|kaum|noch nicht)\b|\bniemand weiß\b|\bnobody knows\b"
+    r"|\b(?:forscher\w*|wissenschaftler\w*|experten|fachleute|man|wir)\s+(?:weiß|wissen|weiss|verstehen|versteht)\s+"
+    r"(?:\w+\s+){0,2}?(?:nicht|kaum)\b"
+    r"|\b(?:we|scientists|researchers|experts)\s+(?:still\s+)?(?:don't|do not|cannot|can't)\s+(?:yet\s+)?(?:know|explain|say)\b"
+    r"|\blässt sich\s+(?:\w+\s+){0,3}?nicht\s+(?:\w+\s+)?(?:erklären|sagen|beantworten|klären)\b"
+)
+_REASON_REFERENCE = re.compile(
+    r"(?i)\b(?:warum|wieso|weshalb|weswegen|wodurch|woran|wie genau|grund|gründe|ursache\w*|erklärung|"
+    r"why|how exactly|reason|reasons|cause|causes|explanation)\b|\b(?:das|dies|es|this|that)\b"
+)
+
+
+# A clause that gives the reason after all ("..., aber der Grund ist klar:
+# ...", "weil ...") resolves what the sentence leaves open elsewhere.
+_GIVES_REASON = re.compile(r"(?i)\b(?:weil|denn|deshalb|darum|daher|dadurch|because|therefore|liegt daran|ist klar|is clear)\b")
+
+
+def states_open_question(text: object) -> bool:
+    """The sentence says a why/how (or "this") is still unanswered - not a resolution."""
+    sentence = str(text or "")
+    return bool(_OPEN_STATE.search(sentence) and _REASON_REFERENCE.search(sentence) and not _GIVES_REASON.search(sentence))
+
+
 # Spoken-clarity grammar (no topic vocabulary): abstract noun endings, office
 # language and clause connectors that make a sentence hard to follow by ear.
 _ABSTRACT_NOUN = re.compile(r"(?i)^\w{4,}(?:ung|heit|keit|tion|ität|ismus|ierung|schaft|ance|ence|ment|ity|ness)(?:en|s)?$")
@@ -834,13 +971,13 @@ SPOKEN_UNIT_WORDS = 12
 
 
 def spoken_simplicity(text: str, context: dict[str, Any]) -> tuple[float, list[str]]:
-    """How easily an average 14-year-old follows the hook on first listen (0..1).
+    """How easily an average 12-year-old follows the hook on first listen (0..1).
 
     Spoken clarity, not a school-grade formula: short spoken units, common
     words, one idea at a time.  Long, rare or research terms, abstract noun
     chains, office language, long spoken numbers and stacked clauses cost
     points — also when the user's own question used them: how technically
-    the user asked says nothing about what a 14-year-old understands.  A
+    the user asked says nothing about what a 12-year-old understands.  A
     necessary term may stay; it is simply counted.  Only the names of the
     compared subjects (the question's sides) are exempt: they are the topic,
     not a wording choice.
@@ -918,32 +1055,237 @@ _LIGHT = {
     "macht", "machen", "machst", "bist", "ist", "sind", "war", "waren", "hat", "hast", "haben", "gibt", "geben", "wird", "wirst",
     "werden", "kommt", "sein", "nach", "vor", "beim", "einem", "einen", "einer", "eines", "dabei", "dafür", "davon", "darauf",
     "mich", "dich", "sich", "euch", "makes", "make", "made", "gets", "get", "there", "after", "before", "into", "does", "being",
-    "been", "will", "would", "could", "should",
+    "been", "will", "would", "could", "should", "bleibt", "bleiben", "bleibe", "blieb", "blieben", "remain", "remains",
+    "stay", "stays",
 }
 _NEGATED = re.compile(r"(?i)\b(?:nicht|kein\w*|nie|niemals|not|no|never)\b|\w+n[’']t\b")
 
 
-def _proposition_words(text: str) -> set[str]:
-    return {word for word in _words(text) if word not in _LIGHT}
+# Words that carry no proposition in any topic: empty curiosity adjectives,
+# "something happens" verbs and nouns, intensifiers, hedges and possessives.
+# A sentence whose only new words are these says nothing new ("does
+# something strange" -> "reacts strangely").  Casefolded (ß -> ss).
+_VAGUE = {
+    "something", "anything", "everything", "thing", "things", "stuff", "way", "ways", "kind", "too",
+    "strange", "strangely", "weird", "weirdly", "odd", "oddly", "unusual", "surprising", "surprisingly",
+    "interesting", "interestingly", "amazing", "incredible", "crazy", "fascinating", "curious",
+    "react", "reacts", "reacting", "reacted", "happen", "happens", "happened", "happening",
+    "occur", "occurs", "occurring", "goes", "going", "went", "gone", "comes", "came", "quite", "pretty",
+    "simply", "basically", "literally", "indeed", "usually", "normally", "typically", "generally",
+    "exactly", "yourself", "itself", "themselves", "yours", "mine",
+    "etwas", "ding", "dinge", "seltsam", "seltsame", "seltsames", "merkwürdig", "merkwürdiges", "komisch",
+    "komisches", "erstaunlich", "interessant", "passiert", "passieren", "geschieht", "reagiert", "reagieren",
+    "ziemlich", "sozusagen", "quasi", "gewissermassen", "normalerweise", "meistens", "üblicherweise",
+    "genau", "selbst", "deines", "deinem", "meine", "meinen", "meinem", "meiner", "meines", "unseren",
+    "unserem", "unserer", "eigene", "eigenen", "eigenes", "eigener", "eigenem",
+    "eher", "insgesamt", "tendenziell", "durchschnittlich", "rather", "overall",
+}
+# Connectors state a relation between propositions, not a proposition; the
+# relation itself is read from the sentence grammar (mechanism/contrast).
+# "Ein Grund: X" states X, the reason label adds nothing.
+_CONNECTORS = {
+    "deshalb", "darum", "daher", "dadurch", "deswegen", "dagegen", "jedoch", "trotzdem", "während",
+    "sodass", "weshalb", "therefore", "thus", "hence", "whereas", "while", "however", "instead",
+    "desto", "umso", "grund", "gründe", "reason", "reasons", "obwohl", "obgleich", "although",
+}
+# Multi-word expressions of one concept (any topic), rewritten to a single
+# concept word before tokenising: "hängen bleiben", "einen starken Eindruck
+# hinterlassen" and "einprägsam" all say that something is remembered.  A
+# negation inside the phrase is kept ("keinen Eindruck" = -memorable).
+_PHRASES: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"(?i)\bhängen\s*(?:zu\s+)?bleib\w*|\bbleib\w*\s+(?:\w+\s+){0,2}?hängen\b|\bhängengeblieben\b"), " einprägsam "),
+    (re.compile(
+        r"(?i)\b(?:(?:stark|bleibend|tief|nachhaltig|groß|kein)\w*\s+)?eindr[uü]\w*\s+hinterl\w*|"
+        r"\bhinterl\w*\s+(?:(?:einen|einem|den|kein\w*|stark\w*|bleibend\w*|tief\w*|nachhaltig\w*|groß\w*)\s+){0,2}eindr[uü]\w*"
+    ), " einprägsam "),
+    (re.compile(r"(?i)\bleav\w*\s+(?:an?\s+)?(?:(?:strong|lasting|deep|big)\s+)?impressions?\b"), " memorable "),
+    (re.compile(r"(?i)\bstick\w*\s+(?:in\s+(?:your|the|our|their|my)\s+(?:mind|memory|head)|with\s+(?:you|us|them|me))\b"), " memorable "),
+    # A trend: "immer schneller", "ever faster", "more and more".
+    (re.compile(r"(?i)\bimmer\s+(?=\w{3,}er\b)"), " zunehmend "),
+    (re.compile(r"(?i)\bever\s+(?=\w{3,}er\b)|\bmore and more\b"), " increasingly "),
+    # A statistical qualifier, not a claim of its own.
+    (re.compile(r"(?i)\bim\s+durchschnitt\b|\bon\s+average\b"), " "),
+)
+# Reporting frames: who said or measured a claim is not the claim.  "In
+# Befragungen wählen Ältere häufiger die Antwort, dass X" states X again;
+# a number, a named source or a new group stays new information.
+_REPORTING = (
+    r"befrag\w*|umfrage\w*|studie|studien|antwort\w*|angab\w*|angeben|bericht\w*|wähl\w*|forscher\w*|forschung\w*|"
+    r"teilnehm\w*|survey\w*|study|studies|polls?|respond\w*|answers?|answered|reports?|reported|researchers?|participants?"
+)
+_REPORTING_RE = re.compile(rf"(?i)\b(?:{_REPORTING})\b")
+# A frequency word that qualifies a quantity ("oft weniger") or a report
+# ("wählen häufiger die Antwort") is a hedge, not a frequency claim.
+_HEDGING_FREQUENCY = re.compile(r"(?i)\b(?:oft|häufig\w*|often|frequently)\s+(?:weniger|mehr|less|more|fewer|kaum|nicht|kein\w*)\b")
+# An explicit comparison ("schneller als Jüngere", "je ... desto", "the more
+# ... the") already states the trend along its axis.
+_COMPARISON = re.compile(
+    r"(?i)\b\w{3,}er\s+(?:\w+\s+){0,3}?(?:als|than)\b|\b(?:mehr|weniger|more|less|fewer)\b[^.!?]*?\b(?:als|than)\b|"
+    r"\bje\b[^.!?]*?\bdesto\b|\bthe\s+(?:more|less|\w+er)\b[^.!?]*?,\s*the\s+(?:more|less|\w+er)\b"
+)
+# Everyday paraphrase pairs (grammar-level, not topic vocabulary): each word
+# counts as its canonical form, so swapping one for the other adds nothing.
+# A canonical form in ``_STOP`` ("fast") drops the whole group.
+_SYNONYMS = {
+    "quick": "fast", "quickly": "fast", "rapid": "fast", "rapidly": "fast", "speedy": "fast", "swiftly": "fast",
+    "schnell": "fast", "rasch": "fast",
+    "large": "big", "huge": "big", "enormous": "big", "tiny": "small", "little": "small",
+    "glow": "light", "glows": "light", "glowing": "light", "shine": "light", "shines": "light",
+    "emit": "produce", "emits": "produce", "create": "produce", "creates": "produce",
+    "generate": "produce", "generates": "produce", "produces": "produce",
+    "begin": "start", "begins": "start", "starts": "start",
+}
+# Concepts: general relations that many topics express in unrelated words
+# ("spiegelverkehrt", "vertauscht die Seiten", "Umkehrung", "so herum" all
+# state one orientation fact).  A word matching a pattern counts as the
+# concept.  ``salient`` concepts are predicates: one new salient concept is
+# real news, never "just a synonym".  ``polar`` concepts carry the clause's
+# negation ("fehlt diese Umkehrung" = -reverse); ``negative`` words already
+# are the negated form ("ungewohnt" = -familiar).  ``None`` marks frame words
+# (perceiving, depicting, sides, people) that carry no proposition of their own.
+_CONCEPTS: tuple[tuple[str | None, bool, bool, re.Pattern[str]], ...] = (
+    ("reverse", True, False, re.compile(
+        r"(?:vertausch|umkehr|umgekehrt|verkehrt|revers|invert|flipp|swapp?)\w*|flip|flips|swap|swaps|"
+        r"andersherum|herum|rum|backwards|mirrored|gespiegelt\w*|seitenverkehrt\w*|spiegelverkehrt\w*"
+    )),
+    ("familiar", True, True, re.compile(r"(?:ungewohnt|unvertraut|unbekannt|unfamiliar|fremd)\w*")),
+    ("familiar", True, False, re.compile(r"(?:gewohnt|gewöhn|gewohnheit|vertraut|bekannt|familiar|accustom|habituat)\w*")),
+    ("different", True, False, re.compile(r"anders|(?:unterschied|verschieden|differ|distinct)\w*")),
+    ("frequent", True, False, re.compile(r"oft|öfter|(?:häufig|frequent)\w*|often")),
+    # Novelty and memory: "neue Erlebnisse, die hängen bleiben" = "neue
+    # Erlebnisse, die einen starken Eindruck hinterlassen".
+    ("novel", True, False, re.compile(r"neu|neue|neuen|neuer|neues|neuem|neuartig\w*|neuheit\w*|novel\w*|new|newness")),
+    ("memorable", True, False, re.compile(
+        r"einprägsam\w*|(?:erinner|gedächtnis|memorab|remember|unvergess|unforgett)\w*|memory|memories"
+    )),
+    # Age as an axis: "Ältere", "mit dem Alter", "mit zunehmendem Alter" are
+    # one side of it, "Jüngere" the other.
+    ("age", True, True, re.compile(r"jünger\w*|younger|youth\w*")),
+    ("age", True, False, re.compile(r"alter|alters|älter\w*|altern\w*|altert|older|age|aged|ages|aging|ageing|elderly")),
+    # A rising trend or degree ("stärker", "zunehmend", "immer schneller").
+    ("more", False, False, re.compile(r"stärker|zunehmend\w*|steigend\w*|wachsend\w*|verstärk\w*|increasing\w*|growing|grows|stronger")),
+    ("other", False, False, re.compile(r"andere|anderen|anderer|anderes|anderem|others?")),
+    ("photo", False, False, re.compile(r"(?:foto|photo|aufnahme|selfie)\w*")),
+    ("mirror", False, False, re.compile(r"(?:spiegel|mirror)\w*")),
+    (None, False, False, re.compile(
+        r"sieh\w*|sieht|sehe|sehen|sah|sahen|gesehen|aussehen|aussieht|wirk(?:e|st|t|en|te|test|ten)|(?:erschein|vorkomm|schau|anschau|betracht|zeig|fühl|anfühl)\w*|"
+        r"looks?|looking|looked|see|sees|seen|seems?|seemed|appears?|appeared|shows?|showed|shown|views?|viewed|feels?|felt|"
+        r"bild|bilder|bildes|abbild\w*|version\w*|images?|pictures?|seite|seiten|sides?|links|rechts|left|right|"
+        r"menschen|leute|people|persons?|personen|"
+        # Time passing is what "time" does: "Zeit vergeht" states "Zeit".
+        r"vergeh\w*|verging\w*|vergang\w*|verstreich\w*|verstrich\w*|verflieg\w*|elaps\w*|"
+        # An anaphoric label for what was said ("dieser Effekt").
+        r"effekt\w*|effects?|phänomen\w*|phenomen\w*|"
+        + _REPORTING
+    )),
+)
+_SALIENT = {name for name, salient, _polar, _pattern in _CONCEPTS if name and salient}
+# A clause is negated by an explicit negator or by stating that something is missing.
+_NEGATOR = re.compile(
+    r"(?i)\b(?:nicht|kein\w*|nie|niemals|not|no|never|ohne|without|fehlt|fehlen|fehlend\w*|lacks?|lacking|missing)\b|\w+n[’']t\b"
+)
+_CLAUSE = re.compile(r"\s*[,;:–—]\s*|(?<=[.!?])\s+")
+_NEGATOR_WORDS = {"fehlt", "fehlen", "fehlend", "fehlende", "fehlenden", "ohne", "without", "lack", "lacks", "lacking", "missing"}
+
+
+def _concept(word: str) -> tuple[str | None, bool] | None:
+    """(concept, negative) for a word, ``(None, False)`` for a frame word, None if plain."""
+    for name, _salient, negative, pattern in _CONCEPTS:
+        if pattern.fullmatch(word):
+            return name, negative
+    return None
+
+
+def _concept_parts(word: str) -> list[tuple[str | None, bool] | str]:
+    """A word as concepts; a German compound ("Spiegelbild", "seitenverkehrt")
+    is split into its head word and a concept tail."""
+    found = _concept(word)
+    if found is not None:
+        return [found]
+    for cut in range(4, len(word) - 3):
+        head, tail = word[:cut].removesuffix("s") if len(word[:cut]) > 4 else word[:cut], word[cut:]
+        found = _concept(tail)
+        if found is not None:
+            return [_concept(head) or head, found]
+    return [word]
+
+
+def is_salient_concept(token: str) -> bool:
+    return token[:1] in "+-" and token[1:] in _SALIENT
+
+
+def proposition_words(text: object) -> set[str]:
+    """What a sentence asserts, as comparable tokens.
+
+    Content words (light grammar, vague words, connectors and paraphrase
+    synonyms normalised away) plus concepts: ``+name`` / ``-name`` for a
+    general relation stated positively or negated in its clause, so the same
+    fact in other words ("vertauscht die Seiten" / "spiegelverkehrt") is the
+    same token and a denied fact ("fehlt diese Umkehrung") a different one.
+    """
+    tokens: set[str] = set()
+    text = str(text or "")
+    for pattern, replacement in _PHRASES:
+        text = pattern.sub(lambda match, concept=replacement: " ".join([*_NEGATOR.findall(match.group(0)), concept]), text)
+    for clause in _CLAUSE.split(text):
+        negated = bool(_NEGATOR.search(clause))
+        hedged = bool(_REPORTING_RE.search(clause) or _HEDGING_FREQUENCY.search(clause))
+        for raw in _words(clause):
+            word = _SYNONYMS.get(raw, raw)
+            if word in _LIGHT or word in _VAGUE or word in _STOP or word in _CONNECTORS or word in _NEGATOR_WORDS:
+                continue
+            for part in _concept_parts(word):
+                if isinstance(part, str):
+                    if part not in _LIGHT and part not in _VAGUE and part not in _STOP:
+                        tokens.add(part)
+                    continue
+                name, negative = part
+                if name is None or (name == "frequent" and hedged):
+                    continue
+                polar = name in _SALIENT
+                sign = "-" if polar and (negated != negative) else "+"
+                tokens.add(f"{sign}{name}")
+    return tokens
+
+
+_proposition_words = proposition_words
+
+
+def _asserted_clauses(reference: str) -> list[str]:
+    # A question asserts nothing: only the hook's statement part is "said";
+    # a sentence answering the question is progress.
+    return [
+        part for part in re.split(r"\s*[–—:;]\s*|(?<=[.!?])\s+", reference)
+        if part.strip() and "?" not in part and not re.match(r"(?i)\s*(?:aber\s+|und\s+|but\s+|and\s+)?(?:why|how|what|which|who|warum|wieso|weshalb|wie|was|welche\w*|wer)\b", part)
+    ]
 
 
 def information_gain(reference: str, sentence: str) -> list[str]:
     """What ``sentence`` says that ``reference`` does not (empty: same proposition).
 
-    Content words and numbers beyond the reference (inflection tolerant), or a
-    flipped negation.  Exact wording and word order are irrelevant.
+    Content words, concepts (with their polarity) and numbers beyond the
+    reference, inflection tolerant; exact wording and word order are
+    irrelevant.  A plain negation ("Schweden hat nicht mehr Inseln") counts
+    only against the one earlier statement it denies, never against the
+    whole reference ("nicht schlechter" in a hook is no news for every later
+    sentence without a "nicht").
     """
-    # A question asserts nothing: only the hook's statement part is "said";
-    # a sentence answering the question is progress.
-    asserted = " ".join(
-        part for part in re.split(r"\s*[–—:;]\s*|(?<=[.!?])\s+", reference)
-        if part.strip() and "?" not in part and not re.match(r"(?i)\s*(?:aber\s+|und\s+|but\s+|and\s+)?(?:why|how|what|which|who|warum|wieso|weshalb|wie|was|welche\w*|wer)\b", part)
-    )
-    known, said = _proposition_words(asserted), _proposition_words(sentence)
+    clauses = _asserted_clauses(reference)
+    asserted = " ".join(clauses)
+    # Per clause: a negation never leaks into the next clause's polarity.
+    known = set().union(*(_proposition_words(clause) for clause in clauses)) if clauses else set()
+    said = _proposition_words(sentence)
     gain = sorted(said - _related(said, known))
+    if "+more" in gain and _COMPARISON.search(asserted):
+        # "Mit zunehmendem Alter wird der Effekt stärker" after "Ältere ...
+        # schneller als Jüngere": a rising trend is what the comparison said.
+        gain.remove("+more")
     gain += sorted(_numbers(sentence) - _numbers(asserted))
-    if bool(_NEGATED.search(asserted)) != bool(_NEGATED.search(sentence)):
-        gain.append("negation")
+    if not gain and said and not any(token[:1] in "+-" and token[1:] in _SALIENT for token in said):
+        denied = [clause for clause in clauses if _related(said, _proposition_words(clause)) == said]
+        negated = bool(_NEGATED.search(sentence))
+        if denied and all(bool(_NEGATED.search(clause)) != negated for clause in denied):
+            gain.append("negation")
     return gain
 
 

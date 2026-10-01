@@ -28,7 +28,7 @@ from .narration import (
     clean_script_blocks,
     contamination_issues,
 )
-from .novelty import safe_novelty_plan
+from .novelty import current_information_gain, prune_redundant_information, safe_novelty_plan
 from .pacing import analyze_pacing
 from .payoff import (
     _is_protected_question,
@@ -36,7 +36,10 @@ from .payoff import (
     trim_post_payoff_fluff,
 )
 from .progress import ProgressCallback, report_progress
+from .question_intent import interpret_question, merge_planner_intent
+from .question_intent import research_query as intent_research_query
 from .reactions import plan_viewer_reactions, reaction_arc
+from .readiness import content_readiness, not_ready_message
 from .research import research_topic
 from .schemas import AdvancedOptions
 from .script_review import (
@@ -154,6 +157,32 @@ def _fiction_plan(prompt: str, intent: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+# What keeps a viewer watching, stated once for the writer and the review.
+RETENTION_REQUIREMENTS = (
+    (
+        "Every block must help answer story_arc.question_contract.core_question; leave out facts marked "
+        "serves_question false and anything that is merely about the same subject."
+    ),
+    "The first block must give a useful new clue at once, not background or a restatement of the question.",
+    (
+        "Each block must tell the viewer something they did not know a moment ago and leave one concrete thing "
+        "still open; never two blocks in a row that only rephrase or elaborate the same point."
+    ),
+    (
+        "For a why/how question follow story_arc.question_contract.explanation_spine: the answer block orients "
+        "the viewer, the mechanism follows, and the video ends as soon as the causal path is complete - no extra "
+        "example, label, minor fact or summary after it."
+    ),
+    "Save the clearest 'that is why' connection for the final block, then stop.",
+    (
+        "Never write a sentence about the facts, research or sources themselves (for example that they do not "
+        "explain something) or saying the question stays open or unclear: if the facts cannot answer the "
+        "question, write the supported part only; the system will research again."
+    ),
+    "Use words a 10-12 year old understands on first listen; prefer a concrete example over an abstract term.",
+)
+
+
 def _story_blocks(
     intent: dict[str, Any], facts: list[dict[str, Any]], story_arc: dict[str, Any]
 ) -> list[dict[str, Any]]:
@@ -172,7 +201,7 @@ def _story_blocks(
         if unit is None or fact is None:
             continue
         valuable = unit.get("novelty") in {"distinctive", "explanatory", "comparison", "core"}
-        if fact_id not in required and not valuable:
+        if fact_id not in required and (not valuable or unit.get("off_question")):
             continue
         claim = clean_research_claim(fact.get("claim"))
         if not claim:
@@ -425,6 +454,7 @@ def _generate_body_with_v2_or_fallback(
             },
             writing_requirements=[
                 "Write a body-only explanation; do not create a hook.",
+                *RETENTION_REQUIREMENTS,
                 "Stop when the explanation is complete.",
             ],
             payoff_plan=payoff_plan,
@@ -480,7 +510,9 @@ def _generate_body_with_v2_or_fallback(
             "Preserve complete causal context needed to understand the answer.",
             "Keep the body concise without optimizing for the shortest possible version.",
             "Respect the payoff plan; do not add a generic post-payoff outro.",
+            *RETENTION_REQUIREMENTS,
         ],
+        story_arc=story_brief(story_arc) or None,
     )
     try:
         review_result = review_script_v2(review_request, selected_review_provider)
@@ -493,6 +525,12 @@ def _generate_body_with_v2_or_fallback(
             "provider": getattr(selected_review_provider, "name", "custom"),
         }
         return _v2_body_blocks(result.draft.blocks), diagnostics
+    response = review_result.response
+    diagnostics["explanation_audit"] = {
+        "sentences": [item.model_dump(mode="json") for item in response.explanation_audit] if response else [],
+        "answer_sufficiency": response.answer_sufficiency.model_dump(mode="json") if response and response.answer_sufficiency else None,
+        "source": "script_review_v2",
+    } if response and (response.explanation_audit or response.answer_sufficiency) else None
     diagnostics["review"] = {
         "status": review_result.status,
         "issues": (
@@ -1023,10 +1061,13 @@ def _normalise_blocks(
             for sentence in re.split(r"(?<=[.!?])\s+", block["text"])
             if sentence.strip()
         ]
+        # A payoff block closes on its last sentence (the resolution); every
+        # other block leads with its first (the answer, the claim).
+        lead = len(sentences) - 1 if block["role"] == "payoff" else 0
         for sentence_index, sentence in enumerate(sentences):
             sentence_blocks.append(
                 {
-                    "role": block["role"] if sentence_index == 0 else "detail",
+                    "role": block["role"] if sentence_index == lead else "detail",
                     "text": sentence,
                     "fact_ids": list(block.get("fact_ids") or []),
                 }
@@ -1117,6 +1158,27 @@ def _refresh_script_derivatives(
     plan_viewer_reactions(state)
 
 
+# One tighter research pass when the first script cannot answer its why/how
+# question; never more (no loops).
+MAX_RESEARCH_RETRIES = 1
+_MECHANISM_QUERY = {"de": "Ursache Mechanismus warum", "en": "cause mechanism why"}
+
+
+def research_retry_query(state: dict[str, Any]) -> str:
+    """A research query aimed at the missing mechanism (question + condition + what is missing)."""
+    intent = state.get("intent") or {}
+    question = str(intent.get("question") or state.get("prompt") or "")
+    report = current_information_gain(state)
+    sufficiency = report.get("answer_sufficiency") if isinstance(report.get("answer_sufficiency"), dict) else {}
+    # The interpreted question (possibly corrected by the planner) leads the retry.
+    question = intent_research_query(intent.get("question_intent"), str(intent.get("language") or "en")) or question
+    parts = [question, _MECHANISM_QUERY.get(str(intent.get("language") or "en"), _MECHANISM_QUERY["en"])]
+    parts += [str(term) for term in sufficiency.get("condition_terms") or []]
+    if sufficiency.get("missing"):
+        parts.append(str(sufficiency["missing"]))
+    return " ".join(part for part in parts if part).strip()[:300]
+
+
 def build_initial_state(
     prompt: str,
     options: AdvancedOptions,
@@ -1126,7 +1188,45 @@ def build_initial_state(
     script_writer_provider: ScriptWriterProvider | None = None,
     script_review_provider: ScriptReviewProvider | None = None,
 ) -> dict[str, Any]:
+    """Generate the project state; a script that cannot answer gets one research retry.
+
+    The retry researches the missing mechanism and rebuilds facts, story
+    plan and script.  If it still cannot answer, the state stays blocked
+    (``script`` stage, ``script.readiness``) and is never rendered; nothing
+    is invented to fill the gap.
+    """
+    kwargs = {"progress": progress, "script_writer_provider": script_writer_provider, "script_review_provider": script_review_provider}
+    state = _build_initial_state(prompt, options, settings, **kwargs)
+    attempts = [{"query": prompt, "readiness": state["script"]["readiness"]["status"], "facts": len(state.get("facts") or [])}]
+    for _retry in range(MAX_RESEARCH_RETRIES):
+        readiness = state["script"]["readiness"]
+        if readiness["ready"] or not readiness["research_required"] or not state["intent"].get("research_required"):
+            break
+        query = research_retry_query(state)
+        retried = _build_initial_state(prompt, options, settings, research_query=query, **kwargs)
+        attempts.append({"query": query, "readiness": retried["script"]["readiness"]["status"], "facts": len(retried.get("facts") or [])})
+        if retried["script"]["readiness"]["ready"]:
+            state = retried
+        else:
+            state["script"]["readiness"]["retry_exhausted"] = True
+    state["research"]["attempts"] = attempts
+    return attach_hashes(state)
+
+
+def _build_initial_state(
+    prompt: str,
+    options: AdvancedOptions,
+    settings: Settings,
+    *,
+    progress: ProgressCallback | None = None,
+    script_writer_provider: ScriptWriterProvider | None = None,
+    script_review_provider: ScriptReviewProvider | None = None,
+    research_query: str | None = None,
+) -> dict[str, Any]:
     intent = _intent(prompt, options)
+    # What the user actually asks, before anything is researched (grammar:
+    # agency, intention, contrast); the planner call confirms or corrects it.
+    intent["question_intent"] = interpret_question(prompt, intent["language"])
     resolved_options = options.model_copy(update={"language": intent["language"]})
     sources: list[dict] = []
     facts: list[dict[str, Any]] = []
@@ -1135,7 +1235,10 @@ def build_initial_state(
     research_error = None
     if intent["research_required"]:
         report_progress(progress, "research", "Researching the topic", phase="start")
-        result = research_topic(prompt, intent["language"], settings)
+        result = research_topic(
+            research_query or intent_research_query(intent["question_intent"], intent["language"]) or prompt,
+            intent["language"], settings,
+        )
         research_status = result.status
         research_provider = result.provider
         research_error = result.error
@@ -1173,11 +1276,13 @@ def build_initial_state(
         settings,
         evidence=[fact["claim"] for fact in facts if fact.get("claim")],
         novelty_plan=novelty_plan,
+        question_intent=intent["question_intent"],
     )
     plan_language_mismatch = False
     if ai_result.plan:
         plan = ai_plan_to_dict(ai_result.plan)
         plan["intent"]["language"] = intent["language"]
+        intent["question_intent"] = merge_planner_intent(intent["question_intent"], plan.get("question_intent"))
         planned_text = " ".join(
             str(block.get("text", "")) for block in plan.get("script_blocks", [])
         )
@@ -1335,6 +1440,19 @@ def build_initial_state(
             block["id"] = f"voice_block_{index:02d}"
     # The sentence after the hook must advance the story (after ordering and fitting).
     blocks, hook_transition = _advance_after_hook(blocks, story_arc)
+    # Within-video information gain: what only repeats or fills is removed
+    # (never rewritten or replaced by new claims), so thin evidence yields a
+    # shorter video instead of padding.  Generation time only: later user
+    # edits are assessed, never pruned.
+    explanation_audit = script_writer_diagnostics.get("explanation_audit")
+    blocks, information_repairs = prune_redundant_information(
+        blocks, {
+            "story_arc": story_arc, "facts": facts, "intent": intent, "novelty_plan": novelty_plan,
+            "explanation_audit": explanation_audit,
+        }
+    )
+    for index, block in enumerate(blocks, 1):
+        block["id"] = f"voice_block_{index:02d}"
     hook_block = next((block for block in blocks if _is_hook_block(block)), None)
     selected_hook = (
         selected_hook_candidate.text
@@ -1410,6 +1528,9 @@ def build_initial_state(
         },
         "format_plan": format_plan,
         "novelty_plan": novelty_plan,
+        "information_gain": {"repairs": information_repairs},
+        # The AI review's per-sentence explanatory judgement (matched by text).
+        "explanation_audit": explanation_audit,
         "script": {
             "text": script_text,
             "word_count": word_count,
@@ -1560,6 +1681,13 @@ def build_initial_state(
     annotate_story_roles(state)
     analyze_pacing(state)
     plan_viewer_reactions(state, planned_reaction_arc)
+    # The success contract, before anything is voiced or rendered.
+    readiness = content_readiness(state)
+    state["script"]["readiness"] = {**readiness, "message": None if readiness["ready"] else not_ready_message(readiness)}
+    if not readiness["ready"]:
+        for stage in state["pipeline"]:
+            if stage["id"] == "script":
+                stage["status"] = "blocked"
     return attach_hashes(state)
 
 

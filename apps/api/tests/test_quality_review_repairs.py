@@ -30,6 +30,7 @@ from test_final_critic import finger_provider, fingers, issue_codes, scene
 from test_story_visual_integration import fact, generate, visual
 
 from clipforge import final_critic, visual_director
+from clipforge.ai import AIStoryArc, AIStoryUnit
 from clipforge.attention import callout_suppressed, replan_attention, visible_attention_events
 from clipforge.final_critic import (
     DEFAULT_MAX_REPAIR_PASSES,
@@ -388,7 +389,10 @@ def regression_provider() -> ImageProvider:
 @pytest.fixture
 def regression(monkeypatch, tmp_path):
     silent_voice(monkeypatch)
-    state = small_timeline(generate(monkeypatch, tmp_path, REGRESSION_Q, REGRESSION, planner_target=""))
+    # The planner vouches for every beat: this regression is about the
+    # mislabelled visuals, not about retention pruning of weak facts.
+    arc = AIStoryArc(units=[AIStoryUnit(fact_index=index, role="supporting_fact", serves_question=True) for index in (3, 4, 5)])
+    state = small_timeline(generate(monkeypatch, tmp_path, REGRESSION_Q, REGRESSION, planner_target="", story_arc=arc))
     provider = regression_provider()
     media_pass(state, tmp_path, provider)  # metadata-only: the mislabelled assets pass
     # A text-heavy explanation card ...
