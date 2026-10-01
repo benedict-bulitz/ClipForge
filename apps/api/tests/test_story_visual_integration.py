@@ -16,6 +16,7 @@ from clipforge.ai import (
     AIPlanResult,
     AIProjectPlan,
     AIScriptBlock,
+    AIStoryArc,
     AIVisualIntent,
 )
 from clipforge.config import Settings
@@ -36,7 +37,10 @@ def fact(claim: str, importance: float = 0.8) -> dict:
     }
 
 
-def generate(monkeypatch, tmp_path: Path, question: str, blocks: list[tuple[dict, str, AIVisualIntent]], planner_target: str) -> dict:
+def generate(
+    monkeypatch, tmp_path: Path, question: str, blocks: list[tuple[dict, str, AIVisualIntent]], planner_target: str,
+    story_arc: AIStoryArc | None = None,
+) -> dict:
     """Run the real pipeline with fixture research and a planner that supplies visual targets."""
     facts = [item for item, _role, _visual in blocks]
     plan = AIProjectPlan(
@@ -49,6 +53,7 @@ def generate(monkeypatch, tmp_path: Path, question: str, blocks: list[tuple[dict
         music_mood="documentary",
         visual_intents=[visual for _item, _role, visual in blocks],
         payoff_plan=AIPayoffPlan(curiosity_question=question, payoff=facts[-1]["claim"], protected_visual_target=planner_target),
+        story_arc=story_arc,
     )
     monkeypatch.setattr(
         "clipforge.pipeline.research_topic",
