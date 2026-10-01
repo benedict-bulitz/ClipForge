@@ -75,6 +75,9 @@ AGE_BUCKETS: tuple[tuple[str, float], ...] = (("1h", 1), ("6h", 6), ("24h", 24),
 # bounded number of times (so a video that never gets data stops costing quota).
 NO_DATA_RETRY_AFTER = timedelta(hours=6)
 NO_DATA_RETRIES = 3
+# At most this many due Analytics captures per explicit refresh (bounded quota;
+# the rest are still due on the next click).
+ANALYTICS_DUE_LIMIT = 10
 
 
 def _now() -> datetime:
@@ -150,6 +153,48 @@ def snapshot_status(metrics: dict[str, dict[str, Any]], retention_status: str) -
     if any(value == "unavailable" for value in values) or retention_status == "unavailable":
         return "partial"
     return "ok"
+
+
+def due_uploads(
+    db: Session, channel_id: str, *, now: datetime | None = None, exclude: set[str] | frozenset[str] = frozenset(), limit: int | None = None,
+) -> list[YouTubeUpload]:
+    """Published videos of the channel whose Analytics capture is due (``due_bucket``).
+
+    Chosen by due-ness, not by recency in the library, so scheduled or newer
+    rows never crowd out an older published video whose data YouTube has now
+    processed.  Videos without any captured data come first, then the newest;
+    at most ``limit`` (default ``ANALYTICS_DUE_LIMIT``).  Store reads only.
+    """
+    now = now or _now()
+    uploads = [
+        upload for upload in db.scalars(
+            select(YouTubeUpload).where(
+                YouTubeUpload.channel_id == channel_id,
+                YouTubeUpload.youtube_video_id.is_not(None),
+                YouTubeUpload.deleted_on_youtube.is_(False),
+                YouTubeUpload.published_at.is_not(None),
+            )
+        ).all()
+        if upload.id not in exclude
+    ]
+    if not uploads:
+        return []
+    history: dict[str, list[YouTubeAnalyticsSnapshot]] = {upload.id: [] for upload in uploads}
+    for snapshot in db.scalars(
+        select(YouTubeAnalyticsSnapshot)
+        .where(YouTubeAnalyticsSnapshot.upload_id.in_(list(history)), YouTubeAnalyticsSnapshot.source == SOURCE_API)
+        .order_by(YouTubeAnalyticsSnapshot.fetched_at)
+    ).all():
+        history[snapshot.upload_id].append(snapshot)
+    due = []
+    for upload in uploads:
+        published = _utc(upload.published_at)
+        age_hours = max(0.0, (now - published).total_seconds() / 3600)  # type: ignore[operator]
+        if due_bucket(history[upload.id], age_hours, now) is not None:
+            has_data = any(item.status in {"ok", "partial"} for item in history[upload.id])
+            due.append((has_data, -published.timestamp(), upload.id, upload))  # type: ignore[union-attr]
+    due.sort(key=lambda item: item[:3])
+    return [item[3] for item in due][: ANALYTICS_DUE_LIMIT if limit is None else limit]
 
 
 def _report_params(video_id: str, start: date, end: date, metrics: tuple[str, ...], dimensions: str) -> dict[str, str]:

@@ -23,6 +23,7 @@ import {
   liveStatsNote,
   projectHref,
   projectLabel,
+  refreshNotice,
   sameFilters,
   stateTone,
   summaryLine,
@@ -248,7 +249,7 @@ export function VideoLibrary({ initialFilters }: { initialFilters: LibraryFilter
     setNotice(null);
     try {
       const result = await refreshRecentVideos();
-      setNotice(result.error ? `Checked ${result.checked} recent video${result.checked === 1 ? "" : "s"} · ${result.error.message}` : `Checked ${result.checked} recent video${result.checked === 1 ? "" : "s"} with YouTube.`);
+      setNotice(refreshNotice(result));
       setLoading(true);
       setPerformanceKey((key) => key + 1);
       await firstPage(filters);

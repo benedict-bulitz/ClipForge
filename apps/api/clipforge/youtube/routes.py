@@ -776,22 +776,37 @@ def list_videos_route(
 @videos_router.post("/refresh-recent")
 def refresh_recent_videos_route(db: DbSession, settings: SettingsDep, store: StoreDep, provider: ProviderDep) -> dict:
     """Explicit "Refresh recent videos": the existing status + due-analytics sync
-    for the newest videos on the connected channel only (bounded)."""
+    (``refresh_analytics(due_only=True)``) for
+
+    * the newest videos on the connected channel (bounded status refresh), and
+    * the channel's published videos whose Analytics capture is due
+      (``analytics.due_uploads``, bounded), chosen by due-ness so scheduled or
+      newer rows never crowd out an older video YouTube has now processed.
+    """
     record = connection.active_connection(db)
     if record is None:
         raise _error("not_connected", "Connect a YouTube channel first.")
-    results = []
-    for upload in library.recent_videos(db, record.channel_id):
+    results: list[dict] = []
+
+    def refresh(upload, reason: str) -> bool:
         try:
             outcome = analytics.refresh_analytics(db, upload, settings, store, provider, due_only=True)
         except uploads.UploadRefused as exc:
             outcome = {"status": "skipped", "reason": exc.code}
-        results.append({"upload_id": upload.id, "video_id": upload.youtube_video_id, **outcome})
-        if outcome.get("status") == "error" and (outcome.get("error") or {}).get("code") in {"auth_expired", "quota_exceeded", "not_connected", "insufficient_scope"}:
-            break  # further calls would fail the same way
+        results.append({"upload_id": upload.id, "video_id": upload.youtube_video_id, "selected_for": reason, **outcome})
+        # further calls would fail the same way
+        return not (outcome.get("status") == "error" and (outcome.get("error") or {}).get("code") in {"auth_expired", "quota_exceeded", "not_connected", "insufficient_scope"})
+
+    recent = library.recent_videos(db, record.channel_id)
+    proceed = all(refresh(upload, "recent") for upload in recent)
+    due = analytics.due_uploads(db, record.channel_id, exclude={upload.id for upload in recent}) if proceed else []
+    for upload in due:
+        if not refresh(upload, "analytics_due"):
+            break
     errors = [item for item in results if item.get("status") == "error"]
     return {
         "checked": len(results),
+        "analytics_due": sum(1 for item in results if item["selected_for"] == "analytics_due"),
         "errors": len(errors),
         "error": errors[0].get("error") if errors else None,
         "results": results,

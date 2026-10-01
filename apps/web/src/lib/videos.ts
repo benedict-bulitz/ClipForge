@@ -346,3 +346,13 @@ export function associationPairs(data: Record<string, unknown>): Array<[string, 
     .filter(([, value]) => value !== null && value !== undefined && value !== "")
     .map(([key, value]) => [humanize(key), typeof value === "number" ? String(Math.round(value * 100) / 100) : typeof value === "boolean" ? (value ? "yes" : "no") : humanize(String(value))]);
 }
+
+/** "Checked 10 recent videos with YouTube · Analytics for 1 older video." */
+export function refreshNotice(result: { checked: number; analytics_due?: number; error: { message: string } | null }): string {
+  const due = result.analytics_due ?? 0;
+  const recent = result.checked - due;
+  const parts = [`Checked ${recent} recent video${recent === 1 ? "" : "s"}${result.error ? "" : " with YouTube"}`];
+  if (due > 0) parts.push(`Analytics for ${due} older video${due === 1 ? "" : "s"}`);
+  if (result.error) parts.push(result.error.message);
+  return `${parts.join(" · ")}${result.error ? "" : "."}`;
+}

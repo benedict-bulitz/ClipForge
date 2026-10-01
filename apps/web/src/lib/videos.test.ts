@@ -21,6 +21,7 @@ import {
   sameFilters,
   sceneChange,
   stateTone,
+  refreshNotice,
   summaryLine,
   type LibrarySummary,
   type LibraryVideo,
@@ -300,4 +301,11 @@ test("scheduled videos show the exact date/time in their zone; the video ID is s
   assert.match(detail, /<p className="mono mt-0\.5 text-\[10px\] text-\[var\(--muted-foreground\)\]" title="YouTube video ID">YouTube ID \{video\.youtube_video_id\}<\/p>/);
   assert.ok(library.indexOf('aria-label="Date"') < library.indexOf('title="YouTube video ID"'));
   assert.ok(detail.indexOf('aria-label="Date"') < detail.indexOf('title="YouTube video ID"'));
+});
+
+test("refresh notice separates the recent status check from the analytics-due videos", () => {
+  assert.equal(refreshNotice({ checked: 10, error: null }), "Checked 10 recent videos with YouTube.");
+  assert.equal(refreshNotice({ checked: 11, analytics_due: 1, error: null }), "Checked 10 recent videos with YouTube · Analytics for 1 older video.");
+  assert.equal(refreshNotice({ checked: 12, analytics_due: 2, error: { message: "Quota reached." } }), "Checked 10 recent videos · Analytics for 2 older videos · Quota reached.");
+  assert.match(library, /setNotice\(refreshNotice\(result\)\)/);
 });

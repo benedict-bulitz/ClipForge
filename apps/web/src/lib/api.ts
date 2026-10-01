@@ -483,7 +483,7 @@ export function getPerformanceOverview(scope: import("./performance").Performanc
 
 /** The existing status + due-analytics sync for the newest videos only (bounded). */
 export function refreshRecentVideos() {
-  return request<{ checked: number; errors: number; error: { code: string; message: string } | null }>("/videos/refresh-recent", { method: "POST" });
+  return request<{ checked: number; analytics_due?: number; errors: number; error: { code: string; message: string } | null }>("/videos/refresh-recent", { method: "POST" });
 }
 
 export function syncYouTubeUpload(uploadId: string) {
