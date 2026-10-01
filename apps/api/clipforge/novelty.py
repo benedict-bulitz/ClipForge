@@ -688,6 +688,12 @@ _CONDITION = re.compile(
 )
 
 
+# Correlative ("je ... desto", "the older ...") and concessive ("obwohl",
+# "although") conditions are what the question asks about; a temporal
+# trigger ("wenn", "when") is often implied by the mechanism instead.
+_ESSENTIAL_CONDITION = re.compile(r"(?i)\b(?:je|obwohl|obgleich|the (?:more|less|older|longer|younger)|although|even though)\b")
+
+
 def _condition_terms(question: str) -> set[str]:
     from .story_arc import _FRAME
 
@@ -785,15 +791,16 @@ def _answer_sufficiency(units: list[dict[str, Any]], context: dict[str, Any], pa
     if not explanatory and not ai:
         status = "not_applicable"
     elif (
-        {"review_unanswered", "question_left_open", "condition_not_explained"} & set(reasons)
-        or (missing_research and "payoff_does_not_resolve" in reasons)
+        {"review_unanswered", "question_left_open"} & set(reasons)
+        or ("condition_not_explained" in reasons and _ESSENTIAL_CONDITION.search(question))
+        or (missing_research and {"payoff_does_not_resolve", "condition_not_explained"} & set(reasons))
     ):
         # The review's semantic verdict, a script that admits the question is
         # still open, a question condition ("je älter") no causal beat reaches,
         # or research without a mechanism plus a payoff that resolves nothing.
         # A paraphrased link alone never fails a video.
         status = "fail"
-    elif "review_partial" in reasons or "payoff_does_not_resolve" in reasons or len(structural) == 2:
+    elif "review_partial" in reasons or {"payoff_does_not_resolve", "condition_not_explained"} & set(reasons) or len(structural) == 2:
         status = "warning"
     elif reasons:
         # One lexical signal alone (a paraphrased link, thin research) is a diagnostic.
