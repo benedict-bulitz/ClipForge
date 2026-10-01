@@ -70,6 +70,11 @@ API_UNAVAILABLE_METRICS = {
 # Studio-only values a user may import by hand, with their valid range.
 MANUAL_METRICS: dict[str, tuple[float, float]] = {"stayed_to_watch": (0.0, 100.0)}
 AGE_BUCKETS: tuple[tuple[str, float], ...] = (("1h", 1), ("6h", 6), ("24h", 24), ("72h", 72), ("7d", 168))
+# YouTube Analytics lags behind views by a few days.  A capture that came back
+# empty does not use up its bucket: it is due again after this interval, a
+# bounded number of times (so a video that never gets data stops costing quota).
+NO_DATA_RETRY_AFTER = timedelta(hours=6)
+NO_DATA_RETRIES = 3
 
 
 def _now() -> datetime:
@@ -103,6 +108,26 @@ def age_bucket(age_hours: float, taken: set[str]) -> str | None:
     """
     reached = [name for name, hours in AGE_BUCKETS if age_hours >= hours]
     return reached[-1] if reached and reached[-1] not in taken else None
+
+
+def due_bucket(history: list[YouTubeAnalyticsSnapshot], age_hours: float, now: datetime) -> str | None:
+    """The bucket a due-only sync should capture now, if any.
+
+    Only a capture with data (``ok``/``partial``) takes a bucket.  An empty one
+    (``no_data_yet``) is retried after ``NO_DATA_RETRY_AFTER``, at most
+    ``NO_DATA_RETRIES`` times; otherwise the last bucket (7d) could end in
+    "processing" for good although YouTube has the data a day later.
+    """
+    api = [item for item in history if item.source == SOURCE_API and item.status != "error"]
+    bucket = age_bucket(age_hours, {item.age_bucket for item in api if item.status != "no_data_yet"})
+    if bucket is None:
+        return None
+    empty = [item.fetched_at for item in api if item.age_bucket == bucket and item.status == "no_data_yet"]
+    if not empty:
+        return bucket
+    if len(empty) > NO_DATA_RETRIES or now - _utc(max(empty)) < NO_DATA_RETRY_AFTER:  # type: ignore[operator]
+        return None
+    return bucket
 
 
 def _report_params(video_id: str, start: date, end: date, metrics: tuple[str, ...], dimensions: str) -> dict[str, str]:
@@ -246,9 +271,7 @@ def refresh_analytics(
     upload.last_analytics_attempt_at = now
     db.commit()
     age_hours = max(0.0, (now - _utc(upload.published_at)).total_seconds() / 3600)  # type: ignore[operator]
-    history = _snapshots(db, upload.id)
-    taken = {item.age_bucket for item in history if item.source == SOURCE_API and item.status != "error"}
-    bucket = age_bucket(age_hours, taken)
+    bucket = due_bucket(_snapshots(db, upload.id), age_hours, now)
     if due_only and bucket is None:
         return {"status": "not_due", "published_age_hours": round(age_hours, 2)}
     try:

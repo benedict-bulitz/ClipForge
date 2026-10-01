@@ -4,10 +4,15 @@ Nothing is stored here.  Every number comes from the existing authorities:
 
 * ``youtube_analytics_snapshots`` / ``youtube_metric_values`` (YouTube
   Analytics API, and manual Studio imports for ``stayed_to_watch``);
-* ``youtube_uploads`` (the video, its channel and publication time);
+* ``youtube_uploads`` (the video, its channel and publication time, and the
+  YouTube Data API ``videos.list`` statistics the Video Library shows);
 * ``production_fingerprints`` (the real rendered duration).
 
 Per video, the *latest* snapshot with data is used (lifetime values so far).
+A published video whose analytics YouTube has not processed yet still counts
+with the views/likes/comments YouTube already reports (``videos.list``
+statistics, ``status.live_stats``); everything else stays missing for it.  One
+source per video, never mixed, so every ratio pairs values of the same source.
 Trends compare cohorts at the *same video age* (``learning._snapshot_near_age``)
 so a young cohort is not "down" just because it had less time to collect views.
 
@@ -47,6 +52,7 @@ from ..models import (
 )
 from .analytics import SOURCE_API, SOURCE_MANUAL
 from .library import _analytics_summaries, library_condition
+from .status import LIVE_STATS_SOURCE, live_stats
 from .uploads import aware
 
 SCOPES = ("last10", "28d", "90d", "all")
@@ -57,6 +63,8 @@ PERFORMANCE_METRICS = (
     "views", "engagedViews", "estimatedMinutesWatched", "averageViewDuration", "averageViewPercentage",
     "likes", "comments", "shares", "subscribersGained", "subscribersLost",
 )
+# What videos.list statistics report (the rest exists only in YouTube Analytics).
+LIVE_STATS_METRICS = ("views", "likes", "comments")
 MIN_TREND_VIDEOS = 3
 TREND_FLAT = 0.03
 MAX_TREND_AGE_HOURS = 168.0
@@ -87,6 +95,7 @@ class VideoRow:
     duration: float | None
     values: dict[str, float | None] = field(default_factory=dict)
     stayed_to_watch: float | None = None
+    source: str = SOURCE_API
 
 
 # ---------------------------------------------------------------------------
@@ -342,6 +351,21 @@ def _stayed_to_watch(db: Session, upload_ids: list[str]) -> dict[str, float]:
     return {row.upload_id: float(row.value) for row in rows}  # later rows win
 
 
+def _row(upload: YouTubeUpload, summary: Any, duration: float | None) -> tuple[VideoRow, datetime | None] | None:
+    """The video's values from its latest analytics snapshot with data, else from
+    the Data API statistics YouTube already reported; None when neither exists."""
+    published = _utc(upload.published_at)
+    metrics = (summary.metrics or {}) if summary is not None else {}
+    if any(value is not None for value in metrics.values()):
+        return VideoRow(upload.id, published, duration, dict(metrics)), _utc(summary.fetched_at)  # type: ignore[arg-type]
+    stats = live_stats(upload)
+    if stats is None:
+        return None  # nothing reported yet: not part of any cohort (never a zero)
+    values: dict[str, float | None] = dict.fromkeys(PERFORMANCE_METRICS)
+    values.update({name: None if stats[name] is None else float(stats[name]) for name in LIVE_STATS_METRICS})
+    return VideoRow(upload.id, published, duration, values, source=LIVE_STATS_SOURCE), stats["checked_at"]  # type: ignore[arg-type]
+
+
 def _select(rows: list[VideoRow], scope: str, now: datetime) -> tuple[list[VideoRow], list[VideoRow]]:
     """(cohort, immediately preceding comparable cohort); newest first."""
     ordered = sorted(rows, key=lambda row: (row.published_at, row.upload_id), reverse=True)
@@ -406,15 +430,12 @@ def performance_overview(db: Session, *, scope: str = DEFAULT_SCOPE, min_sample:
     rows: list[VideoRow] = []
     fetched: dict[str, datetime] = {}
     for upload in uploads:
-        summary = summaries.get(upload.id)
-        if summary is None or not summary.metrics:
-            continue  # only videos with analytics data
-        rows.append(VideoRow(
-            upload.id, _utc(upload.published_at),  # type: ignore[arg-type]
-            durations.get(upload.fingerprint_id or ""), dict(summary.metrics),
-        ))
-        if summary.fetched_at is not None:
-            fetched[upload.id] = _utc(summary.fetched_at)  # type: ignore[assignment]
+        loaded = _row(upload, summaries.get(upload.id), durations.get(upload.fingerprint_id or ""))
+        if loaded is None:
+            continue
+        rows.append(loaded[0])
+        if loaded[1] is not None:
+            fetched[upload.id] = loaded[1]
     stayed = _stayed_to_watch(db, [row.upload_id for row in rows])
     for row in rows:
         row.stayed_to_watch = stayed.get(row.upload_id)
@@ -444,6 +465,8 @@ def performance_overview(db: Session, *, scope: str = DEFAULT_SCOPE, min_sample:
         "previous_count": len(previous),
         "updated_at": aware(max(updated)) if updated else None,
         "value_basis": "latest_snapshot_per_video",
+        # Videos per source: analytics snapshot, or (not processed yet) videos.list statistics.
+        "sources": {source: sum(1 for row in cohort if row.source == source) for source in (SOURCE_API, LIVE_STATS_SOURCE)},
         "primary": list(PRIMARY),
         "secondary": list(SECONDARY),
         "metrics": metrics,

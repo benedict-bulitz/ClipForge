@@ -93,6 +93,22 @@ test("scope control: four compact options applied to the one overview request", 
   assert.equal(cohortLine({ video_count: 1, updated_at: null }, () => ""), "1 Video");
 });
 
+test("a cohort whose analytics YouTube has not processed yet still shows real numbers, labelled", () => {
+  const sources = { youtube_analytics_api: 1, youtube_data_api_videos_list: 2 };
+  assert.equal(
+    cohortLine({ video_count: 3, updated_at: "2026-09-30T12:00:00Z", sources }, () => "30.09.2026"),
+    "3 Videos · 2 noch ohne Analytics (nur Aufrufe/Likes/Kommentare) · zuletzt aktualisiert 30.09.2026",
+  );
+  assert.equal(cohortLine({ video_count: 2, updated_at: null, sources: { youtube_analytics_api: 2, youtube_data_api_videos_list: 0 } }, () => ""), "2 Videos");
+  // Views without retention: the panel shows the views and "—" for the rest, not "no data".
+  assert.equal(formatPerformanceValue("avg_views", 956), "956");
+  assert.equal(formatPerformanceValue("avg_view_duration", null), "—");
+  assert.equal(formatPerformanceValue("avg_view_percentage", null), "—");
+  assert.equal(formatPerformanceValue("engaged_view_rate", null), "—");
+  assert.notEqual(formatPerformanceValue("avg_views", 0), "—"); // a real 0 stays a 0
+  assert.match(component, /const empty = overview !== null && overview\.video_count === 0;/);
+});
+
 test("secondary metrics are collapsed by default", () => {
   assert.match(component, /const \[expanded, setExpanded\] = useState\(false\);/);
   assert.match(component, /\{expanded && \(\n\s+<dl id="channel-performance-more"/);

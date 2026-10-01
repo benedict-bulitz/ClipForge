@@ -199,6 +199,23 @@ def current_state(upload: YouTubeUpload, now: datetime) -> str:
     return "private"
 
 
+LIVE_STATS_SOURCE = "youtube_data_api_videos_list"
+
+
+def live_stats(upload: YouTubeUpload) -> dict[str, Any] | None:
+    """YouTube's videos.list statistics as last stored (None until YouTube reported them)."""
+    checked = _utc(upload.remote_status_checked_at)
+    if checked is None or upload.remote_view_count is None:
+        return None
+    return {
+        "views": upload.remote_view_count,
+        "likes": upload.remote_like_count,
+        "comments": upload.remote_comment_count,
+        "checked_at": checked,
+        "source": LIVE_STATS_SOURCE,
+    }
+
+
 def current_status(upload: YouTubeUpload, *, now: datetime | None = None) -> dict[str, Any]:
     now = now or datetime.now(UTC)
     state = current_state(upload, now)
@@ -237,13 +254,7 @@ def current_status(upload: YouTubeUpload, *, now: datetime | None = None) -> dic
             "rejection_reason": upload.rejection_reason,
             "failure_reason": upload.failure_reason,
         },
-        "live_stats": {
-            "views": upload.remote_view_count,
-            "likes": upload.remote_like_count,
-            "comments": upload.remote_comment_count,
-            "checked_at": checked,
-            "source": "youtube_data_api_videos_list",
-        } if checked is not None and upload.remote_view_count is not None else None,
+        "live_stats": live_stats(upload),
         "requested": {
             "visibility": upload.requested_visibility,
             "publish_at": _utc(upload.publish_at),

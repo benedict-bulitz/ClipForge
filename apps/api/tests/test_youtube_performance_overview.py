@@ -171,7 +171,12 @@ def test_hook_prefers_real_stayed_to_watch_when_imported():
 # ---------------------------------------------------------------------------
 
 
-def add_video(db, index: int, *, days_ago: float, duration: float | None = 30.0, snapshots: list[tuple[float, dict[str, float | None]]] | None = None, channel: str = CHANNEL, stayed: float | None = None) -> YouTubeUpload:
+def add_video(
+    db, index: int, *, days_ago: float, duration: float | None = 30.0, snapshots: list[tuple[float, dict[str, float | None]]] | None = None,
+    channel: str = CHANNEL, stayed: float | None = None, live: tuple[int, int | None, int | None] | None = None,
+    scheduled: bool = False, status: str = "ok",
+) -> YouTubeUpload:
+    """``live``: videos.list statistics (views, likes, comments) as the status sync stores them."""
     published = NOW - timedelta(days=days_ago)
     fingerprint = ProductionFingerprint(project_id=f"p{index}", render_revision=1, render_sha256=f"{index:064d}", fingerprint={"content": {"duration_seconds": duration}})
     db.add(fingerprint)
@@ -179,15 +184,20 @@ def add_video(db, index: int, *, days_ago: float, duration: float | None = 30.0,
     upload = YouTubeUpload(
         project_id=f"p{index}", project_revision=1, render_revision=1, render_sha256=f"{index:064d}", render_file_size=10,
         channel_id=channel, youtube_video_id=f"vid{index:05d}", state="ready", upload_status="processed",
-        remote_privacy_status="public", published_at=published, fingerprint_id=fingerprint.id, title=f"Video {index}",
+        remote_privacy_status="private" if scheduled else "public", published_at=None if scheduled else published,
+        publish_at=NOW + timedelta(days=2) if scheduled else None, remote_publish_at=NOW + timedelta(days=2) if scheduled else None,
+        fingerprint_id=fingerprint.id, title=f"Video {index}",
     )
+    if live is not None:
+        upload.remote_view_count, upload.remote_like_count, upload.remote_comment_count = live
+        upload.remote_status_checked_at = NOW - timedelta(minutes=5)
     db.add(upload)
     db.flush()
     for age, metrics in snapshots or []:
         snapshot = YouTubeAnalyticsSnapshot(
             upload_id=upload.id, youtube_video_id=upload.youtube_video_id, channel_id=channel, project_id=upload.project_id,
             project_revision=1, render_revision=1, source="youtube_analytics_api", age_bucket="manual",
-            published_age_hours=age, status="ok", fetched_at=published + timedelta(hours=age),
+            published_age_hours=age, status=status, fetched_at=published + timedelta(hours=age),
         )
         for name, value in metrics.items():
             snapshot.metrics.append(YouTubeMetricValue(
@@ -319,3 +329,177 @@ def test_route_reads_the_store_only_and_writes_nothing(connected):
 
 def test_no_new_analytics_tables():
     assert not [name for name in Base.metadata.tables if "performance" in name or "overview" in name or "aggregate" in name]
+
+
+# ---------------------------------------------------------------------------
+# Real data before YouTube Analytics has processed it (Mac report: the library
+# showed 956 views / 15 likes while the overview said "no analytics data")
+# ---------------------------------------------------------------------------
+
+
+def test_published_videos_with_only_youtube_statistics_form_a_cohort(connected):
+    db = connected
+    add_video(db, 1, days_ago=1, live=(956, 15, 2))  # "Analytics: Processing" in the library
+    add_video(db, 2, days_ago=2, live=(400, 5, None))
+    result = performance.performance_overview(db, scope="last10", now=NOW)
+    assert result["video_count"] == 2 and result["eligible_total"] == 2
+    assert result["sources"] == {"youtube_analytics_api": 0, "youtube_data_api_videos_list": 2}
+    assert result["metrics"]["avg_views"] == {"value": 678.0, "n": 2, "missing": 0}
+    assert result["metrics"]["avg_likes"]["value"] == 10.0
+    assert result["metrics"]["likes_per_1k_views"]["value"] == pytest.approx(20 / 1356 * 1000, abs=1e-3)
+    assert result["metrics"]["avg_video_length"]["value"] == 30.0
+    # Analytics-only metrics are missing (rendered "—"), never zero, and never derived.
+    for name in ("avg_view_duration", "avg_view_percentage", "engaged_view_rate", "avg_shares", "avg_watch_time_minutes", "avg_subscribers_gained"):
+        assert result["metrics"][name]["value"] is None and result["metrics"][name]["n"] == 0, name
+    assert result["metrics"]["avg_comments"] == {"value": 2.0, "n": 1, "missing": 1}  # unknown comment count is not a 0
+    assert result["metrics"]["stayed_to_watch"]["available"] is False and result["swipe_away"]["available"] is False
+    assert result["updated_at"] is not None
+
+
+def test_partial_analytics_and_statistics_only_videos_share_one_cohort_without_mixing_sources(connected):
+    db = connected
+    add_video(db, 1, days_ago=1, live=(956, 15, 2))  # analytics still processing
+    retention_missing = {**metrics(2000), "averageViewPercentage": None, "averageViewDuration": None, "engagedViews": None}
+    add_video(db, 2, days_ago=3, snapshots=[(48.0, retention_missing)], live=(2600, 99, 9), status="partial")
+    add_video(db, 3, days_ago=5, snapshots=[(96.0, metrics(1000))], live=(1300, 50, 4))
+    result = performance.performance_overview(db, scope="last10", now=NOW)
+    assert result["video_count"] == 3 and result["sources"] == {"youtube_analytics_api": 2, "youtube_data_api_videos_list": 1}
+    # A video with analytics keeps its snapshot values (its live counters are not mixed in).
+    assert result["metrics"]["avg_views"]["value"] == pytest.approx((956 + 2000 + 1000) / 3)
+    # Retention: only the one video that has it; missing values do not empty the panel or count as zero.
+    assert result["metrics"]["avg_view_percentage"] == {"value": 50.0, "n": 1, "missing": 2, "method": "watch_time_weighted"}
+    assert result["metrics"]["avg_view_duration"]["value"] == 15.0 and result["metrics"]["avg_view_duration"]["n"] == 1
+    # engagedViews / views pairs values of one snapshot only (not the statistics-only video's views).
+    assert result["metrics"]["engaged_view_rate"] == {"value": pytest.approx(0.6), "n": 1, "missing": 2}
+
+
+def test_latest_snapshot_with_data_wins_over_older_ones_and_over_statistics(connected):
+    db = connected
+    add_video(db, 1, days_ago=20, snapshots=[(24.0, metrics(300)), (72.0, metrics(800)), (168.0, metrics(1500))], live=(9999, 1, 1))
+    result = performance.performance_overview(db, scope="all", now=NOW)
+    assert result["metrics"]["avg_views"]["value"] == 1500.0 and result["sources"]["youtube_analytics_api"] == 1
+
+
+def test_an_empty_analytics_capture_falls_back_to_statistics(connected):
+    db = connected
+    empty = dict.fromkeys(performance.PERFORMANCE_METRICS)
+    add_video(db, 1, days_ago=2, snapshots=[(24.0, empty)], live=(500, 20, 1), status="partial")
+    result = performance.performance_overview(db, scope="all", now=NOW)
+    assert result["metrics"]["avg_views"]["value"] == 500.0 and result["sources"]["youtube_data_api_videos_list"] == 1
+
+
+def test_scheduled_and_never_reported_videos_do_not_dilute_the_averages(connected):
+    db = connected
+    add_video(db, 1, days_ago=1, live=(1000, 10, 1))
+    add_video(db, 2, days_ago=0, scheduled=True, live=(0, 0, 0))  # private placeholder counters
+    add_video(db, 3, days_ago=0, scheduled=True)
+    add_video(db, 4, days_ago=1)  # published, YouTube reported nothing yet
+    result = performance.performance_overview(db, scope="all", now=NOW)
+    assert result["video_count"] == 1 and result["metrics"]["avg_views"] == {"value": 1000.0, "n": 1, "missing": 0}
+
+
+def test_statistics_only_videos_follow_the_connected_channel(connected):
+    db = connected
+    add_video(db, 1, days_ago=1, live=(1000, 10, 1))
+    add_video(db, 2, days_ago=1, live=(90_000, 900, 90), channel="UC_other")
+    result = performance.performance_overview(db, scope="all", now=NOW)
+    assert result["channel"]["id"] == CHANNEL and result["video_count"] == 1
+    assert result["metrics"]["avg_views"]["value"] == 1000.0
+
+
+def test_statistics_only_videos_never_enter_the_same_age_trend(connected):
+    db = connected
+    for index in range(10, 20):
+        add_video(db, index, days_ago=40 + index, snapshots=[(72.0, metrics(1000))])
+    for index in range(10):
+        add_video(db, index, days_ago=3.5 + index * 0.01, snapshots=[(72.0, metrics(1200))] if index < 5 else None, live=(5000, 1, 1))
+    result = performance.performance_overview(db, scope="last10", now=NOW)
+    assert result["video_count"] == 10 and result["sources"] == {"youtube_analytics_api": 5, "youtube_data_api_videos_list": 5}
+    assert result["trends"]["avg_views"]["n_current"] == 5 and result["trends"]["avg_views"]["change"] == pytest.approx(0.2)
+
+
+# ---------------------------------------------------------------------------
+# End to end through the real routes and the analytics sync (fake Google)
+# ---------------------------------------------------------------------------
+
+
+def test_mac_report_end_to_end_overview_refresh_and_newest_sort(db, tmp_path, monkeypatch):
+    from test_youtube_learning_loop import METRICS, connect
+    from test_youtube_publishing_v2 import api_client, build_project, generated_thumbnail, upload
+    from test_youtube_video_library import OTHER
+    from youtube_support import FakeYouTube, analytics_payload, publish_options, youtube_settings
+
+    from clipforge.security.secrets import SecretStore
+    from clipforge.youtube import analytics, connection, publishing, uploads
+
+    connection.reset_youtube_auth_cache()
+    publishing.reset_category_cache()
+    uploads._SHA_CACHE.clear()
+    settings, store, fake = youtube_settings(tmp_path), SecretStore(), FakeYouTube()
+    connect(db, settings, store, fake)
+    published = upload(db, build_project(db, settings), settings, store, fake, publish_options(thumbnail=generated_thumbnail()))
+    fake.publish(published.youtube_video_id, "2026-09-10T11:00:00Z")
+    fake.videos[published.youtube_video_id]["statistics"] = {"viewCount": "956", "likeCount": "15", "commentCount": "2"}
+    scheduled = upload(db, build_project(db, settings, project_id=OTHER, content=b"S" * 20_000), settings, store, fake, publish_options(thumbnail=generated_thumbnail()))
+    fake.videos[scheduled.youtube_video_id]["status"].update(publishAt="2026-09-30T18:00:00Z", uploadStatus="processed")
+    fake.videos[scheduled.youtube_video_id]["statistics"] = {"viewCount": "0", "likeCount": "0", "commentCount": "0"}
+    start = datetime(2026, 9, 10, 11, 0, tzinfo=UTC)
+    clock = {"now": start}
+    monkeypatch.setattr(analytics, "_now", lambda: clock["now"])
+    client = api_client(db, settings, store, fake)
+    try:
+        def step(hours: float, data: dict | None) -> dict:
+            clock["now"] = start + timedelta(hours=hours)
+            fake.analytics_handler = analytics_payload(data)
+            return next(item for item in client.post("/api/videos/refresh-recent").json()["results"] if item["upload_id"] == published.id)
+
+        assert step(80, None)["status"] == "no_data_yet"  # 72h capture: YouTube has not processed the data yet
+        rows = {item["id"]: item for item in client.get("/api/videos").json()["items"]}
+        assert rows[published.id]["live_stats"]["views"] == 956 and rows[published.id]["analytics"]["state"] == "processing"
+        newest = [item["id"] for item in client.get("/api/videos", params={"sort": "newest"}).json()["items"]]
+
+        # Opening the overview: one read, no YouTube call, no write; real numbers instead of "no data".
+        calls, snapshots = len(fake.calls), db.scalar(select(func.count()).select_from(YouTubeAnalyticsSnapshot))
+        overview = client.get("/api/videos/performance").json()
+        assert len(fake.calls) == calls and db.scalar(select(func.count()).select_from(YouTubeAnalyticsSnapshot)) == snapshots
+        assert overview["video_count"] == 1 and overview["metrics"]["avg_views"]["value"] == 956.0
+        assert overview["metrics"]["avg_likes"]["value"] == 15.0 and overview["metrics"]["avg_view_duration"]["value"] is None
+
+        # Before the fix the 72h bucket was used up by the empty capture: "not_due" until 7d, then forever.
+        assert step(82, METRICS)["status"] == "not_due"  # retried only after NO_DATA_RETRY_AFTER
+        before = len(fake.calls)
+        assert step(90, METRICS)["status"] == "ok"
+        video_queries = [params for name, params in fake.calls[before:] if name == "analytics" and params["dimensions"] == "video"]
+        assert len(video_queries) == 1 and video_queries[0]["metrics"] == ",".join(analytics.VIDEO_METRICS)  # one query, not one per metric
+        assert step(95, METRICS)["status"] == "not_due"  # a bucket with data is never fetched twice
+
+        overview = client.get("/api/videos/performance").json()
+        assert overview["sources"] == {"youtube_analytics_api": 1, "youtube_data_api_videos_list": 0}
+        assert overview["metrics"]["avg_views"]["value"] == METRICS["views"]
+        assert overview["metrics"]["avg_view_duration"]["value"] == METRICS["averageViewDuration"]
+        assert overview["metrics"]["avg_view_percentage"]["value"] == METRICS["averageViewPercentage"]
+        assert overview["metrics"]["engaged_view_rate"]["value"] == pytest.approx(METRICS["engagedViews"] / METRICS["views"], abs=1e-4)
+        assert [item["id"] for item in client.get("/api/videos", params={"sort": "newest"}).json()["items"]] == newest
+        assert newest == [scheduled.id, published.id]  # effective date: the scheduled time is the newest
+    finally:
+        app.dependency_overrides.clear()
+        connection.reset_youtube_auth_cache()
+
+
+def test_empty_analytics_captures_are_retried_a_bounded_number_of_times():
+    from types import SimpleNamespace
+
+    from clipforge.youtube import analytics
+
+    def snap(bucket, status, hours):
+        return SimpleNamespace(source=analytics.SOURCE_API, age_bucket=bucket, status=status, fetched_at=NOW + timedelta(hours=hours))
+
+    assert analytics.due_bucket([], 30.0, NOW) == "24h"
+    assert analytics.due_bucket([snap("24h", "ok", 0)], 30.0, NOW + timedelta(hours=30)) is None
+    empty = [snap("24h", "no_data_yet", 0)]
+    assert analytics.due_bucket(empty, 26.0, NOW + timedelta(hours=2)) is None
+    assert analytics.due_bucket(empty, 30.0, NOW + timedelta(hours=6)) == "24h"
+    exhausted = [snap("7d", "no_data_yet", hours) for hours in range(0, 6 * (analytics.NO_DATA_RETRIES + 1), 6)]
+    assert analytics.due_bucket(exhausted, 400.0, NOW + timedelta(days=30)) is None
+    # A new bucket is always due, whatever the earlier empty captures.
+    assert analytics.due_bucket([snap("24h", "no_data_yet", 0)], 73.0, NOW + timedelta(hours=1)) == "72h"

@@ -8,6 +8,7 @@ or upload session URI is ever printed.
     PYTHONPATH=. python scripts/youtube_diagnostics.py [project_id]
     PYTHONPATH=. python scripts/youtube_diagnostics.py --video VIDEO_ID
     PYTHONPATH=. python scripts/youtube_diagnostics.py --learning
+    PYTHONPATH=. python scripts/youtube_diagnostics.py --performance [last10|28d|90d|all]
 
 ``--live`` additionally reads fresh status/metrics from Google (read-only
 calls: videos.list and Analytics reports) without persisting anything.
@@ -23,7 +24,7 @@ from clipforge.config import get_settings
 from clipforge.database import SessionLocal
 from clipforge.models import Project, YouTubeUpload
 from clipforge.security.secrets import SecretStore
-from clipforge.youtube import analytics, connection, learning
+from clipforge.youtube import analytics, connection, learning, library, performance
 from clipforge.youtube import status as status_authority
 from clipforge.youtube.provider import GoogleYouTubeProvider, YouTubeApiError
 from clipforge.youtube.uploads import STATUS_PARTS
@@ -159,12 +160,59 @@ def _live(db, upload: YouTubeUpload, settings) -> None:
         db.rollback()  # never persist anything from a diagnostic
 
 
+def _performance(db, record, scope: str, settings) -> None:
+    """Channel Performance trace: every library video of the channel, where its
+    numbers come from, and whether the overview counts it (store only)."""
+    now = datetime.now(UTC)
+    channel_id = record.channel_id if record else None
+    uploads_ = db.scalars(select(YouTubeUpload).where(library.library_condition())).all()
+    summaries = library._analytics_summaries(db, None, performance.PERFORMANCE_METRICS)
+    durations = performance._durations(db, (item.fingerprint_id for item in uploads_ if item.fingerprint_id))
+    print(f"\nLibrary videos: {len(uploads_)} (connected channel {channel_id})")
+    for upload in sorted(uploads_, key=library._sort_date, reverse=True):
+        summary = summaries.get(upload.id)
+        live = status_authority.live_stats(upload)
+        history = analytics._snapshots(db, upload.id)
+        published = upload.published_at
+        age = (now - status_authority._utc(published)).total_seconds() / 3600 if published else None
+        loaded = performance._row(upload, summary, durations.get(upload.fingerprint_id or "")) if published else None
+        if upload.channel_id != channel_id and channel_id:
+            verdict = "EXCLUDED: other channel"
+        elif published is None:
+            verdict = "EXCLUDED: not published (no published_at)"
+        elif loaded is None:
+            verdict = "EXCLUDED: no analytics snapshot with data and no videos.list statistics"
+        else:
+            verdict = f"INCLUDED via {loaded[0].source}"
+        state = library._analytics_state(upload, summary, now)
+        print(f"\n  {upload.youtube_video_id} upload={upload.id} channel={upload.channel_id} '{(upload.title or '')[:50]}'")
+        print(f"    state={library.library_state(upload, now)} published_at={published} ({upload.published_source}) analytics={state}")
+        print(f"    library views/likes source: videos.list live_stats={'none' if live is None else {k: live[k] for k in ('views', 'likes', 'comments', 'checked_at')}}")
+        print(f"    analytics error={upload.analytics_error_code} last_attempt={upload.last_analytics_attempt_at} last_sync={upload.last_analytics_sync_at}")
+        print(f"    fingerprint={upload.fingerprint_id} rendered_duration={durations.get(upload.fingerprint_id or '')}")
+        for snap in history:
+            values = {item.name: item.value for item in snap.metrics if item.availability == "available"}
+            print(f"    snapshot {snap.fetched_at} source={snap.source} bucket={snap.age_bucket} age={_fmt(snap.published_age_hours)}h status={snap.status} retention={snap.retention_status} channel={snap.channel_id}")
+            print(f"      available: {values or 'none'}")
+        if not history:
+            print("    snapshots: none")
+        if age is not None:
+            print(f"    due-only refresh now would capture bucket: {analytics.due_bucket(history, age, now)}")
+        print(f"    overview: {verdict}")
+    result = performance.performance_overview(db, scope=scope, min_sample=settings.youtube_baseline_min_sample, now=now)
+    print(f"\nGET /api/videos/performance?scope={result['scope']}")
+    print(f"  channel={result['channel']} video_count={result['video_count']} eligible_total={result['eligible_total']} sources={result['sources']}")
+    for name in result["primary"]:
+        print(f"  {name}: {result['metrics'][name]}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("project_id", nargs="?")
     parser.add_argument("--video", help="YouTube video ID")
     parser.add_argument("--live", action="store_true", help="also read fresh data from Google (read-only)")
     parser.add_argument("--learning", action="store_true", help="print the cross-video learning table")
+    parser.add_argument("--performance", nargs="?", const="last10", metavar="SCOPE", help="trace the Channel Performance overview")
     args = parser.parse_args()
     settings = get_settings()
     with SessionLocal() as db:
@@ -175,6 +223,10 @@ def main() -> None:
         else:
             print(f"  channel: {record.channel_title} ({record.channel_id}) status={record.status}")
             print(f"  scopes:  {', '.join(scope.rsplit('/', 1)[-1] for scope in record.granted_scopes or [])}")
+        if args.performance:
+            _performance(db, record, args.performance, settings)
+            db.rollback()
+            return
         if args.learning:
             if record is None:
                 parser.error("Connect YouTube first")

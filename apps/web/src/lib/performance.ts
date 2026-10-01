@@ -1,7 +1,9 @@
 /**
  * Channel Performance overview: shape of /api/videos/performance and pure
- * presentation helpers. All numbers come from the stored YouTube analytics;
- * a missing value is "—", never a zero.
+ * presentation helpers. All numbers come from stored YouTube data: the
+ * Analytics API per video, or - until YouTube has processed a video's
+ * analytics - the views/likes/comments its Data API already reports (the
+ * same numbers as the video list). A missing value is "—", never a zero.
  */
 
 export type PerformanceScope = "last10" | "28d" | "90d" | "all";
@@ -26,6 +28,8 @@ export type PerformanceOverview = {
   previous_count: number;
   updated_at: string | null;
   value_basis: string;
+  /** Videos per source: Analytics API snapshot, or videos.list statistics only. */
+  sources?: { youtube_analytics_api: number; youtube_data_api_videos_list: number };
   primary: MetricKey[];
   secondary: MetricKey[];
   metrics: Record<MetricKey, MetricResult>;
@@ -65,7 +69,7 @@ export const METRIC_LABELS: Record<MetricKey, string> = {
 };
 
 export const METRIC_TOOLTIPS: Partial<Record<MetricKey, string>> = {
-  avg_views: "Durchschnittliche Aufrufe je Video (YouTube Analytics, letzter Abruf je Video).",
+  avg_views: "Durchschnittliche Aufrufe je Video (YouTube Analytics, letzter Abruf je Video; ohne Analytics noch die Aufrufe aus der Videoliste).",
   avg_view_duration: "Gesamte Wiedergabezeit ÷ Gesamtaufrufe (nach Aufrufen gewichtet).",
   avg_view_percentage: "Nach Wiedergabezeit gewichteter Durchschnitt – nicht der einfache Mittelwert der Videos.",
   engaged_view_rate: "engagedViews ÷ views (YouTube Analytics). Das ist KEINE Swipe-away-Rate – die gibt es in der API nicht.",
@@ -153,8 +157,11 @@ export function diagnosisLabel(status: DiagnosisStatus | undefined): string {
   }
 }
 
-/** "10 Videos · zuletzt aktualisiert 30.09.2026, 14:05" */
-export function cohortLine(overview: Pick<PerformanceOverview, "video_count" | "updated_at">, format: (iso: string) => string): string {
-  const videos = `${overview.video_count} ${overview.video_count === 1 ? "Video" : "Videos"}`;
-  return overview.updated_at ? `${videos} · zuletzt aktualisiert ${format(overview.updated_at)}` : videos;
+/** "10 Videos · 3 noch ohne Analytics · zuletzt aktualisiert 30.09.2026, 14:05" */
+export function cohortLine(overview: Pick<PerformanceOverview, "video_count" | "updated_at" | "sources">, format: (iso: string) => string): string {
+  const parts = [`${overview.video_count} ${overview.video_count === 1 ? "Video" : "Videos"}`];
+  const pending = overview.sources?.youtube_data_api_videos_list ?? 0;
+  if (pending > 0) parts.push(`${pending} noch ohne Analytics (nur Aufrufe/Likes/Kommentare)`);
+  if (overview.updated_at) parts.push(`zuletzt aktualisiert ${format(overview.updated_at)}`);
+  return parts.join(" · ");
 }
