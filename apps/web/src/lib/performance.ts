@@ -1,9 +1,9 @@
 /**
  * Channel Performance overview: shape of /api/videos/performance and pure
- * presentation helpers. All numbers come from stored YouTube data: the
- * Analytics API per video, or - until YouTube has processed a video's
- * analytics - the views/likes/comments its Data API already reports (the
- * same numbers as the video list). A missing value is "—", never a zero.
+ * presentation helpers. Authority per metric: views/likes/comments are the
+ * live YouTube counters (videos.list, the same numbers as the video list);
+ * watch time, durations, engaged views, shares and subscribers come from
+ * YouTube Analytics, which lags by days. A missing value is "—", never a zero.
  */
 
 export type PerformanceScope = "last10" | "28d" | "90d" | "all";
@@ -13,7 +13,8 @@ export type MetricKey =
   | "avg_likes" | "avg_comments" | "avg_shares" | "avg_subscribers_gained" | "avg_subscribers_lost" | "avg_net_subscribers"
   | "avg_watch_time_minutes" | "likes_per_1k_views" | "comments_per_1k_views" | "shares_per_1k_views" | "subscribers_per_1k_views";
 
-export type MetricResult = { value: number | null; n: number; missing: number; method?: string | null; source?: string; available?: boolean };
+export type SourceCounts = Partial<Record<"youtube_data_api_videos_list" | "youtube_analytics_api", number>>;
+export type MetricResult = { value: number | null; n: number; missing: number; method?: string | null; source?: string; available?: boolean; sources?: SourceCounts };
 export type Trend = { change: number; direction: "up" | "down" | "flat"; n_current: number; n_previous: number; age_hours: number };
 export type DiagnosisStatus = "weaker" | "normal" | "stronger" | "insufficient_data";
 export type DiagnosisEntry = { status: DiagnosisStatus; evidence: string; value: number | null; n: number; baseline_n: number; baseline_median?: number };
@@ -28,7 +29,7 @@ export type PerformanceOverview = {
   previous_count: number;
   updated_at: string | null;
   value_basis: string;
-  /** Videos per source: Analytics API snapshot, or videos.list statistics only. */
+  /** Videos that have each source (overlapping): live counters, processed Analytics. */
   sources?: { youtube_analytics_api: number; youtube_data_api_videos_list: number };
   primary: MetricKey[];
   secondary: MetricKey[];
@@ -69,7 +70,7 @@ export const METRIC_LABELS: Record<MetricKey, string> = {
 };
 
 export const METRIC_TOOLTIPS: Partial<Record<MetricKey, string>> = {
-  avg_views: "Durchschnittliche Aufrufe je Video (YouTube Analytics, letzter Abruf je Video; ohne Analytics noch die Aufrufe aus der Videoliste).",
+  avg_views: "Durchschnittliche aktuelle Aufrufe je Video – dieselben Live-Zähler wie in der Videoliste (YouTube Analytics hinkt Tage hinterher).",
   avg_view_duration: "Gesamte Wiedergabezeit ÷ Gesamtaufrufe (nach Aufrufen gewichtet).",
   avg_view_percentage: "Nach Wiedergabezeit gewichteter Durchschnitt – nicht der einfache Mittelwert der Videos.",
   engaged_view_rate: "engagedViews ÷ views (YouTube Analytics). Das ist KEINE Swipe-away-Rate – die gibt es in der API nicht.",
@@ -157,11 +158,24 @@ export function diagnosisLabel(status: DiagnosisStatus | undefined): string {
   }
 }
 
+const SOURCE_LABELS: Record<keyof SourceCounts, string> = {
+  youtube_data_api_videos_list: "Live-Zähler",
+  youtube_analytics_api: "YouTube Analytics",
+};
+
+/** "Quelle: Live-Zähler 9 · YouTube Analytics 1" (videos per source of this value). */
+export function sourceLine(result: Pick<MetricResult, "sources"> | undefined): string | null {
+  const parts = (Object.keys(SOURCE_LABELS) as Array<keyof SourceCounts>)
+    .filter((key) => (result?.sources?.[key] ?? 0) > 0)
+    .map((key) => `${SOURCE_LABELS[key]} ${result?.sources?.[key]}`);
+  return parts.length ? `Quelle: ${parts.join(" · ")}` : null;
+}
+
 /** "10 Videos · 3 noch ohne Analytics · zuletzt aktualisiert 30.09.2026, 14:05" */
 export function cohortLine(overview: Pick<PerformanceOverview, "video_count" | "updated_at" | "sources">, format: (iso: string) => string): string {
   const parts = [`${overview.video_count} ${overview.video_count === 1 ? "Video" : "Videos"}`];
-  const pending = overview.sources?.youtube_data_api_videos_list ?? 0;
-  if (pending > 0) parts.push(`${pending} noch ohne Analytics (nur Aufrufe/Likes/Kommentare)`);
+  const pending = overview.sources ? Math.max(0, overview.video_count - overview.sources.youtube_analytics_api) : 0;
+  if (pending > 0) parts.push(`${pending} noch ohne Analytics`);
   if (overview.updated_at) parts.push(`zuletzt aktualisiert ${format(overview.updated_at)}`);
   return parts.join(" · ");
 }

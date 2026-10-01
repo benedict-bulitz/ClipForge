@@ -195,7 +195,9 @@ def _performance(db, record, scope: str, settings) -> None:
         elif loaded is None:
             verdict = "EXCLUDED: no analytics snapshot with data and no videos.list statistics"
         else:
-            verdict = f"INCLUDED via {loaded[0].source}"
+            row = loaded[0]
+            sources = {name: row.source_of(name) for name in ("views", "likes", "engagedViews", "averageViewDuration", "averageViewPercentage")}
+            verdict = f"INCLUDED; value sources: {sources}"
         state = library._analytics_state(upload, summary, now)
         print(f"\n  {upload.youtube_video_id} upload={upload.id} channel={upload.channel_id} '{(upload.title or '')[:50]}'")
         print(f"    state={library.library_state(upload, now)} published_at={published} ({upload.published_source}) analytics={state}")

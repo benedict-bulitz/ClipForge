@@ -38,9 +38,9 @@ def test_count_averages_exclude_missing_values_instead_of_counting_zero():
     rows = [row(100, likes=10), row(300, likes=None), row(None, likes=30)]
     views = performance.mean_of(rows, "views")
     likes = performance.mean_of(rows, "likes")
-    assert views == {"value": 200.0, "n": 2, "missing": 1}
-    assert likes == {"value": 20.0, "n": 2, "missing": 1}
-    assert performance.mean_of([row(None)], "views") == {"value": None, "n": 0, "missing": 1}
+    assert views == {"value": 200.0, "n": 2, "missing": 1, "sources": {"youtube_analytics_api": 2}}
+    assert likes == {"value": 20.0, "n": 2, "missing": 1, "sources": {"youtube_analytics_api": 2}}
+    assert performance.mean_of([row(None)], "views") == {"value": None, "n": 0, "missing": 1, "sources": {}}
 
 
 def test_view_percentage_is_watch_time_weighted_not_a_blind_mean():
@@ -217,6 +217,21 @@ def add_video(
     return upload
 
 
+def add_snapshot(db, upload: YouTubeUpload, age: float, values: dict[str, float | None]) -> None:
+    snapshot = YouTubeAnalyticsSnapshot(
+        upload_id=upload.id, youtube_video_id=upload.youtube_video_id, channel_id=upload.channel_id, project_id=upload.project_id,
+        project_revision=1, render_revision=1, source="youtube_analytics_api", age_bucket="72h",
+        published_age_hours=age, status="ok", fetched_at=NOW - timedelta(minutes=1),
+    )
+    for name, value in values.items():
+        snapshot.metrics.append(YouTubeMetricValue(
+            youtube_video_id=upload.youtube_video_id, name=name, value=value, availability="available",
+            source="youtube_analytics_api", fetched_at=snapshot.fetched_at,
+        ))
+    db.add(snapshot)
+    db.commit()
+
+
 def metrics(views, **extra):
     base = {"views": views, "engagedViews": views * 0.6, "averageViewPercentage": 50.0, "averageViewDuration": 15.0,
             "likes": views * 0.04, "comments": views * 0.004, "shares": views * 0.003,
@@ -332,9 +347,69 @@ def test_no_new_analytics_tables():
 
 
 # ---------------------------------------------------------------------------
-# Real data before YouTube Analytics has processed it (Mac report: the library
-# showed 956 views / 15 likes while the overview said "no analytics data")
+# Authority per metric: live videos.list counters, Analytics-only metrics from
+# the latest snapshot (the Mac: live 971 views while Analytics had 339)
 # ---------------------------------------------------------------------------
+
+LIVE = "youtube_data_api_videos_list"
+API = "youtube_analytics_api"
+PROVEN = {  # d9xX7tiZBBI, exact production Analytics query on the real Mac
+    "views": 339, "engagedViews": 163, "estimatedMinutesWatched": 44, "averageViewDuration": 14, "averageViewPercentage": 33.33,
+    "likes": 9, "comments": 0, "shares": 0, "subscribersGained": 0, "subscribersLost": 0,
+}
+
+
+def test_proven_case_live_counters_and_analytics_metrics_side_by_side(connected):
+    db = connected
+    add_video(db, 1, days_ago=3, snapshots=[(72.0, PROVEN)], live=(971, 18, 0))
+    result = performance.performance_overview(db, scope="last10", now=NOW)
+    m = result["metrics"]
+    assert result["video_count"] == 1 and result["sources"] == {LIVE: 1, API: 1}
+    # Current counters: videos.list, never the lagging Analytics count.
+    assert m["avg_views"]["value"] == 971.0 and m["avg_views"]["sources"] == {LIVE: 1}
+    assert m["avg_likes"]["value"] == 18.0 and m["avg_likes"]["sources"] == {LIVE: 1}
+    assert m["avg_comments"]["value"] == 0.0  # a real 0 stays 0
+    # Analytics-only metrics: the snapshot.
+    assert m["avg_view_duration"]["value"] == 14.0 and m["avg_view_percentage"]["value"] == 33.33
+    assert m["avg_watch_time_minutes"]["value"] == 44.0 and m["avg_watch_time_minutes"]["sources"] == {API: 1}
+    assert m["avg_shares"]["value"] == 0.0 and m["avg_net_subscribers"]["value"] == 0.0
+    # engagedViews / views from the SAME snapshot: 163/339, not 163/971.
+    assert m["engaged_view_rate"]["value"] == pytest.approx(163 / 339, abs=1e-4) and m["engaged_view_rate"]["sources"] == {API: 1}
+    assert m["engaged_view_rate"]["value"] != pytest.approx(163 / 971, abs=1e-3)
+    # likes per 1k from one source (live 18/971); shares per 1k from the snapshot's own views.
+    assert m["likes_per_1k_views"]["value"] == pytest.approx(18 / 971 * 1000, abs=1e-3) and m["likes_per_1k_views"]["sources"] == {LIVE: 1}
+    assert m["shares_per_1k_views"]["value"] == 0.0 and m["shares_per_1k_views"]["sources"] == {API: 1}
+    # Unchanged semantics: stayed to watch only from Studio imports, no swipe-away.
+    assert m["stayed_to_watch"]["available"] is False and result["swipe_away"]["available"] is False
+
+
+def test_analytics_arriving_never_pulls_current_views_back(connected):
+    db = connected
+    upload = add_video(db, 1, days_ago=3, live=(971, 18, 0))
+    before = performance.performance_overview(db, scope="all", now=NOW)["metrics"]
+    assert before["avg_views"]["value"] == 971.0 and before["avg_view_duration"]["value"] is None
+    add_snapshot(db, upload, 72.0, PROVEN)  # YouTube processed part of it
+    after = performance.performance_overview(db, scope="all", now=NOW)["metrics"]
+    assert after["avg_views"]["value"] == 971.0 and after["avg_likes"]["value"] == 18.0
+    assert after["avg_view_duration"]["value"] == 14.0
+
+
+def test_without_live_statistics_the_snapshot_count_is_the_fallback(connected):
+    db = connected
+    add_video(db, 1, days_ago=3, snapshots=[(72.0, PROVEN)])  # never synced by videos.list
+    result = performance.performance_overview(db, scope="all", now=NOW)
+    assert result["sources"] == {LIVE: 0, API: 1}
+    assert result["metrics"]["avg_views"]["value"] == 339.0 and result["metrics"]["avg_views"]["sources"] == {API: 1}
+    assert result["metrics"]["likes_per_1k_views"]["value"] == pytest.approx(9 / 339 * 1000, abs=1e-3)
+
+
+def test_hidden_live_like_count_does_not_mix_sources_in_a_ratio(connected):
+    db = connected
+    add_video(db, 1, days_ago=3, snapshots=[(72.0, PROVEN)], live=(971, None, 0))  # likes hidden on YouTube
+    m = performance.performance_overview(db, scope="all", now=NOW)["metrics"]
+    assert m["avg_likes"]["value"] == 9.0 and m["avg_likes"]["sources"] == {API: 1}
+    # 9 likes / 339 views (one snapshot), never 9 / 971
+    assert m["likes_per_1k_views"]["value"] == pytest.approx(9 / 339 * 1000, abs=1e-3) and m["likes_per_1k_views"]["sources"] == {API: 1}
 
 
 def test_published_videos_with_only_youtube_statistics_form_a_cohort(connected):
@@ -343,41 +418,41 @@ def test_published_videos_with_only_youtube_statistics_form_a_cohort(connected):
     add_video(db, 2, days_ago=2, live=(400, 5, None))
     result = performance.performance_overview(db, scope="last10", now=NOW)
     assert result["video_count"] == 2 and result["eligible_total"] == 2
-    assert result["sources"] == {"youtube_analytics_api": 0, "youtube_data_api_videos_list": 2}
-    assert result["metrics"]["avg_views"] == {"value": 678.0, "n": 2, "missing": 0}
+    assert result["sources"] == {LIVE: 2, API: 0}
+    assert result["metrics"]["avg_views"] == {"value": 678.0, "n": 2, "missing": 0, "sources": {LIVE: 2}}
     assert result["metrics"]["avg_likes"]["value"] == 10.0
     assert result["metrics"]["likes_per_1k_views"]["value"] == pytest.approx(20 / 1356 * 1000, abs=1e-3)
     assert result["metrics"]["avg_video_length"]["value"] == 30.0
     # Analytics-only metrics are missing (rendered "—"), never zero, and never derived.
     for name in ("avg_view_duration", "avg_view_percentage", "engaged_view_rate", "avg_shares", "avg_watch_time_minutes", "avg_subscribers_gained"):
         assert result["metrics"][name]["value"] is None and result["metrics"][name]["n"] == 0, name
-    assert result["metrics"]["avg_comments"] == {"value": 2.0, "n": 1, "missing": 1}  # unknown comment count is not a 0
+    assert result["metrics"]["avg_comments"]["value"] == 2.0 and result["metrics"]["avg_comments"]["missing"] == 1  # unknown is not 0
     assert result["metrics"]["stayed_to_watch"]["available"] is False and result["swipe_away"]["available"] is False
     assert result["updated_at"] is not None
 
 
-def test_partial_analytics_and_statistics_only_videos_share_one_cohort_without_mixing_sources(connected):
+def test_partial_analytics_and_statistics_only_videos_share_one_cohort(connected):
     db = connected
     add_video(db, 1, days_ago=1, live=(956, 15, 2))  # analytics still processing
     retention_missing = {**metrics(2000), "averageViewPercentage": None, "averageViewDuration": None, "engagedViews": None}
     add_video(db, 2, days_ago=3, snapshots=[(48.0, retention_missing)], live=(2600, 99, 9), status="partial")
     add_video(db, 3, days_ago=5, snapshots=[(96.0, metrics(1000))], live=(1300, 50, 4))
     result = performance.performance_overview(db, scope="last10", now=NOW)
-    assert result["video_count"] == 3 and result["sources"] == {"youtube_analytics_api": 2, "youtube_data_api_videos_list": 1}
-    # A video with analytics keeps its snapshot values (its live counters are not mixed in).
-    assert result["metrics"]["avg_views"]["value"] == pytest.approx((956 + 2000 + 1000) / 3)
+    assert result["video_count"] == 3 and result["sources"] == {LIVE: 3, API: 2}
+    assert result["metrics"]["avg_views"]["value"] == pytest.approx((956 + 2600 + 1300) / 3)  # all live
     # Retention: only the one video that has it; missing values do not empty the panel or count as zero.
-    assert result["metrics"]["avg_view_percentage"] == {"value": 50.0, "n": 1, "missing": 2, "method": "watch_time_weighted"}
+    assert result["metrics"]["avg_view_percentage"] == {"value": 50.0, "n": 1, "missing": 2, "method": "watch_time_weighted", "sources": {API: 1}}
     assert result["metrics"]["avg_view_duration"]["value"] == 15.0 and result["metrics"]["avg_view_duration"]["n"] == 1
-    # engagedViews / views pairs values of one snapshot only (not the statistics-only video's views).
-    assert result["metrics"]["engaged_view_rate"] == {"value": pytest.approx(0.6), "n": 1, "missing": 2}
+    # engagedViews / views of that one snapshot (600/1000), not over any live views.
+    assert result["metrics"]["engaged_view_rate"]["value"] == pytest.approx(0.6) and result["metrics"]["engaged_view_rate"]["n"] == 1
 
 
-def test_latest_snapshot_with_data_wins_over_older_ones_and_over_statistics(connected):
+def test_latest_snapshot_with_data_supplies_the_analytics_metrics(connected):
     db = connected
-    add_video(db, 1, days_ago=20, snapshots=[(24.0, metrics(300)), (72.0, metrics(800)), (168.0, metrics(1500))], live=(9999, 1, 1))
-    result = performance.performance_overview(db, scope="all", now=NOW)
-    assert result["metrics"]["avg_views"]["value"] == 1500.0 and result["sources"]["youtube_analytics_api"] == 1
+    add_video(db, 1, days_ago=20, snapshots=[(24.0, metrics(300, averageViewPercentage=70.0)), (72.0, metrics(800, averageViewPercentage=60.0)), (168.0, metrics(1500, averageViewPercentage=55.0))], live=(9999, 1, 1))
+    m = performance.performance_overview(db, scope="all", now=NOW)["metrics"]
+    assert m["avg_view_percentage"]["value"] == 55.0 and m["avg_watch_time_minutes"]["value"] == 1500 * 0.25
+    assert m["avg_views"]["value"] == 9999.0  # the current counter, not the 7d capture
 
 
 def test_an_empty_analytics_capture_falls_back_to_statistics(connected):
@@ -385,7 +460,7 @@ def test_an_empty_analytics_capture_falls_back_to_statistics(connected):
     empty = dict.fromkeys(performance.PERFORMANCE_METRICS)
     add_video(db, 1, days_ago=2, snapshots=[(24.0, empty)], live=(500, 20, 1), status="partial")
     result = performance.performance_overview(db, scope="all", now=NOW)
-    assert result["metrics"]["avg_views"]["value"] == 500.0 and result["sources"]["youtube_data_api_videos_list"] == 1
+    assert result["metrics"]["avg_views"]["value"] == 500.0 and result["sources"] == {LIVE: 1, API: 0}
 
 
 def test_scheduled_and_never_reported_videos_do_not_dilute_the_averages(connected):
@@ -395,7 +470,7 @@ def test_scheduled_and_never_reported_videos_do_not_dilute_the_averages(connecte
     add_video(db, 3, days_ago=0, scheduled=True)
     add_video(db, 4, days_ago=1)  # published, YouTube reported nothing yet
     result = performance.performance_overview(db, scope="all", now=NOW)
-    assert result["video_count"] == 1 and result["metrics"]["avg_views"] == {"value": 1000.0, "n": 1, "missing": 0}
+    assert result["video_count"] == 1 and result["metrics"]["avg_views"]["value"] == 1000.0 and result["metrics"]["avg_views"]["n"] == 1
 
 
 def test_statistics_only_videos_follow_the_connected_channel(connected):
@@ -407,14 +482,15 @@ def test_statistics_only_videos_follow_the_connected_channel(connected):
     assert result["metrics"]["avg_views"]["value"] == 1000.0
 
 
-def test_statistics_only_videos_never_enter_the_same_age_trend(connected):
+def test_same_age_trend_uses_snapshots_only_never_live_counters(connected):
     db = connected
     for index in range(10, 20):
-        add_video(db, index, days_ago=40 + index, snapshots=[(72.0, metrics(1000))])
+        add_video(db, index, days_ago=40 + index, snapshots=[(72.0, metrics(1000))], live=(90_000, 1, 1))
     for index in range(10):
         add_video(db, index, days_ago=3.5 + index * 0.01, snapshots=[(72.0, metrics(1200))] if index < 5 else None, live=(5000, 1, 1))
     result = performance.performance_overview(db, scope="last10", now=NOW)
-    assert result["video_count"] == 10 and result["sources"] == {"youtube_analytics_api": 5, "youtube_data_api_videos_list": 5}
+    assert result["video_count"] == 10 and result["sources"] == {LIVE: 10, API: 5}
+    # 72h snapshots: +20%; live lifetime counters (5000 vs 90000) would say -94%
     assert result["trends"]["avg_views"]["n_current"] == 5 and result["trends"]["avg_views"]["change"] == pytest.approx(0.2)
 
 
@@ -474,11 +550,12 @@ def test_mac_report_end_to_end_overview_refresh_and_newest_sort(db, tmp_path, mo
         assert step(95, METRICS)["status"] == "not_due"  # a bucket with data is never fetched twice
 
         overview = client.get("/api/videos/performance").json()
-        assert overview["sources"] == {"youtube_analytics_api": 1, "youtube_data_api_videos_list": 0}
-        assert overview["metrics"]["avg_views"]["value"] == METRICS["views"]
+        assert overview["sources"] == {"youtube_analytics_api": 1, "youtube_data_api_videos_list": 1}
+        assert overview["metrics"]["avg_views"]["value"] == 956.0  # live counter, not the Analytics count (5400)
         assert overview["metrics"]["avg_view_duration"]["value"] == METRICS["averageViewDuration"]
         assert overview["metrics"]["avg_view_percentage"]["value"] == METRICS["averageViewPercentage"]
         assert overview["metrics"]["engaged_view_rate"]["value"] == pytest.approx(METRICS["engagedViews"] / METRICS["views"], abs=1e-4)
+        assert overview["metrics"]["avg_likes"]["value"] == 15.0
         assert [item["id"] for item in client.get("/api/videos", params={"sort": "newest"}).json()["items"]] == newest
         assert newest == [scheduled.id, published.id]  # effective date: the scheduled time is the newest
     finally:

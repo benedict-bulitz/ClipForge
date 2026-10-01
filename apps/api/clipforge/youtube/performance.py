@@ -8,11 +8,19 @@ Nothing is stored here.  Every number comes from the existing authorities:
   YouTube Data API ``videos.list`` statistics the Video Library shows);
 * ``production_fingerprints`` (the real rendered duration).
 
-Per video, the *latest* snapshot with data is used (lifetime values so far).
-A published video whose analytics YouTube has not processed yet still counts
-with the views/likes/comments YouTube already reports (``videos.list``
-statistics, ``status.live_stats``); everything else stays missing for it.  One
-source per video, never mixed, so every ratio pairs values of the same source.
+Authority per metric, not per video:
+
+* the current counters (views, likes, comments) come from ``videos.list``
+  (``status.live_stats``, what the Video Library shows); YouTube Analytics
+  lags behind them by days, so a processed snapshot must never pull a video's
+  views back down (live 971 vs Analytics 339).  Without live statistics the
+  snapshot's count is the fallback;
+* everything only Analytics has (engaged views, watch time, average view
+  duration/percentage, shares, subscribers) comes from the video's *latest*
+  snapshot with data, and stays missing until YouTube has processed it;
+* a ratio never mixes the two: engagedViews / views, view-weighted durations
+  and shares/subscribers per 1k use the snapshot's own views; likes/comments
+  per 1k use the live pair when both are live.
 Trends compare cohorts at the *same video age* (``learning._snapshot_near_age``)
 so a young cohort is not "down" just because it had less time to collect views.
 
@@ -93,9 +101,26 @@ class VideoRow:
     upload_id: str
     published_at: datetime
     duration: float | None
-    values: dict[str, float | None] = field(default_factory=dict)
+    values: dict[str, float | None] = field(default_factory=dict)  # one Analytics snapshot
     stayed_to_watch: float | None = None
-    source: str = SOURCE_API
+    live: dict[str, float | None] | None = None  # videos.list counters (views/likes/comments)
+
+    def current(self, name: str) -> float | None:
+        """Current value: the live counter when YouTube reports it, else the snapshot's."""
+        live = (self.live or {}).get(name)
+        return live if live is not None else self.values.get(name)
+
+    def source_of(self, name: str) -> str | None:
+        if (self.live or {}).get(name) is not None:
+            return LIVE_STATS_SOURCE
+        return SOURCE_API if self.values.get(name) is not None else None
+
+    def pair(self, numerator: str, denominator: str) -> tuple[float | None, float | None, str]:
+        """(numerator, denominator) from one source: live when both are live, else the snapshot."""
+        live = self.live or {}
+        if live.get(numerator) is not None and live.get(denominator) is not None:
+            return live[numerator], live[denominator], LIVE_STATS_SOURCE
+        return self.values.get(numerator), self.values.get(denominator), SOURCE_API
 
 
 # ---------------------------------------------------------------------------
@@ -107,10 +132,17 @@ def _result(value: float | None, n: int, total: int, **extra: Any) -> dict[str, 
     return {"value": None if value is None else round(value, 4), "n": n, "missing": total - n, **extra}
 
 
+def _sources(used: list[str]) -> dict[str, int]:
+    """How many videos contributed from each source (only sources actually used)."""
+    return {source: used.count(source) for source in (LIVE_STATS_SOURCE, SOURCE_API) if source in used}
+
+
 def mean_of(rows: list[VideoRow], name: str) -> dict[str, Any]:
-    """Arithmetic mean per video; videos without the metric are excluded (not zero)."""
-    values = [row.values[name] for row in rows if row.values.get(name) is not None]
-    return _result(sum(values) / len(values) if values else None, len(values), len(rows))  # type: ignore[arg-type]
+    """Arithmetic mean per video of the current value; missing values are excluded (not zero)."""
+    usable = [row for row in rows if row.current(name) is not None]
+    values = [row.current(name) for row in usable]
+    value = sum(values) / len(values) if values else None  # type: ignore[arg-type]
+    return _result(value, len(values), len(rows), sources=_sources([row.source_of(name) for row in usable]))  # type: ignore[misc]
 
 
 def net_subscribers(rows: list[VideoRow]) -> dict[str, Any]:
@@ -123,15 +155,16 @@ def net_subscribers(rows: list[VideoRow]) -> dict[str, Any]:
 
 
 def ratio_of_sums(rows: list[VideoRow], numerator: str, denominator: str = "views", scale: float = 1.0) -> dict[str, Any]:
-    """sum(numerator) / sum(denominator) over videos that have both (denominator > 0)."""
+    """sum(numerator) / sum(denominator) over videos that have both (denominator > 0),
+    each video's pair from one source (``VideoRow.pair``)."""
     pairs = [
-        (row.values[numerator], row.values[denominator])
-        for row in rows
-        if row.values.get(numerator) is not None and (row.values.get(denominator) or 0) > 0
+        (num, den, source)
+        for num, den, source in (row.pair(numerator, denominator) for row in rows)
+        if num is not None and (den or 0) > 0
     ]
-    total = sum(den for _num, den in pairs)
-    value = sum(num for num, _den in pairs) / total * scale if pairs and total else None  # type: ignore[misc]
-    return _result(value, len(pairs), len(rows))
+    total = sum(den for _num, den, _source in pairs)  # type: ignore[misc]
+    value = sum(num for num, _den, _source in pairs) / total * scale if pairs and total else None  # type: ignore[misc]
+    return _result(value, len(pairs), len(rows), sources=_sources([source for _num, _den, source in pairs]))
 
 
 def weighted_view_duration(rows: list[VideoRow]) -> dict[str, Any]:
@@ -143,7 +176,7 @@ def weighted_view_duration(rows: list[VideoRow]) -> dict[str, Any]:
     ]
     total = sum(views for _avd, views in pairs)
     value = sum(avd * views for avd, views in pairs) / total if pairs and total else None  # type: ignore[operator]
-    return _result(value, len(pairs), len(rows), method="views_weighted")
+    return _result(value, len(pairs), len(rows), method="views_weighted", sources=_sources([SOURCE_API] * len(pairs)))
 
 
 def weighted_view_percentage(rows: list[VideoRow]) -> dict[str, Any]:
@@ -157,11 +190,11 @@ def weighted_view_percentage(rows: list[VideoRow]) -> dict[str, Any]:
         if row.values.get("averageViewPercentage") is not None and (row.values.get("views") or 0) > 0
     ]
     if not usable:
-        return _result(None, 0, len(rows), method=None)
+        return _result(None, 0, len(rows), method=None, sources={})
     with_duration = all(row.duration and row.duration > 0 for row in usable)
     weights = [(row.values["views"] or 0) * ((row.duration or 0) if with_duration else 1.0) for row in usable]
     value = sum(row.values["averageViewPercentage"] * weight for row, weight in zip(usable, weights, strict=True)) / sum(weights)  # type: ignore[operator]
-    return _result(value, len(usable), len(rows), method="watch_time_weighted" if with_duration else "views_weighted")
+    return _result(value, len(usable), len(rows), method="watch_time_weighted" if with_duration else "views_weighted", sources=_sources([SOURCE_API] * len(usable)))
 
 
 def average_length(rows: list[VideoRow]) -> dict[str, Any]:
@@ -174,7 +207,7 @@ def stayed_to_watch(rows: list[VideoRow]) -> dict[str, Any]:
     usable = [row for row in rows if row.stayed_to_watch is not None]
     if not usable:
         return _result(None, 0, len(rows), source="manual_studio_import", available=False)
-    weights = [row.values.get("views") or 0 for row in usable]
+    weights = [row.current("views") or 0 for row in usable]
     if all(weight > 0 for weight in weights):
         value = sum(row.stayed_to_watch * weight for row, weight in zip(usable, weights, strict=True)) / sum(weights)  # type: ignore[operator]
     else:
@@ -352,18 +385,17 @@ def _stayed_to_watch(db: Session, upload_ids: list[str]) -> dict[str, float]:
 
 
 def _row(upload: YouTubeUpload, summary: Any, duration: float | None) -> tuple[VideoRow, datetime | None] | None:
-    """The video's values from its latest analytics snapshot with data, else from
-    the Data API statistics YouTube already reported; None when neither exists."""
-    published = _utc(upload.published_at)
+    """The video's latest analytics snapshot with data and its live videos.list
+    counters, side by side; None when YouTube reported neither."""
     metrics = (summary.metrics or {}) if summary is not None else {}
-    if any(value is not None for value in metrics.values()):
-        return VideoRow(upload.id, published, duration, dict(metrics)), _utc(summary.fetched_at)  # type: ignore[arg-type]
+    has_analytics = any(value is not None for value in metrics.values())
     stats = live_stats(upload)
-    if stats is None:
+    if not has_analytics and stats is None:
         return None  # nothing reported yet: not part of any cohort (never a zero)
-    values: dict[str, float | None] = dict.fromkeys(PERFORMANCE_METRICS)
-    values.update({name: None if stats[name] is None else float(stats[name]) for name in LIVE_STATS_METRICS})
-    return VideoRow(upload.id, published, duration, values, source=LIVE_STATS_SOURCE), stats["checked_at"]  # type: ignore[arg-type]
+    values: dict[str, float | None] = {name: metrics.get(name) for name in PERFORMANCE_METRICS}
+    live = {name: None if stats[name] is None else float(stats[name]) for name in LIVE_STATS_METRICS} if stats else None
+    stamps = [stamp for stamp in (_utc(summary.fetched_at) if has_analytics else None, stats["checked_at"] if stats else None) if stamp]
+    return VideoRow(upload.id, _utc(upload.published_at), duration, values, live=live), max(stamps) if stamps else None  # type: ignore[arg-type]
 
 
 def _select(rows: list[VideoRow], scope: str, now: datetime) -> tuple[list[VideoRow], list[VideoRow]]:
@@ -465,8 +497,11 @@ def performance_overview(db: Session, *, scope: str = DEFAULT_SCOPE, min_sample:
         "previous_count": len(previous),
         "updated_at": aware(max(updated)) if updated else None,
         "value_basis": "latest_snapshot_per_video",
-        # Videos per source: analytics snapshot, or (not processed yet) videos.list statistics.
-        "sources": {source: sum(1 for row in cohort if row.source == source) for source in (SOURCE_API, LIVE_STATS_SOURCE)},
+        # Videos that have each source (they overlap): live counters, processed Analytics.
+        "sources": {
+            LIVE_STATS_SOURCE: sum(1 for row in cohort if row.live is not None),
+            SOURCE_API: sum(1 for row in cohort if any(value is not None for value in row.values.values())),
+        },
         "primary": list(PRIMARY),
         "secondary": list(SECONDARY),
         "metrics": metrics,

@@ -206,3 +206,18 @@ def test_live_diagnostic_refuses_writes(published_video):
     with pytest.raises(RuntimeError, match="read-only"):
         db.commit()
     db.rollback()
+
+
+def test_performance_trace_names_the_source_per_metric(db, capsys):
+    from test_youtube_performance_overview import CHANNEL, add_video
+
+    db.add(YouTubeConnection(slot="primary", channel_id=CHANNEL, channel_title="Knowledge Lab"))
+    db.commit()
+    add_video(db, 1, days_ago=3, snapshots=[(72.0, {"views": 339, "engagedViews": 163, "averageViewDuration": 14, "averageViewPercentage": 33.33, "likes": 9})], live=(971, 18, 0))
+    add_video(db, 2, days_ago=1, live=(500, 5, 1))
+    record = db.get(YouTubeConnection, "primary")
+    _diagnostics()._performance(db, record, "all", youtube_settings(Path("/tmp")))
+    out = capsys.readouterr().out
+    assert "'views': 'youtube_data_api_videos_list'" in out and "'averageViewDuration': 'youtube_analytics_api'" in out
+    assert "'averageViewDuration': None" in out  # the video Analytics has not processed yet
+    assert "video_count=2" in out

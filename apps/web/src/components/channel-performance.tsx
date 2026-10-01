@@ -14,6 +14,7 @@ import {
   formatPerformanceValue,
   primaryMetrics,
   secondaryMetrics,
+  sourceLine,
   trendLabel,
   trendTitle,
   type DiagnosisKey,
@@ -31,7 +32,7 @@ function Metric({ name, overview, compact = false }: { name: MetricKey; overview
   const value = formatPerformanceValue(name, result?.value);
   const trend = overview.trends[name];
   const unavailable = value === "—";
-  const help = [METRIC_TOOLTIPS[name], result ? `${result.n} Videos${result.missing ? ` · ${result.missing} ohne Wert` : ""}` : null].filter(Boolean).join(" · ");
+  const help = [METRIC_TOOLTIPS[name], result ? `${result.n} Videos${result.missing ? ` · ${result.missing} ohne Wert` : ""}` : null, sourceLine(result)].filter(Boolean).join(" · ");
   return (
     <div className="min-w-0" data-metric={name} title={help || undefined}>
       <dt className="truncate text-[10px] font-bold uppercase tracking-[.07em] text-[var(--muted-foreground)]">{METRIC_LABELS[name]}</dt>
