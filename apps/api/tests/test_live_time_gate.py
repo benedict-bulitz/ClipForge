@@ -17,9 +17,17 @@ from test_triple_hook import Judge, ai_candidate, generation
 
 from clipforge.config import Settings
 from clipforge.format_intelligence import plan_format
-from clipforge.generation import claim_next_generation_job, create_generation_job, run_generation_job
+from clipforge.generation import (
+    claim_next_generation_job,
+    create_generation_job,
+    run_generation_job,
+)
 from clipforge.models import GenerationJob, Project
-from clipforge.novelty import assess_information_gain, build_novelty_plan, prune_redundant_information
+from clipforge.novelty import (
+    assess_information_gain,
+    build_novelty_plan,
+    prune_redundant_information,
+)
 from clipforge.pipeline import _normalise_blocks, build_initial_state
 from clipforge.readiness import ScriptNotReady, content_readiness
 from clipforge.renderer import RenderResult
@@ -232,7 +240,7 @@ class Calls:
 
 
 def _wire(monkeypatch, name: str, calls: Calls) -> None:
-    question, facts, hook, writer = CASES[name]
+    _question, facts, hook, writer = CASES[name]
     source = {"label": "Quelle", "url": "https://source.test/a"}
 
     def research(query, *_a, **_k):
