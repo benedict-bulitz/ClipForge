@@ -670,6 +670,12 @@ def assess_verbal(
     if spends_payoff:
         # The last meaningful beat of the arc would be spent in the first second.
         codes.append("spends_final_payoff")
+    if narrates_failure(verbal):
+        hard.append("narrates_failure")
+    unsupported_cause = ungrounded_cause(verbal, context)
+    if unsupported_cause:
+        # A curiosity hook gets no licence to invent a plausible cause.
+        hard.append("unsupported_cause")
     mechanism = explains_mechanism(verbal, context["question"], context.get("mechanisms") or [])
     if mechanism:
         # The opening already says *why*: the video's explanation (its payoff)
@@ -832,6 +838,39 @@ _MECHANISM_GRAMMAR = re.compile(
 )
 
 
+# Grammar that attributes a cause ("weil ...", "steckt ... dahinter", "liegt
+# an ...", "because", "is behind it") and words that only frame it.
+_ATTRIBUTION = re.compile(
+    r"(?i)\b(?:weil|denn|dahinter|steckt|stecken|liegt (?:daran|an)|schuld|grund|ursache|verursach\w*|"
+    r"because|caused?|causes|behind|due to|reason|blame\w*)\b"
+)
+_ATTRIBUTION_FRAME = {
+    "weil", "denn", "dahinter", "steckt", "stecken", "liegt", "daran", "schuld", "grund", "ursache", "because",
+    "cause", "caused", "causes", "behind", "due", "reason", "blame", "manchmal", "immer", "oft", "häufig",
+    "selten", "wieder", "nur", "eigentlich", "sometimes", "always", "often", "never", "again", "only", "just",
+}
+
+
+def ungrounded_cause(text: object, context: dict[str, Any]) -> list[str]:
+    """Words of a cause the hook asserts that no researched fact (or the question) contains.
+
+    Only a statement's cause clause counts; a question opens the gap and
+    projects without research evidence are not judged here.
+    """
+    verbal = _clean(text)
+    sourced = [_plain(fact.get("claim")) for fact in context.get("sourced_facts") or [] if _plain(fact.get("claim"))]
+    if not verbal or not sourced:
+        return []
+    grounded = set().union(*(proposition_words(claim) for claim in sourced)) | proposition_words(context.get("question"))
+    missing: list[str] = []
+    for clause in re.split(r"\s*[,;:–—]\s*|\s-\s|(?<=[.!])\s+", verbal):
+        if "?" in clause or not _ATTRIBUTION.search(clause):
+            continue
+        said = {word for word in proposition_words(clause) if word[:1] not in "+-" and word not in _ATTRIBUTION_FRAME and len(word) >= 3}
+        missing += sorted(said - _related(said, grounded))
+    return missing
+
+
 def explains_mechanism(text: object, question: object, mechanisms: list[str]) -> list[str]:
     """Concepts of a story mechanism a hook already states (empty: it opens, not finishes).
 
@@ -853,6 +892,32 @@ def explains_mechanism(text: object, question: object, mechanisms: list[str]) ->
         if len(shared) >= 2 and (any(is_salient_concept(word) for word in shared) or len(shared) >= 0.6 * len(said)):
             return sorted(shared)
     return []
+
+
+# A sentence about the video's own evidence failing ("Diese Fakten erklären
+# aber nicht, warum ...", "Die Recherche reicht dafür nicht aus"): an
+# internal diagnostic, never narration.  Grammar only: a determiner pointing
+# at the evidence itself, a negation or insufficiency, and an explain/answer
+# verb.  "Studien zeigen keinen Zusammenhang" (a finding) is not one.
+_EVIDENCE_REFERENCE = re.compile(
+    r"(?i)\b(?:diese[nrs]?|die|den|der|unsere[nrs]?|vorliegende[nrs]?|verfügbare[nrs]?|bisherige[nrs]?|"
+    r"these|those|the|our|available|current)\s+(?:\w+\s+)?(?:fakten|fakt|befunde?|befunden|quellen?|"
+    r"recherche\w*|daten|studien|studie|informationen|belege?|ergebnisse\w*|facts?|findings?|sources?|"
+    r"research|data|studies|evidence|information|results)\b"
+)
+_INSUFFICIENT = re.compile(
+    r"(?i)\b(?:nicht|kein\w*|unvollständig\w*|not|no|cannot|can't|don't|doesn't|insufficient|incomplete)\b"
+)
+_EXPLAIN_VERB = re.compile(
+    r"(?i)\b(?:erklär\w*|beantwort\w*|klär\w*|ausreich\w*|reich\w*|belegen|explain\w*|answer\w*|"
+    r"clarif\w*|suffic\w*|enough)\b"
+)
+
+
+def narrates_failure(text: object) -> bool:
+    """The sentence reports that the video's evidence cannot answer (diagnostic, not content)."""
+    sentence = re.sub(r"(?i)\b(?:nicht nur|not only|not just)\b", " ", str(text or ""))
+    return bool(_EVIDENCE_REFERENCE.search(sentence) and _INSUFFICIENT.search(sentence) and _EXPLAIN_VERB.search(sentence))
 
 
 # Spoken-clarity grammar (no topic vocabulary): abstract noun endings, office
@@ -987,7 +1052,7 @@ _VAGUE = {
 _CONNECTORS = {
     "deshalb", "darum", "daher", "dadurch", "deswegen", "dagegen", "jedoch", "trotzdem", "während",
     "sodass", "weshalb", "therefore", "thus", "hence", "whereas", "while", "however", "instead",
-    "desto", "umso", "grund", "gründe", "reason", "reasons",
+    "desto", "umso", "grund", "gründe", "reason", "reasons", "obwohl", "obgleich", "although",
 }
 # Multi-word expressions of one concept (any topic), rewritten to a single
 # concept word before tokenising: "hängen bleiben", "einen starken Eindruck

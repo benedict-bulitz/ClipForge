@@ -21,7 +21,9 @@ DIRECTOR_INSTRUCTIONS = (
     "exact question (a true detail about the same app, animal or place that answers a different question); name "
     "primary_answer_index (the fact that actually answers the question) and final_payoff_index (the last "
     "meaningful beat, which may differ from the answer). A related but different insight is secondary_insight, "
-    "never the answer. State the concrete curiosity_gap the viewer has. "
+    "never the answer. State the concrete curiosity_gap the viewer has. For a why/how question set answers_why: "
+    "true only if the facts state the cause or mechanism (for a condition such as 'the older you get', a mechanism "
+    "tied to that condition), false if they only describe the phenomenon or related details. "
     "Identify a compact payoff_plan with the central curiosity, actual payoff, "
     "supporting information, desired viewer reaction, and whether the hook must withhold the payoff. "
     "Start with one very short curiosity hook or setup that makes sense to a viewer who never saw the "
@@ -146,6 +148,8 @@ class AIStoryArc(BaseModel):
     primary_answer_index: int | None = Field(default=None, ge=1, le=10)
     final_payoff_index: int | None = Field(default=None, ge=1, le=10)
     curiosity_gap: str = Field(default="", max_length=240)
+    # Why/how questions: do the facts explain the cause or mechanism, not only the phenomenon?
+    answers_why: bool | None = None
 
 
 class AIProjectPlan(BaseModel):
@@ -365,7 +369,8 @@ HOOK_GENERATION_INSTRUCTIONS = (
     "happens because Y'). Name the observation, the contradiction or the surprising consequence instead and leave "
     "the why for the body, so the viewer has a reason to keep watching. The hook creates one concrete unresolved "
     "tension: not a restatement of the answer, not a reframing the body then only repeats, and not so abstract that "
-    "nothing specific is open. HARD RULE: an average 12-year-old must understand the spoken hook on first listen — "
+    "nothing specific is open. A curiosity hook gets no licence to invent a plausible cause: every cause, error or "
+    "reason it names must be stated by the supplied facts. HARD RULE: an average 12-year-old must understand the spoken hook on first listen — "
     "common everyday words, short spoken units, concrete wording, one idea at a time, natural speech; replace any "
     "specialist, academic or bureaucratic term and any abstract noun chain with ordinary words; say long numbers as "
     "a true rounded figure ('rund 270.000', 'about 270,000'); a slightly simpler hook beats a more sophisticated one. "

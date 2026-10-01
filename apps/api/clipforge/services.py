@@ -39,6 +39,7 @@ from .pipeline import (
 )
 from .progress import ProgressCallback, report_progress
 from .reactions import plan_viewer_reactions
+from .readiness import ScriptNotReady, content_readiness, not_ready_message
 from .renderer import RenderResult, RenderUnavailable, VoiceGenerationError, render_video
 from .review import pre_render_quality_gate, run_ai_review
 from .schemas import (
@@ -897,6 +898,15 @@ def export_project(
     )
 
 
+def _require_ready(state: dict) -> None:
+    readiness = content_readiness(state)
+    if not readiness["ready"]:
+        raise ScriptNotReady(
+            not_ready_message(readiness),
+            category="research_required" if readiness["research_required"] else "script_not_ready",
+        )
+
+
 def _render_state(
     previous_state: dict,
     project_id: str,
@@ -907,6 +917,9 @@ def _render_state(
 ) -> dict:
     state = copy.deepcopy(previous_state)
     _refresh_script_derivatives(state, old_scenes=state.get("scenes", []))
+    # A script that fails the success contract is refused before any media,
+    # review, TTS or render work starts (the gate below re-checks it last).
+    _require_ready(state)
     # Match once against the real catalog before the final render revision is
     # persisted.  The browser can then immediately preview the selected layer;
     # the base render itself remains narration/video only.
@@ -928,7 +941,10 @@ def _render_state(
         _refresh_script_derivatives(state, old_scenes=state.get("scenes", []))
     if state["script"]["text"] != script_before_review:
         prepare_project_media(state, project_id, settings)
-    pre_render_quality_gate(state)
+    gate = pre_render_quality_gate(state)
+    if not gate.get("ready", True):
+        # The success contract failed: no TTS, no render, no social metadata.
+        _require_ready(state)
     report_progress(progress, "review", "Reviewing content quality", phase="complete")
     result = render_video(
         state, project_id, revision_number, settings, progress=progress

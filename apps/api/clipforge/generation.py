@@ -646,7 +646,8 @@ def run_generation_job(
                 if isinstance(exc, VoiceGenerationError):
                     tracker.fail(str(exc), category=exc.category)
                 elif isinstance(exc, RenderUnavailable):
-                    tracker.fail(str(exc), category="render_unavailable")
+                    # A refused script (research required) keeps its own category.
+                    tracker.fail(str(exc), category=getattr(exc, "category", None) or "render_unavailable")
                 else:
                     job = db.get(GenerationJob, job_id)
                     label = job.stage_label if job is not None else "generation"

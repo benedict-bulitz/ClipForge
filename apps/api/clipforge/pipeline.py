@@ -28,7 +28,7 @@ from .narration import (
     clean_script_blocks,
     contamination_issues,
 )
-from .novelty import prune_redundant_information, safe_novelty_plan
+from .novelty import current_information_gain, prune_redundant_information, safe_novelty_plan
 from .pacing import analyze_pacing
 from .payoff import (
     _is_protected_question,
@@ -37,6 +37,7 @@ from .payoff import (
 )
 from .progress import ProgressCallback, report_progress
 from .reactions import plan_viewer_reactions, reaction_arc
+from .readiness import content_readiness, not_ready_message
 from .research import research_topic
 from .schemas import AdvancedOptions
 from .script_review import (
@@ -171,6 +172,11 @@ RETENTION_REQUIREMENTS = (
         "example, label, minor fact or summary after it."
     ),
     "Save the clearest 'that is why' connection for the final block, then stop.",
+    (
+        "Never write a sentence about the facts, research or sources themselves (for example that they do not "
+        "explain something): if the facts cannot answer the question, write the supported part only; the "
+        "system will research again."
+    ),
     "Use words a 10-12 year old understands on first listen; prefer a concrete example over an abstract term.",
 )
 
@@ -1150,6 +1156,25 @@ def _refresh_script_derivatives(
     plan_viewer_reactions(state)
 
 
+# One tighter research pass when the first script cannot answer its why/how
+# question; never more (no loops).
+MAX_RESEARCH_RETRIES = 1
+_MECHANISM_QUERY = {"de": "Ursache Mechanismus warum", "en": "cause mechanism why"}
+
+
+def research_retry_query(state: dict[str, Any]) -> str:
+    """A research query aimed at the missing mechanism (question + condition + what is missing)."""
+    intent = state.get("intent") or {}
+    question = str(intent.get("question") or state.get("prompt") or "")
+    report = current_information_gain(state)
+    sufficiency = report.get("answer_sufficiency") if isinstance(report.get("answer_sufficiency"), dict) else {}
+    parts = [question, _MECHANISM_QUERY.get(str(intent.get("language") or "en"), _MECHANISM_QUERY["en"])]
+    parts += [str(term) for term in sufficiency.get("condition_terms") or []]
+    if sufficiency.get("missing"):
+        parts.append(str(sufficiency["missing"]))
+    return " ".join(part for part in parts if part).strip()[:300]
+
+
 def build_initial_state(
     prompt: str,
     options: AdvancedOptions,
@@ -1158,6 +1183,41 @@ def build_initial_state(
     progress: ProgressCallback | None = None,
     script_writer_provider: ScriptWriterProvider | None = None,
     script_review_provider: ScriptReviewProvider | None = None,
+) -> dict[str, Any]:
+    """Generate the project state; a script that cannot answer gets one research retry.
+
+    The retry researches the missing mechanism and rebuilds facts, story
+    plan and script.  If it still cannot answer, the state stays blocked
+    (``script`` stage, ``script.readiness``) and is never rendered; nothing
+    is invented to fill the gap.
+    """
+    kwargs = {"progress": progress, "script_writer_provider": script_writer_provider, "script_review_provider": script_review_provider}
+    state = _build_initial_state(prompt, options, settings, **kwargs)
+    attempts = [{"query": prompt, "readiness": state["script"]["readiness"]["status"], "facts": len(state.get("facts") or [])}]
+    for _retry in range(MAX_RESEARCH_RETRIES):
+        readiness = state["script"]["readiness"]
+        if readiness["ready"] or not readiness["research_required"] or not state["intent"].get("research_required"):
+            break
+        query = research_retry_query(state)
+        retried = _build_initial_state(prompt, options, settings, research_query=query, **kwargs)
+        attempts.append({"query": query, "readiness": retried["script"]["readiness"]["status"], "facts": len(retried.get("facts") or [])})
+        if retried["script"]["readiness"]["ready"]:
+            state = retried
+        else:
+            state["script"]["readiness"]["retry_exhausted"] = True
+    state["research"]["attempts"] = attempts
+    return attach_hashes(state)
+
+
+def _build_initial_state(
+    prompt: str,
+    options: AdvancedOptions,
+    settings: Settings,
+    *,
+    progress: ProgressCallback | None = None,
+    script_writer_provider: ScriptWriterProvider | None = None,
+    script_review_provider: ScriptReviewProvider | None = None,
+    research_query: str | None = None,
 ) -> dict[str, Any]:
     intent = _intent(prompt, options)
     resolved_options = options.model_copy(update={"language": intent["language"]})
@@ -1168,7 +1228,7 @@ def build_initial_state(
     research_error = None
     if intent["research_required"]:
         report_progress(progress, "research", "Researching the topic", phase="start")
-        result = research_topic(prompt, intent["language"], settings)
+        result = research_topic(research_query or prompt, intent["language"], settings)
         research_status = result.status
         research_provider = result.provider
         research_error = result.error
@@ -1609,6 +1669,13 @@ def build_initial_state(
     annotate_story_roles(state)
     analyze_pacing(state)
     plan_viewer_reactions(state, planned_reaction_arc)
+    # The success contract, before anything is voiced or rendered.
+    readiness = content_readiness(state)
+    state["script"]["readiness"] = {**readiness, "message": None if readiness["ready"] else not_ready_message(readiness)}
+    if not readiness["ready"]:
+        for stage in state["pipeline"]:
+            if stage["id"] == "script":
+                stage["status"] = "blocked"
     return attach_hashes(state)
 
 

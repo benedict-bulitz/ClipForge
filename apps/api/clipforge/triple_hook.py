@@ -846,6 +846,7 @@ def state_context(state: dict[str, Any]) -> dict[str, Any]:
 _INVALIDATING = {
     "cheap_clickbait", "unnecessary_provocation", "meta_language", "unsupported_statistic", "unsupported_trend",
     "fake_controversy", "question_echo", "body_duplication", "states_primary_answer",
+    "unsupported_cause", "narrates_failure",
 }
 
 

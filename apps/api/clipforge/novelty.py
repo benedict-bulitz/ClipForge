@@ -39,6 +39,7 @@ from .verbal_hook import (
     explains_mechanism,
     information_gain,
     is_salient_concept,
+    narrates_failure,
     proposition_words,
     spoken_simplicity,
 )
@@ -658,6 +659,8 @@ def _deterministic_delta(unit: dict[str, Any], beat: str, chain: str, mechanism_
 
 def _weak_resolution(unit: dict[str, Any], units: list[dict[str, Any]], context: dict[str, Any]) -> str:
     """Why a closing beat does not complete the explanation ("" when it does)."""
+    if unit.get("narrates_failure"):
+        return "it reports that the evidence cannot answer - an internal diagnostic, not a resolution."
     if unit["category"] == "resolution":
         return ""
     if _APPEARANCE.search(unit["text"]):
@@ -675,6 +678,21 @@ def _links_question(text: str, terms: set[str]) -> bool:
     said = _bare(proposition_words(text))
     words = set(re.findall(r"[\wäöüß]+", text.casefold()))
     return bool(_related(said, terms)) or bool(_families(words) & _families(terms))
+
+
+_CONDITION = re.compile(
+    r"(?i)(?:,\s*|\b)(?:je|wenn|sobald|obwohl|obgleich|falls|the (?:more|less|older|longer|younger)|although|even though|when)\b([^?.!,;]*)"
+)
+
+
+def _condition_terms(question: str) -> set[str]:
+    from .story_arc import _FRAME
+
+    terms: set[str] = set()
+    for match in _CONDITION.finditer(question):
+        clause = match.group(0)
+        terms |= {word.lstrip("+-") for word in proposition_words(clause) if word not in _FRAME}
+    return terms
 
 
 def _asked_terms(question: str, contract: dict[str, Any], body: list[dict[str, Any]], hook: str = "") -> set[str]:
@@ -726,10 +744,17 @@ def _answer_sufficiency(units: list[dict[str, Any]], context: dict[str, Any], pa
         # The observation itself (the answer's own fact, stated without a cause) explains nothing yet.
         and not (set(unit["evidence"]["fact_ids"]) <= {primary} and not _REASON.search(unit["text"]))
     ]
-    linked = [unit for unit in mechanisms if _links_question(unit["text"], terms)]
+    # "je älter man wird", "obwohl wir es nicht wollten": a question with a
+    # condition asks why the condition changes things - the mechanism must
+    # reach the condition, not only the effect.
+    condition = _condition_terms(question)
+    linked = [unit for unit in mechanisms if _links_question(unit["text"], condition or terms)]
     reasons: list[str] = []
     if explanatory and not linked:
         reasons.append("no_mechanism_linked_to_question")
+        if condition:
+            # "je älter", "obwohl wir es nicht wollten": the very thing asked is unexplained.
+            reasons.append("condition_not_explained")
     if explanatory and payoff.get("status") == "fail":
         reasons.append("payoff_does_not_resolve")
     if ai and ai["verdict"] == "unanswered":
@@ -742,9 +767,13 @@ def _answer_sufficiency(units: list[dict[str, Any]], context: dict[str, Any], pa
     structural = {"no_mechanism_linked_to_question", "payoff_does_not_resolve"} & set(reasons)
     if not explanatory and not ai:
         status = "not_applicable"
-    elif "review_unanswered" in reasons or (missing_research and structural):
-        # Semantic verdict, or research that holds no mechanism at all: a
-        # lexical miss alone (a paraphrased link) never fails a video.
+    elif "review_unanswered" in reasons or (
+        missing_research and ({"payoff_does_not_resolve", "condition_not_explained"} & set(reasons))
+    ):
+        # The review's semantic verdict, or research without a mechanism plus
+        # an unambiguous structural gap (no resolving payoff, or the question's
+        # condition never explained).  A lexical miss alone - a paraphrased
+        # link - never fails a video.
         status = "fail"
     elif "review_partial" in reasons or "payoff_does_not_resolve" in reasons or len(structural) == 2:
         status = "warning"
@@ -759,11 +788,59 @@ def _answer_sufficiency(units: list[dict[str, Any]], context: dict[str, Any], pa
         "reasons": reasons,
         "mechanism_block_ids": [unit["block_id"] for unit in linked],
         "question_terms": sorted(terms),
+        "condition_terms": sorted(condition),
         "review_verdict": ai["verdict"] if ai else None,
         "one_sentence_answer": (ai or {}).get("one_sentence_answer") or "",
         "missing": (ai or {}).get("missing") or "",
         "research_required": status == "fail" and (missing_research or "no_mechanism_linked_to_question" in reasons),
     }
+
+
+def _hook_spent(body: list[dict[str, Any]], hook_text: str, context: dict[str, Any]) -> dict[int, str]:
+    """Body beats that only re-tell an analogy or example the hook already spent.
+
+    The hook's *side* concepts are what it says beyond the question, the
+    primary answer and the final payoff (the voice recording in a photo
+    video).  A later beat built on two or more of them re-tells that
+    analogy unless it ties it back to the core with two concepts of its
+    own; the detail right after it, from the same writer block and sharing
+    its concepts, only extends it.  Callbacks that deepen the explanation
+    stay.
+    """
+    if not hook_text:
+        return {}
+    arc = context["arc"]
+    units = arc_units(arc)
+    claims = [str(units.get(str(arc.get(key) or ""), {}).get("claim") or "") for key in ("primary_answer_id", "final_payoff_id")]
+    core = _bare(set().union(*(proposition_words(text) for text in [_question(context), *claims] if text)))
+    side = _bare(proposition_words(hook_text))
+    side -= _related(side, core)
+    spent: dict[int, str] = {}
+    previous: dict[str, Any] | None = None
+    told: set[str] = set()
+    for unit in body:
+        own = _bare(proposition_words(unit["text"]))
+        if unit["role"] in {"answer", "payoff"} or unit.get("is_payoff"):
+            previous = None
+            told |= own
+            continue
+        # Substantial: core concepts this beat adds that the body has not said yet.
+        tied = len(_related(own, core) - _related(own, told))
+        told |= own
+        if len(_related(own, side)) >= 2 and tied < 2:
+            spent[unit["index"]] = "hook_analogy_reuse"
+            previous = unit
+            continue
+        if (
+            previous is not None and unit["role"] == "detail" and unit["index"] == previous["index"] + 1 and tied < 2
+            and unit["evidence"]["fact_ids"] == previous["evidence"]["fact_ids"]
+            and _related(own - _related(own, core), _bare(proposition_words(previous["text"])))
+        ):
+            spent[unit["index"]] = "hook_analogy_elaboration"
+            previous = unit
+            continue
+        previous = None
+    return spent
 
 
 def _audit_beats(units: list[dict[str, Any]], context: dict[str, Any]) -> None:
@@ -830,7 +907,15 @@ def _audit_beats(units: list[dict[str, Any]], context: dict[str, Any]) -> None:
             # (an unsupported beat never becomes an explanation).
             source, needed = "ai", bool(judged.get("needed"))
             delta = judged["delta"] if beat != "unsupported" else delta
-        unit.update(explanatory_delta=delta, delta_source=source, delta_needed=needed)
+        unit.update(explanatory_delta=delta, delta_source=source, delta_needed=needed, narrates_failure=narrates_failure(unit["text"]))
+        if unit["narrates_failure"]:
+            # "Diese Fakten erklären aber nicht ...": a diagnostic, never content.
+            unit.update(explanatory_delta="weak_value", delta_source="deterministic", delta_needed=False)
+    spent = _hook_spent(body, hook["text"] if hook else "", context)
+    for unit in body:
+        unit["hook_spent"] = spent.get(unit["index"])
+        if unit["hook_spent"]:
+            unit.update(explanatory_delta="restatement", delta_source="deterministic", delta_needed=False)
     payoff = next((unit for unit in body if unit.get("is_payoff")), None)
     if payoff is not None:
         payoff["weak_resolution"] = _weak_resolution(payoff, units, context)
@@ -1050,6 +1135,11 @@ def assess_information_gain(state: dict[str, Any]) -> dict[str, Any]:
     payoff = _payoff_result(units, blocks, context)
     if payoff["status"] == "fail":
         issue(f"payoff_{payoff['result']}", "warning", payoff["reason"], payoff["block_id"])
+    for unit in body:
+        if unit.get("narrates_failure"):
+            issue("narrated_failure", "error", f"The narration reports missing evidence instead of explaining: “{unit['text'][:80]}”", unit["block_id"])
+        elif unit.get("hook_spent"):
+            issue("hook_analogy_reuse", "warning", f"Re-tells the analogy the hook already used: “{unit['text'][:80]}”", unit["block_id"])
     tail = [unit for unit in body if unit.get("weak_tail")]
     if tail:
         issue("weak_tail", "warning", f"{len(tail)} beat(s) after the explanation is complete only delay the ending: “{tail[0]['text'][:60]}”", tail[0]["block_id"])
@@ -1306,22 +1396,42 @@ def _drop_beat(
         id(unit) for unit in body
         if unit.get("delta_source") == "ai" and unit.get("delta_needed") is False and unit["explanatory_delta"] in _PASSENGER_DELTAS
     }
-    weak |= {id(unit) for unit in body if unit.get("weak_tail")}
-    for unit in body:
+    weak |= {id(unit) for unit in body if unit.get("weak_tail") or unit.get("hook_spent") or unit.get("narrates_failure")}
+    # The hook already told what a re-told analogy carries.
+    spent_facts = {fact_id for unit in body if unit.get("hook_spent") for fact_id in unit["evidence"]["fact_ids"]}
+    # An analogy's elaboration goes before the analogy it extends (it is only
+    # recognisable while the analogy is still there).
+    ordered = sorted(body, key=lambda unit: unit.get("hook_spent") != "hook_analogy_elaboration")
+    for unit in ordered:
         tangent = unit.get("beat_class") == "off_chain"
-        if unit.get("is_payoff") or not (tangent or id(unit) in weak):
+        closing = bool(unit.get("is_payoff") and unit.get("narrates_failure"))
+        if (unit.get("is_payoff") and not closing) or not (tangent or id(unit) in weak):
             continue
         index = unit["index"]
         own = set(_fact_ids(blocks[index]))
         elsewhere = {fact_id for position, block in enumerate(blocks) if position != index for fact_id in _fact_ids(block)}
         dropped = own - elsewhere
-        if not tangent and not dropped <= optional:
+        if not tangent and not unit.get("narrates_failure") and not dropped <= optional | (spent_facts if unit.get("hook_spent") else set()):
             continue
-        if any(dropped & deps.get(fact_id, set()) for fact_id in elsewhere) or _removal_blocked(blocks, index, arc, anchors):
+        if any(dropped & deps.get(fact_id, set()) for fact_id in elsewhere) or _removal_blocked(blocks, index, arc, anchors, closing=closing):
             continue
         removed = blocks.pop(index)
-        action = "remove_off_question" if tangent else ("remove_weak_tail" if unit.get("weak_tail") else (
-            "remove_low_explanation" if unit.get("delta_source") == "ai" else "remove_weak_value"))
+        if closing:
+            # A diagnostic never closes the video: the last beat that remains does
+            # (the answer keeps its own role).
+            last = next((block for block in reversed(blocks) if _role(block) != "hook"), None)
+            if last is not None and _role(last) != "answer":
+                last["role"] = "payoff"
+        if tangent:
+            action = "remove_off_question"
+        elif unit.get("narrates_failure"):
+            action = "remove_narrated_failure"
+        elif unit.get("hook_spent"):
+            action = "remove_hook_analogy_reuse"
+        elif unit.get("weak_tail"):
+            action = "remove_weak_tail"
+        else:
+            action = "remove_low_explanation" if unit.get("delta_source") == "ai" else "remove_weak_value"
         repairs.append({
             "action": action,
             "block_id": removed.get("id"), "text": _text(removed), "category": unit["explanatory_delta"] if not tangent else unit["beat_class"],

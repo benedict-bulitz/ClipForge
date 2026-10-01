@@ -664,6 +664,8 @@ def build_story_arc(
         "units": [units[fact_id] for fact_id in order],
         "repairs": repairs,
     }
+    if isinstance(supplied, dict) and isinstance(supplied.get("answers_why"), bool):
+        arc["planner_answers_why"] = supplied["answers_why"]
     arc["question_contract"] = question_contract(arc, terms, supplied_gap)
     arc["issues"] = story_arc_issues(arc)
     return arc
@@ -698,12 +700,16 @@ def explanation_spine(arc: dict[str, Any], chain: list[str], terms: dict[str, An
     ]
     observation = primary if primary in units and primary not in mechanism else None
     support = [fact_id for fact_id in chain if fact_id not in mechanism and fact_id not in {primary, final}]
+    planner = arc.get("planner_answers_why")
     if not explanatory:
         status = "not_required"
-    elif not units:
-        status = "unknown"  # no research facts in the arc: nothing to judge
+    elif planner is not None:
+        # The planner's semantic judgement: does the research explain why/how?
+        status = "complete" if planner else "missing_mechanism"
     elif mechanism:
         status = "complete"
+    elif len(units) < 2:
+        status = "unknown"  # one fact (or none) is no evidence that a mechanism is missing
     else:
         status = "missing_mechanism"
     return {
@@ -715,6 +721,7 @@ def explanation_spine(arc: dict[str, Any], chain: list[str], terms: dict[str, An
         "final_resolution": final,
         "status": status,
         "research_required": status == "missing_mechanism",
+        "source": "planner" if planner is not None else "deterministic",
         "question_terms": list((terms or {}).get("question_terms") or []),
     }
 
