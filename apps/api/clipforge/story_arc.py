@@ -226,11 +226,15 @@ def _question_links(
     # A fact that answers an explicitly excluded interpretation of the
     # question (a deep link for "why do WE open the app") is off the question
     # however well its words match (lazy: question_intent imports this module).
-    from .question_intent import domain_alignment
+    from .question_intent import advice_off_intent, domain_alignment
 
     for fact_id, unit in units.items():
         if fact_id != primary and domain_alignment(question_intent, [unit["claim"]])["status"] == "mismatch":
             links[fact_id] = "excluded_interpretation"
+        elif fact_id != primary and advice_off_intent(question, unit["claim"], question_intent):
+            # "Achtsames Essen kann helfen ..." for "Warum essen wir weiter?":
+            # what to do about it is not why it happens.
+            links[fact_id] = "off_intent_advice"
     for fact_id, unit in units.items():
         planner = unit.pop("planner_serves_question", None)
         if unit["role"] == "ranked_item":
@@ -240,7 +244,7 @@ def _question_links(
         elif planner is False and fact_id != primary:
             links[fact_id] = "off_question"
         unit["question_link"] = links.get(fact_id, "unjudged")
-        unit["off_question"] = unit["question_link"] in {"isolated", "off_question", "excluded_interpretation"}
+        unit["off_question"] = unit["question_link"] in {"isolated", "off_question", "excluded_interpretation", "off_intent_advice"}
         if unit["off_question"]:
             unit["may_be_omitted"] = True
     return {"subject_terms": sorted(subject), "question_terms": sorted(predicate)}

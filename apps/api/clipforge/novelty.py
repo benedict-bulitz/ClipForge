@@ -664,6 +664,8 @@ def _weak_resolution(unit: dict[str, Any], units: list[dict[str, Any]], context:
         return "it reports that the evidence cannot answer - an internal diagnostic, not a resolution."
     if unit.get("open_question"):
         return "it says the question is still unanswered."
+    if unit.get("off_intent") == "advice":
+        return "it changes the question from why it happens to what to do about it - advice the question did not ask for."
     if unit["category"] == "resolution":
         return ""
     if _APPEARANCE.search(unit["text"]):
@@ -882,6 +884,11 @@ def _hook_spent(body: list[dict[str, Any]], hook_text: str, context: dict[str, A
     return spent
 
 
+def _question_intent(context: dict[str, Any]) -> dict[str, Any] | None:
+    intent = (context.get("intent") or {}).get("question_intent") or context["arc"].get("question_intent")
+    return intent if isinstance(intent, dict) else None
+
+
 def _audit_beats(units: list[dict[str, Any]], context: dict[str, Any]) -> None:
     """Relevance, beat class, language and viewer momentum per body unit (in place)."""
     arc = context["arc"]
@@ -892,7 +899,10 @@ def _audit_beats(units: list[dict[str, Any]], context: dict[str, Any]) -> None:
     payoff_index = next((unit["index"] for unit in body if unit.get("is_payoff")), body[-1]["index"] if body else -1)
     contract = arc.get("question_contract") if isinstance(arc.get("question_contract"), dict) else {}
     mechanism_ids = set((contract.get("explanation_spine") or {}).get("mechanism") or [])
+    from .question_intent import advice_off_intent
+
     audit = _audit_entries(context)
+    question_intent = _question_intent(context)
     learned: list[str] = []
     for unit in body:
         fact_ids = unit["evidence"]["fact_ids"]
@@ -953,6 +963,11 @@ def _audit_beats(units: list[dict[str, Any]], context: dict[str, Any]) -> None:
         if unit["narrates_failure"]:
             # "Diese Fakten erklären aber nicht ...": a diagnostic, never content.
             unit.update(explanatory_delta="weak_value", delta_source="deterministic", delta_needed=False)
+        unit["off_intent"] = "advice" if advice_off_intent(question, unit["text"], question_intent) else None
+        if unit["off_intent"]:
+            # What to do about it, for a question that asks why: it changes the
+            # question instead of answering it (the review cannot override).
+            unit.update(explanatory_delta="tangent", delta_source="deterministic", delta_needed=False)
     spent = _hook_spent(body, hook["text"] if hook else "", context)
     for unit in body:
         unit["hook_spent"] = spent.get(unit["index"])
@@ -1368,7 +1383,7 @@ def _merge_target(
 
 def _hand_over_payoff(
     blocks: list[dict[str, Any]], units: list[dict[str, Any]], arc: dict[str, Any], anchors: set[str],
-    deps: dict[str, set[str]], repairs: list[dict[str, Any]],
+    deps: dict[str, set[str]], repairs: list[dict[str, Any]], optional: set[str] | None = None,
 ) -> bool:
     """A closing unit that only repeats the body gives the payoff to the beat before it.
 
@@ -1409,6 +1424,15 @@ def _hand_over_payoff(
         return False
     elsewhere = {fact_id for position, block in enumerate(blocks) if position != index for fact_id in _fact_ids(block)}
     moving = [fact_id for fact_id in _fact_ids(blocks[index]) if fact_id not in elsewhere]
+    dropped: list[str] = []
+    optional = optional or set()
+    if payoff.get("off_intent"):
+        # Off-intent advice is not said again by the explanation: its optional
+        # facts leave with it (an anchor still moves to the closing unit).
+        dropped = [fact_id for fact_id in moving if fact_id in optional and fact_id not in anchors]
+        if any(set(dropped) & deps.get(fact_id, set()) for fact_id in elsewhere):
+            return False
+        moving = [fact_id for fact_id in moving if fact_id not in dropped]
     told = {fact_id for block in blocks[: target + 1] for fact_id in _fact_ids(block)}
     if any(deps.get(fact_id, set()) - told - set(moving) for fact_id in moving):
         return False
@@ -1418,8 +1442,10 @@ def _hand_over_payoff(
     closing["role"] = "payoff"
     closing["fact_ids"] = [*_fact_ids(closing), *moving]
     repairs.append({
-        "action": "hand_over_payoff", "block_id": removed.get("id"), "text": _text(removed),
-        "category": payoff["category"], "repeats_block_id": payoff["repeats_block_id"], "moved_fact_ids": moving,
+        "action": "remove_off_intent_payoff" if payoff.get("off_intent") else "hand_over_payoff",
+        "block_id": removed.get("id"), "text": _text(removed),
+        "category": "off_intent_" + payoff["off_intent"] if payoff.get("off_intent") else payoff["category"],
+        "repeats_block_id": payoff["repeats_block_id"], "moved_fact_ids": moving, "dropped_fact_ids": dropped,
         "payoff_block_id": closing.get("id"), "payoff_previous_role": previous_role,
     })
     return True
@@ -1469,7 +1495,9 @@ def _drop_beat(
             last = next((block for block in reversed(blocks) if _role(block) != "hook"), None)
             if last is not None and _role(last) != "answer":
                 last["role"] = "payoff"
-        if tangent:
+        if unit.get("off_intent"):
+            action = "remove_off_intent"
+        elif tangent:
             action = "remove_off_question"
         elif unit.get("narrates_failure"):
             action = "remove_narrated_failure"
@@ -1481,7 +1509,8 @@ def _drop_beat(
             action = "remove_low_explanation" if unit.get("delta_source") == "ai" else "remove_weak_value"
         repairs.append({
             "action": action,
-            "block_id": removed.get("id"), "text": _text(removed), "category": unit["explanatory_delta"] if not tangent else unit["beat_class"],
+            "block_id": removed.get("id"), "text": _text(removed),
+            "category": "off_intent_" + unit["off_intent"] if unit.get("off_intent") else (unit["explanatory_delta"] if not tangent else unit["beat_class"]),
             "repeats_block_id": None, "moved_fact_ids": [], "dropped_fact_ids": sorted(dropped),
         })
         return True
@@ -1544,7 +1573,7 @@ def prune_redundant_information(
             continue
         if _drop_beat(blocks, units, arc, anchors, deps, optional, repairs):
             continue
-        if _hand_over_payoff(blocks, units, arc, anchors, deps, repairs):
+        if _hand_over_payoff(blocks, units, arc, anchors, deps, repairs, optional):
             continue
         # A unit whose every word the next, richer unit repeats gives way to it.
         closing = {unit["index"] for unit in units if unit.get("is_payoff")}

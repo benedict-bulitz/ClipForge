@@ -90,6 +90,67 @@ DOMAIN_CUES = {
 }
 
 
+# What answer the user asks for (grammar, any topic): an explanation ("warum"),
+# or something to do - advice, instructions, a recommendation.  "Warum ...
+# und was kann ich dagegen tun?" asks for both.
+_ASKS_FOR_ADVICE = re.compile(
+    r"(?i)\b(?:was (?:kann|könnte|soll|sollte|muss) (?:ich|man|du|wir) (?:\w+ ){0,3}?(?:tun|machen)|was hilft|was tun|"
+    r"wie (?:kann|könnte|soll|sollte|schaffe|werde|bekomme|vermeide|verhindere|stoppe|lerne) (?:ich|man|du|wir)\b|"
+    r"wie (?:ich|man|du) (?:\w+ ){0,4}?(?:kann|könnte|schaffe|vermeide|verhindere)\b|"
+    r"(?:welche|welcher|welches|was) (?:\w+ ){0,3}?(?:empfiehlt|empfehl\w*|ist (?:am )?besten|eignet sich|lohnt sich)|"
+    r"sollte (?:ich|man|du|wir)\b|soll (?:ich|man)\b|tipps?\b|anleitung|"
+    r"what (?:can|could|should) (?:i|you|we|one) do|how (?:can|do|should|could) (?:i|you|we|one)\b|how to\b|"
+    r"what helps|should (?:i|you|we)\b|(?:which|what) (?:\w+ ){0,3}?(?:is best|do you recommend|recommend\w*|works best)|"
+    r"tips?\b|advice)"
+)
+# A sentence that tells the viewer what to do rather than why (grammar only):
+# a recommendation or instruction on its own ...
+_ADVICE = re.compile(
+    r"(?i)\b(?:solltest|solltet|sollten (?:wir|sie)|empfiehlt sich|empfehl\w*|tipps?\b|ratschl\w*|am besten (?:solltest|isst|"
+    r"machst|trinkst|gehst|hilft)|versuch(?:e|t)? (?:es |mal |doch |lieber )|probier(?:e|t)? (?:es |mal |doch )|"
+    r"was du (?:dagegen )?tun kannst|dagegen tun|you should|we should|try to|it'?s best to|recommend\w*|tips?\b|advice|"
+    r"what you can do)"
+)
+# ... or help, prevention and stopping aimed at the viewer ("können helfen,
+# aufzuhören, wenn du satt bist").  A cause that once helped ("weil Essen
+# beim Überleben geholfen hat") is not advice.
+_ADVICE_ACTION = re.compile(
+    r"(?i)\b(?:(?:kann|können|könnte|könnten|can|could|may|might) (?:\w+ ){0,2}?(?:helfen|help)|hilft (?:dir|dabei|euch|you)|"
+    r"helps? you|vermeid\w*|verhinder\w*|vorbeug\w*|gegensteuer\w*|aufzuhören|abgewöhn\w*|avoid\w*|prevent\w*|"
+    r"stop (?:yourself|eating|doing)|cut back)\b"
+)
+_VIEWER = re.compile(r"(?i)\b(?:du|dir|dich|dein\w*|ihr|euch|euer\w*|man|wir|uns|unser\w*|you|your|we|us|our)\b")
+ANSWER_MODES = ("explanation", "advice")
+
+
+def asks_for_advice(question: object) -> bool:
+    """The question itself asks what to do (advice, instructions, a recommendation)."""
+    return bool(_ASKS_FOR_ADVICE.search(str(question or "")))
+
+
+def gives_advice(text: object) -> bool:
+    """A sentence that recommends, instructs or prescribes instead of explaining."""
+    value = str(text or "")
+    return bool(_ADVICE.search(value) or (_ADVICE_ACTION.search(value) and _VIEWER.search(value)))
+
+
+def answer_mode(question: object) -> str:
+    """``advice`` when the question asks what to do (a how-to, a recommendation
+    or an explicit "und was kann ich dagegen tun?"), else ``explanation``."""
+    text = str(question or "")
+    if asks_for_advice(text) or (not is_explanatory_question(text) and _HOW.search(text)):
+        return "advice"
+    return "explanation"
+
+
+def advice_off_intent(question: object, text: object, intent: dict[str, Any] | None = None) -> bool:
+    """Advice the question did not ask for: a why/how-it-works question
+    answered with what to do about it changes the intent."""
+    mode = (intent or {}).get("answer_mode") if isinstance(intent, dict) else None
+    mode = mode if mode in ANSWER_MODES else answer_mode(question)
+    return mode == "explanation" and is_explanatory_question(question) and gives_advice(text)
+
+
 def _clauses(question: str) -> tuple[str, str]:
     """(main clause, contrast clause)."""
     match = _CONTRAST.search(question)
@@ -154,6 +215,8 @@ def interpret_question(question: str, language: str = "de") -> dict[str, Any]:
         "original_question": text,
         "intended_question": _paraphrase(text, kind, lang),
         "question_type": kind,
+        # What kind of answer is owed: an explanation, or something to do.
+        "answer_mode": answer_mode(text),
         "actor": actor,
         "target_phenomenon": main.strip(" ,?") or text,
         "key_contrast_or_condition": contrast.strip(" ?.") or None,
