@@ -180,7 +180,9 @@ def _polar(word: str) -> bool:
     return is_salient_concept(word)
 
 
-def _question_links(units: dict[str, dict[str, Any]], question: str, primary: str | None) -> dict[str, Any]:
+def _question_links(
+    units: dict[str, dict[str, Any]], question: str, primary: str | None, question_intent: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """How each fact connects to the core question (grammar and shared concepts only).
 
     A fact links when it shares a non-subject concept with the question, the
@@ -221,16 +223,24 @@ def _question_links(units: dict[str, dict[str, Any]], question: str, primary: st
                 shares = any(_overlap(own[fact_id], own[other]) for other in units if other != fact_id)
                 # Isolation needs content of its own: one sparse concept is no evidence.
                 links[fact_id] = "isolated" if not shares and len(own[fact_id]) >= ISOLATED_MIN_CONCEPTS else "unlinked"
+    # A fact that answers an explicitly excluded interpretation of the
+    # question (a deep link for "why do WE open the app") is off the question
+    # however well its words match (lazy: question_intent imports this module).
+    from .question_intent import domain_alignment
+
+    for fact_id, unit in units.items():
+        if fact_id != primary and domain_alignment(question_intent, [unit["claim"]])["status"] == "mismatch":
+            links[fact_id] = "excluded_interpretation"
     for fact_id, unit in units.items():
         planner = unit.pop("planner_serves_question", None)
         if unit["role"] == "ranked_item":
             links[fact_id] = "ranked"  # every ranked item answers a ranking question
         elif planner is True:
-            links[fact_id] = "planner" if links.get(fact_id) in {None, "unlinked", "isolated"} else links[fact_id]
+            links[fact_id] = "planner" if links.get(fact_id) in {None, "unlinked", "isolated", "excluded_interpretation"} else links[fact_id]
         elif planner is False and fact_id != primary:
             links[fact_id] = "off_question"
         unit["question_link"] = links.get(fact_id, "unjudged")
-        unit["off_question"] = unit["question_link"] in {"isolated", "off_question"}
+        unit["off_question"] = unit["question_link"] in {"isolated", "off_question", "excluded_interpretation"}
         if unit["off_question"]:
             unit["may_be_omitted"] = True
     return {"subject_terms": sorted(subject), "question_terms": sorted(predicate)}
@@ -532,7 +542,8 @@ def build_story_arc(
             repairs.append("duplicate_primary_answer_demoted")
     # Core question relevance: same-subject tangents become optional and
     # never join the causal chain or close the video.
-    terms = _question_links(units, question, primary) if units else {"subject_terms": [], "question_terms": []}
+    question_intent = (intent or {}).get("question_intent") if isinstance((intent or {}).get("question_intent"), dict) else None
+    terms = _question_links(units, question, primary, question_intent) if units else {"subject_terms": [], "question_terms": []}
 
     # Dependencies (planner-supplied ones are kept; the structure fills gaps).
     withhold = structure in {"reveal", "ranked_progression"}
@@ -666,6 +677,8 @@ def build_story_arc(
     }
     if isinstance(supplied, dict) and isinstance(supplied.get("answers_why"), bool):
         arc["planner_answers_why"] = supplied["answers_why"]
+    if question_intent:
+        arc["question_intent"] = {key: value for key, value in question_intent.items() if key != "candidates"}
     arc["question_contract"] = question_contract(arc, terms, supplied_gap)
     arc["issues"] = story_arc_issues(arc)
     return arc
@@ -748,7 +761,14 @@ def question_contract(arc: dict[str, Any], terms: dict[str, Any] | None = None, 
         stack.extend(units[current].get("depends_on") or [])
     chain = [fact_id for fact_id in arc.get("order") or [] if fact_id in required or (fact_id in units and not units[fact_id].get("may_be_omitted"))]
     terms = terms or {}
+    question_intent = arc.get("question_intent") if isinstance(arc.get("question_intent"), dict) else {}
     return {
+        # The user's words stay the core question; the interpreted meaning is
+        # what every beat must answer (traceable to the original).
+        "intended_question": question_intent.get("intended_question") or arc.get("primary_question") or "",
+        "question_type": question_intent.get("question_type"),
+        "expected_explanation_domain": question_intent.get("expected_explanation_domain"),
+        "excluded_interpretations": list(question_intent.get("explicitly_excluded_interpretations") or []),
         "explanation_spine": explanation_spine(arc, chain, terms),
         "core_question": arc.get("primary_question") or "",
         "hook_promise": hook_promise or (arc.get("curiosity_gap") or {}).get("planner_text") or arc.get("primary_question") or "",
@@ -879,7 +899,8 @@ def story_brief(arc: dict[str, Any] | None) -> dict[str, Any]:
             key: value for key, value in (arc.get("question_contract") or {}).items()
             if key in {
                 "core_question", "hook_promise", "primary_answer_id", "final_resolution_id", "essential_explanation_chain",
-                "off_question_ids", "explanation_spine",
+                "off_question_ids", "explanation_spine", "intended_question", "question_type", "expected_explanation_domain",
+                "excluded_interpretations",
             }
         },
         "information_order": [

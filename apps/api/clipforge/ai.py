@@ -14,7 +14,14 @@ from .schemas import AdvancedOptions
 
 DIRECTOR_INSTRUCTIONS = (
     "You are ClipForge's short-form director. Write the shortest complete explanation that answers "
-    "the user's question well. Identify a compact story_arc over the research evidence (1-based fact_index): "
+    "the user's question well. First interpret the question as a whole sentence, not as keywords: return "
+    "question_intent with a meaning-preserving intended_question, question_type, the acting person or thing "
+    "(grammatical agency: 'why do WE open the app although we did not want to' asks about human behaviour; 'why "
+    "does the app open although I clicked nothing' asks about technology), the target phenomenon, the key contrast or "
+    "condition, the expected explanation domain and the interpretations that are explicitly excluded. The supplied "
+    "question_intent is a grammatical first reading: confirm or correct it; never replace the user's question. Only "
+    "use confidence low when two materially different readings stay plausible. Facts that answer an excluded "
+    "interpretation get serves_question false. Identify a compact story_arc over the research evidence (1-based fact_index): "
     "give each fact a role (primary_answer, essential_context, evidence, comparison, supporting_fact, "
     "explanation, secondary_insight, ranked_item), what it depends_on, whether it may_appear_in_hook, and whether "
     "it serves_question: false for a fact that is merely about the same subject but does not help answer this "
@@ -152,6 +159,19 @@ class AIStoryArc(BaseModel):
     answers_why: bool | None = None
 
 
+class AIQuestionIntent(BaseModel):
+    """The planner's reading of what the user actually asks (confirms or corrects the grammar)."""
+
+    intended_question: str = Field(default="", max_length=400)
+    question_type: Literal["behavioral_why", "technical_why", "causal_why", "how", "comparison", "factual"] = "causal_why"
+    actor: str = Field(default="", max_length=80)
+    target_phenomenon: str = Field(default="", max_length=240)
+    key_contrast_or_condition: str = Field(default="", max_length=240)
+    expected_explanation_domain: str = Field(default="", max_length=240)
+    explicitly_excluded_interpretations: list[str] = Field(default_factory=list, max_length=4)
+    confidence: Literal["high", "medium", "low"] = "medium"
+
+
 class AIProjectPlan(BaseModel):
     intent: AIIntent
     research_questions: list[str] = Field(min_length=0, max_length=6)
@@ -164,6 +184,7 @@ class AIProjectPlan(BaseModel):
     visual_intents: list[AIVisualIntent] = Field(default_factory=list, max_length=8)
     payoff_plan: AIPayoffPlan | None = None
     story_arc: AIStoryArc | None = None
+    question_intent: AIQuestionIntent | None = None
 
 
 # The documented Hook Strategy framework in canonical form (hooks.CANONICAL_STRATEGIES).
@@ -355,7 +376,8 @@ HOOK_GENERATION_INSTRUCTIONS = (
     "overlay). strategy must be the planned documented strategy the wording really uses; supported_by_fact_ids "
     "names the facts it rests on; reason_codes are short snake_case codes (e.g. strong_sourced_number, "
     "protected_answer_safe, specific), never reasoning. "
-    "The supplied story_arc is authoritative: primary question, primary answer, final payoff, fact roles, "
+    "The hook opens story_arc.question_contract.intended_question (what the user means), never an excluded "
+    "interpretation. The supplied story_arc is authoritative: primary question, primary answer, final payoff, fact roles, "
     "dependencies and which facts may appear in a hook (may_appear_in_hook). When withhold_answer is true no channel "
     "may reveal the protected answer (payoff_plan.hook_must_not_reveal) or imply it by elimination; name the "
     "protected subject only as one open option of a question. A number of a protected fact may be spoken only "
@@ -609,6 +631,7 @@ def plan_with_openai(
     *,
     evidence: list[str] | None = None,
     novelty_plan: dict[str, Any] | None = None,
+    question_intent: dict[str, Any] | None = None,
 ) -> AIPlanResult:
     """Create a schema-validated semantic plan and report provider failure explicitly."""
     if settings.clipforge_ai_mode != "openai":
@@ -622,6 +645,7 @@ def plan_with_openai(
         "options": options.model_dump(mode="json", exclude_none=True),
         "research_evidence": [clean_research_claim(item) for item in (evidence or []) if item],
         "novelty_plan": novelty_plan or {},
+        "question_intent": {key: value for key, value in (question_intent or {}).items() if key not in {"candidates", "version"}},
         "hook_playbook": generation_playbook([
             {
                 "claim": clean_research_claim(item),

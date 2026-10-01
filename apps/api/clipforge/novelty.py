@@ -784,6 +784,13 @@ def _answer_sufficiency(units: list[dict[str, Any]], context: dict[str, Any], pa
         reasons.append("review_unanswered")
     elif ai and ai["verdict"] == "partial":
         reasons.append("review_partial")
+    # Did the video answer what the user MEANT, not one literal reading?
+    from .question_intent import domain_alignment
+
+    question_intent = (context.get("intent") or {}).get("question_intent") or arc.get("question_intent")
+    alignment = domain_alignment(question_intent, [unit["text"] for unit in body])
+    if alignment["status"] == "mismatch":
+        reasons.append("answers_excluded_interpretation")
     missing_research = spine.get("status") == "missing_mechanism"
     if explanatory and missing_research:
         reasons.append("research_has_no_mechanism")
@@ -791,7 +798,7 @@ def _answer_sufficiency(units: list[dict[str, Any]], context: dict[str, Any], pa
     if not explanatory and not ai:
         status = "not_applicable"
     elif (
-        {"review_unanswered", "question_left_open"} & set(reasons)
+        {"review_unanswered", "question_left_open", "answers_excluded_interpretation"} & set(reasons)
         or ("condition_not_explained" in reasons and _ESSENTIAL_CONDITION.search(question))
         or (missing_research and {"payoff_does_not_resolve", "condition_not_explained"} & set(reasons))
     ):
@@ -814,11 +821,16 @@ def _answer_sufficiency(units: list[dict[str, Any]], context: dict[str, Any], pa
         "mechanism_block_ids": [unit["block_id"] for unit in linked],
         "question_terms": sorted(terms),
         "condition_terms": sorted(condition),
+        "intent_alignment": alignment,
+        "intended_question": (question_intent or {}).get("intended_question") if isinstance(question_intent, dict) else None,
         "review_verdict": ai["verdict"] if ai else None,
         "one_sentence_answer": (ai or {}).get("one_sentence_answer") or "",
         "missing": (ai or {}).get("missing") or "",
         "research_required": status == "fail" and bool(
-            missing_research or {"no_mechanism_linked_to_question", "question_left_open", "condition_not_explained", "review_unanswered"} & set(reasons)
+            missing_research or {
+                "no_mechanism_linked_to_question", "question_left_open", "condition_not_explained", "review_unanswered",
+                "answers_excluded_interpretation",
+            } & set(reasons)
         ),
     }
 

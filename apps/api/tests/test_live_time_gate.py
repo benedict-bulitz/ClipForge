@@ -1,4 +1,4 @@
-"""Final live-gate regression: the real time script that escaped, and the two that pass.
+"""Final live-gate regression: the real time script that escaped, and the scripts that pass.
 
 Narration is each Mac run verbatim; research facts were not kept with the
 runs and are reconstructed from what each script says.  The real time run
@@ -29,6 +29,7 @@ from clipforge.novelty import (
     prune_redundant_information,
 )
 from clipforge.pipeline import _normalise_blocks, build_initial_state
+from clipforge.question_intent import interpret_question
 from clipforge.readiness import ScriptNotReady, content_readiness
 from clipforge.renderer import RenderResult
 from clipforge.research import ResearchResult
@@ -49,7 +50,10 @@ def fact(index: int, claim: str, importance: float = 0.8) -> dict:
 
 
 def intent(question: str) -> dict:
-    return {"topic": question, "question": question, "content_type": "factual_explainer", "language": "de", "research_required": True}
+    return {
+        "topic": question, "question": question, "content_type": "factual_explainer", "language": "de",
+        "research_required": True, "question_intent": interpret_question(question, "de"),
+    }
 
 
 # --- FAIL: time (the escaped live run) ------------------------------------------
@@ -126,10 +130,15 @@ PLANNERS = {
                          for index, role in ((1, "primary_answer"), (2, "supporting_fact"), (3, "supporting_fact"))]},
     "photo": {"primary_answer_index": 1, "final_payoff_index": 3, "answers_why": True},
 }
+# The accepted TikTok script answers how a tapped link hands over to the app:
+# a valid answer to this technical question - not to the behavioural one.
+DEEPLINK_Q = "Warum startet mein Handy eine App, obwohl ich nur auf einen Link klicke?"
+PLANNERS["deeplink"] = PLANNERS["tiktok"]
 CASES = {
     "time": (TIME_Q, TIME_FACTS, TIME_HOOK, TIME_BLOCKS),
     "tiktok": (TIKTOK_Q, TIKTOK_FACTS, TIKTOK_HOOK, TIKTOK_BLOCKS),
     "photo": (PHOTO_Q, PHOTO_FACTS, PHOTO_HOOK, PHOTO_BLOCKS),
+    "deeplink": (DEEPLINK_Q, TIKTOK_FACTS, TIKTOK_HOOK, TIKTOK_BLOCKS),
 }
 
 
@@ -211,10 +220,10 @@ def test_review_prompt_treats_an_open_ending_as_unanswered():
 
 
 # ---------------------------------------------------------------------------
-# TIKTOK and PHOTO: still pass, unchanged
+# PHOTO and the deep-link script (for its technical question): still pass, unchanged
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("name", ["tiktok", "photo"])
+@pytest.mark.parametrize("name", ["deeplink", "photo"])
 def test_the_passing_live_scripts_stay_ready_and_unchanged(name):
     before, state = final_state(name, PLANNERS[name])
     assert body(state["script"]["blocks"]) == body(before)
@@ -223,10 +232,21 @@ def test_the_passing_live_scripts_stay_ready_and_unchanged(name):
     assert content_readiness(state)["ready"]
 
 
-@pytest.mark.parametrize("name", ["tiktok", "photo"])
+@pytest.mark.parametrize("name", ["deeplink", "photo"])
 def test_the_passing_live_scripts_stay_ready_without_a_planner(name):
     _before, state = final_state(name, None)
     assert content_readiness(state)["ready"]
+
+
+@pytest.mark.parametrize("planner", [PLANNERS["tiktok"], None], ids=["planner", "deterministic"])
+def test_the_deeplink_script_answers_the_wrong_tiktok_question(planner):
+    # Factually fine, but the user asked why WE open the app without meaning to.
+    _before, state = final_state("tiktok", planner)
+    sufficiency = assess_information_gain(state)["answer_sufficiency"]
+    assert sufficiency["status"] == "fail" and "answers_excluded_interpretation" in sufficiency["reasons"]
+    assert sufficiency["intent_alignment"]["status"] == "mismatch"
+    readiness = content_readiness(state)
+    assert not readiness["ready"] and readiness["status"] == "research_required"
 
 
 # ---------------------------------------------------------------------------
@@ -306,7 +326,7 @@ def test_the_live_time_run_fails_research_required_with_no_tts_or_render(db, mon
     assert len(calls.queries) == 2  # one bounded research retry, then a clean stop
 
 
-@pytest.mark.parametrize("name", ["tiktok", "photo"])
+@pytest.mark.parametrize("name", ["deeplink", "photo"])
 def test_the_passing_live_scripts_render(db, monkeypatch, tmp_path, name):
     calls = Calls()
     _wire(monkeypatch, name, calls)

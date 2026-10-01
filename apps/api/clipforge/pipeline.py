@@ -36,6 +36,8 @@ from .payoff import (
     trim_post_payoff_fluff,
 )
 from .progress import ProgressCallback, report_progress
+from .question_intent import interpret_question, merge_planner_intent
+from .question_intent import research_query as intent_research_query
 from .reactions import plan_viewer_reactions, reaction_arc
 from .readiness import content_readiness, not_ready_message
 from .research import research_topic
@@ -1168,6 +1170,8 @@ def research_retry_query(state: dict[str, Any]) -> str:
     question = str(intent.get("question") or state.get("prompt") or "")
     report = current_information_gain(state)
     sufficiency = report.get("answer_sufficiency") if isinstance(report.get("answer_sufficiency"), dict) else {}
+    # The interpreted question (possibly corrected by the planner) leads the retry.
+    question = intent_research_query(intent.get("question_intent"), str(intent.get("language") or "en")) or question
     parts = [question, _MECHANISM_QUERY.get(str(intent.get("language") or "en"), _MECHANISM_QUERY["en"])]
     parts += [str(term) for term in sufficiency.get("condition_terms") or []]
     if sufficiency.get("missing"):
@@ -1220,6 +1224,9 @@ def _build_initial_state(
     research_query: str | None = None,
 ) -> dict[str, Any]:
     intent = _intent(prompt, options)
+    # What the user actually asks, before anything is researched (grammar:
+    # agency, intention, contrast); the planner call confirms or corrects it.
+    intent["question_intent"] = interpret_question(prompt, intent["language"])
     resolved_options = options.model_copy(update={"language": intent["language"]})
     sources: list[dict] = []
     facts: list[dict[str, Any]] = []
@@ -1228,7 +1235,10 @@ def _build_initial_state(
     research_error = None
     if intent["research_required"]:
         report_progress(progress, "research", "Researching the topic", phase="start")
-        result = research_topic(research_query or prompt, intent["language"], settings)
+        result = research_topic(
+            research_query or intent_research_query(intent["question_intent"], intent["language"]) or prompt,
+            intent["language"], settings,
+        )
         research_status = result.status
         research_provider = result.provider
         research_error = result.error
@@ -1266,11 +1276,13 @@ def _build_initial_state(
         settings,
         evidence=[fact["claim"] for fact in facts if fact.get("claim")],
         novelty_plan=novelty_plan,
+        question_intent=intent["question_intent"],
     )
     plan_language_mismatch = False
     if ai_result.plan:
         plan = ai_plan_to_dict(ai_result.plan)
         plan["intent"]["language"] = intent["language"]
+        intent["question_intent"] = merge_planner_intent(intent["question_intent"], plan.get("question_intent"))
         planned_text = " ".join(
             str(block.get("text", "")) for block in plan.get("script_blocks", [])
         )

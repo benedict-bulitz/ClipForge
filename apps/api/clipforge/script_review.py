@@ -134,6 +134,8 @@ SCRIPT_REVIEW_V2_INSTRUCTIONS = (
     "The final block must resolve the question with a clear 'that is why' connection. If cutting leaves a "
     "short script, keep it short: never pad, never invent a fact to fill a gap, and never move the protected "
     "answer earlier. "
+    "Intent check: the body must answer story_arc.question_contract.intended_question (what the user means), "
+    "not one of its excluded_interpretations; a correct answer to the wrong reading of the question is unanswered. "
     "Explanation check against story_arc.question_contract.explanation_spine: for a why/how question the body "
     "must follow one causal path - observation, cause or mechanism, consequence, resolution - and the answer block "
     "orients the viewer without finishing the video. For every sentence of the final body ask what the viewer can "
