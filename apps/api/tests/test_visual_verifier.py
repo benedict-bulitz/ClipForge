@@ -1,4 +1,5 @@
 from PIL import Image
+from visual_rights_support import TEST_REUSE_RIGHTS
 
 from clipforge.media import MediaCandidate, media_relevance, verify_media_shortlist
 from clipforge.visual_verifier import (
@@ -11,7 +12,7 @@ from clipforge.visual_verifier import (
 def candidate(
     identifier: str, *, title: str = "", query: str = "house foundation", rank: float = 100
 ) -> MediaCandidate:
-    return MediaCandidate(identifier, "video", "https://cdn.test/media", "https://source.test", "Tester", None, 1080, 1920, 8.0, query, rank, title=title, preview_url="https://cdn.test/preview.jpg")
+    return MediaCandidate(identifier, "video", "https://cdn.test/media", "https://source.test", "Tester", None, 1080, 1920, 8.0, query, rank, title=title, preview_url="https://cdn.test/preview.jpg", rights=TEST_REUSE_RIGHTS)
 
 
 class FakeVerifier:

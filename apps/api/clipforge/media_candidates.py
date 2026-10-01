@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -14,18 +14,19 @@ from .image_generation import generation_message, get_image_generator, model_lab
 from .media import (
     MediaCandidate,
     MediaProviderError,
-    PexelsMediaClient,
-    WikimediaMediaClient,
-    _optional_real_clients,
     build_visual_query_plan,
+    candidate_evidence,
     candidate_reveals_protected,
     derive_search_queries,
+    destination_asset_allowed,
+    excluded_asset_keys,
     is_real_media_allowed,
     is_scene_asset_allowed,
     media_relevance,
     normalize_cached_photo,
     protected_candidate_terms,
     real_media_quality_gate,
+    scene_acceptance_key,
     verify_media_shortlist,
 )
 from .renderer import RenderUnavailable, replace_scene_video
@@ -34,6 +35,12 @@ from .services import (
     _append_revision,
     _next_revision_number,
     effective_revision_state,
+)
+from .visual_providers import (
+    AcquisitionBudget,
+    CandidateLedger,
+    asset_keys,
+    create_provider_registry,
 )
 
 MAX_CANDIDATES = 8
@@ -48,6 +55,7 @@ class CandidateSet:
     base_revision: int
     candidates: tuple[MediaCandidate, ...]
     created_at: float
+    evidence: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 _SETS: dict[str, CandidateSet] = {}
@@ -72,8 +80,9 @@ def clear_candidate_sets() -> None:
 
 def _ordered(candidates: list[MediaCandidate], preferred: str, used: set[str], scene: dict[str, Any] | None = None, state: dict[str, Any] | None = None) -> list[MediaCandidate]:
     unique: dict[str, MediaCandidate] = {}
+    ledger = CandidateLedger(used)
     for candidate in candidates:
-        if is_real_media_allowed(candidate) and candidate.identity not in used:
+        if ledger.admit(candidate):
             unique.setdefault(candidate.identity, candidate)
     verified = list(unique.values())
     if scene is not None:
@@ -115,117 +124,78 @@ def discover_scene_media_candidates(
     if preferred not in {"video", "photo"}:
         preferred = "video"
     used = {
-        str(media.get("identity"))
+        key
         for item in [scene]
         if isinstance(item, dict)
         for media in [item.get("media")]
-        if isinstance(media, dict) and media.get("identity")
+        if isinstance(media, dict)
+        for key in asset_keys(media)
     }
+    used.update(excluded_asset_keys(state, set(scene.get("rejected_media_identities") or [])))
     # One focused query keeps this scene-level browser bounded; providers already return a ranked page.
     queries = derive_search_queries(scene, state)[:3] or [str(scene.get("visual_goal") or "cinematic")]
-    pexels = client or (PexelsMediaClient(settings.pexels_api_key) if settings.pexels_api_key else None)
-    wikimedia = fallback_client or WikimediaMediaClient()
+    registry = create_provider_registry(settings, client=client, fallback_client=fallback_client, extra_clients=extra_clients)
+    acquisition_budget = AcquisitionBudget()
     found: list[MediaCandidate] = []
     portrait = int(state["timeline"]["height"]) >= int(state["timeline"]["width"])
     scene_duration = float(scene["end"] - scene["start"])
     eligible: dict[str, MediaCandidate] = {}
+    evidence: dict[str, dict[str, Any]] = {}
     checked: set[str] = set()
-    # Same Story Arc reveal protection as automatic selection.
+    ledger = CandidateLedger(used)
     protected_terms = protected_candidate_terms(state, build_visual_query_plan(scene, state))
+
     def accept_new() -> None:
         ordered = _ordered(found, preferred, used | checked, scene, state)
         for offset in range(0, min(len(ordered), 24), 6):
             batch = ordered[offset:offset + 6]
             checked.update(item.identity for item in batch)
-            for candidate, relevance in verify_media_shortlist(batch, scene, state, visual_verifier):
-                # The same final quality gate as automatic selection.
-                if (
-                    relevance.get("confidence") in {"high", "acceptable"}
+            for candidate, relevance in verify_media_shortlist(batch, scene, state, visual_verifier, acquisition_budget=acquisition_budget):
+                if (relevance.get("confidence") in {"high", "acceptable"}
                     and real_media_quality_gate(candidate, relevance)[0]
-                    and not candidate_reveals_protected(candidate, protected_terms)
-                ):
+                    and not candidate_reveals_protected(candidate, protected_terms)):
                     eligible.setdefault(candidate.identity, candidate)
+                    evidence[candidate.identity] = {"relevance": relevance, "acceptance_scene_key": scene_acceptance_key(scene, state)}
             if len(eligible) >= limit:
                 break
 
-    for query in queries:
-        if pexels is not None:
-            search = pexels.search_videos if preferred == "video" else pexels.search_photos
-            kwargs = {"portrait": portrait}
-            if preferred == "video":
-                kwargs["scene_duration"] = scene_duration
-            try:
-                found.extend(search(query, **kwargs))
-            except MediaProviderError:
-                pass
-        accept_new()
-        if len(eligible) < limit and pexels is not None:
-            search = pexels.search_photos if preferred == "video" else pexels.search_videos
-            kwargs = {"portrait": portrait}
-            if search.__name__ == "search_videos":
-                kwargs["scene_duration"] = scene_duration
-            try:
-                found.extend(search(query, **kwargs))
-            except MediaProviderError:
-                pass
-        accept_new()
-        if len(eligible) >= limit:
-            break
-    # Optional free providers (Pixabay) use the same bounded query list.
-    extras = _optional_real_clients(settings) if extra_clients is None else list(extra_clients)
-    for extra in extras:
-        if len(eligible) >= limit:
-            break
-        for query in queries:
-            try:
-                if preferred == "video" and hasattr(extra, "search_videos"):
-                    found.extend(extra.search_videos(query, portrait=portrait, scene_duration=scene_duration))
-                else:
-                    found.extend(extra.search_photos(query, portrait=portrait))
-            except MediaProviderError:
-                pass
-            accept_new()
-            if len(eligible) >= limit:
-                break
-    if extra_clients is None:
-        for extra in extras:
-            extra.close()
-    # Wikimedia is a photo fallback and is queried only when the bounded Pexels pass is short.
-    if len(eligible) < limit:
-        for query in queries:
-            try:
-                found.extend(wikimedia.search_photos(query, portrait=portrait))
-            except MediaProviderError:
-                pass
-            accept_new()
-            if len(eligible) >= limit:
-                break
+    primary = registry.get("pexels")
+    alternate = "photo" if preferred == "video" else "video"
+    passes = []
+    if primary:
+        passes.append([(primary, preferred), (primary, alternate)])
+    passes.extend([(provider, preferred if preferred in provider.capabilities.kinds else "photo")]
+                  for provider in registry.enabled() if provider.provider not in {"pexels", "wikimedia"})
+    commons = registry.get("wikimedia")
+    if commons:
+        passes.append([(commons, "photo")])
+    try:
+        for search_pass in passes:
+            for query in queries:
+                for provider, kind in search_pass:
+                    if len(eligible) >= limit:
+                        break
+                    try:
+                        results = provider.search(query, kind, portrait=portrait, scene_duration=scene_duration, budget=acquisition_budget)
+                        found.extend(item for item in results if ledger.admit(item))
+                    except MediaProviderError:
+                        continue
+                    accept_new()
+                if len(eligible) >= limit:
+                    break
+    finally:
+        registry.close()
     selected = tuple(eligible.values())[: max(1, min(limit, MAX_CANDIDATES))]
     _prune()
     token = uuid.uuid4().hex
-    _SETS[token] = CandidateSet(project_id, scene_number, base_revision, selected, time.monotonic())
+    _SETS[token] = CandidateSet(project_id, scene_number, base_revision, selected, time.monotonic(), evidence)
     return token, [serialize_candidate(f"{token}:{index}", candidate) for index, candidate in enumerate(selected)]
 
 
 def serialize_candidate(token: str, candidate: MediaCandidate, selected: bool = False) -> dict[str, Any]:
-    return {
-        "token": token,
-        "provider": candidate.provider,
-        "provider_id": candidate.provider_id,
-        "kind": candidate.kind,
+    return candidate_evidence(candidate) | {
+        "token": token, "selected": selected,
         "preview_url": candidate.download_url if candidate.kind == "video" else candidate.preview_url or candidate.download_url,
-        "verification_url": candidate.verification_url,
-        "source_url": candidate.source_url,
-        "creator": candidate.creator,
-        "creator_url": candidate.creator_url,
-        "query": candidate.query,
-        "width": candidate.width,
-        "height": candidate.height,
-        "duration": candidate.duration,
-        "selected": selected,
-        "title": candidate.title,
-        "description": candidate.description,
-        "tags": list(candidate.tags),
     }
 
 
@@ -255,45 +225,35 @@ def apply_scene_media_candidate(
         candidate = candidate_set.candidates[int(index_text)]
     except (ValueError, IndexError):
         raise CandidateError("That media candidate is not part of the fetched alternatives.")
-    downloader = client if candidate.provider == "pexels" else fallback_client
     if not is_real_media_allowed(candidate):
-        raise CandidateError("Only real images and videos may replace a scene.")
-    if candidate.provider == "pixabay" and downloader is None:
-        downloader = next((extra for extra in _optional_real_clients(settings) if extra.provider == "pixabay"), None)
-        if downloader is None:
-            raise CandidateError("Pixabay is not configured.")
+        raise CandidateError("Selected media has unsafe or insufficient reusable-rights evidence.")
+    state = effective_revision_state(project)
+    scenes = state.get("scenes") or []
+    if scene_number < 1 or scene_number > len(scenes):
+        raise CandidateError("Scene not found.")
+    scene = scenes[scene_number - 1]
+    metadata = candidate_evidence(candidate) | candidate_set.evidence.get(candidate.identity, {})
+    if not destination_asset_allowed(metadata, scene, state):
+        raise CandidateError("Selected media no longer passes scene acceptance.")
+    registry = create_provider_registry(settings, client=client, fallback_client=fallback_client)
+    downloader = registry.get(candidate.provider)
     if downloader is None:
-        downloader = PexelsMediaClient(settings.pexels_api_key) if candidate.provider == "pexels" and settings.pexels_api_key else WikimediaMediaClient()
+        registry.close()
+        raise CandidateError("The selected media provider is not configured.")
     suffix = ".mp4" if candidate.kind == "video" else ".jpg"
     destination = settings.render_root.resolve() / project.id / "replacements" / candidate.provider / f"{candidate.kind}-{candidate.provider_id}{suffix}"
     try:
-        downloaded = downloader.download(candidate, destination)
+        downloaded = downloader.download(candidate, destination, budget=AcquisitionBudget())
         if not downloaded.is_file() or downloaded.stat().st_size <= 0:
             raise MediaProviderError("provider_error", "The selected media could not be cached.")
         if candidate.kind == "photo":
             normalize_cached_photo(downloaded)
     except (MediaProviderError, OSError) as exc:
         raise CandidateError(str(exc)) from exc
+    finally:
+        registry.close()
     relative = downloaded.relative_to(settings.render_root.resolve()).as_posix()
-    metadata = {
-        "identity": candidate.identity,
-        "provider": candidate.provider,
-        "source": candidate.provider,
-        "provider_id": candidate.provider_id,
-        "kind": candidate.kind,
-        "cache_path": relative,
-        "source_url": candidate.source_url,
-        "creator": candidate.creator,
-        "creator_url": candidate.creator_url,
-        "width": candidate.width,
-        "height": candidate.height,
-        "duration": candidate.duration,
-        "query": candidate.query,
-        "title": candidate.title,
-        "description": candidate.description,
-        "tags": list(candidate.tags),
-        "manually_selected": True,
-    }
+    metadata.update(cache_path=relative, manually_selected=True)
 
     def mutate(state: dict[str, Any]) -> str:
         scenes = state.get("scenes") or []
@@ -313,15 +273,14 @@ def apply_scene_media_candidate(
         assets["status"] = "media_ready"
         return f"Applied {candidate.kind} media {candidate.provider_id} to scene {scene_number}."
 
-    state = effective_revision_state(project)
     mutate(state)
-    result = _commit_scene_media(db, project, scene_number, state, settings, instruction=f"Choose media for scene {scene_number}", auto_render=auto_render)
+    result = _commit_scene_media(db, project, scene_number, state, settings, instruction=f"Choose media for scene {scene_number}", auto_render=auto_render, base_revision=candidate_set.base_revision)
     _SETS.pop(set_token, None)
     return result
 
 
 def _commit_scene_media(
-    db: Session, project: Any, scene_number: int, state: dict[str, Any], settings: Settings, *, instruction: str, auto_render: bool
+    db: Session, project: Any, scene_number: int, state: dict[str, Any], settings: Settings, *, instruction: str, auto_render: bool, base_revision: int | None = None
 ) -> Any:
     """Persist a scene media choice; re-render just that scene when a render exists.
 
@@ -340,7 +299,7 @@ def _commit_scene_media(
         state.setdefault("render", {}).update(status="regeneration_required", stale=True)
     return _append_revision(
         db, project, instruction=instruction, state=attach_hashes(state), changed=["assets", "scenes", "render"],
-        base_revision=project.current_revision, status="rendered" if rendered else "ready_for_production",
+        base_revision=base_revision if base_revision is not None else project.current_revision, status="rendered" if rendered else "ready_for_production",
     )
 
 

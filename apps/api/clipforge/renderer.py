@@ -31,7 +31,13 @@ from .alignment import (
 )
 from .attention import replan_attention, visible_attention_events
 from .config import Settings
-from .media import GRAPHIC_ASSET_SOURCE, _reuse_safe, is_scene_asset_allowed, media_source
+from .media import (
+    GRAPHIC_ASSET_SOURCE,
+    destination_asset_allowed,
+    is_scene_asset_allowed,
+    media_source,
+    refresh_rights_acceptance,
+)
 from .music import attach_discovered_track, resolve_track_path
 from .narration import clean_narration_text, contamination_issues
 from .progress import ProgressCallback, report_progress
@@ -1126,20 +1132,30 @@ def _create_visual_segment(
     height = int(state["timeline"]["height"])
     fps = int(state["timeline"]["fps"])
     source, kind = _scene_media_path(scene, settings)
+    reused = scene.get("asset_status") in {"related_media_reused", "real_media_reused", "generated_media_reused", "block_visual_continued"}
+    if source is not None and reused and not destination_asset_allowed(scene["media"], scene, state, reuse=True):
+        source = None
     if source is None:
         if require_real_media:
             raise RenderUnavailable("The replacement media is unavailable. Choose another real image or video.")
         strategy = scene.get("visual_director") if isinstance(scene.get("visual_director"), dict) else {}
         for other in state.get("scenes", []):
-            if not isinstance(other.get("media"), dict) or not _reuse_safe(other["media"], strategy):
+            if not isinstance(other.get("media"), dict) or not destination_asset_allowed(other["media"], scene, state, reuse=True, strategy=strategy):
                 continue
             source, kind = _scene_media_path(other, settings)
             if source is not None:
-                scene["media"] = dict(other["media"])
+                scene["media"] = refresh_rights_acceptance(dict(other["media"]))
                 scene["asset_status"] = "real_media_reused"
+                manifest = state.setdefault("assets", {}).setdefault("license_manifest", [])
+                if not any(item.get("identity") == scene["media"].get("identity") for item in manifest):
+                    manifest.append(dict(scene["media"]))
                 break
         if source is None:
             raise RenderUnavailable("No real scene media is available. Retry media discovery; text cards are disabled.")
+    refresh_rights_acceptance(scene["media"])
+    manifest = state.setdefault("assets", {}).setdefault("license_manifest", [])
+    manifest[:] = [item for item in manifest if item.get("identity") != scene["media"].get("identity")]
+    manifest.append(dict(scene["media"]))
     output = temp / f"segment-{index:02d}.mp4"
     adjustments = scene.get("render_adjustments") if isinstance(scene.get("render_adjustments"), dict) else {}
     smart_crop = analyze_scene_media(scene, state, settings)

@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import sessionmaker
+from visual_rights_support import TEST_REUSE_RIGHTS
 
 from clipforge.config import Settings
 from clipforge.generation import (
@@ -164,9 +165,11 @@ def test_media_reports_actual_scene_work_units_and_cache_hits(tmp_path):
                 "id": f"scene-{index}",
                 "start": index * 2,
                 "end": index * 2 + 2,
-                "visual_goal": "blue daylight sky",
+                "visual_goal": "blue daylight sky", "narration": "Blue daylight sky",
                 "asset_status": "photo_ready",
                 "media": {
+                    "rights": TEST_REUSE_RIGHTS.serialize(),
+                    "query": "blue daylight sky", "title": "Blue daylight sky",
                     "identity": f"wikimedia:photo:cached-{index}",
                     "provider": "wikimedia",
                     "kind": "photo",

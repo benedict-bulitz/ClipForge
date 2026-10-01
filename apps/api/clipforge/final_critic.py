@@ -41,9 +41,15 @@ from .media import (
     _mentions,
     _reuse_safe,
     build_visual_query_plan,
+    destination_asset_allowed,
     is_scene_asset_allowed,
+    media_relevance,
     media_source,
+    persisted_candidate,
     protected_candidate_terms,
+    refresh_rights_acceptance,
+    reuse_allowed,
+    scene_acceptance_key,
 )
 from .overlay_copy import (
     OVERLAY_SEMANTIC_CODES,
@@ -663,6 +669,8 @@ class _Review:
         scenes), its role must be compatible and it must not be this scene's
         current (rejected) visual.
         """
+        if not reuse_allowed(row.scene, row.strategy) or user_locked_visual(row.scene):
+            return []
         minimum = self.required_score(row) if minimum is None else minimum
         rejected = {str(value) for value in row.scene.get("rejected_media_identities") or []} | ({row.identity} if row.identity else set())
         ranked: list[tuple[float, _Row]] = []
@@ -684,6 +692,7 @@ class _Review:
             seen.add(other.identity)
             same_block = bool(row.scene.get("block_id")) and other.scene.get("block_id") == row.scene.get("block_id")
             score = self.cross_score(other, row)
+            visual_score = score
             if score is None:
                 # Metadata only: the same fact's visual, or media described by
                 # this scene's own visual-intent words.
@@ -691,7 +700,11 @@ class _Review:
                 overlap = len(words & _coverage_tokens(_media_text(media))) / max(1, min(len(words), 6))
                 fits = same_block or overlap >= 0.34
                 score = minimum + overlap if fits else 0.0
-            if score >= minimum:
+            evidence = dict(media)
+            if visual_score is not None:
+                evidence["acceptance_scene_key"] = scene_acceptance_key(row.scene, self.state)
+                evidence["relevance"] = {"visual": {"status": "verified", "score": visual_score, "scene_score": visual_score, "provenance": "final_critic_destination_frames"}}
+            if score >= minimum and destination_asset_allowed(evidence, row.scene, self.state, reuse=True, strategy=strategy):
                 ranked.append((score + (0.02 if same_block else 0.0), other))
         return sorted(ranked, key=lambda item: -item[0])
 
@@ -1529,10 +1542,14 @@ class _Repairer:
                 remember()
             _restore(scene, original)
         scene["asset_status"] = "replacement_required"
-        scene["media_repair"] = {"no_reuse": True}
+        original_repair = scene.get("media_repair")
+        scene["media_repair"] = {**(original_repair or {}), "no_reuse": True}
         scene.pop("visual_continuity", None)
         self.prepare_media(self.state)
-        scene.pop("media_repair", None)
+        if original_repair is not None:
+            scene["media_repair"] = original_repair
+        else:
+            scene.pop("media_repair", None)
         strategy = self._strategy(scene)
         media = scene.get("media") if isinstance(scene.get("media"), dict) else {}
         identity = str(media.get("identity") or "")
@@ -1612,8 +1629,18 @@ class _Repairer:
             (dict(item["media"]) for item in self.state.get("scenes") or [] if isinstance(item.get("media"), dict) and str(item["media"].get("identity") or "") == action["base_identity"]),
             None,
         )
-        if base is None or reveal_problems(scene, self.state, media=base, overlays=[]) or not _reuse_safe(base, strategy or {"reveal_allowed": True}):
+        if base is None or reveal_problems(scene, self.state, media=base, overlays=[]):
             return False
+        target = next((row for row in self.review.rows if row.scene_id == scene.get("id")), None)
+        source = next((row for row in self.review.rows if row.identity == action["base_identity"]), None)
+        score = self.review.cross_score(source, target) if source is not None and target is not None else None
+        if score is not None and media_source(base) not in {GENERATED_ASSET_SOURCE, GRAPHIC_ASSET_SOURCE}:
+            relevance = media_relevance(persisted_candidate(base), scene, self.state)
+            relevance["visual"] = {"status": "verified", "score": score, "scene_score": score, "provenance": "final_critic_destination_frames"}
+            base.update(relevance=relevance, acceptance_scene_key=scene_acceptance_key(scene, self.state))
+        if not destination_asset_allowed(base, scene, self.state, reuse=True, strategy=strategy):
+            return False
+        refresh_rights_acceptance(base)
         base.pop("manually_selected", None)
         scene["media"] = base
         scene["asset_status"] = "block_visual_continued"

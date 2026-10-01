@@ -13,6 +13,8 @@ from urllib.parse import urlparse
 import httpx
 
 from .media import MAX_PHOTO_BYTES, MAX_VIDEO_BYTES, MediaCandidate, MediaProviderError
+from .visual_providers import ProviderCapabilities
+from .visual_rights import provider_terms_rights
 
 PIXABAY_API = "https://pixabay.com/api/"
 PIXABAY_VIDEO_API = "https://pixabay.com/api/videos/"
@@ -47,6 +49,7 @@ def parse_pixabay_photos(payload: dict[str, Any], *, query: str, portrait: bool)
                 query=query,
                 rank=65 - position * 2 + (25 if (height >= width) == portrait else 0),
                 provider="pixabay",
+                rights=provider_terms_rights("pixabay"),
                 title="",
                 description=", ".join(tags),
                 tags=tags,
@@ -90,6 +93,7 @@ def parse_pixabay_videos(
                 query=query,
                 rank=90 - position * 2 + (30 if (height >= width) == portrait else 0) - too_short,
                 provider="pixabay",
+                rights=provider_terms_rights("pixabay"),
                 title="",
                 description=", ".join(tags),
                 tags=tags,
@@ -105,6 +109,7 @@ class PixabayMediaClient:
 
     __slots__ = ("_api_key", "_client")
     provider = "pixabay"
+    capabilities = ProviderCapabilities(("video", "photo"), page_limit=20, evidence="provider-wide license")
     license = PIXABAY_LICENSE
 
     def __init__(self, api_key: str, *, client: httpx.Client | None = None):
@@ -120,8 +125,8 @@ class PixabayMediaClient:
     def _get_json(self, url: str, params: dict[str, Any]) -> dict[str, Any]:
         try:
             response = self._client.get(url, params={**params, "key": self._api_key})
-        except httpx.HTTPError:
-            raise MediaProviderError("network_error", "Pixabay search is temporarily unavailable.") from None
+        except httpx.HTTPError as exc:
+            raise MediaProviderError("timeout" if isinstance(exc, httpx.TimeoutException) else "network_error", "Pixabay search is temporarily unavailable.") from None
         if response.status_code in {400, 401, 403}:
             raise MediaProviderError("invalid_credentials", "Pixabay rejected the configured credentials.")
         if response.status_code == 429:
@@ -132,7 +137,9 @@ class PixabayMediaClient:
             payload = response.json()
         except ValueError:
             raise MediaProviderError("provider_error", "Pixabay returned an unreadable response.") from None
-        return payload if isinstance(payload, dict) else {}
+        if not isinstance(payload, dict):
+            raise MediaProviderError("malformed_response", "Pixabay returned malformed data.")
+        return payload
 
     def search_photos(self, query: str, *, portrait: bool) -> list[MediaCandidate]:
         payload = self._get_json(PIXABAY_API, {

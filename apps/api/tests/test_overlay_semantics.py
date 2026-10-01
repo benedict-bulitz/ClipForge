@@ -132,6 +132,9 @@ def test_well_sized_but_meaningless_overlay_fails_and_only_the_copy_is_repaired(
     for item in state["scenes"]:
         if item["block_id"] == "voice_block_02":
             item["visual_director"]["overlay_spec"] = {"kind": "process", "steps": list(BAD)}
+            # Keep this semantics-only fixture inside its stated size limit
+            # across local fonts; geometry has separate regression coverage.
+            item["render_adjustments"] = {"overlay": {"mode": "compact"}}
     media_pass(state, tmp_path, provider)
     render(state, tmp_path)
     target = next(item["id"] for item in state["scenes"] if item["block_id"] == "voice_block_02")

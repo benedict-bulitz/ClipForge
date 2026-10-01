@@ -528,7 +528,7 @@ def test_repair_before_the_reveal_cannot_introduce_the_protected_answer(monkeypa
     assert not any(issue["category"] == "reveal_safety" for issue in review["issues"])
 
 
-def test_answer_visual_shown_before_the_reveal_is_flagged_and_replaced(monkeypatch, tmp_path):
+def test_renderer_blocks_answer_visual_before_the_reveal(monkeypatch, tmp_path):
     state = islands(monkeypatch, tmp_path)
     provider = island_provider()
     media_pass(state, tmp_path, provider)
@@ -541,13 +541,15 @@ def test_answer_visual_shown_before_the_reveal_is_flagged_and_replaced(monkeypat
     review = Harness(tmp_path, provider).review(state)
 
     reveal = [issue for issue in review["initial_issues"] if issue["scene_id"] == "scene_01_01" and issue["category"] == "reveal_safety"]
-    assert reveal and all(issue["severity"] == "error" for issue in reveal)
+    # Destination acceptance prevents the illicit borrowed answer from reaching
+    # the rendered hook; the existing Critic therefore sees no reveal leak.
+    assert reveal == []
     assert not shows_sweden(scene(state, "scene_01_01")["media"])
     assert frame_concepts(review, "scene_01_01", tmp_path)["sweden"] < 0.05
-    assert review["status"] == "repaired"
+    assert review["status"] == "passed"
 
 
-def test_final_payoff_that_collapses_into_the_answer_visual_is_repaired(monkeypatch, tmp_path):
+def test_renderer_blocks_unrelated_primary_answer_reuse_for_final_payoff(monkeypatch, tmp_path):
     state = islands(monkeypatch, tmp_path)
     provider = island_provider()
     media_pass(state, tmp_path, provider)
@@ -559,11 +561,11 @@ def test_final_payoff_that_collapses_into_the_answer_visual_is_repaired(monkeypa
 
     review = Harness(tmp_path, provider).review(state)
 
-    assert "repeats_primary_answer_visual" in issue_codes(review, final["id"], "initial_issues")
+    assert "repeats_primary_answer_visual" not in issue_codes(review, final["id"], "initial_issues")
     repaired = scene(state, final["id"])
-    assert repaired["media"]["provider_id"] == "nation"
+    assert repaired["media"]["provider_id"] == "id"  # fitting Indonesia footage, accepted before Critic
     assert repaired["media"]["identity"] != scene(state, answer["id"])["media"]["identity"]
-    assert review["status"] == "repaired"
+    assert review["status"] == "passed"
 
 
 # ---------------------------------------------------------------------------

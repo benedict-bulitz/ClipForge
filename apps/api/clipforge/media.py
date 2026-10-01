@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import hashlib
 import html
+import json
 import re
 import unicodedata
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -14,6 +16,23 @@ import httpx
 from . import still_image
 from .config import Settings
 from .progress import ProgressCallback, report_progress
+from .visual_providers import (
+    AcquisitionBudget,
+    CandidateLedger,
+    ProviderAdapter,
+    ProviderCapabilities,
+    asset_keys,
+    canonical_source,
+    create_provider_registry,
+    provider_call,
+)
+from .visual_rights import (
+    MediaRights,
+    accepted_rights,
+    commons_rights,
+    evaluate_rights,
+    provider_terms_rights,
+)
 from .visual_verifier import (
     SCENE_VISUAL_THRESHOLD,
     VISUAL_THRESHOLD,
@@ -57,6 +76,8 @@ class MediaCandidate:
     tags: tuple[str, ...] = ()
     preview_url: str = ""
     verification_url: str = ""
+    rights: MediaRights = field(default_factory=MediaRights)
+    canonical_asset_key: str | None = None
 
     @property
     def identity(self) -> str:
@@ -65,6 +86,10 @@ class MediaCandidate:
 
 class PexelsMediaClient:
     """Small Pexels client that keeps credentials out of representations and errors."""
+
+    provider = "pexels"
+    request_budget_supported = True
+    capabilities = ProviderCapabilities(("video", "photo"), evidence="provider-wide license")
 
     __slots__ = ("_api_key", "_client")
 
@@ -82,7 +107,7 @@ class PexelsMediaClient:
         self._client.close()
 
     def search_videos(
-        self, query: str, *, portrait: bool, scene_duration: float
+        self, query: str, *, portrait: bool, scene_duration: float, request_budget: AcquisitionBudget | None = None
     ) -> list[MediaCandidate]:
         payload = self._get_json(
             f"{PEXELS_API}/videos/search",
@@ -92,12 +117,13 @@ class PexelsMediaClient:
                 "size": "medium",
                 "per_page": 18,
             },
+            request_budget=request_budget,
         )
         return parse_video_results(
             payload, query=query, portrait=portrait, scene_duration=scene_duration
         )
 
-    def search_photos(self, query: str, *, portrait: bool) -> list[MediaCandidate]:
+    def search_photos(self, query: str, *, portrait: bool, request_budget: AcquisitionBudget | None = None) -> list[MediaCandidate]:
         payload = self._get_json(
             f"{PEXELS_API}/search",
             {
@@ -106,6 +132,7 @@ class PexelsMediaClient:
                 "size": "large",
                 "per_page": 15,
             },
+            request_budget=request_budget,
         )
         return parse_photo_results(payload, query=query, portrait=portrait)
 
@@ -152,15 +179,17 @@ class PexelsMediaClient:
                     ) from exc
         raise MediaProviderError("network_error", "Pexels media could not be downloaded right now.")
 
-    def _get_json(self, url: str, params: dict[str, Any]) -> dict[str, Any]:
+    def _get_json(self, url: str, params: dict[str, Any], *, request_budget: AcquisitionBudget | None = None) -> dict[str, Any]:
         for attempt in range(2):
+            if attempt and request_budget is not None and not request_budget.claim("search_requests"):
+                raise MediaProviderError("budget_exhausted", "Visual acquisition search budget exhausted.")
             try:
                 response = self._client.get(
                     url,
                     params=params,
                     headers={"Authorization": self._api_key},
                 )
-                if response.status_code == 401:
+                if response.status_code in {401, 403}:
                     raise MediaProviderError(
                         "invalid_credentials", "Pexels rejected the configured credentials."
                     )
@@ -177,7 +206,7 @@ class PexelsMediaClient:
                 raise
             except (httpx.HTTPError, ValueError, TypeError) as exc:
                 if attempt == 1:
-                    category = "network_error" if isinstance(exc, httpx.RequestError) else "provider_error"
+                    category = "timeout" if isinstance(exc, httpx.TimeoutException) else "network_error" if isinstance(exc, httpx.RequestError) else "malformed_response"
                     raise MediaProviderError(
                         category, "Pexels search is temporarily unavailable."
                     ) from exc
@@ -186,6 +215,9 @@ class PexelsMediaClient:
 
 class WikimediaMediaClient:
     """Free still-image fallback using Wikimedia Commons' public API."""
+
+    provider = "wikimedia"
+    capabilities = ProviderCapabilities(("photo",), page_limit=10, evidence="imageinfo.extmetadata")
 
     __slots__ = ("_client",)
 
@@ -215,11 +247,15 @@ class WikimediaMediaClient:
                     "format": "json",
                 },
             )
+            if response.status_code in {401, 403}:
+                raise MediaProviderError("invalid_credentials", "Wikimedia rejected credentials.")
+            if response.status_code == 429:
+                raise MediaProviderError("rate_limited", "Wikimedia is rate limited.")
             response.raise_for_status()
             pages = response.json().get("query", {}).get("pages", {})
         except (httpx.HTTPError, ValueError, TypeError) as exc:
             raise MediaProviderError(
-                "wikimedia_unavailable", "Wikimedia media search is temporarily unavailable."
+                "timeout" if isinstance(exc, httpx.TimeoutException) else "network_error" if isinstance(exc, httpx.RequestError) else "malformed_response", "Wikimedia media search is temporarily unavailable."
             ) from exc
         candidates: list[MediaCandidate] = []
         for position, page in enumerate(pages.values() if isinstance(pages, dict) else []):
@@ -252,6 +288,7 @@ class WikimediaMediaClient:
                     title=_plain_metadata(str(page.get("title") or "")),
                     description=_plain_metadata(str((metadata.get("ImageDescription") or {}).get("value") or "")) if isinstance(metadata.get("ImageDescription"), dict) else "",
                     preview_url=str(download_url),
+                    rights=commons_rights(metadata, source_url=str(info.get("descriptionurl") or ""), creator=_plain_metadata(str(artist.get("value") or ""))),
                 )
             )
         return sorted(candidates, key=lambda item: item.rank, reverse=True)
@@ -345,6 +382,7 @@ def parse_video_results(
                 tags=tuple(str(tag) for tag in (item.get("tags") or []) if tag),
                 preview_url=str(item.get("image") or ""),
                 verification_url=str(verification_file.get("link") or ""),
+                rights=provider_terms_rights("pexels"),
             )
         )
     return sorted(candidates, key=lambda item: item.rank, reverse=True)
@@ -383,6 +421,7 @@ def parse_photo_results(
                 description=str(item.get("alt") or ""),
                 tags=tuple(str(tag) for tag in (item.get("tags") or []) if tag),
                 preview_url=str(sources.get("tiny") or sources.get("small") or download_url),
+                rights=provider_terms_rights("pexels"),
             )
         )
     return sorted(candidates, key=lambda item: item.rank, reverse=True)
@@ -929,6 +968,8 @@ def _metadata_presentation_risk(candidate: MediaCandidate) -> dict[str, Any]:
 def is_real_media_allowed(value: MediaCandidate | dict[str, Any]) -> bool:
     """Shared hard gate for candidates and persisted assets, independent of fit."""
     data = value if isinstance(value, dict) else vars(value)
+    if evaluate_rights(data.get("rights")).status != "usable":
+        return False
     if data.get("kind") not in {"photo", "video"}:
         return False
     provider = str(data.get("provider") or str(data.get("identity", "")).split(":")[0])
@@ -993,6 +1034,9 @@ def real_media_quality_gate(
     subject or, when it has no metadata at all, provenance from one of this
     scene's own planned queries.
     """
+    rights = evaluate_rights(candidate.rights)
+    if rights.status != "usable":
+        return False, f"rights_{rights.reason}"
     if not is_real_media_allowed(candidate) or (relevance.get("presentation_risk") or {}).get("rejected"):
         return False, "presentation_risk"
     visual = relevance.get("visual") or {}
@@ -1160,7 +1204,7 @@ def media_relevance(candidate: MediaCandidate, scene: dict[str, Any], state: dic
 
 
 def _best_unused(candidates: Iterable[MediaCandidate], used: set[str], scene: dict[str, Any] | None = None, state: dict[str, Any] | None = None) -> MediaCandidate | None:
-    available = [candidate for candidate in candidates if candidate.identity not in used]
+    available = [candidate for candidate in candidates if is_real_media_allowed(candidate) and not asset_keys(candidate) & used]
     if scene is None:
         return max(available, key=lambda item: item.rank, default=None)
     ranked = []
@@ -1178,6 +1222,7 @@ def verify_media_shortlist(
     verifier: Any | None = None,
     *,
     limit: int = 6,
+    acquisition_budget: AcquisitionBudget | None = None,
 ) -> list[tuple[MediaCandidate, dict[str, Any]]]:
     """Verify only a small metadata-ranked shortlist; never resurrect rejected metadata."""
     visual = verifier or get_visual_verifier()
@@ -1197,6 +1242,10 @@ def verify_media_shortlist(
     metadata_rows = [row for row in metadata_rows if row[1]["confidence"] != "rejected"][:limit]
     texts = visual_intent_text(scene, state)
     for candidate, metadata in metadata_rows:
+        if acquisition_budget is not None and not acquisition_budget.claim("verifications", candidate.identity):
+            if candidate.identity in acquisition_budget.verification_evidence:
+                rows.append((candidate, acquisition_budget.verification_evidence[candidate.identity]))
+            continue
         if metadata["confidence"] == "rejected":
             continue
         result = visual.verify_candidate(candidate, texts) if getattr(visual, "status", "unavailable_dependency") == "available" else None
@@ -1243,6 +1292,8 @@ def verify_media_shortlist(
                 combined["confidence"] = "acceptable"
                 combined["selection_tier"] = 1
         rows.append((candidate, combined))
+        if acquisition_budget is not None:
+            acquisition_budget.verification_evidence[candidate.identity] = combined
     return rows
 
 
@@ -1253,13 +1304,15 @@ def _rank_verified(
     preferred_kind: str,
     used: set[str],
     verifier: Any | None,
+    acquisition_budget: AcquisitionBudget | None = None,
 ) -> list[tuple[MediaCandidate, dict[str, Any]]]:
     unique: dict[str, MediaCandidate] = {}
+    ledger = CandidateLedger(used)
     for candidate in candidates:
-        if candidate.identity not in used:
+        if ledger.admit(candidate):
             unique.setdefault(candidate.identity, candidate)
     shortlist = list(unique.values())
-    rows = verify_media_shortlist(shortlist, scene, state, verifier)
+    rows, _ok = _safe_verify(shortlist, scene, state, verifier, acquisition_budget)
     eligible = [row for row in rows if row[1]["confidence"] in {"high", "acceptable"}]
     return sorted(
         eligible,
@@ -1525,12 +1578,7 @@ _GENERIC_SOURCE_PATHS = {"", "video", "videos", "photo", "photos", "wiki"}
 
 
 def _canonical_source(url: str) -> str | None:
-    """Stable asset URL key; generic provider landing pages identify nothing."""
-    parsed = urlparse(str(url or "").strip())
-    path = parsed.path.strip("/").casefold()
-    if not parsed.netloc or path in _GENERIC_SOURCE_PATHS:
-        return None
-    return f"{parsed.netloc.casefold().removeprefix('www.')}/{path}"
+    return canonical_source(url)
 
 
 def _claim_logical_query(provenance: dict[str, Any], query: str) -> bool:
@@ -1545,10 +1593,10 @@ def _claim_logical_query(provenance: dict[str, Any], query: str) -> bool:
     return True
 
 
-def _count_provider_request(provenance: dict[str, Any], source: str) -> None:
-    provenance["provider_requests_executed"] += 1
+def _count_provider_request(provenance: dict[str, Any], source: str, count: int = 1) -> None:
+    provenance["provider_requests_executed"] += count
     by_source = provenance["provider_requests_by_source"]
-    by_source[source] = by_source.get(source, 0) + 1
+    by_source[source] = by_source.get(source, 0) + count
 
 
 def _safe_verify(
@@ -1556,11 +1604,15 @@ def _safe_verify(
     scene: dict[str, Any],
     state: dict[str, Any],
     verifier: Any | None,
+    acquisition_budget: AcquisitionBudget | None = None,
 ) -> tuple[list[tuple[MediaCandidate, dict[str, Any]]], bool]:
     try:
-        return verify_media_shortlist(candidates, scene, state, verifier), True
+        return verify_media_shortlist(candidates, scene, state, verifier, acquisition_budget=acquisition_budget), True
     except Exception:  # noqa: BLE001 - verification must never fail media search
-        rows = verify_media_shortlist(candidates, scene, state, _METADATA_ONLY_VERIFIER)
+        admitted = [candidate for candidate in candidates if acquisition_budget is None or candidate.identity in acquisition_budget.verified_identities]
+        rows = verify_media_shortlist(admitted, scene, state, _METADATA_ONLY_VERIFIER)
+        if acquisition_budget is not None:
+            acquisition_budget.verification_evidence.update({candidate.identity: relevance for candidate, relevance in rows})
         return rows, False
 
 
@@ -1570,12 +1622,15 @@ def _relaxed_visual_verdict(
     visual: Any,
     scene: dict[str, Any],
     state: dict[str, Any],
+    acquisition_budget: AcquisitionBudget | None = None,
 ) -> tuple[str, float]:
     """Visual gate for the last-resort fallback: pass, unverified, rejected or presentation_risk.
 
     A completed verification from the staged search is reused; OpenCLIP only
     runs for candidates it has not seen yet.
     """
+    if known is None and acquisition_budget is not None:
+        known = acquisition_budget.verification_evidence.get(candidate.identity)
     if known is not None:
         visual_data = known.get("visual") or {}
         if visual_data.get("presentation_risk") or (known.get("presentation_risk") or {}).get("source") == "vision":
@@ -1587,6 +1642,8 @@ def _relaxed_visual_verdict(
         if known.get("confidence") == "rejected" or scene_score < SCENE_VISUAL_THRESHOLD:
             return "rejected", scene_score
         return "pass", scene_score
+    if acquisition_budget is not None and not acquisition_budget.claim("verifications", candidate.identity):
+        return "rejected", -1.0
     if getattr(visual, "status", "") != "available":
         return "unverified", -1.0
     try:
@@ -1628,8 +1685,10 @@ def run_staged_scene_search(
     verifier: Any | None,
     budget: int = MAX_SCENE_QUERY_BUDGET,
     extra_clients: list[Any] | None = None,
+    acquisition_budget: AcquisitionBudget | None = None,
 ) -> StagedSearchResult:
     """Execute planned queries one stage at a time within a hard query budget."""
+    acquisition_budget = acquisition_budget or AcquisitionBudget()
     budget = max(1, min(int(budget), MAX_SCENE_QUERY_BUDGET))
     planned = list(dict.fromkeys(query for query in queries if query))
     coverage_targets = scene_coverage_targets(scene, state, query_plan)
@@ -1637,7 +1696,7 @@ def run_staged_scene_search(
     planned = _scene_query_order(planned, targets, query_plan)
     remaining = planned[:budget]
     seen: dict[str, MediaCandidate] = {}
-    seen_sources: set[str] = set()
+    ledger = CandidateLedger(used)
     rows: dict[str, tuple[MediaCandidate, dict[str, Any]]] = {}
     failure: MediaProviderError | None = None
     stages: list[dict[str, Any]] = []
@@ -1656,39 +1715,37 @@ def run_staged_scene_search(
     # Optional extra free providers extend the same logical query (provider
     # requests only; the logical query budget is unchanged).
     for extra in extra_clients or []:
-        extra_kind = preferred_kind if hasattr(extra, "search_videos") else "photo"
+        extra_kind = preferred_kind if preferred_kind in getattr(extra, "capabilities", ProviderCapabilities(("video", "photo") if hasattr(extra, "search_videos") else ("photo",))).kinds else "photo"
         search_plan.append((extra, extra_kind))
+    search_plan = [(provider if isinstance(provider, ProviderAdapter) else ProviderAdapter(getattr(provider, "provider", "pexels" if provider is pexels else "wikimedia"), provider), kind) for provider, kind in search_plan]
     query = remaining.pop(0) if remaining else None
     while query is not None:
         stage = {"query": query, "requests": 0, "new": 0, "duplicates": 0, "errors": []}
         for position, (provider, kind) in enumerate(search_plan):
             if position and coverage["overall"] == COVERAGE_STRONG:
                 break  # the preferred kind already covers the scene
+            before = acquisition_budget.search_requests
             try:
-                if kind == "video":
-                    results = provider.search_videos(query, portrait=portrait, scene_duration=scene_duration)
-                else:
-                    results = provider.search_photos(query, portrait=portrait)
+                results = provider.search(query, kind, portrait=portrait, scene_duration=scene_duration, budget=acquisition_budget)
             except MediaProviderError as exc:
                 failure = exc
                 stage["errors"].append(exc.category)
                 results = []
-            requests += 1
-            stage["requests"] += 1
+            if acquisition_budget.search_requests == before:
+                continue
+            work = acquisition_budget.search_requests - before
+            requests += work
+            stage["requests"] += work
             fresh: list[MediaCandidate] = []
             for candidate in results or []:
-                source = _canonical_source(candidate.source_url)
-                if candidate.identity in seen or (source and source in seen_sources):
+                if not ledger.admit(candidate):
                     stage["duplicates"] += 1
                     continue
                 seen[candidate.identity] = candidate
-                if source:
-                    seen_sources.add(source)
-                if candidate.identity not in used:
-                    fresh.append(candidate)
+                fresh.append(candidate)
             stage["new"] += len(fresh)
             if fresh:
-                verified, ok = _safe_verify(fresh, scene, state, active_verifier)
+                verified, ok = _safe_verify(fresh, scene, state, active_verifier, acquisition_budget)
                 if not ok:
                     # One failure is enough evidence; do not retry per stage.
                     verification_ok = False
@@ -1763,6 +1820,7 @@ def run_staged_scene_search(
         ],
         "duplicate_count": duplicates,
         "visual_verification": "ok" if verification_ok else "failed_metadata_fallback",
+        "acquisition_budget": acquisition_budget.snapshot(),
     }
     return StagedSearchResult(
         ranked,
@@ -1828,6 +1886,7 @@ def _cache_candidate(
     asset_root: Path,
     render_root: Path,
     downloader: Any | None,
+    acquisition_budget: AcquisitionBudget | None = None,
 ) -> dict[str, Any]:
     if not is_real_media_allowed(candidate):
         raise MediaProviderError("ineligible_media", "Cards and synthetic placeholders are not allowed.")
@@ -1835,30 +1894,33 @@ def _cache_candidate(
     destination = asset_root / candidate.provider / f"{candidate.kind}-{candidate.provider_id}{suffix}"
     if downloader is None:
         raise MediaProviderError("provider_error", "No downloader is available for this candidate.")
-    downloaded = downloader.download(candidate, destination)
+    if isinstance(downloader, ProviderAdapter):
+        downloaded = downloader.download(candidate, destination, budget=acquisition_budget or AcquisitionBudget())
+    else:
+        if acquisition_budget is not None and not acquisition_budget.claim("downloads"):
+            raise MediaProviderError("budget_exhausted", "Visual acquisition download budget exhausted.")
+        downloaded = provider_call(lambda: downloader.download(candidate, destination))
     if candidate.kind == "photo":
         normalize_cached_photo(downloaded)
     relative = downloaded.relative_to(render_root.resolve()).as_posix()
+    return candidate_evidence(candidate) | {"cache_path": relative, "relevance": relevance}
+
+
+def candidate_evidence(candidate: MediaCandidate) -> dict[str, Any]:
     return {
-        "identity": candidate.identity,
-        "provider": candidate.provider,
-        "source": candidate.provider,
-        "provider_id": candidate.provider_id,
-        "kind": candidate.kind,
-        "cache_path": relative,
-        "source_url": candidate.source_url,
-        "creator": candidate.creator,
-        "creator_url": candidate.creator_url,
-        "width": candidate.width,
-        "height": candidate.height,
-        "duration": candidate.duration,
-        "query": candidate.query,
-        "title": candidate.title,
-        "description": candidate.description,
-        "tags": list(candidate.tags),
-        "preview_url": candidate.preview_url,
-        "relevance": relevance,
+        "identity": candidate.identity, "provider": candidate.provider, "source": candidate.provider,
+        "provider_id": candidate.provider_id, "kind": candidate.kind, "source_url": candidate.source_url,
+        "creator": candidate.creator, "creator_url": candidate.creator_url,
+        "width": candidate.width, "height": candidate.height, "duration": candidate.duration,
+        "query": candidate.query, "title": candidate.title, "description": candidate.description,
+        "tags": list(candidate.tags), "preview_url": candidate.preview_url,
+        "verification_url": candidate.verification_url, "download_url": candidate.download_url,
+        "rights": accepted_rights(candidate.rights),
+        "rights_acceptance": vars(evaluate_rights(candidate.rights)),
+        "canonical_asset_key": candidate.canonical_asset_key or (
+            f"source:{canonical_source(candidate.source_url)}" if canonical_source(candidate.source_url) else candidate.identity),
     }
+
 
 
 class _SceneQualityGate:
@@ -1935,9 +1997,9 @@ def prepare_project_media(
 
     assets = state.setdefault("assets", {})
     assets.setdefault("license_manifest", [])
-    pexels = client or (PexelsMediaClient(settings.pexels_api_key) if settings.pexels_api_key else None)
-    wikimedia = fallback_client or WikimediaMediaClient()
-    extras = list(extra_clients) if extra_clients is not None else _optional_real_clients(settings)
+    registry = create_provider_registry(settings, client=client, fallback_client=fallback_client, extra_clients=extra_clients)
+    pexels, wikimedia = registry.get("pexels"), registry.get("wikimedia")
+    extras = [item for item in registry.enabled() if item.provider not in {"pexels", "wikimedia"}]
     generator = image_generator if image_generator is not None else get_image_generator(settings)
     director.generation_policy(state, settings)
     arc = director.story_arc(state)
@@ -1963,33 +2025,33 @@ def prepare_project_media(
         total_units=total_scenes,
     )
 
-    def downloader_for(candidate: MediaCandidate) -> Any:
-        if candidate.provider == "pexels":
-            return pexels
-        if candidate.provider == "wikimedia":
-            return wikimedia
-        return next((extra for extra in extras if getattr(extra, "provider", None) == candidate.provider), None)
-
     def cache(candidate: MediaCandidate, relevance: dict[str, Any]) -> dict[str, Any]:
-        return _cache_candidate(
+        metadata = _cache_candidate(
             candidate,
             relevance,
             asset_root=asset_root,
             render_root=settings.render_root,
-            downloader=downloader_for(candidate),
+            downloader=registry.get(candidate.provider),
+            acquisition_budget=acquisition_budget,
         )
+        metadata["acceptance_scene_key"] = scene_acceptance_key(scene, state)
+        return metadata
 
     # Scenes of one fact/block share a base visual where that reads better
     # (stills, or scenes whose information is drawn as an overlay).
     block_bases: dict[str, dict[str, Any]] = {}
 
     for scene_index, scene in enumerate(scenes, 1):
+        acquisition_budget = AcquisitionBudget()
         existing = scene.get("media") if isinstance(scene.get("media"), dict) else None
+        reused = scene.get("asset_status") in {"related_media_reused", "real_media_reused", "generated_media_reused", "block_visual_continued"}
+        cache_allowed = bool(existing and is_scene_asset_allowed(existing) and (not reused or destination_asset_allowed(existing, scene, state, reuse=True)))
         if existing:
             identity = str(existing.get("identity") or "")
             path = settings.render_root.resolve() / str(existing.get("cache_path") or "")
-            if identity and path.is_file() and is_scene_asset_allowed(existing) and scene.get("asset_status") != "replacement_required":
-                used.add(identity)
+            if identity and path.is_file() and cache_allowed and scene.get("asset_status") != "replacement_required":
+                refresh_rights_acceptance(existing)
+                used.update(asset_keys(existing))
                 manifest.append(existing)
                 if media_source(existing) != GRAPHIC_ASSET_SOURCE:
                     selected_media.append(existing)
@@ -2003,17 +2065,22 @@ def prepare_project_media(
                     cached=True,
                 )
                 continue
+        if existing and scene.get("user_locked_visual") and not cache_allowed:
+            scene["asset_status"] = "real_media_unavailable"
+            scene["fallback_reason"] = "Locked media needs reusable-rights and scene acceptance evidence. Choose new media."
+            missing_media_count += 1
+            continue
         existing_usable = bool(
             existing
             and str(existing.get("identity") or "")
             and path.is_file()
-            and is_scene_asset_allowed(existing)
+            and cache_allowed
         )
 
         # Identities a targeted repair rejected for this scene are never picked
         # again; a requested replacement also avoids footage other scenes show.
         rejected = {str(value) for value in scene.get("rejected_media_identities") or [] if value}
-        excluded = used | rejected
+        excluded = used | excluded_asset_keys(state, rejected)
         if scene.get("asset_status") == "replacement_required":
             excluded |= {
                 str(other["media"].get("identity"))
@@ -2036,11 +2103,11 @@ def prepare_project_media(
             and scene.get("asset_status") != "replacement_required"
             and str(continued.get("identity") or "") not in rejected
             and (strategy.get("overlay_spec") or continued.get("kind") == "photo")
-            and _reuse_safe(continued, strategy)
+            and destination_asset_allowed(continued, scene, state, reuse=True, strategy=strategy)
         ):
             # Visual continuity only: the narration and Story Arc facts stay
             # separate; the overlay evolves while the base visual stays.
-            scene["media"] = dict(continued)
+            scene["media"] = refresh_rights_acceptance(dict(continued))
             scene["asset_status"] = "block_visual_continued"
             scene["media_search"] = _continuity_provenance()
             scene.pop("fallback_reason", None)
@@ -2078,6 +2145,7 @@ def prepare_project_media(
             used=excluded,
             verifier=visual_verifier,
             extra_clients=extras,
+            acquisition_budget=acquisition_budget,
         )
         search_provenance = staged.provenance
         # Later fallbacks follow the scene-aware query order, not the global plan.
@@ -2106,18 +2174,19 @@ def prepare_project_media(
         # Only already executed query strings are reused: no new logical query.
         if metadata is None and pexels is not None:
             winning_source = "wikimedia_fallback"
+            fallback_ledger = CandidateLedger(excluded | set().union(*(asset_keys(item) for item in staged.candidates)))
             for query in list(search_provenance["executed_queries"]):
-                _count_provider_request(search_provenance, "wikimedia_fallback")
+                before = acquisition_budget.search_requests
                 try:
-                    commons_candidates.extend(
-                        wikimedia.search_photos(query, portrait=portrait)
-                    )
+                    commons_candidates.extend(item for item in wikimedia.search(query, "photo", portrait=portrait, scene_duration=duration, budget=acquisition_budget) if fallback_ledger.admit(item))
                 except MediaProviderError as exc:
                     failure = exc
+                if acquisition_budget.search_requests > before:
+                    _count_provider_request(search_provenance, "wikimedia_fallback", acquisition_budget.search_requests - before)
             search_provenance["wikimedia_fallback"] = True
             try:
                 wikimedia_ranked = _rank_verified(
-                    commons_candidates, scene, state, preferred_kind, excluded | staged.evaluated, scene_verifier
+                    commons_candidates, scene, state, preferred_kind, excluded | staged.evaluated, scene_verifier, acquisition_budget
                 )
             except Exception:  # noqa: BLE001 - verification must never fail media search
                 search_provenance["visual_verification"] = "failed_metadata_fallback"
@@ -2125,6 +2194,10 @@ def prepare_project_media(
                 wikimedia_ranked = _rank_verified(
                     commons_candidates, scene, state, preferred_kind, excluded | staged.evaluated, scene_verifier
                 )
+            if any((relevance.get("visual") or {}).get("status") == "verification_failed" for _candidate, relevance in wikimedia_ranked):
+                scene_verifier = _METADATA_ONLY_VERIFIER
+                search_provenance["visual_verification"] = "failed_metadata_fallback"
+            staged.verified.update({candidate.identity: relevance for candidate, relevance in wikimedia_ranked})
             for candidate, relevance in wikimedia_ranked:
                 if not accept(candidate, relevance):
                     continue
@@ -2164,7 +2237,7 @@ def prepare_project_media(
             ]
             visual = scene_verifier or get_visual_verifier()
             verified_rows = staged.verified
-            relaxed_seen: set[str] = set()
+            relaxed_ledger = CandidateLedger(excluded)
             visually_rejected = 0
             for broad_query in [None, *broad_queries]:
                 batch = pools[0] if broad_query is None else []
@@ -2175,17 +2248,18 @@ def prepare_project_media(
                     for provider in (pexels, wikimedia):
                         if provider is None:
                             continue
-                        _count_provider_request(search_provenance, "relaxed_fallback")
+                        before = acquisition_budget.search_requests
                         try:
-                            batch.extend(provider.search_photos(broad_query, portrait=portrait))
+                            batch.extend(provider.search(broad_query, "photo", portrait=portrait, scene_duration=duration, budget=acquisition_budget))
                         except MediaProviderError as exc:
                             failure = exc
+                        if acquisition_budget.search_requests > before:
+                            _count_provider_request(search_provenance, "relaxed_fallback", acquisition_budget.search_requests - before)
                 for candidate in batch[:24]:
-                    if candidate.identity in excluded or candidate.identity in relaxed_seen or not is_real_media_allowed(candidate):
+                    if not relaxed_ledger.admit(candidate):
                         continue
-                    relaxed_seen.add(candidate.identity)
                     known = verified_rows.get(candidate.identity)
-                    verdict, scene_score = _relaxed_visual_verdict(candidate, known, visual, scene, state)
+                    verdict, scene_score = _relaxed_visual_verdict(candidate, known, visual, scene, state, acquisition_budget)
                     if verdict in {"presentation_risk", "rejected"}:
                         # OpenCLIP already judged this asset off-scene; provider
                         # order or mere existence must never make it the winner.
@@ -2205,6 +2279,7 @@ def prepare_project_media(
                     break
             if visually_rejected:
                 search_provenance["visually_rejected_count"] = visually_rejected
+        search_provenance["acquisition_budget"] = acquisition_budget.snapshot()
         if gate_rejections:
             search_provenance["quality_gate_rejections"] = gate_rejections
         if metadata is not None:
@@ -2236,7 +2311,7 @@ def prepare_project_media(
         if metadata is None:
             safe_selected = [
                 item for item in selected_media
-                if is_scene_asset_allowed(item) and _reuse_safe(item, strategy) and str(item.get("identity") or "") not in rejected
+                if destination_asset_allowed(item, scene, state, reuse=True, strategy=strategy)
             ] if reuse_allowed(scene, strategy) else []
             related = _related_media(queries, safe_selected) or (
                 safe_selected[-1] if safe_selected and not story_critical(strategy) else None
@@ -2253,7 +2328,7 @@ def prepare_project_media(
                     _record_search_winner(search_provenance, metadata, resolved_type or "none")
                     director.record_decision(scene, strategy, director.DEGRADED, resolved_type, failure_reason)
             if related is not None:
-                scene["media"] = dict(related)
+                scene["media"] = refresh_rights_acceptance(dict(related))
                 scene["asset_status"] = "related_media_reused"
                 director.record_decision(scene, strategy, director.DEGRADED, director.REUSE_PREVIOUS_VISUAL, "no_accepted_real_media_reused_project_visual")
                 manifest.append(dict(related))
@@ -2311,12 +2386,11 @@ def prepare_project_media(
             query_plan,
             query=metadata.get("query") if media_source(metadata) in REAL_MEDIA_PROVIDERS else None,
         )
-        candidate_identity = str(metadata["identity"])
         scene["media"] = metadata
         scene["preferred_media"] = metadata["kind"] if media_source(metadata) in REAL_MEDIA_PROVIDERS else scene.get("preferred_media", preferred_kind)
         scene["asset_status"] = _asset_status(metadata)
         scene.pop("fallback_reason", None)
-        used.add(candidate_identity)
+        used.update(asset_keys(metadata))
         manifest.append(metadata)
         if media_source(metadata) != GRAPHIC_ASSET_SOURCE:
             selected_media.append(metadata)
@@ -2337,7 +2411,7 @@ def prepare_project_media(
                 strategy = scene.get("visual_director") if isinstance(scene.get("visual_director"), dict) else {}
                 rejected = {str(value) for value in scene.get("rejected_media_identities") or [] if value}
                 candidates = [
-                    item for item in selected_media if _reuse_safe(item, strategy) and str(item.get("identity") or "") not in rejected
+                    item for item in selected_media if destination_asset_allowed(item, scene, state, reuse=True, strategy=strategy)
                 ] if reuse_allowed(scene, strategy) else []
                 # Story-critical scenes only reuse a visual planned for a related subject.
                 reusable = (
@@ -2346,7 +2420,7 @@ def prepare_project_media(
                 )
                 if reusable is None:
                     continue
-                scene["media"] = dict(reusable)
+                scene["media"] = refresh_rights_acceptance(dict(reusable))
                 scene["asset_status"] = "real_media_reused" if media_source(reusable) in REAL_MEDIA_PROVIDERS else "generated_media_reused"
                 if strategy:
                     director.record_decision(scene, strategy, director.DEGRADED, director.REUSE_PREVIOUS_VISUAL, "no_accepted_real_media_reused_project_visual")
@@ -2393,13 +2467,7 @@ def prepare_project_media(
             provider="pexels+wikimedia" if settings.pexels_api_key else "wikimedia",
             diagnostic="No real media is available. Rendering is blocked; retry free media discovery.",
         )
-    if client is None and pexels is not None:
-        pexels.close()
-    if fallback_client is None:
-        wikimedia.close()
-    if extra_clients is None:
-        for extra in extras:
-            extra.close()
+    registry.close()
     report_progress(
         progress,
         "media",
@@ -2530,3 +2598,72 @@ def _related_media(
 def _provider_summary(manifest: list[dict[str, Any]]) -> str:
     providers = list(dict.fromkeys(str(item.get("provider") or "unknown") for item in manifest))
     return "+".join(providers)
+
+
+def persisted_candidate(media: dict[str, Any]) -> MediaCandidate:
+    return MediaCandidate(
+        provider_id=str(media.get("provider_id") or ""), kind=str(media.get("kind") or ""),
+        download_url=str(media.get("download_url") or ""), source_url=str(media.get("source_url") or ""),
+        creator=str(media.get("creator") or ""), creator_url=media.get("creator_url"),
+        width=int(media.get("width") or 0), height=int(media.get("height") or 0),
+        duration=media.get("duration"), query=str(media.get("query") or ""), rank=0,
+        provider=media_source(media), title=str(media.get("title") or ""),
+        description=str(media.get("description") or ""), tags=tuple(media.get("tags") or ()),
+        preview_url=str(media.get("preview_url") or ""), verification_url=str(media.get("verification_url") or ""),
+        rights=MediaRights.read(media.get("rights")), canonical_asset_key=media.get("canonical_asset_key"),
+    )
+
+
+def destination_asset_allowed(media: dict[str, Any], scene: dict[str, Any], state: dict[str, Any],
+                              *, reuse: bool = False, strategy: dict[str, Any] | None = None) -> bool:
+    """Shared cache/apply/reuse gate; destination fit never inherits A's verdict."""
+    if not is_scene_asset_allowed(media):
+        return False
+    if asset_keys(media) & excluded_asset_keys(state, set(scene.get("rejected_media_identities") or [])):
+        return False
+    strategy = strategy if strategy is not None else scene.get("visual_director") or {}
+    current = scene.get("media") if isinstance(scene.get("media"), dict) else {}
+    locked = scene.get("user_locked_visual") or current.get("manually_selected") or strategy.get("manually_selected")
+    if reuse and (locked or not reuse_allowed(scene, strategy) or not _reuse_safe(media, strategy)):
+        return False
+    if media_source(media) not in REAL_MEDIA_PROVIDERS:
+        # Generated/graphic provenance retains its existing authority. For
+        # cross-scene generated reuse require the existing focused relation.
+        return not reuse or _related_media(derive_search_queries(scene, state), [media]) is not None
+    candidate = persisted_candidate(media)
+    plan = build_visual_query_plan(scene, state)
+    relevance = media_relevance(candidate, scene, state)
+    if media.get("acceptance_scene_key") == scene_acceptance_key(scene, state):
+        # Visual evidence is scoped to the same destination intent. A different
+        # scene cannot inherit the previous scene's visual verdict.
+        relevance = dict(relevance, visual=(media.get("relevance") or {}).get("visual") or {})
+    return _SceneQualityGate(
+        scene_coverage_targets(scene, state, plan)["targets"],
+        max(1.0, float(scene.get("end", 0)) - float(scene.get("start", 0))),
+        "real_media_strong" in (strategy.get("fallback_chain") or []) if reuse else False, protected_candidate_terms(state, plan),
+    )(candidate, relevance)
+
+
+def scene_acceptance_key(scene: dict[str, Any], state: dict[str, Any]) -> str:
+    evidence = {key: scene.get(key) for key in ("narration", "visual_goal", "visual_intent")}
+    evidence["intent"] = state.get("intent")
+    return hashlib.sha256(json.dumps(evidence, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+
+
+def excluded_asset_keys(state: dict[str, Any], identities: set[str]) -> set[str]:
+    """Known source evidence prevents rejected/used identities resurfacing elsewhere."""
+    keys = set(identities)
+    media_rows = [scene.get("media") for scene in state.get("scenes") or [] if isinstance(scene, dict)]
+    media_rows.extend((state.get("assets") or {}).get("license_manifest") or [])
+    for row in media_rows:
+        if isinstance(row, dict) and row.get("identity") in identities:
+            keys.update(asset_keys(row))
+    return keys
+
+
+def refresh_rights_acceptance(metadata: dict[str, Any]) -> dict[str, Any]:
+    """Re-evaluate persisted evidence under the current policy; never infer it."""
+    if media_source(metadata) in REAL_MEDIA_PROVIDERS:
+        metadata["rights"] = accepted_rights(metadata.get("rights"))
+        metadata["rights_acceptance"] = vars(evaluate_rights(metadata["rights"]))
+    return metadata

@@ -3,6 +3,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from visual_rights_support import TEST_REUSE_RIGHTS
 
 from clipforge.config import Settings
 from clipforge.media import (
@@ -22,6 +23,7 @@ from clipforge.renderer import (
 )
 from clipforge.schemas import AdvancedOptions, ProjectCreate
 from clipforge.services import create_project, edit_project, render_project
+from clipforge.visual_verifier import UnavailableVisualVerifier
 
 
 def local_settings(tmp_path: Path | None = None, *, pexels: str | None = None) -> Settings:
@@ -307,8 +309,7 @@ def candidate(
         query=query,
         rank=100 - int(provider_id) if rank is None else rank,
         provider=provider,
-        title=title or query,
-    )
+        title=title or query, rights=TEST_REUSE_RIGHTS)
 
 
 class FakePexels:
@@ -421,6 +422,8 @@ def test_failed_media_replacement_keeps_previous_cached_asset(tmp_path):
     cached.parent.mkdir(parents=True)
     cached.write_bytes(b"previous-media")
     state["scenes"][0]["media"] = {
+        "rights": TEST_REUSE_RIGHTS.serialize(),
+        "title": previous.title,
         "identity": previous.identity,
         "provider": previous.provider,
         "provider_id": previous.provider_id,
@@ -542,6 +545,7 @@ def test_wikimedia_is_attempted_after_pexels_before_card_fallback(tmp_path):
         settings,
         client=FakePexels([]),
         fallback_client=commons,
+        visual_verifier=UnavailableVisualVerifier(),
     )
 
     scene = state["scenes"][0]
@@ -569,6 +573,7 @@ def test_wikimedia_is_used_after_relevant_pexels_download_fails(tmp_path):
         settings,
         client=DownloadFailure([candidate("10", query="lighthouse storm")]),
         fallback_client=commons,
+        visual_verifier=UnavailableVisualVerifier(),
     )
 
     assert commons.queries
@@ -581,6 +586,7 @@ def test_relevant_media_can_be_reused_only_after_retrieval_attempts(tmp_path):
     state = sample_state(settings)
     state["scenes"] = state["scenes"][:2]
     for scene in state["scenes"]:
+        scene["narration"] = "The lighthouse stands above storm ocean waves."
         scene["visual_goal"] = "lighthouse storm ocean waves"
         scene["search_queries"] = []
     pexels = FakePexels([candidate("6", query="lighthouse storm ocean")])
@@ -592,6 +598,7 @@ def test_relevant_media_can_be_reused_only_after_retrieval_attempts(tmp_path):
         settings,
         client=pexels,
         fallback_client=commons,
+        visual_verifier=UnavailableVisualVerifier(),
     )
 
     assert state["scenes"][0]["asset_status"] == "video_ready"
@@ -648,6 +655,7 @@ def test_missing_real_media_records_degraded_coverage_after_all_searches(tmp_pat
         settings,
         client=FakePexels([]),
         fallback_client=commons,
+        visual_verifier=UnavailableVisualVerifier(),
     )
 
     assert commons.queries
@@ -665,6 +673,7 @@ def test_renderer_uses_selected_video_as_moving_media(monkeypatch, tmp_path):
     source.write_bytes(b"mock-video")
     scene = state["scenes"][0]
     scene["media"] = {
+        "rights": TEST_REUSE_RIGHTS.serialize(), "provider": "pexels", "query": "lighthouse", "title": "lighthouse",
         "kind": "video",
         "cache_path": source.relative_to(tmp_path).as_posix(),
     }
@@ -698,6 +707,7 @@ def test_still_zoompan_keeps_headroom_and_integer_window_origins(monkeypatch, tm
     source.write_bytes(b"mock-photo")
     scene = state["scenes"][0]
     scene["media"] = {
+        "rights": TEST_REUSE_RIGHTS.serialize(), "provider": "pexels", "query": "lighthouse", "title": "lighthouse",
         "kind": "photo",
         "cache_path": source.relative_to(tmp_path).as_posix(),
     }
@@ -740,7 +750,7 @@ def test_still_without_motion_is_static_and_does_not_implicitly_zoom(monkeypatch
     source.parent.mkdir(parents=True)
     source.write_bytes(b"mock-photo")
     scene = state["scenes"][0]
-    scene["media"] = {"kind": "photo", "cache_path": source.relative_to(tmp_path).as_posix()}
+    scene["media"] = {"rights": TEST_REUSE_RIGHTS.serialize(), "provider": "pexels", "query": "lighthouse", "title": "lighthouse", "kind": "photo", "cache_path": source.relative_to(tmp_path).as_posix()}
     scene.pop("motion", None)
     commands = []
 
@@ -769,7 +779,7 @@ def test_smart_crop_center_is_reused_without_frame_drift(monkeypatch, tmp_path):
     source.parent.mkdir(parents=True)
     source.write_bytes(b"mock-photo")
     scene = state["scenes"][0]
-    scene["media"] = {"kind": "photo", "cache_path": source.relative_to(tmp_path).as_posix()}
+    scene["media"] = {"rights": TEST_REUSE_RIGHTS.serialize(), "provider": "pexels", "query": "lighthouse", "title": "lighthouse", "kind": "photo", "cache_path": source.relative_to(tmp_path).as_posix()}
     scene["motion"] = "subtle_pan"
     commands = []
 

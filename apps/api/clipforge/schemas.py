@@ -268,6 +268,13 @@ class SceneMediaCandidateRead(BaseModel):
     height: int
     duration: float | None = None
     selected: bool = False
+    verification_url: str = ""
+    title: str = ""
+    description: str = ""
+    tags: list[str] = Field(default_factory=list)
+    rights: dict[str, Any] = Field(default_factory=dict)
+    rights_acceptance: dict[str, Any] = Field(default_factory=dict)
+    canonical_asset_key: str | None = None
     # Generated alternatives (Visual Director manual generation).
     generated: bool = False
     new: bool = False

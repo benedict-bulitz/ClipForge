@@ -16,6 +16,7 @@ import imageio_ffmpeg
 import pytest
 from PIL import Image
 from test_visual_director import finger_project, settings_for
+from visual_rights_support import TEST_REUSE_RIGHTS
 
 from clipforge import renderer, still_image
 from clipforge.media import (
@@ -162,8 +163,7 @@ def wikimedia_candidate(page_id: str = "946106") -> MediaCandidate:
     return MediaCandidate(
         provider_id=page_id, kind="photo", download_url=f"https://upload.wikimedia.org/thumb/{page_id}.gif",
         source_url="https://commons.wikimedia.org/wiki/File:x.gif", creator="c", creator_url=None,
-        width=640, height=640, duration=None, query="sweets", rank=60, provider="wikimedia", title="File:x.gif",
-    )
+        width=640, height=640, duration=None, query="sweets", rank=60, provider="wikimedia", title="File:x.gif", rights=TEST_REUSE_RIGHTS)
 
 
 def wikimedia_serving(body: bytes, content_type: str = "image/gif") -> WikimediaMediaClient:
@@ -204,7 +204,7 @@ def still_scene(tmp_path: Path, data: bytes):
     state["timeline"].update(width=108, height=192, fps=10)
     scene = state["scenes"][0]
     scene.pop("overlays", None)
-    scene["media"] = {"identity": "wikimedia:photo:946106", "provider": "wikimedia", "source": "wikimedia", "kind": "photo", "cache_path": "project/assets/wikimedia/photo-946106.jpg"}
+    scene["media"] = {"rights": TEST_REUSE_RIGHTS.serialize(), "query": "wet wrinkled fingers water", "title": "Wet wrinkled fingers water", "identity": "wikimedia:photo:946106", "provider": "wikimedia", "source": "wikimedia", "kind": "photo", "cache_path": "project/assets/wikimedia/photo-946106.jpg"}
     write(tmp_path / "project" / "assets" / "wikimedia" / "photo-946106.jpg", data)
     return settings, state, scene
 

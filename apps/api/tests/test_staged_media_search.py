@@ -9,6 +9,7 @@ from pathlib import Path
 
 import httpx
 import pytest
+from visual_rights_support import TEST_REUSE_RIGHTS
 
 import clipforge.media as media_module
 from clipforge.config import Settings
@@ -57,8 +58,7 @@ def cand(
         query=query,
         rank=100,
         provider=provider,
-        title=title,
-    )
+        title=title, rights=TEST_REUSE_RIGHTS)
 
 
 class Provider:
@@ -574,10 +574,10 @@ def test_old_project_data_remains_compatible(tmp_path):
     scene, _ = run(state, tmp_path, pexels)
     legacy_scene, _ = run(legacy, tmp_path, Provider(videos={"visible breath winter": [cand("1", "visible breath winter", "Visible breath in cold winter air")]}))
 
-    assert pexels.calls == []
-    assert "media_search" not in scene
-    assert scene["media"]["identity"] == "pexels:video:old"
-    assert "media_search_summary" not in state["assets"]
+    assert pexels.calls
+    assert "media_search" in scene
+    assert "media" not in scene
+    assert state["assets"]["license_manifest"] == []
     assert legacy_scene["asset_status"] == "video_ready"
 
 
@@ -750,13 +750,12 @@ def test_protected_payoff_does_not_leak_on_any_pre_reveal_scene(tmp_path):
 def test_deduplication_across_providers_and_generic_source_urls():
     state = breath_project()
     scene = state["scenes"][0]
-    video = cand("7", "visible breath winter", "Visible breath in cold winter air")
     photo_same_page = cand("8", "visible breath winter", "Visible breath", kind="photo", source_url="https://pexels.test/video/7")
     generic_a = cand("9", "visible breath winter", "Breath one", source_url="https://www.pexels.com/videos/")
     generic_b = cand("10", "visible breath winter", "Breath two", source_url="https://www.pexels.com/videos/")
     pexels = Provider(
         videos={"visible breath winter": [cand("7", "visible breath winter", "Cold air over a frozen lake", source_url="https://www.pexels.test/video/7/"), generic_a, generic_b]},
-        photos={"visible breath winter": [video, photo_same_page]},
+        photos={"visible breath winter": [photo_same_page, photo_same_page]},
     )
 
     result = run_staged_scene_search(
@@ -944,7 +943,7 @@ def test_all_visually_poor_candidates_stay_nonfatal_and_never_win(tmp_path):
     assert scene["visual_director"]["generation"]["status"] == "unavailable_no_api_key"
 
 
-def test_all_poor_scene_prefers_reusing_verified_project_media(tmp_path):
+def test_all_poor_scene_cannot_reuse_unrelated_verified_project_media(tmp_path):
     state = german_project("Schweden hat besonders viele Inseln.", "Your warm breath meets cold air.")
     pexels = Provider(videos={
         "swedish islands": [cand("se", "swedish islands", "Sweden archipelago islands aerial")],
@@ -958,8 +957,8 @@ def test_all_poor_scene_prefers_reusing_verified_project_media(tmp_path):
     )
 
     second = state["scenes"][1]
-    assert second["asset_status"] == "related_media_reused"
-    assert second["media"]["provider_id"] == "se"
+    assert second["asset_status"] == "real_media_unavailable"
+    assert "media" not in second
     assert "quality_degraded" not in second["media_search"]
 
 

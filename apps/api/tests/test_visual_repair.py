@@ -28,6 +28,7 @@ from test_visual_director import (
     png_bytes,
     settings_for,
 )
+from visual_rights_support import TEST_REUSE_RIGHTS
 
 import clipforge.services  # noqa: F401 - registers ORM models for the db fixture
 from clipforge import image_generation, visual_director, visual_translation
@@ -38,7 +39,7 @@ from clipforge.media import prepare_project_media
 from clipforge.pipeline import _fallback_visual_intent
 from clipforge.renderer import _create_visual_segment, _scene_media_path
 from clipforge.services import get_project, serialize_project
-from clipforge.visual_verifier import VisualVerification
+from clipforge.visual_verifier import UnavailableVisualVerifier, VisualVerification
 
 PROMPT = "Photorealistic macro photo of a wet human hand with wrinkled fingertips holding a smooth river stone, water droplets, natural light, no text"
 PROJECT_ID = "66666666-6666-4666-8666-666666666666"
@@ -72,6 +73,7 @@ def status_error(cls, status: int, body: dict):
 @pytest.fixture
 def api(db, tmp_path, monkeypatch):
     """Seeded project + API client; returns (client, images, settings, project)."""
+    monkeypatch.setattr("clipforge.visual_verifier.get_visual_verifier", lambda: UnavailableVisualVerifier())
     settings = settings_for(tmp_path, openai_api_key="sk-live-secret")
     state = finger_project()
     scene = state["scenes"][2]
@@ -399,7 +401,7 @@ def test_renderer_composites_overlay_over_base_visual(monkeypatch, tmp_path):
     source.parent.mkdir(parents=True)
     Image.new("RGB", (1600, 1200), (40, 90, 60)).save(source)
     scene = state["scenes"][1]
-    scene["media"] = {"identity": "pexels:photo:9", "provider": "pexels", "kind": "photo", "cache_path": "project/assets/pexels/photo-9.jpg"}
+    scene["media"] = {"rights": TEST_REUSE_RIGHTS.serialize(), "query": "wet wrinkled fingers water", "title": "Wet wrinkled fingers water", "identity": "pexels:photo:9", "provider": "pexels", "kind": "photo", "cache_path": "project/assets/pexels/photo-9.jpg"}
     scene["overlays"] = [{"kind": "process", "spec": {"kind": "process", "steps": ["Nervensignal", "Blutgefäße verengen sich"], "active": 1}}]
     commands = []
 

@@ -11,6 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 from PIL import Image
+from visual_rights_support import TEST_REUSE_RIGHTS
 
 from clipforge import visual_director
 from clipforge.config import Settings
@@ -53,8 +54,7 @@ def cand(provider_id: str, title: str, *, query: str = "wrinkled fingers water",
         query=query,
         rank=100,
         provider=provider,
-        title=title,
-    )
+        title=title, rights=TEST_REUSE_RIGHTS)
 
 
 class Provider:
@@ -734,9 +734,9 @@ def test_old_projects_without_director_state_still_load_and_render(tmp_path):
 
     pexels = run(state, tmp_path, generator=generator)
 
-    assert pexels.calls == [] and generator.prompts == []
-    assert state["scenes"][0]["media"] == legacy_media
-    assert is_scene_asset_allowed(legacy_media)
+    assert pexels.calls
+    assert state["scenes"][0].get("media") != legacy_media
+    assert not is_scene_asset_allowed(legacy_media)
     assert state["visual_director"]["policy"]["max_auto_generated_images_per_project"] == 3
     assert state["visual_director"]["policy"]["max_generation_attempts_per_scene"] == 1
     # Missing director state defaults safely.

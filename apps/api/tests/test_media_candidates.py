@@ -4,6 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from visual_rights_support import TEST_REUSE_RIGHTS
 
 from clipforge.config import Settings
 from clipforge.media import (
@@ -20,7 +21,7 @@ from clipforge.media_candidates import (
 
 
 def candidate(provider_id: str, kind: str, rank: float) -> MediaCandidate:
-    return MediaCandidate(provider_id, kind, f"https://cdn.test/{provider_id}", f"https://source.test/{provider_id}", "Creator", None, 1080, 1920, 8.0 if kind == "video" else None, "lighthouse", rank, title="lighthouse")
+    return MediaCandidate(provider_id, kind, f"https://cdn.test/{provider_id}", f"https://source.test/{provider_id}", "Creator", None, 1080, 1920, 8.0 if kind == "video" else None, "lighthouse", rank, title="lighthouse", rights=TEST_REUSE_RIGHTS)
 
 
 class FakeProvider:
@@ -74,7 +75,7 @@ def test_visual_rejections_do_not_prevent_wikimedia_fallback(local_settings, mon
     provider.photos = []
     fallback = FakeProvider()
     fallback.photos = [replace(candidate("real", "photo", 80), provider="wikimedia"), replace(candidate("card", "photo", 90), title="Lighthouse flashcard")]
-    def verify(items, *args):
+    def verify(items, *args, **kwargs):
         return [(item, {"confidence": "acceptable" if item.provider == "wikimedia" else "rejected"}) for item in items]
     monkeypatch.setattr("clipforge.media_candidates.verify_media_shortlist", verify)
     _, results = discover_scene_media_candidates(state(), "p", 1, 1, local_settings(), client=provider, fallback_client=fallback)
@@ -163,15 +164,15 @@ def test_missing_replacement_media_cannot_generate_a_card(local_settings, tmp_pa
 def test_semantic_relevance_beats_format_and_technical_rank():
     scene = {"narration": "Workers pouring concrete foundation", "visual_goal": "residential foundation construction"}
     state_data = {"intent": {"topic": "building a house"}}
-    relevant_photo = MediaCandidate("photo", "photo", "https://cdn.test/photo", "https://source.test/photo", "Creator", None, 1080, 1920, None, "residential foundation construction", 10, title="Workers pouring concrete foundation")
-    unrelated_video = MediaCandidate("dog", "video", "https://cdn.test/dog", "https://source.test/dog", "Creator", None, 1080, 1920, 20, "dog playing in park", 200, title="Dog playing in park")
+    relevant_photo = MediaCandidate("photo", "photo", "https://cdn.test/photo", "https://source.test/photo", "Creator", None, 1080, 1920, None, "residential foundation construction", 10, title="Workers pouring concrete foundation", rights=TEST_REUSE_RIGHTS)
+    unrelated_video = MediaCandidate("dog", "video", "https://cdn.test/dog", "https://source.test/dog", "Creator", None, 1080, 1920, 20, "dog playing in park", 200, title="Dog playing in park", rights=TEST_REUSE_RIGHTS)
     assert media_relevance(relevant_photo, scene, state_data)["score"] > media_relevance(unrelated_video, scene, state_data)["score"]
 
 
 def test_action_specific_candidate_beats_generic_topic_match():
     scene = {"narration": "Workers pouring concrete foundation", "visual_goal": "house construction"}
-    specific = MediaCandidate("pour", "video", "https://cdn.test/pour", "https://source.test/pour", "Creator", None, 1080, 1920, 8, "house construction", 80, title="Workers pouring concrete slab")
-    generic = MediaCandidate("exterior", "video", "https://cdn.test/exterior", "https://source.test/exterior", "Creator", None, 1080, 1920, 8, "house construction", 100, title="Luxury house exterior")
+    specific = MediaCandidate("pour", "video", "https://cdn.test/pour", "https://source.test/pour", "Creator", None, 1080, 1920, 8, "house construction", 80, title="Workers pouring concrete slab", rights=TEST_REUSE_RIGHTS)
+    generic = MediaCandidate("exterior", "video", "https://cdn.test/exterior", "https://source.test/exterior", "Creator", None, 1080, 1920, 8, "house construction", 100, title="Luxury house exterior", rights=TEST_REUSE_RIGHTS)
     assert media_relevance(specific, scene)["score"] > media_relevance(generic, scene)["score"]
 
 
@@ -190,18 +191,15 @@ def test_global_subject_context_rejects_generic_hole_media():
     road = MediaCandidate(
         "road", "video", "https://cdn.test/road", "https://source.test/road",
         "Creator", None, 1080, 1920, 8, "hole middle pane", 200,
-        title="Normal road with cars and trees",
-    )
+        title="Normal road with cars and trees", rights=TEST_REUSE_RIGHTS)
     fabric = MediaCandidate(
         "fabric", "photo", "https://cdn.test/fabric", "https://source.test/fabric",
         "Creator", None, 1080, 1920, None, "hole middle pane", 200,
-        title="Macro hole in fabric",
-    )
+        title="Macro hole in fabric", rights=TEST_REUSE_RIGHTS)
     airplane = MediaCandidate(
         "airplane", "photo", "https://cdn.test/airplane", "https://source.test/airplane",
         "Creator", None, 1080, 1920, None, "airplane window breather hole", 20,
-        title="Close-up of an airplane window and breather hole",
-    )
+        title="Close-up of an airplane window and breather hole", rights=TEST_REUSE_RIGHTS)
     assert media_relevance(road, scene, state_data)["confidence"] == "rejected"
     assert media_relevance(fabric, scene, state_data)["confidence"] == "rejected"
     assert media_relevance(airplane, scene, state_data)["confidence"] in {"high", "acceptable"}
@@ -216,13 +214,11 @@ def test_relevant_photo_beats_unrelated_generic_hole_video():
     photo = MediaCandidate(
         "window-photo", "photo", "https://cdn.test/window", "https://source.test/window",
         "Creator", None, 1080, 1920, None, "airplane window hole", 10,
-        title="Airplane window with a middle-pane breather hole",
-    )
+        title="Airplane window with a middle-pane breather hole", rights=TEST_REUSE_RIGHTS)
     video = MediaCandidate(
         "hole-video", "video", "https://cdn.test/hole", "https://source.test/hole",
         "Creator", None, 1080, 1920, 8, "hole middle pane", 200,
-        title="Generic hole in material",
-    )
+        title="Generic hole in material", rights=TEST_REUSE_RIGHTS)
     assert media_relevance(photo, scene, state_data)["score"] > media_relevance(video, scene, state_data)["score"]
     assert media_relevance(photo, scene, state_data)["confidence"] in {"high", "acceptable"}
     assert media_relevance(video, scene, state_data)["confidence"] == "rejected"
@@ -237,8 +233,7 @@ def test_subject_gate_rejects_house_window_for_smartphone_camera():
     house_window = MediaCandidate(
         "house-window", "photo", "https://cdn.test/window", "https://source.test/window",
         "Creator", None, 1080, 1920, None, "protective glass", 200,
-        title="House window glass",
-    )
+        title="House window glass", rights=TEST_REUSE_RIGHTS)
     assert media_relevance(house_window, scene, state_data)["confidence"] == "rejected"
 
 
@@ -251,8 +246,7 @@ def test_subject_gate_accepts_volcano_ash_positive_control():
     eruption = MediaCandidate(
         "eruption", "video", "https://cdn.test/eruption", "https://source.test/eruption",
         "Creator", None, 1080, 1920, 8, "volcano ash cloud", 20,
-        title="Real volcanic eruption with ash cloud",
-    )
+        title="Real volcanic eruption with ash cloud", rights=TEST_REUSE_RIGHTS)
     assert media_relevance(eruption, scene, state_data)["confidence"] in {"high", "acceptable"}
 
 
@@ -292,7 +286,7 @@ def test_german_scene_uses_canonical_english_visual_queries():
 
 
 def island_stock(provider_id: str, query: str, title: str) -> MediaCandidate:
-    return MediaCandidate(provider_id, "video", f"https://cdn.test/{provider_id}", f"https://source.test/{provider_id}", "Creator", None, 1080, 1920, 12, query, 100, title=title)
+    return MediaCandidate(provider_id, "video", f"https://cdn.test/{provider_id}", f"https://source.test/{provider_id}", "Creator", None, 1080, 1920, 12, query, 100, title=title, rights=TEST_REUSE_RIGHTS)
 
 
 GERMAN_ISLANDS = {
@@ -419,13 +413,11 @@ def test_exact_scene_relevance_beats_generic_topic_relevance():
     exact = MediaCandidate(
         "droplets", "photo", "https://cdn.test/droplets", "https://source.test/droplets",
         "Creator", None, 1080, 1920, None, "condensation droplets", 20,
-        title="Water vapor condensation forming fine droplets",
-    )
+        title="Water vapor condensation forming fine droplets", rights=TEST_REUSE_RIGHTS)
     generic = MediaCandidate(
         "coat", "video", "https://cdn.test/coat", "https://source.test/coat",
         "Creator", None, 1080, 1920, 8, "winter breath", 200,
-        title="Person wearing a winter coat",
-    )
+        title="Person wearing a winter coat", rights=TEST_REUSE_RIGHTS)
 
     exact_relevance = media_relevance(exact, scene, state_data)
     generic_relevance = media_relevance(generic, scene, state_data)
@@ -449,8 +441,7 @@ def test_text_card_and_document_metadata_are_rejected(title):
     item = MediaCandidate(
         "card", "photo", "https://cdn.test/card", "https://source.test/card",
         "Creator", None, 1080, 1920, None, "condensation droplets", 100,
-        title=title,
-    )
+        title=title, rights=TEST_REUSE_RIGHTS)
 
     relevance = media_relevance(item, scene)
 
@@ -466,8 +457,7 @@ def test_ordinary_photographic_footage_remains_eligible():
     item = MediaCandidate(
         "photo", "photo", "https://cdn.test/photo", "https://source.test/photo",
         "Creator", None, 1080, 1920, None, "water droplets cold air", 50,
-        title="Close-up photograph of water droplets in cold air",
-    )
+        title="Close-up photograph of water droplets in cold air", rights=TEST_REUSE_RIGHTS)
 
     assert media_relevance(item, scene)["confidence"] in {"high", "acceptable"}
 
@@ -480,8 +470,7 @@ def test_useful_real_diagram_is_not_globally_banned():
     item = MediaCandidate(
         "diagram", "photo", "https://cdn.test/diagram", "https://source.test/diagram",
         "Creator", None, 1080, 1920, None, "condensation diagram", 50,
-        title="Scientific diagram of water vapor condensation into droplets",
-    )
+        title="Scientific diagram of water vapor condensation into droplets", rights=TEST_REUSE_RIGHTS)
 
     relevance = media_relevance(item, scene)
 
@@ -498,8 +487,7 @@ def test_unrelated_candidate_is_rejected_when_only_topic_word_matches():
     item = MediaCandidate(
         "fashion", "photo", "https://cdn.test/fashion", "https://source.test/fashion",
         "Creator", None, 1080, 1920, None, "winter", 100,
-        title="Winter fashion portrait",
-    )
+        title="Winter fashion portrait", rights=TEST_REUSE_RIGHTS)
 
     assert media_relevance(item, scene, state_data)["confidence"] == "rejected"
 
@@ -513,8 +501,7 @@ def test_global_topic_is_not_mandatory_for_exact_local_match():
     item = MediaCandidate(
         "condensation", "photo", "https://cdn.test/condensation", "https://source.test/condensation",
         "Creator", None, 1080, 1920, None, "condensation droplets", 50,
-        title="Water condensation and fine droplets",
-    )
+        title="Water condensation and fine droplets", rights=TEST_REUSE_RIGHTS)
 
     relevance = media_relevance(item, scene, state_data)
 
@@ -563,8 +550,7 @@ def test_negated_smoke_does_not_become_a_provider_query_or_eligible_media():
     flame = MediaCandidate(
         "flame", "video", "https://cdn.test/flame", "https://source.test/flame",
         "Creator", None, 1080, 1920, 8, "visible breath", 200,
-        title="Burning match emitting smoke",
-    )
+        title="Burning match emitting smoke", rights=TEST_REUSE_RIGHTS)
 
     assert "smoke" not in " ".join(derive_search_queries(scene, {"intent": {"topic": "visible breath"}}))
     assert media_relevance(flame, scene, {"intent": {"topic": "visible breath in winter"}})["confidence"] == "rejected"
@@ -578,13 +564,11 @@ def test_global_topic_overlap_cannot_rescue_unrelated_person_footage():
     athlete = MediaCandidate(
         "athlete", "video", "https://cdn.test/athlete", "https://source.test/athlete",
         "Creator", None, 1080, 1920, 8, "winter breath", 250,
-        title="Winter athlete catching breath outdoors",
-    )
+        title="Winter athlete catching breath outdoors", rights=TEST_REUSE_RIGHTS)
     mist = MediaCandidate(
         "mist", "photo", "https://cdn.test/mist", "https://source.test/mist",
         "Creator", None, 1080, 1920, None, "condensation mist droplets", 10,
-        title="Fine water droplets condensing in cold mist",
-    )
+        title="Fine water droplets condensing in cold mist", rights=TEST_REUSE_RIGHTS)
     state_data = {"intent": {"topic": "visible breath in winter"}}
 
     assert media_relevance(athlete, scene, state_data)["confidence"] == "unknown"
