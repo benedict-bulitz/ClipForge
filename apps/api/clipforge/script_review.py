@@ -24,12 +24,40 @@ class ScriptReviewIssue(BaseModel):
     message: str = Field(min_length=2, max_length=240)
 
 
+ExplanatoryDelta = Literal[
+    "advances_explanation", "useful_evidence", "useful_example", "context_only", "restatement", "tangent", "weak_value",
+]
+
+
+class ScriptReviewSentence(BaseModel):
+    """What one sentence of the final body lets the viewer explain that they could not before."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    sentence: str = Field(min_length=1, max_length=400)
+    delta: ExplanatoryDelta
+    needed: bool
+
+
+class ScriptReviewSufficiency(BaseModel):
+    """Could a viewer answer the ORIGINAL question in one simple sentence after the video?"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    verdict: Literal["answered", "partial", "unanswered"]
+    one_sentence_answer: str = Field(default="", max_length=240)
+    missing: str = Field(default="", max_length=240)
+
+
 class ScriptReviewResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     status: Literal["approve", "revise"]
     issues: list[ScriptReviewIssue] = Field(default_factory=list, max_length=10)
     draft: ScriptDraftV2 | None = None
+    # Judged on the final body (the revised draft when revising).
+    explanation_audit: list[ScriptReviewSentence] = Field(default_factory=list, max_length=24)
+    answer_sufficiency: ScriptReviewSufficiency | None = None
 
 
 @dataclass(frozen=True)
@@ -105,7 +133,23 @@ SCRIPT_REVIEW_V2_INSTRUCTIONS = (
     "move the viewer forward with something new; merge or cut blocks that only rephrase, elaborate or repeat. "
     "The final block must resolve the question with a clear 'that is why' connection. If cutting leaves a "
     "short script, keep it short: never pad, never invent a fact to fill a gap, and never move the protected "
-    "answer earlier."
+    "answer earlier. "
+    "Explanation check against story_arc.question_contract.explanation_spine: for a why/how question the body "
+    "must follow one causal path - observation, cause or mechanism, consequence, resolution - and the answer block "
+    "orients the viewer without finishing the video. For every sentence of the final body ask what the viewer can "
+    "explain after hearing it that they could not explain before, and cut sentences that only restate, add context, "
+    "name a technical label, or give an example or analogy that does not improve understanding. Once the causal "
+    "explanation is complete, end: no further example, label, minor fact or summary. The final sentence must "
+    "complete the causal path with an 'ah, that is why' connection; never end on 'this is part of the explanation', "
+    "'that is why this effect happens', 'the effect gets stronger' or a repeat. Prefer direct spoken German "
+    "('Du bist dieses Bild einfach weniger gewohnt.') over hedged abstract phrasing ('Diese ungewohnte Ansicht kann "
+    "dir schlechter vorkommen.'), without changing facts. If the facts only support a partial explanation, say so "
+    "plainly earlier, still end on the strongest supported connection, and never turn missing evidence into "
+    "generic advice. Then fill explanation_audit with one entry per sentence of the final body, quoting the "
+    "sentence exactly: delta is advances_explanation, useful_evidence, useful_example, context_only, restatement, "
+    "tangent or weak_value, and needed says whether removing it would reduce understanding. Fill "
+    "answer_sufficiency: could a viewer answer the ORIGINAL question (not the topic) in one simple sentence after "
+    "this body? verdict answered, partial or unanswered, that one_sentence_answer, and what is missing."
 )
 
 
@@ -123,7 +167,7 @@ class OpenAIScriptReviewProvider:
                 instructions=SCRIPT_REVIEW_V2_INSTRUCTIONS,
                 input=json.dumps(request.model_input(), ensure_ascii=False),
                 text_format=ScriptReviewResponse,
-                max_output_tokens=1_500,
+                max_output_tokens=2_500,
                 store=False,
             )
             parsed = response.output_parsed

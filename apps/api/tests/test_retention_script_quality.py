@@ -401,7 +401,9 @@ def test_an_information_plateau_is_flagged_and_broken_safely():
     assert [unit["beat_class"] for unit in report["units"][2:4]] == ["weak_value", "weak_value"]
     assert [issue["block_id"] for issue in report["issues"] if issue["code"] == "information_plateau"] == ["x"]
     pruned, repairs = prune_redundant_information(copy.deepcopy(blocks), state)
-    assert [repair["action"] for repair in repairs] == ["remove_weak_value"]
-    assert len(body_texts(pruned)) == 3 and body_texts(pruned)[0] == T_ANSWER and body_texts(pruned)[-1] == T_PAYOFF
+    # Both elaborations come after the explanation is complete: a weak tail
+    # before the payoff, removed without touching the answer or the payoff.
+    assert [repair["action"] for repair in repairs] == ["remove_weak_tail", "remove_weak_tail"]
+    assert body_texts(pruned) == [T_ANSWER, T_PAYOFF]
     state["script"]["blocks"] = pruned
     assert not any(issue["code"] == "information_plateau" for issue in assess_information_gain(state)["issues"])

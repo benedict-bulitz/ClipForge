@@ -165,6 +165,11 @@ RETENTION_REQUIREMENTS = (
         "Each block must tell the viewer something they did not know a moment ago and leave one concrete thing "
         "still open; never two blocks in a row that only rephrase or elaborate the same point."
     ),
+    (
+        "For a why/how question follow story_arc.question_contract.explanation_spine: the answer block orients "
+        "the viewer, the mechanism follows, and the video ends as soon as the causal path is complete - no extra "
+        "example, label, minor fact or summary after it."
+    ),
     "Save the clearest 'that is why' connection for the final block, then stop.",
     "Use words a 10-12 year old understands on first listen; prefer a concrete example over an abstract term.",
 )
@@ -512,6 +517,12 @@ def _generate_body_with_v2_or_fallback(
             "provider": getattr(selected_review_provider, "name", "custom"),
         }
         return _v2_body_blocks(result.draft.blocks), diagnostics
+    response = review_result.response
+    diagnostics["explanation_audit"] = {
+        "sentences": [item.model_dump(mode="json") for item in response.explanation_audit] if response else [],
+        "answer_sufficiency": response.answer_sufficiency.model_dump(mode="json") if response and response.answer_sufficiency else None,
+        "source": "script_review_v2",
+    } if response and (response.explanation_audit or response.answer_sufficiency) else None
     diagnostics["review"] = {
         "status": review_result.status,
         "issues": (
@@ -1361,8 +1372,12 @@ def build_initial_state(
     # (never rewritten or replaced by new claims), so thin evidence yields a
     # shorter video instead of padding.  Generation time only: later user
     # edits are assessed, never pruned.
+    explanation_audit = script_writer_diagnostics.get("explanation_audit")
     blocks, information_repairs = prune_redundant_information(
-        blocks, {"story_arc": story_arc, "facts": facts, "intent": intent, "novelty_plan": novelty_plan}
+        blocks, {
+            "story_arc": story_arc, "facts": facts, "intent": intent, "novelty_plan": novelty_plan,
+            "explanation_audit": explanation_audit,
+        }
     )
     for index, block in enumerate(blocks, 1):
         block["id"] = f"voice_block_{index:02d}"
@@ -1442,6 +1457,8 @@ def build_initial_state(
         "format_plan": format_plan,
         "novelty_plan": novelty_plan,
         "information_gain": {"repairs": information_repairs},
+        # The AI review's per-sentence explanatory judgement (matched by text).
+        "explanation_audit": explanation_audit,
         "script": {
             "text": script_text,
             "word_count": word_count,

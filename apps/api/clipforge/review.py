@@ -26,6 +26,9 @@ _GAIN_CHECKS = {
     "no_question_relevant_information": "relevance",
     "complex_language": "accessibility",
     "information_plateau": "script",
+    "answer_insufficient": "prompt_fidelity",
+    "weak_tail": "brevity",
+    "low_explanatory_value": "script",
 }
 
 

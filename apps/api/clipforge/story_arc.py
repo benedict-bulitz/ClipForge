@@ -68,7 +68,10 @@ _COMPARATIVE_FAMILIES = {
     "speed": {"faster", "fastest", "schneller", "schnellste", "schnellsten", "schnellster"},
     "height": {"higher", "highest", "taller", "tallest", "höher", "höchste", "höchsten", "höchster"},
     "age": {"older", "oldest", "älter", "älteste", "ältesten", "ältester"},
-    "quality": {"better", "best", "besser", "beste", "besten", "bester"},
+    "quality": {
+        "better", "best", "besser", "beste", "besten", "bester",
+        "worse", "worst", "schlechter", "schlechteste", "schlechtesten", "schlechtester",
+    },
     "length": {"longer", "longest", "länger", "längste", "längsten", "längster"},
     "depth": {"deeper", "deepest", "tiefer", "tiefste", "tiefsten", "tiefster"},
 }
@@ -160,11 +163,21 @@ def question_terms(question: object, claims: list[set[str]]) -> tuple[set[str], 
     needed = max(2, (len(claims) + 1) // 2)
     # The alternatives of an "A or B" question are what it asks about, never mere subject.
     sides = set().union(*comparison_sides(str(question or ""))) if comparison_sides(str(question or "")) else set()
+    # A comparative ("schneller") or a polar relation ("+age": älter) is what
+    # the question asks, however often the research repeats it.
+    comparative = set().union(*_COMPARATIVE_FAMILIES.values())
     subject = {
         word for word in asked
-        if not _overlap({word}, sides) and sum(1 for claim in claims if _overlap({word}, claim)) >= needed
+        if not _overlap({word}, sides) and word not in comparative and not _polar(word)
+        and sum(1 for claim in claims if _overlap({word}, claim)) >= needed
     }
     return subject, asked - subject
+
+
+def _polar(word: str) -> bool:
+    from .verbal_hook import is_salient_concept
+
+    return is_salient_concept(word)
 
 
 def _question_links(units: dict[str, dict[str, Any]], question: str, primary: str | None) -> dict[str, Any]:
@@ -656,6 +669,54 @@ def build_story_arc(
     return arc
 
 
+# "Why / how" questions owe the viewer a cause, not only a fact (grammar only).
+_EXPLANATORY_QUESTION = re.compile(
+    r"(?i)^\s*(?:warum|wieso|weshalb|weswegen|wodurch|why|how come|how (?:do|does|did|can|is|are)|"
+    r"wie (?:kommt|kann|funktionier\w*|entsteh\w*)|was (?:passiert|bewirkt|macht)|what (?:makes|causes|happens))\b"
+)
+
+
+def is_explanatory_question(question: object) -> bool:
+    return bool(_EXPLANATORY_QUESTION.search(str(question or "")))
+
+
+def explanation_spine(arc: dict[str, Any], chain: list[str], terms: dict[str, Any] | None = None) -> dict[str, Any]:
+    """The causal path from the question to its resolution, by fact identity.
+
+    initial_observation (what the viewer notices), main_answer (the primary
+    answer), mechanism (facts that say *why*: explanation roles or causal
+    grammar), necessary_support (the rest of the essential chain) and
+    final_resolution.  A why/how question without any mechanism fact is
+    ``missing_mechanism``: research must be tightened, never padded.
+    """
+    units = arc_units(arc)
+    primary, final = arc.get("primary_answer_id"), arc.get("final_payoff_id")
+    explanatory = is_explanatory_question(arc.get("primary_question"))
+    mechanism = [
+        fact_id for fact_id in chain
+        if fact_id in units and (units[fact_id].get("role") == "explanation" or _CAUSE.search(str(units[fact_id].get("claim") or "")))
+    ]
+    observation = primary if primary in units and primary not in mechanism else None
+    support = [fact_id for fact_id in chain if fact_id not in mechanism and fact_id not in {primary, final}]
+    if not explanatory:
+        status = "not_required"
+    elif mechanism:
+        status = "complete"
+    else:
+        status = "missing_mechanism"
+    return {
+        "explanatory_question": explanatory,
+        "initial_observation": observation,
+        "main_answer": primary,
+        "mechanism": mechanism,
+        "necessary_support": support,
+        "final_resolution": final,
+        "status": status,
+        "research_required": status == "missing_mechanism",
+        "question_terms": list((terms or {}).get("question_terms") or []),
+    }
+
+
 def question_contract(arc: dict[str, Any], terms: dict[str, Any] | None = None, hook_promise: str = "") -> dict[str, Any]:
     """The one canonical statement of what the video owes the viewer.
 
@@ -679,6 +740,7 @@ def question_contract(arc: dict[str, Any], terms: dict[str, Any] | None = None, 
     chain = [fact_id for fact_id in arc.get("order") or [] if fact_id in required or (fact_id in units and not units[fact_id].get("may_be_omitted"))]
     terms = terms or {}
     return {
+        "explanation_spine": explanation_spine(arc, chain, terms),
         "core_question": arc.get("primary_question") or "",
         "hook_promise": hook_promise or (arc.get("curiosity_gap") or {}).get("planner_text") or arc.get("primary_question") or "",
         "primary_answer_id": primary,
@@ -806,7 +868,10 @@ def story_brief(arc: dict[str, Any] | None) -> dict[str, Any]:
         "curiosity_gap": arc.get("curiosity_gap"),
         "question_contract": {
             key: value for key, value in (arc.get("question_contract") or {}).items()
-            if key in {"core_question", "hook_promise", "primary_answer_id", "final_resolution_id", "essential_explanation_chain", "off_question_ids"}
+            if key in {
+                "core_question", "hook_promise", "primary_answer_id", "final_resolution_id", "essential_explanation_chain",
+                "off_question_ids", "explanation_spine",
+            }
         },
         "information_order": [
             {

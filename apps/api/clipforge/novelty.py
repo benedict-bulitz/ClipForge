@@ -24,7 +24,13 @@ import json
 import re
 from typing import Any
 
-from .story_arc import arc_units, comparison_sides, mechanism_claims
+from .story_arc import (
+    _families,
+    arc_units,
+    comparison_sides,
+    is_explanatory_question,
+    mechanism_claims,
+)
 from .verbal_hook import (
     _NEGATED,
     _numbers,
@@ -402,7 +408,8 @@ def _context(state: dict[str, Any]) -> dict[str, Any]:
     arc = state.get("story_arc") if isinstance(state.get("story_arc"), dict) else {}
     plan = state.get("novelty_plan") if isinstance(state.get("novelty_plan"), dict) else {}
     facts = [fact for fact in state.get("facts") or [] if isinstance(fact, dict) and fact.get("id")]
-    return {"intent": intent, "arc": arc, "plan": plan, "facts": facts}
+    audit = state.get("explanation_audit") if isinstance(state.get("explanation_audit"), dict) else {}
+    return {"intent": intent, "arc": arc, "plan": plan, "facts": facts, "audit": audit}
 
 
 def _anchor_ids(arc: dict[str, Any]) -> set[str]:
@@ -492,6 +499,8 @@ def _payoff_result(
         return {**base, "status": "fail", "result": "repeats_earlier", "reason": "The payoff only repeats what the video already said."}
     if question_words and not beyond and not new_numbers and not answers_choice and not answers_negation:
         return {**base, "status": "fail", "result": "restates_question", "reason": "The payoff restates the question instead of answering it."}
+    if unit.get("weak_resolution"):
+        return {**base, "status": "fail", "result": "weak_resolution", "reason": "The payoff does not complete the explanation: " + unit["weak_resolution"]}
     if not unit["counts_as_gain"]:
         return {**base, "status": "fail", "result": "unsupported", "reason": "The payoff's information is not supported by the research."}
     strong = unit["category"] in {"mechanism", "quantitative", "contrast", "resolution"} or unit["novelty_class"] in {"explanatory_gain", "comparison_gain", "distinctive"}
@@ -506,6 +515,7 @@ def _signature(blocks: list[dict[str, Any]], state: dict[str, Any]) -> str:
         "blocks": [[str(block.get("id") or ""), _role(block), _text(block), _fact_ids(block)] for block in blocks],
         "facts": [[fact.get("id"), fact.get("claim"), fact.get("verification"), bool(fact.get("sources"))] for fact in state.get("facts") or [] if isinstance(fact, dict)],
         "arc": [str((state.get("story_arc") or {}).get(key) or "") for key in ("primary_answer_id", "final_payoff_id")] if isinstance(state.get("story_arc"), dict) else [],
+        "audit": state.get("explanation_audit") if isinstance(state.get("explanation_audit"), dict) else None,
     }
     return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode()).hexdigest()[:16]
 
@@ -574,6 +584,186 @@ def _language(text: str, context: dict[str, Any]) -> dict[str, Any]:
     return {"score": score, "codes": codes, "status": "complex" if hard else "clear"}
 
 
+# Explanatory delta: what the viewer can *explain* after a beat that they
+# could not before (stricter than new information).
+EXPLANATORY_DELTAS = (
+    "advances_explanation", "useful_evidence", "useful_example", "context_only", "restatement", "tangent", "weak_value",
+)
+# Deltas that never carry the explanation: removable once it is complete.
+_PASSENGER_DELTAS = {"useful_example", "context_only", "weak_value", "restatement", "tangent"}
+# Grammar only (no topic vocabulary).  "Es wirkt so, als ..." describes how
+# something appears, not why it happens.
+_APPEARANCE = re.compile(
+    r"(?i)\b(?:wirkt|wirken|wirkte|sieht|sehen|aussehen|scheint|scheinen|looks?|seems?|appears?)\b[^.!?]*?"
+    r"\b(?:als ob|als hätte\w*|als wäre\w*|als würde\w*|als sei|as if|as though)\b"
+)
+# Naming a term ("Dieser Effekt heißt ...") explains nothing by itself.
+_LABEL = re.compile(r"(?i)\b(?:heißt|heisst|nennt man|nennen (?:das|wir|forscher\w*|fachleute)|is called|are called|known as)\b")
+# Transfer to another case or an illustration.
+_EXAMPLE = re.compile(
+    r"(?i)\b(?:gilt auch für|das gleiche gilt|genauso (?:ist es|bei)|zum beispiel|beispielsweise|etwa wenn|"
+    r"same (?:goes|is true) for|also applies|for example|for instance|like when)\b"
+)
+# A cause or reason stated (grammar).
+_REASON = re.compile(
+    r"(?i)\b(?:weil|denn|deshalb|darum|daher|dadurch|deswegen|sodass|so dass|grund|liegt (?:daran|an)|führt|"
+    r"löst|lösen|auslös\w*|bewirk\w*|sorgt dafür|sorgen dafür|because|therefore|so that|reason|due to|leads? to|"
+    r"causes?|triggers?)\b"
+)
+# Words that point at an explanation instead of giving one ("ein Teil der
+# Erklärung", "dieser Effekt wird stärker"): a payoff made only of them
+# resolves nothing.
+_META = {
+    "erklärung", "erklärungen", "teil", "grund", "gründe", "effekt", "effekte", "ursache", "phänomen", "stärker",
+    "schwächer", "genau", "explanation", "part", "reason", "effect", "cause", "phenomenon", "stronger", "weaker",
+}
+
+
+def _norm_sentence(text: object) -> str:
+    return " ".join(str(text or "").casefold().replace("„", "").replace("“", "").replace('"', "").split()).rstrip(".!?…")
+
+
+def _audit_entries(context: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    return {
+        _norm_sentence(item.get("sentence")): item
+        for item in (context.get("audit") or {}).get("sentences") or []
+        if isinstance(item, dict) and item.get("delta") in EXPLANATORY_DELTAS
+    }
+
+
+def _deterministic_delta(unit: dict[str, Any], beat: str, chain: str, mechanism_ids: set[str]) -> str:
+    text = unit["text"]
+    if beat == "off_chain":
+        return "tangent"
+    if beat == "redundant":
+        return "restatement"
+    if beat == "unsupported":
+        return "weak_value"
+    if _APPEARANCE.search(text):
+        return "context_only"
+    if _LABEL.search(text) and len(unit["gain_terms"]) <= 3:
+        return "context_only"
+    if _EXAMPLE.search(text):
+        return "useful_example"
+    if beat == "weak_value":
+        return "weak_value"
+    if unit["category"] == "quantitative":
+        return "useful_evidence"
+    if _REASON.search(text) or unit["category"] == "mechanism" or set(unit["evidence"]["fact_ids"]) & mechanism_ids:
+        return "advances_explanation"
+    if chain in {"answer", "payoff", "chain"}:
+        return "advances_explanation"
+    return "context_only"
+
+
+def _weak_resolution(unit: dict[str, Any], units: list[dict[str, Any]], context: dict[str, Any]) -> str:
+    """Why a closing beat does not complete the explanation ("" when it does)."""
+    if unit["category"] == "resolution":
+        return ""
+    if _APPEARANCE.search(unit["text"]):
+        return "it only says how things appear, not why."
+    earlier = [item["text"] for item in units if item["index"] < unit["index"]]
+    gain = _bare(set(information_gain(" ".join([_question(context), *earlier]), unit["text"])))
+    if not gain - _META and not _numbers(unit["text"]):
+        return "it points at the explanation instead of completing it."
+    if unit.get("delta_source") == "ai" and unit.get("explanatory_delta") in {"context_only", "weak_value", "tangent", "restatement"}:
+        return "the review judged it adds no explanation."
+    return ""
+
+
+def _links_question(text: str, terms: set[str]) -> bool:
+    said = _bare(proposition_words(text))
+    words = set(re.findall(r"[\wäöüß]+", text.casefold()))
+    return bool(_related(said, terms)) or bool(_families(words) & _families(terms))
+
+
+def _asked_terms(question: str, contract: dict[str, Any], body: list[dict[str, Any]], hook: str = "") -> set[str]:
+    """What the question asks about its subject, bare (polarity-free).
+
+    The arc's predicate, minus words the hook and script repeat in most beats
+    (the topic itself: "TikTok"), but never a comparative or a polar relation.
+    """
+    from .story_arc import _COMPARATIVE_FAMILIES, _FRAME
+
+    asked = {word for word in proposition_words(question) if word not in _FRAME}
+    subject = {str(word).lstrip("+-") for word in contract.get("subject_terms") or []}
+    comparative = set().union(*_COMPARATIVE_FAMILIES.values())
+    said = [_bare(proposition_words(text)) for text in [hook, *(unit["text"] for unit in body)] if text]
+    for word in asked:
+        bare = word.lstrip("+-")
+        if is_salient_concept(word) or bare in comparative or len(said) < 4:
+            continue
+        hits = sum(1 for words in said if _related({bare}, words))
+        if hits >= 3 and hits * 2 >= len(said):
+            subject.add(bare)
+    terms = {word.lstrip("+-") for word in asked}
+    terms -= _related(terms, subject)
+    return terms or {word.lstrip("+-") for word in asked}
+
+
+def _answer_sufficiency(units: list[dict[str, Any]], context: dict[str, Any], payoff: dict[str, Any]) -> dict[str, Any]:
+    """Could a viewer answer the ORIGINAL question in one simple sentence after the video?
+
+    Deterministic structure for why/how questions: a mechanism beat (beyond
+    the observation) that touches what the question asks, and a payoff that
+    completes the path.  The review's semantic verdict is added on top; an
+    "unanswered" verdict fails on its own.
+    """
+    arc = context["arc"]
+    contract = arc.get("question_contract") if isinstance(arc.get("question_contract"), dict) else {}
+    spine = contract.get("explanation_spine") if isinstance(contract.get("explanation_spine"), dict) else {}
+    question = _question(context)
+    explanatory = is_explanatory_question(question)
+    ai = (context.get("audit") or {}).get("answer_sufficiency")
+    ai = ai if isinstance(ai, dict) and ai.get("verdict") in {"answered", "partial", "unanswered"} else None
+    primary = str(arc.get("primary_answer_id") or "")
+    body = [unit for unit in units if unit["category"] != "hook"]
+    hook = next((unit["text"] for unit in units if unit["category"] == "hook"), "")
+    terms = _asked_terms(question, contract, body, hook)
+    mechanisms = [
+        unit for unit in body
+        if unit.get("explanatory_delta") == "advances_explanation" and not unit.get("weak_resolution")
+        # The observation itself (the answer's own fact, stated without a cause) explains nothing yet.
+        and not (set(unit["evidence"]["fact_ids"]) <= {primary} and not _REASON.search(unit["text"]))
+    ]
+    linked = [unit for unit in mechanisms if _links_question(unit["text"], terms)]
+    reasons: list[str] = []
+    if explanatory and not linked:
+        reasons.append("no_mechanism_linked_to_question")
+    if explanatory and payoff.get("status") == "fail":
+        reasons.append("payoff_does_not_resolve")
+    if ai and ai["verdict"] == "unanswered":
+        reasons.append("review_unanswered")
+    elif ai and ai["verdict"] == "partial":
+        reasons.append("review_partial")
+    missing_research = spine.get("status") == "missing_mechanism"
+    if explanatory and missing_research:
+        reasons.append("research_has_no_mechanism")
+    structural = {"no_mechanism_linked_to_question", "payoff_does_not_resolve"} & set(reasons)
+    if not explanatory and not ai:
+        status = "not_applicable"
+    elif "review_unanswered" in reasons or len(structural) == 2 or (missing_research and structural):
+        status = "fail"
+    elif "review_partial" in reasons or "payoff_does_not_resolve" in reasons:
+        status = "warning"
+    elif reasons:
+        # One lexical signal alone (a paraphrased link, thin research) is a diagnostic.
+        status = "uncertain"
+    else:
+        status = "pass"
+    return {
+        "status": status,
+        "explanatory_question": explanatory,
+        "reasons": reasons,
+        "mechanism_block_ids": [unit["block_id"] for unit in linked],
+        "question_terms": sorted(terms),
+        "review_verdict": ai["verdict"] if ai else None,
+        "one_sentence_answer": (ai or {}).get("one_sentence_answer") or "",
+        "missing": (ai or {}).get("missing") or "",
+        "research_required": status == "fail" and (missing_research or "no_mechanism_linked_to_question" in reasons),
+    }
+
+
 def _audit_beats(units: list[dict[str, Any]], context: dict[str, Any]) -> None:
     """Relevance, beat class, language and viewer momentum per body unit (in place)."""
     arc = context["arc"]
@@ -582,6 +772,9 @@ def _audit_beats(units: list[dict[str, Any]], context: dict[str, Any]) -> None:
     question = _question(context)
     body = [unit for unit in units if unit["category"] != "hook"]
     payoff_index = next((unit["index"] for unit in body if unit.get("is_payoff")), body[-1]["index"] if body else -1)
+    contract = arc.get("question_contract") if isinstance(arc.get("question_contract"), dict) else {}
+    mechanism_ids = set((contract.get("explanation_spine") or {}).get("mechanism") or [])
+    audit = _audit_entries(context)
     learned: list[str] = []
     for unit in body:
         fact_ids = unit["evidence"]["fact_ids"]
@@ -628,6 +821,25 @@ def _audit_beats(units: list[dict[str, Any]], context: dict[str, Any]) -> None:
             },
         )
         learned += [term for term in new if term not in learned]
+        delta, source, needed = _deterministic_delta(unit, beat, chain, mechanism_ids), "deterministic", None
+        judged = audit.get(_norm_sentence(unit["text"]))
+        if judged:
+            # The review judges explanatory value; evidence stays deterministic
+            # (an unsupported beat never becomes an explanation).
+            source, needed = "ai", bool(judged.get("needed"))
+            delta = judged["delta"] if beat != "unsupported" else delta
+        unit.update(explanatory_delta=delta, delta_source=source, delta_needed=needed)
+    payoff = next((unit for unit in body if unit.get("is_payoff")), None)
+    if payoff is not None:
+        payoff["weak_resolution"] = _weak_resolution(payoff, units, context)
+    # Weak tail: once the last beat that explains has been heard, passengers
+    # before the payoff only delay the ending.
+    last = max((unit["index"] for unit in body if not unit.get("is_payoff") and unit["explanatory_delta"] in {"advances_explanation", "useful_evidence"}), default=None)
+    for unit in body:
+        unit["weak_tail"] = bool(
+            last is not None and last < unit["index"] < payoff_index and not unit.get("is_payoff")
+            and unit["explanatory_delta"] in _PASSENGER_DELTAS and unit.get("delta_needed") is not True
+        )
 
 
 def _plateaus(body: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
@@ -836,6 +1048,18 @@ def assess_information_gain(state: dict[str, Any]) -> dict[str, Any]:
     payoff = _payoff_result(units, blocks, context)
     if payoff["status"] == "fail":
         issue(f"payoff_{payoff['result']}", "warning", payoff["reason"], payoff["block_id"])
+    tail = [unit for unit in body if unit.get("weak_tail")]
+    if tail:
+        issue("weak_tail", "warning", f"{len(tail)} beat(s) after the explanation is complete only delay the ending: “{tail[0]['text'][:60]}”", tail[0]["block_id"])
+    for unit in body:
+        if unit.get("delta_source") == "ai" and unit.get("delta_needed") is False and unit["explanatory_delta"] in _PASSENGER_DELTAS and not unit.get("weak_tail") and not unit.get("is_payoff"):
+            issue("low_explanatory_value", "warning", f"Adds no explanation ({unit['explanatory_delta']}): “{unit['text'][:80]}”", unit["block_id"])
+    sufficiency = _answer_sufficiency(units, context, payoff)
+    if sufficiency["status"] in {"fail", "warning", "uncertain"}:
+        message = "The video does not let a viewer answer the original question (" + ", ".join(sufficiency["reasons"]) + ")"
+        if sufficiency["research_required"]:
+            message += "; research must supply the missing mechanism - never pad or substitute advice"
+        issue("answer_insufficient", {"fail": "error", "warning": "warning"}.get(sufficiency["status"], "info"), message + ".")
     counted = [unit for unit in body if unit["counts_as_gain"]]
     redundant = [unit for unit in body if unit["redundancy"] != "none"]
     unsupported = [unit for unit in body if unit["category"] not in REDUNDANT_CATEGORIES and not unit["counts_as_gain"]]
@@ -889,7 +1113,9 @@ def assess_information_gain(state: dict[str, Any]) -> dict[str, Any]:
             "unused_supported_gain_fact_ids": unused_gain,
             "beat_classes": {name: sum(1 for unit in body if unit.get("beat_class") == name) for name in BEAT_CLASSES},
             "plateaus": len(_plateaus(body)),
+            "explanatory_deltas": {name: sum(1 for unit in body if unit.get("explanatory_delta") == name) for name in EXPLANATORY_DELTAS},
         },
+        "answer_sufficiency": sufficiency,
         "question_contract": {
             **{key: value for key, value in ((context["arc"].get("question_contract") or {}) if isinstance(context["arc"].get("question_contract"), dict) else {}).items()},
             "core_question": _question(context),
@@ -1021,9 +1247,14 @@ def _hand_over_payoff(
     body = [unit for unit in units if unit["category"] != "hook"]
     # Only a closing unit that adds no proposition at all: a one-word
     # paraphrase may still carry the closing fact ("der größte Inselstaat").
-    if payoff is None or payoff["category"] != "restatement" or body[-1] is not payoff or len(body) < 2:
+    if payoff is None or body[-1] is not payoff or len(body) < 2:
+        return False
+    weak = bool(payoff.get("weak_resolution"))
+    if payoff["category"] != "restatement" and not weak:
         return False
     successor = body[-2]
+    if weak and payoff["category"] != "restatement" and successor.get("explanatory_delta") not in {"advances_explanation", "useful_evidence"}:
+        return False
     # Never the answer or its own continuation (a unit telling only the answer's facts).
     answer_facts = {fact_id for unit in body if unit["role"] == "answer" for fact_id in unit["evidence"]["fact_ids"]}
     answer_facts |= {str(arc.get("primary_answer_id") or "")} - {""}
@@ -1068,6 +1299,12 @@ def _drop_beat(
     """
     body = [unit for unit in units if unit["category"] != "hook"]
     weak = {id(unit) for run in _plateaus(body) for unit in run if unit.get("beat_class") == "weak_value"}
+    # The review judged these sentences unnecessary for understanding.
+    weak |= {
+        id(unit) for unit in body
+        if unit.get("delta_source") == "ai" and unit.get("delta_needed") is False and unit["explanatory_delta"] in _PASSENGER_DELTAS
+    }
+    weak |= {id(unit) for unit in body if unit.get("weak_tail")}
     for unit in body:
         tangent = unit.get("beat_class") == "off_chain"
         if unit.get("is_payoff") or not (tangent or id(unit) in weak):
@@ -1081,9 +1318,11 @@ def _drop_beat(
         if any(dropped & deps.get(fact_id, set()) for fact_id in elsewhere) or _removal_blocked(blocks, index, arc, anchors):
             continue
         removed = blocks.pop(index)
+        action = "remove_off_question" if tangent else ("remove_weak_tail" if unit.get("weak_tail") else (
+            "remove_low_explanation" if unit.get("delta_source") == "ai" else "remove_weak_value"))
         repairs.append({
-            "action": "remove_off_question" if tangent else "remove_weak_value",
-            "block_id": removed.get("id"), "text": _text(removed), "category": unit["beat_class"],
+            "action": action,
+            "block_id": removed.get("id"), "text": _text(removed), "category": unit["explanatory_delta"] if not tangent else unit["beat_class"],
             "repeats_block_id": None, "moved_fact_ids": [], "dropped_fact_ids": sorted(dropped),
         })
         return True
