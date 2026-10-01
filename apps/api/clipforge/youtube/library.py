@@ -254,8 +254,22 @@ def _analytics_bucket(state: str) -> str | None:
 
 
 def _sort_date(upload: YouTubeUpload) -> datetime:
-    """Publication time once published, otherwise when it was uploaded."""
-    return _utc(upload.published_at) or _utc(upload.uploaded_at) or _utc(upload.created_at) or datetime.min.replace(tzinfo=UTC)
+    """The video's effective date, as YouTube Studio orders its Date column.
+
+    Scheduled and published videos are one chronological feed: published
+    videos by their publication time, scheduled ones by their scheduled
+    time (YouTube's once checked, else the requested one), never by when the
+    file was uploaded.  Videos with neither fall back to upload, then record
+    creation; ties break on the row ID in the caller (deterministic).
+    """
+    return (
+        _utc(upload.published_at)
+        or status_authority.scheduled_time(upload)
+        or _utc(upload.publish_at)
+        or _utc(upload.uploaded_at)
+        or _utc(upload.created_at)
+        or datetime.min.replace(tzinfo=UTC)
+    )
 
 
 # ---------------------------------------------------------------------------
