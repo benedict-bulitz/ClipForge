@@ -9,14 +9,21 @@ or upload session URI is ever printed.
     PYTHONPATH=. python scripts/youtube_diagnostics.py --video VIDEO_ID
     PYTHONPATH=. python scripts/youtube_diagnostics.py --learning
     PYTHONPATH=. python scripts/youtube_diagnostics.py --performance [last10|28d|90d|all]
+    PYTHONPATH=. python scripts/youtube_diagnostics.py --analytics-live VIDEO_ID [VIDEO_ID ...]
 
 ``--live`` additionally reads fresh status/metrics from Google (read-only
 calls: videos.list and Analytics reports) without persisting anything.
+
+``--analytics-live`` traces the YouTube Analytics ingestion of one video: the
+stored captures (with YouTube's raw answers), the exact production queries
+sent again live, and a few minimal comparison queries.  Read-only GET
+requests only; the database session refuses every write.
 """
 
 import argparse
 from datetime import UTC, datetime, timedelta
 from itertools import pairwise
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 
@@ -26,7 +33,12 @@ from clipforge.models import Project, YouTubeUpload
 from clipforge.security.secrets import SecretStore
 from clipforge.youtube import analytics, connection, learning, library, performance
 from clipforge.youtube import status as status_authority
-from clipforge.youtube.provider import GoogleYouTubeProvider, YouTubeApiError
+from clipforge.youtube.provider import (
+    ANALYTICS_API,
+    GoogleYouTubeProvider,
+    YouTubeApiError,
+    has_capability,
+)
 from clipforge.youtube.uploads import STATUS_PARTS
 
 
@@ -148,11 +160,11 @@ def _live(db, upload: YouTubeUpload, settings) -> None:
         print(f"  privacy={status.get('privacyStatus')} uploadStatus={status.get('uploadStatus')} publishAt={status.get('publishAt')} publishedAt={(items[0].get('snippet') or {}).get('publishedAt')}")
         print(f"  views={stats.get('viewCount')} likes={stats.get('likeCount')} comments={stats.get('commentCount')}")
         _connection, token = connection.access_token(db, settings, store, provider, capability="analytics")
-        start = (upload.published_at or upload.created_at or datetime.now(UTC)) - timedelta(days=1)
-        metrics, _raw = analytics.fetch_video_metrics(provider, token, upload.youtube_video_id, start.date(), datetime.now(UTC).date())
+        start, end = analytics.report_window(upload.published_at or upload.created_at or datetime.now(UTC), datetime.now(UTC))
+        metrics, _raw = analytics.fetch_video_metrics(provider, token, upload.youtube_video_id, start, end)
         for name, item in metrics.items():
             print(f"  {name:<26} {_fmt(item['value']) if item['availability'] == 'available' else item['availability']}")
-        status_name, points, used, _raw = analytics.fetch_retention(provider, token, upload.youtube_video_id, start.date(), datetime.now(UTC).date())
+        status_name, points, used, _raw = analytics.fetch_retention(provider, token, upload.youtube_video_id, start, end)
         print(f"  retention: {status_name}, {len(points)} points, metrics={list(used)}")
     except YouTubeApiError as exc:
         print(f"  {exc.code}: {exc.message}")
@@ -206,6 +218,202 @@ def _performance(db, record, scope: str, settings) -> None:
         print(f"  {name}: {result['metrics'][name]}")
 
 
+PACIFIC = ZoneInfo("America/Los_Angeles")
+ROW_PREVIEW = 8
+
+
+class _RecordingProvider:
+    """The real provider, recording each Analytics request and its outcome."""
+
+    def __init__(self, provider) -> None:
+        self.provider = provider
+        self.calls: list[tuple[dict, YouTubeApiError | None, dict | None]] = []
+
+    def analytics_report(self, token: str, params: dict) -> dict:
+        try:
+            response = self.provider.analytics_report(token, params)
+        except YouTubeApiError as exc:
+            self.calls.append((dict(params), exc, None))
+            raise
+        self.calls.append((dict(params), None, response))
+        return response
+
+
+def _read_only(db) -> None:
+    """A diagnostic never writes: a commit, or a flush with pending changes, raises."""
+    flush = db.flush
+
+    def refuse(*_args, **_kwargs):
+        raise RuntimeError("youtube_diagnostics is read-only")
+
+    def guarded_flush(*args, **kwargs):
+        if db.new or db.dirty or db.deleted:
+            refuse()
+        return flush(*args, **kwargs)  # autoflush runs before every query; nothing to write is fine
+
+    db.flush = guarded_flush
+    db.commit = refuse
+
+
+def _print_response(params: dict, error: YouTubeApiError | None, response: dict | None, indent: str = "  ") -> None:
+    print(f"{indent}GET {ANALYTICS_API}")
+    for key in ("ids", "startDate", "endDate", "metrics", "dimensions", "filters", "sort", "maxResults"):
+        if key in params:
+            print(f"{indent}  {key}={params[key]}")
+    if error is not None:
+        print(f"{indent}HTTP {error.status_code or '?'} -> {error.code} (reason={error.reason or '-'}): {error.message}")
+        return
+    headers = [str(item.get("name")) for item in (response or {}).get("columnHeaders") or [] if isinstance(item, dict)]
+    rows = (response or {}).get("rows") or []
+    print(f"{indent}HTTP 200  column headers={headers}  rows={len(rows)}")
+    for row in rows[:ROW_PREVIEW]:
+        print(f"{indent}  {row}")
+    if len(rows) > ROW_PREVIEW:
+        print(f"{indent}  ... {len(rows) - ROW_PREVIEW} more")
+
+
+def _ask(provider, token: str, label: str, params: dict) -> tuple[YouTubeApiError | None, dict | None]:
+    print(f"\n[{label}]")
+    try:
+        response = provider.analytics_report(token, params)
+    except YouTubeApiError as exc:
+        _print_response(params, exc, None)
+        return exc, None
+    _print_response(params, None, response)
+    return None, response
+
+
+def _rows(response: dict | None) -> int:
+    return len((response or {}).get("rows") or [])
+
+
+def _stored_evidence(db, upload: YouTubeUpload) -> None:
+    print("\nSTORED CAPTURES (what YouTube answered at the time, from raw_responses):")
+    snapshots = analytics._snapshots(db, upload.id)
+    if not snapshots:
+        print("  none")
+    for snap in snapshots:
+        print(f"  {snap.fetched_at}  age={_fmt(snap.published_age_hours)}h bucket={snap.age_bucket} source={snap.source} status={snap.status} retention={snap.retention_status} range={snap.date_range or {}}")
+        for key, value in sorted((snap.raw_responses or {}).items()):
+            if not isinstance(value, dict):
+                continue
+            if "error" in value:
+                print(f"      {key}: ERROR {value['error']}")
+                continue
+            headers = [str(item.get("name")) for item in value.get("columnHeaders") or [] if isinstance(item, dict)]
+            print(f"      {key}: headers={headers} rows={len(value.get('rows') or [])}")
+
+
+def _analytics_live(db, settings, video_id: str) -> None:
+    """One video's Analytics ingestion, end to end, read-only."""
+    upload = db.scalar(select(YouTubeUpload).where(YouTubeUpload.youtube_video_id == video_id))
+    print(f"\n{'=' * 78}\nVIDEO: {video_id}")
+    if upload is None:
+        print("  no ClipForge upload maps to this video ID")
+        return
+    record = connection.get_connection(db)
+    now = datetime.now(UTC)
+    published = upload.published_at
+    print(f"  upload={upload.id} channel={upload.channel_id} (connected: {record.channel_id if record else '-'}, match={bool(record and record.channel_id == upload.channel_id)})")
+    print(f"  title='{upload.title}' content_type={upload.content_type or '-'} privacy={upload.remote_privacy_status} deleted={upload.deleted_on_youtube}")
+    print(f"  live stats (videos.list): views={upload.remote_view_count} likes={upload.remote_like_count} checked={upload.remote_status_checked_at}")
+    print(f"  analytics error stored: {upload.analytics_error_code or '-'} {upload.analytics_error_message or ''}")
+    _stored_evidence(db, upload)
+    if published is None:
+        print("\nPUBLISHED_AT: none (not public yet) - production never queries Analytics for it")
+        return
+    published_utc = published.replace(tzinfo=UTC) if published.tzinfo is None else published.astimezone(UTC)
+    start, end = analytics.report_window(published_utc, now)
+    today_pt = now.astimezone(PACIFIC).date()
+    published_pt = published_utc.astimezone(PACIFIC).date()
+    print("\nPUBLISHED_AT:")
+    print(f"  UTC {published_utc.isoformat()}  |  Pacific {published_utc.astimezone(PACIFIC).isoformat()} ({upload.published_source})")
+    print(f"  age now: {(now - published_utc).total_seconds() / 3600:.1f} h")
+    print("\nDATE AUDIT:")
+    print(f"  production window startDate={start} endDate={end} (DATEs; start<=end: {start <= end})")
+    print(f"  publication day: UTC {published_utc.date()} / Pacific {published_pt} -> inside window: {start <= published_pt <= end and start <= published_utc.date() <= end}")
+    print(f"  today: UTC {now.date()} / Pacific {today_pt} -> endDate after today in Pacific: {end > today_pt}")
+
+    provider = _RecordingProvider(GoogleYouTubeProvider())
+    store = SecretStore()
+    client = connection.oauth_client(settings)
+    print("\nAUTH:")
+    print(f"  stored scopes: {', '.join(scope.rsplit('/', 1)[-1] for scope in (record.granted_scopes if record else None) or []) or '-'}")
+    print(f"  analytics capability (stored scopes): {has_capability((record.granted_scopes if record else None) or [], 'analytics')}")
+    if client is None:
+        print("  OAuth client not configured")
+        return
+    try:
+        refresh_token = store.get_secret(connection.REFRESH_TOKEN_SECRET)
+        if not refresh_token:
+            print("  no refresh token stored - reconnect YouTube")
+            return
+        grant = provider.provider.refresh_access_token(client, refresh_token)  # token only; nothing is saved
+        token = grant.access_token
+        if grant.scopes:
+            print(f"  scopes Google reports for the token: {', '.join(scope.rsplit('/', 1)[-1] for scope in grant.scopes)}")
+        identity = provider.provider.get_my_channel(token)
+        print(f"  channel==MINE resolves to: {identity.channel_id} ({identity.title}) -> same as the video's channel: {identity.channel_id == upload.channel_id}")
+    except YouTubeApiError as exc:
+        print(f"  token/channel lookup failed: {exc.code} (HTTP {exc.status_code}): {exc.message}")
+        return
+
+    print("\nA. EXACT PRODUCTION QUERIES (the functions refresh_analytics calls, same dates):")
+    try:
+        metrics, _raw = analytics.fetch_video_metrics(provider, token, video_id, start, end)
+        content_type, _raw_type = analytics.fetch_content_type(provider, token, video_id, start, end)
+        retention_status, points, used, _raw_retention = analytics.fetch_retention(provider, token, video_id, start, end)
+    except YouTubeApiError as exc:
+        metrics = None
+        print(f"  production path raised {exc.code} (HTTP {exc.status_code}, reason={exc.reason}): {exc.message}")
+        print("  -> refresh_analytics stores this as analytics_error_code (library: failed/auth_error), not as processing")
+    for params, error, response in provider.calls:
+        _print_response(params, error, response, indent="    ")
+        print()
+    if metrics is not None:
+        print("NORMALIZED RESULT (what ClipForge would store; nothing is stored):")
+        for name, item in metrics.items():
+            shown = _fmt(item["value"]) if item["availability"] == "available" else f"{item['availability']} ({item['reason']})"
+            print(f"  {name:<26} {shown}")
+        print(f"  content type: {content_type or '-'}   retention: {retention_status} ({len(points)} points, metrics={list(used)})")
+        print(f"  snapshot status: {analytics.snapshot_status(metrics, retention_status)}")
+    production = next((response for params, _error, response in provider.calls if params.get("dimensions") == "video" and "," in params.get("metrics", "")), None)
+    production_error = next((error for params, error, _response in provider.calls if params.get("dimensions") == "video" and "," in params.get("metrics", "")), None)
+
+    filters = f"video=={video_id}"
+    base = {"ids": "channel==MINE", "startDate": start.isoformat(), "endDate": end.isoformat(), "filters": filters}
+    print("\nB. COMPARISON QUERIES (read-only):")
+    _e, minimal = _ask(provider.provider, token, "B1 smallest query: views, no dimensions, same dates", {**base, "metrics": "views"})
+    _e, all_no_dim = _ask(provider.provider, token, "B2 all production metrics, no dimensions", {**base, "metrics": ",".join(analytics.VIDEO_METRICS)})
+    wide_start = min(start, published_pt) - timedelta(days=1)
+    _e, by_day = _ask(provider.provider, token, "B3 views by day, Pacific publication day - 1 .. today", {**base, "startDate": wide_start.isoformat(), "endDate": max(end, today_pt).isoformat(), "metrics": "views", "dimensions": "day"})
+    _e, explicit = _ask(provider.provider, token, "B4 explicit channel ID instead of MINE", {**base, "ids": f"channel=={upload.channel_id}", "metrics": "views"})
+    _e, channel_days = _ask(provider.provider, token, "B5 whole channel, views by day, last 14 days (no video filter)", {
+        "ids": "channel==MINE", "startDate": (today_pt - timedelta(days=14)).isoformat(), "endDate": today_pt.isoformat(), "metrics": "views", "dimensions": "day",
+    })
+    if production_error is not None and production_error.code == "bad_request":
+        without = tuple(name for name in analytics.VIDEO_METRICS if name != "engagedViews")
+        _ask(provider.provider, token, "B6 production query without engagedViews", {**base, "metrics": ",".join(without), "dimensions": "video"})
+        _ask(provider.provider, token, "B7 engagedViews alone", {**base, "metrics": "engagedViews", "dimensions": "video"})
+
+    print("\nVERDICT (from the answers above):")
+    if production_error is not None:
+        print(f"  production metrics query FAILED: {production_error.code} (HTTP {production_error.status_code}) - an error, not 'no data yet'")
+    elif _rows(production):
+        print("  production query returns data NOW -> earlier captures were taken before YouTube had processed the video (see their age above);")
+        print("  the next due refresh stores it.")
+    elif _rows(minimal) or _rows(all_no_dim):
+        print("  production query (dimensions=video) is EMPTY but the same filter without dimensions HAS rows -> query shape bug")
+    elif _rows(by_day):
+        print("  daily rows exist for this video but not for the production range -> date range bug (compare dates above)")
+    elif _rows(channel_days):
+        print("  the channel has Analytics rows, this video has none yet -> YouTube has not processed this video's analytics (delay) or the video is not in this channel")
+    else:
+        print("  NO Analytics rows for the whole channel (MINE) in 14 days -> token/channel mapping (Brand account?) or channel-wide data delay")
+    if explicit is not None and _rows(explicit) != _rows(minimal):
+        print("  channel==MINE and the explicit channel ID answer differently -> channel mapping problem")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("project_id", nargs="?")
@@ -213,6 +421,7 @@ def main() -> None:
     parser.add_argument("--live", action="store_true", help="also read fresh data from Google (read-only)")
     parser.add_argument("--learning", action="store_true", help="print the cross-video learning table")
     parser.add_argument("--performance", nargs="?", const="last10", metavar="SCOPE", help="trace the Channel Performance overview")
+    parser.add_argument("--analytics-live", nargs="+", metavar="VIDEO_ID", help="trace the YouTube Analytics ingestion live (read-only)")
     args = parser.parse_args()
     settings = get_settings()
     with SessionLocal() as db:
@@ -223,6 +432,12 @@ def main() -> None:
         else:
             print(f"  channel: {record.channel_title} ({record.channel_id}) status={record.status}")
             print(f"  scopes:  {', '.join(scope.rsplit('/', 1)[-1] for scope in record.granted_scopes or [])}")
+        if args.analytics_live:
+            _read_only(db)
+            for video_id in args.analytics_live:
+                _analytics_live(db, settings, video_id)
+            db.rollback()
+            return
         if args.performance:
             _performance(db, record, args.performance, settings)
             db.rollback()

@@ -130,6 +130,28 @@ def due_bucket(history: list[YouTubeAnalyticsSnapshot], age_hours: float, now: d
     return bucket
 
 
+def report_window(published_at: datetime, now: datetime) -> tuple[date, date]:
+    """The Analytics API date range: plain DATEs (no time of day, no zone).
+
+    YouTube Analytics reports by calendar day.  Starting the day before the
+    UTC publication date keeps the publication day inside the range in every
+    zone west of UTC (a video published late in the evening there is already
+    "tomorrow" in UTC).  The end is today in UTC: never before the start, and
+    a day YouTube has not processed yet simply contributes no rows.
+    """
+    return (_utc(published_at) - timedelta(days=1)).date(), _utc(now).date()  # type: ignore[operator,union-attr]
+
+
+def snapshot_status(metrics: dict[str, dict[str, Any]], retention_status: str) -> str:
+    """ok | partial | no_data_yet for one capture (errors never get here: they raise)."""
+    values = [item["availability"] for item in metrics.values()]
+    if all(value == "no_data_yet" for value in values) and retention_status != "ok":
+        return "no_data_yet"
+    if any(value == "unavailable" for value in values) or retention_status == "unavailable":
+        return "partial"
+    return "ok"
+
+
 def _report_params(video_id: str, start: date, end: date, metrics: tuple[str, ...], dimensions: str) -> dict[str, str]:
     return {
         "ids": "channel==MINE",
@@ -177,6 +199,8 @@ def fetch_video_metrics(
         rows = rows_as_dicts(response)
         if rows and name in rows[0]:
             results[name] = {"value": _number(rows[0][name]), "availability": "available", "reason": None}
+        elif rows:
+            results[name] = {"value": None, "availability": "unavailable", "reason": "not_returned_by_api"}
         else:
             results[name] = {"value": None, "availability": "no_data_yet", "reason": "no_rows_yet"}
     return results, raw
@@ -276,8 +300,7 @@ def refresh_analytics(
         return {"status": "not_due", "published_age_hours": round(age_hours, 2)}
     try:
         _connection, token = access_token(db, settings, store, provider, capability="analytics")
-        start = (_utc(upload.published_at) - timedelta(days=1)).date()  # type: ignore[operator]
-        end = now.date()
+        start, end = report_window(upload.published_at, now)  # type: ignore[arg-type]
         metrics, raw = fetch_video_metrics(provider, token, upload.youtube_video_id, start, end)
         content_type, raw_type = fetch_content_type(provider, token, upload.youtube_video_id, start, end)
         retention_status, points, retention_metrics, raw_retention = fetch_retention(
@@ -287,13 +310,7 @@ def refresh_analytics(
         _set_analytics_error(db, upload, exc)
         return {"status": "error", "error": {"code": exc.code, "message": exc.message}}
     raw.update(content_type=raw_type, retention=raw_retention)
-    values = [item["availability"] for item in metrics.values()]
-    if all(value == "no_data_yet" for value in values) and retention_status != "ok":
-        status = "no_data_yet"
-    elif any(value == "unavailable" for value in values) or retention_status == "unavailable":
-        status = "partial"
-    else:
-        status = "ok"
+    status = snapshot_status(metrics, retention_status)
     snapshot = YouTubeAnalyticsSnapshot(
         upload_id=upload.id,
         youtube_video_id=upload.youtube_video_id,
