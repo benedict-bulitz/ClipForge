@@ -700,6 +700,8 @@ def explanation_spine(arc: dict[str, Any], chain: list[str], terms: dict[str, An
     support = [fact_id for fact_id in chain if fact_id not in mechanism and fact_id not in {primary, final}]
     if not explanatory:
         status = "not_required"
+    elif not units:
+        status = "unknown"  # no research facts in the arc: nothing to judge
     elif mechanism:
         status = "complete"
     else:

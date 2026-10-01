@@ -742,9 +742,11 @@ def _answer_sufficiency(units: list[dict[str, Any]], context: dict[str, Any], pa
     structural = {"no_mechanism_linked_to_question", "payoff_does_not_resolve"} & set(reasons)
     if not explanatory and not ai:
         status = "not_applicable"
-    elif "review_unanswered" in reasons or len(structural) == 2 or (missing_research and structural):
+    elif "review_unanswered" in reasons or (missing_research and structural):
+        # Semantic verdict, or research that holds no mechanism at all: a
+        # lexical miss alone (a paraphrased link) never fails a video.
         status = "fail"
-    elif "review_partial" in reasons or "payoff_does_not_resolve" in reasons:
+    elif "review_partial" in reasons or "payoff_does_not_resolve" in reasons or len(structural) == 2:
         status = "warning"
     elif reasons:
         # One lexical signal alone (a paraphrased link, thin research) is a diagnostic.
