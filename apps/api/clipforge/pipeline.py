@@ -174,8 +174,8 @@ RETENTION_REQUIREMENTS = (
     "Save the clearest 'that is why' connection for the final block, then stop.",
     (
         "Never write a sentence about the facts, research or sources themselves (for example that they do not "
-        "explain something): if the facts cannot answer the question, write the supported part only; the "
-        "system will research again."
+        "explain something) or saying the question stays open or unclear: if the facts cannot answer the "
+        "question, write the supported part only; the system will research again."
     ),
     "Use words a 10-12 year old understands on first listen; prefer a concrete example over an abstract term.",
 )

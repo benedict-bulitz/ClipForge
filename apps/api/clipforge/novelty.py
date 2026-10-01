@@ -42,6 +42,7 @@ from .verbal_hook import (
     narrates_failure,
     proposition_words,
     spoken_simplicity,
+    states_open_question,
 )
 
 _WORD_RE = re.compile(r"[a-zA-ZÀ-ÖØ-öø-ÿ0-9]+")
@@ -661,6 +662,8 @@ def _weak_resolution(unit: dict[str, Any], units: list[dict[str, Any]], context:
     """Why a closing beat does not complete the explanation ("" when it does)."""
     if unit.get("narrates_failure"):
         return "it reports that the evidence cannot answer - an internal diagnostic, not a resolution."
+    if unit.get("open_question"):
+        return "it says the question is still unanswered."
     if unit["category"] == "resolution":
         return ""
     if _APPEARANCE.search(unit["text"]):
@@ -738,10 +741,15 @@ def _answer_sufficiency(units: list[dict[str, Any]], context: dict[str, Any], pa
     body = [unit for unit in units if unit["category"] != "hook"]
     hook = next((unit["text"] for unit in units if unit["category"] == "hook"), "")
     terms = _asked_terms(question, contract, body, hook)
+    spine_mechanism = set(spine.get("mechanism") or [])
     mechanisms = [
         unit for unit in body
         if unit.get("explanatory_delta") == "advances_explanation" and not unit.get("weak_resolution")
-        # The observation itself (the answer's own fact, stated without a cause) explains nothing yet.
+        and not unit.get("open_question")
+        # A mechanism states a cause (grammar), carries a mechanism fact or was
+        # judged explanatory by the review; the observation itself - however
+        # well it matches the question's words - explains nothing yet.
+        and (_REASON.search(unit["text"]) or set(unit["evidence"]["fact_ids"]) & spine_mechanism or unit.get("delta_source") == "ai")
         and not (set(unit["evidence"]["fact_ids"]) <= {primary} and not _REASON.search(unit["text"]))
     ]
     # "je älter man wird", "obwohl wir es nicht wollten": a question with a
@@ -757,6 +765,15 @@ def _answer_sufficiency(units: list[dict[str, Any]], context: dict[str, Any], pa
             reasons.append("condition_not_explained")
     if explanatory and payoff.get("status") == "fail":
         reasons.append("payoff_does_not_resolve")
+    # The script itself says the asked "why" stays open ("warum es mit dem
+    # Alter häufiger wird, bleibt offen"): the original question is unanswered.
+    closing = next((unit for unit in body if unit.get("is_payoff")), None)
+    admits = [
+        unit for unit in body
+        if unit.get("open_question") and (unit is closing or _links_question(unit["text"], condition or terms))
+    ]
+    if explanatory and admits:
+        reasons.append("question_left_open")
     if ai and ai["verdict"] == "unanswered":
         reasons.append("review_unanswered")
     elif ai and ai["verdict"] == "partial":
@@ -767,13 +784,14 @@ def _answer_sufficiency(units: list[dict[str, Any]], context: dict[str, Any], pa
     structural = {"no_mechanism_linked_to_question", "payoff_does_not_resolve"} & set(reasons)
     if not explanatory and not ai:
         status = "not_applicable"
-    elif "review_unanswered" in reasons or (
-        missing_research and ({"payoff_does_not_resolve", "condition_not_explained"} & set(reasons))
+    elif (
+        {"review_unanswered", "question_left_open", "condition_not_explained"} & set(reasons)
+        or (missing_research and "payoff_does_not_resolve" in reasons)
     ):
-        # The review's semantic verdict, or research without a mechanism plus
-        # an unambiguous structural gap (no resolving payoff, or the question's
-        # condition never explained).  A lexical miss alone - a paraphrased
-        # link - never fails a video.
+        # The review's semantic verdict, a script that admits the question is
+        # still open, a question condition ("je älter") no causal beat reaches,
+        # or research without a mechanism plus a payoff that resolves nothing.
+        # A paraphrased link alone never fails a video.
         status = "fail"
     elif "review_partial" in reasons or "payoff_does_not_resolve" in reasons or len(structural) == 2:
         status = "warning"
@@ -792,7 +810,9 @@ def _answer_sufficiency(units: list[dict[str, Any]], context: dict[str, Any], pa
         "review_verdict": ai["verdict"] if ai else None,
         "one_sentence_answer": (ai or {}).get("one_sentence_answer") or "",
         "missing": (ai or {}).get("missing") or "",
-        "research_required": status == "fail" and (missing_research or "no_mechanism_linked_to_question" in reasons),
+        "research_required": status == "fail" and bool(
+            missing_research or {"no_mechanism_linked_to_question", "question_left_open", "condition_not_explained", "review_unanswered"} & set(reasons)
+        ),
     }
 
 
@@ -907,7 +927,10 @@ def _audit_beats(units: list[dict[str, Any]], context: dict[str, Any]) -> None:
             # (an unsupported beat never becomes an explanation).
             source, needed = "ai", bool(judged.get("needed"))
             delta = judged["delta"] if beat != "unsupported" else delta
-        unit.update(explanatory_delta=delta, delta_source=source, delta_needed=needed, narrates_failure=narrates_failure(unit["text"]))
+        unit.update(
+            explanatory_delta=delta, delta_source=source, delta_needed=needed,
+            narrates_failure=narrates_failure(unit["text"]), open_question=states_open_question(unit["text"]),
+        )
         if unit["narrates_failure"]:
             # "Diese Fakten erklären aber nicht ...": a diagnostic, never content.
             unit.update(explanatory_delta="weak_value", delta_source="deterministic", delta_needed=False)
@@ -1088,7 +1111,8 @@ def _resolves(unit: dict[str, Any], units: list[dict[str, Any]], context: dict[s
             continue
         for word in proposition_words(item["text"]) - _related(proposition_words(item["text"]), opening):
             sources.setdefault(word, item["index"])
-    drawn = {word: sources[word] for word in said if word in sources}
+    # Inflection tolerant ("Erwartung" draws on "erwartet").
+    drawn = {word: min(sources[source] for source in _related(set(sources), {word})) for word in said if _related(set(sources), {word})}
     unit["resolution_terms"] = sorted(drawn)
     return len(set(drawn.values())) >= 2 or (bool(drawn) and bool(_CONCLUSION.search(unit["text"])))
 
@@ -1343,6 +1367,10 @@ def _hand_over_payoff(
         return False
     weak = bool(payoff.get("weak_resolution"))
     if payoff["category"] != "restatement" and not weak:
+        return False
+    if payoff.get("open_question"):
+        # An admitted open question stays visible: it blocks production
+        # instead of being hidden behind an earlier beat.
         return False
     successor = body[-2]
     if weak and payoff["category"] != "restatement" and successor.get("explanatory_delta") not in {"advances_explanation", "useful_evidence"}:

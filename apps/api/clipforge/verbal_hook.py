@@ -920,6 +920,40 @@ def narrates_failure(text: object) -> bool:
     return bool(_EVIDENCE_REFERENCE.search(sentence) and _INSUFFICIENT.search(sentence) and _EXPLAIN_VERB.search(sentence))
 
 
+# A sentence saying a question is still unanswered ("warum ..., bleibt
+# offen", "ist noch unklar", "wissen wir nicht genau", "the reason remains
+# unclear").  Grammar families, not phrases: an open-state predicate (open,
+# unclear, unknown, unexplained, not known/understood/clarified) plus a
+# reference to a reason or a "why/how" question.
+_OPEN_STATE = re.compile(
+    r"(?i)\b(?:bleib\w*|ist|sind|war|scheint|remains?|is|are|stays?)\s+(?:\w+\s+){0,3}?"
+    r"(?:offen|unklar|ungeklärt|unbekannt|unerforscht|rätselhaft|ein rätsel|umstritten|open|unclear|unknown|"
+    r"unexplained|uncertain|a mystery|debated|not (?:yet )?(?:known|clear|understood|explained|settled))\b"
+    r"|\b(?:noch\s+)?(?:nicht|kaum)\s+(?:\w+\s+){0,2}(?:geklärt|bekannt|erforscht|verstanden|erklärt|klar)\b"
+    r"|\b(?:weiß|wissen|weiss)\s+(?:man|wir|forscher\w*|fachleute|niemand|die forschung)\s+(?:\w+\s+){0,3}?"
+    r"(?:nicht|kaum|noch nicht)\b|\bniemand weiß\b|\bnobody knows\b"
+    r"|\b(?:forscher\w*|wissenschaftler\w*|experten|fachleute|man|wir)\s+(?:weiß|wissen|weiss|verstehen|versteht)\s+"
+    r"(?:\w+\s+){0,2}?(?:nicht|kaum)\b"
+    r"|\b(?:we|scientists|researchers|experts)\s+(?:still\s+)?(?:don't|do not|cannot|can't)\s+(?:yet\s+)?(?:know|explain|say)\b"
+    r"|\blässt sich\s+(?:\w+\s+){0,3}?nicht\s+(?:\w+\s+)?(?:erklären|sagen|beantworten|klären)\b"
+)
+_REASON_REFERENCE = re.compile(
+    r"(?i)\b(?:warum|wieso|weshalb|weswegen|wodurch|woran|wie genau|grund|gründe|ursache\w*|erklärung|"
+    r"why|how exactly|reason|reasons|cause|causes|explanation)\b|\b(?:das|dies|es|this|that)\b"
+)
+
+
+# A clause that gives the reason after all ("..., aber der Grund ist klar:
+# ...", "weil ...") resolves what the sentence leaves open elsewhere.
+_GIVES_REASON = re.compile(r"(?i)\b(?:weil|denn|deshalb|darum|daher|dadurch|because|therefore|liegt daran|ist klar|is clear)\b")
+
+
+def states_open_question(text: object) -> bool:
+    """The sentence says a why/how (or "this") is still unanswered - not a resolution."""
+    sentence = str(text or "")
+    return bool(_OPEN_STATE.search(sentence) and _REASON_REFERENCE.search(sentence) and not _GIVES_REASON.search(sentence))
+
+
 # Spoken-clarity grammar (no topic vocabulary): abstract noun endings, office
 # language and clause connectors that make a sentence hard to follow by ear.
 _ABSTRACT_NOUN = re.compile(r"(?i)^\w{4,}(?:ung|heit|keit|tion|ität|ismus|ierung|schaft|ance|ence|ment|ity|ness)(?:en|s)?$")
