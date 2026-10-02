@@ -15,7 +15,8 @@ consider, in the scene's own fallback order:
 * one paid generated image (bounded per project and per scene, verified with
   the existing OpenCLIP path, never shown before the Story Arc allows it),
 * reusing an already accepted project visual, or
-* leaving the scene missing (the renderer keeps its existing nonfatal policy).
+* leaving the scene missing once permitted fallbacks are exhausted (rendering
+  refuses missing sources; synthetic text cards remain disabled).
 """
 from __future__ import annotations
 

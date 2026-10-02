@@ -33,8 +33,9 @@ from .attention import replan_attention, visible_attention_events
 from .config import Settings
 from .media import (
     GRAPHIC_ASSET_SOURCE,
+    cached_scene_asset_path,
+    complete_project_visuals,
     destination_asset_allowed,
-    is_scene_asset_allowed,
     media_source,
     refresh_rights_acceptance,
 )
@@ -165,6 +166,9 @@ def render_video(
     if clean_narration_text(raw_text) != raw_text or contamination_issues(raw_text):
         raise RenderUnavailable("Narration validation failed before rendering.")
 
+    complete_project_visuals(state, project_id, settings)
+    _write_visual_diagnostics(state, project_id, settings, "before_render")
+
     output_dir = settings.render_root.resolve() / project_id / "renders" / f"v{revision_number}"
     if not output_dir.exists():
         cancellation.claim_path(output_dir)  # new for this run: removable if it is cancelled
@@ -175,6 +179,27 @@ def render_video(
     except cancellation.GenerationCancelled:
         output.unlink(missing_ok=True)  # a half-written file is never a finished video
         raise
+    except RenderUnavailable:
+        _write_visual_diagnostics(state, project_id, settings, "render_failed")
+        raise
+
+
+def _write_visual_diagnostics(state: dict, project_id: str, settings: Settings, status: str) -> None:
+    """A failed render must not discard the evidence needed to explain it."""
+    path = settings.render_root.resolve() / project_id / "diagnostics" / "visual-acquisition.json"
+    keys = ("id", "block_id", "narration", "visual_goal", "visual_intent", "story_role", "asset_status",
+            "search_queries", "visual_query_plan", "media_search", "visual_director", "fallback_reason",
+            "fallback_completion", "media")
+    evidence = {"status": status, "scenes": [{key: scene[key] for key in keys if key in scene}
+                                              for scene in state.get("scenes") or []],
+                "visual_director": state.get("visual_director"), "assets": state.get("assets")}
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        staging = path.with_suffix(".partial")
+        staging.write_text(json.dumps(evidence, ensure_ascii=False, indent=2), encoding="utf-8")
+        staging.replace(path)
+    except OSError:
+        pass  # diagnostics cannot prevent a render
 
 
 def _render_video(
@@ -922,13 +947,9 @@ def _system_voice(say: str, voice: dict, language: str) -> str | None:
 
 def _scene_media_path(scene: dict, settings: Settings) -> tuple[Path | None, str]:
     media = scene.get("media") if isinstance(scene.get("media"), dict) else {}
-    cache_path = media.get("cache_path")
     kind = str(media.get("kind") or "")
-    if not cache_path or not is_scene_asset_allowed(media):
-        return None, "real_media_unavailable"
-    root = settings.render_root.resolve()
-    candidate = (root / str(cache_path)).resolve()
-    if not candidate.is_relative_to(root) or not candidate.is_file():
+    candidate = cached_scene_asset_path(media, settings)
+    if candidate is None:
         return None, "real_media_unavailable"
     return candidate, kind
 
@@ -1132,6 +1153,8 @@ def _create_visual_segment(
     height = int(state["timeline"]["height"])
     fps = int(state["timeline"]["fps"])
     source, kind = _scene_media_path(scene, settings)
+    if (scene.get("fallback_completion") or {}).get("status") in {"blocked", "exhausted"}:
+        source = None
     reused = scene.get("asset_status") in {"related_media_reused", "real_media_reused", "generated_media_reused", "block_visual_continued"}
     relevance = (scene.get("media") or {}).get("relevance") or {}
     rejected = relevance.get("confidence") == "rejected" or (relevance.get("acceptance") or {}).get("accepted") is False
@@ -1147,7 +1170,7 @@ def _create_visual_segment(
             source, kind = _scene_media_path(other, settings)
             if source is not None:
                 scene["media"] = refresh_rights_acceptance(dict(other["media"]))
-                scene["asset_status"] = "real_media_reused"
+                scene["asset_status"] = "generated_media_reused" if scene["media"].get("ai_generated") else "real_media_reused"
                 manifest = state.setdefault("assets", {}).setdefault("license_manifest", [])
                 if not any(item.get("identity") == scene["media"].get("identity") for item in manifest):
                     manifest.append(dict(scene["media"]))

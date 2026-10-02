@@ -931,6 +931,7 @@ def _dimensions(aspect_ratio: str) -> tuple[int, int]:
 _PERSISTENT_SCENE_KEYS = (
     "user_locked_visual", "render_adjustments", "rejected_media_identities", "visual_continuity",
     "media_search", "visual_query_plan",
+    "visual_director", "fallback_reason", "fallback_completion", "media_repair",
 )
 
 

@@ -2600,10 +2600,16 @@ def persisted_candidate(media: dict[str, Any]) -> MediaCandidate:
 
 
 def destination_asset_allowed(media: dict[str, Any], scene: dict[str, Any], state: dict[str, Any],
-                              *, reuse: bool = False, strategy: dict[str, Any] | None = None) -> bool:
+                              *, reuse: bool = False, strategy: dict[str, Any] | None = None,
+                              settings: Settings | None = None, verifier: Any | None = None,
+                              acquisition_budget: AcquisitionBudget | None = None) -> bool:
     """Shared cache/apply/reuse gate; destination fit never inherits A's verdict."""
     if not is_scene_asset_allowed(media):
         return False
+    if media_source(media) in REAL_MEDIA_PROVIDERS:
+        prior = media.get("relevance") or {}
+        if prior.get("confidence") == "rejected" or (prior.get("acceptance") or {}).get("accepted") is False:
+            return False
     if asset_keys(media) & excluded_asset_keys(state, set(scene.get("rejected_media_identities") or [])):
         return False
     strategy = strategy if strategy is not None else scene.get("visual_director") or {}
@@ -2613,8 +2619,29 @@ def destination_asset_allowed(media: dict[str, Any], scene: dict[str, Any], stat
         return False
     if media_source(media) not in REAL_MEDIA_PROVIDERS:
         # Generated/graphic provenance retains its existing authority. For
-        # cross-scene generated reuse require the existing focused relation.
-        return not reuse or _related_media(derive_search_queries(scene, state), [media]) is not None
+        # generated reuse a focused relation or independently verified
+        # destination is required. English generation prompts and narration
+        # in another language need not share literal query words.
+        if not reuse:
+            return True
+        key = scene_acceptance_key(scene, state)
+        evidence = (media.get("destination_verifications") or {}).get(key)
+        if evidence is None and _related_media(derive_search_queries(scene, state), [media]) is not None:
+            return True
+        if evidence is None and settings is not None and verifier is not None:
+            from . import visual_director as director
+
+            path = cached_scene_asset_path(media, settings)
+            if path is None or (acquisition_budget is not None and not acquisition_budget.claim("verifications", f"reuse:{media.get('identity')}:{key}")):
+                return False
+            prompt = director.build_generation_prompt(scene, state, strategy, settings=settings)
+            if prompt is None:
+                return False
+            evidence = director._verify_generated(path, scene, state, verifier, prompt["verification_texts"])
+            media.setdefault("destination_verifications", {})[key] = evidence
+        return bool(evidence and evidence.get("status") == "verified" and evidence.get("verified")
+                    and evidence.get("accepted") and not evidence.get("presentation_risk")
+                    and float(evidence.get("scene_score") or 0) >= SCENE_VISUAL_THRESHOLD)
     candidate = persisted_candidate(media)
     plan = build_visual_query_plan(scene, state)
     relevance = media_relevance(candidate, scene, state)
@@ -2633,6 +2660,117 @@ def scene_acceptance_key(scene: dict[str, Any], state: dict[str, Any]) -> str:
     evidence = {key: scene.get(key) for key in ("narration", "visual_goal", "visual_intent")}
     evidence["intent"] = state.get("intent")
     return hashlib.sha256(json.dumps(evidence, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+
+
+def cached_scene_asset_path(media: dict[str, Any], settings: Settings) -> Path | None:
+    """The same provenance and cache boundary for acquisition and rendering."""
+    if not media.get("cache_path") or not is_scene_asset_allowed(media):
+        return None
+    root = settings.render_root.resolve()
+    path = (root / str(media["cache_path"])).resolve()
+    return path if path.is_relative_to(root) and path.is_file() else None
+
+
+def complete_project_visuals(
+    state: dict[str, Any], project_id: str, settings: Settings, *,
+    image_generator: Any | None = None, visual_verifier: Any | None = None,
+) -> None:
+    """Finish permitted fallbacks at final admission, without another search.
+
+    Acquisition may have left a scene missing, or a later edit/admission may
+    invalidate its source. Stock failure is not the end of its visual chain.
+    Paid attempts retain the existing project/scene limits and circuit breaker.
+    """
+    from . import visual_director as director
+    from .image_generation import get_image_generator
+
+    generator = image_generator if image_generator is not None else get_image_generator(settings)
+    verifier = visual_verifier if visual_verifier is not None else get_visual_verifier()
+    run_state: dict[str, Any] = {}
+    scenes = state.get("scenes") or []
+    # Carry the acquisition run's provider outage circuit breaker into final
+    # admission; a render boundary is not a second paid acquisition run.
+    for scene in scenes:
+        status = str(((scene.get("visual_director") or {}).get("generation") or {}).get("status") or "")
+        if status.startswith("provider_"):
+            run_state["generation_blocked"] = status
+            break
+    for scene in scenes:
+        current = scene.get("media") or {}
+        reused = scene.get("asset_status") in {"related_media_reused", "real_media_reused", "generated_media_reused", "block_visual_continued"}
+        if cached_scene_asset_path(current, settings) and destination_asset_allowed(current, scene, state, reuse=reused):
+            refresh_rights_acceptance(current)
+            scene.pop("fallback_completion", None)
+            if scene.get("asset_status") == "real_media_unavailable":
+                scene["asset_status"] = _asset_status(current)
+                scene.pop("fallback_reason", None)
+            continue
+        # A user-owned visual cannot be silently replaced at render admission.
+        if scene.get("user_locked_visual") or current.get("manually_selected") or (scene.get("visual_director") or {}).get("manually_selected"):
+            scene["asset_status"] = "real_media_unavailable"
+            scene["fallback_completion"] = {"status": "blocked", "reason": "user_locked_visual"}
+            continue
+        strategy = scene.get("visual_director")
+        if not isinstance(strategy, dict) or not strategy.get("fallback_chain"):
+            strategy = director.plan_scene_strategy(scene, state, build_visual_query_plan(scene, state), settings=settings)
+        stored = (scene.get("media_search") or {}).get("acquisition_budget") or {}
+        budget = AcquisitionBudget()
+        for work, limit in (stored.get("limits") or {}).items():
+            if work in {"search_requests", "verifications", "downloads"}:
+                setattr(budget, f"max_{work}", max(0, int(limit)))
+        for work, count in (stored.get("used") or {}).items():
+            if work in {"search_requests", "verifications", "downloads"}:
+                setattr(budget, work, max(0, int(count)))
+        reason = "no_usable_source_at_render_admission"
+        metadata, resolved = director.resolve_scene_fallback(
+            scene, state, strategy, project_id=project_id, settings=settings,
+            generator=generator, verifier=verifier, failure_reason=reason, run_state=run_state,
+        )
+        if metadata is not None and not destination_asset_allowed(metadata, scene, state):
+            metadata, resolved = None, None
+        if metadata is None and director.REUSE_PREVIOUS_VISUAL in strategy["fallback_chain"]:
+            candidates = []
+            for other in scenes:
+                asset = other.get("media") or {}
+                if other is scene or not cached_scene_asset_path(asset, settings):
+                    continue
+                if destination_asset_allowed(asset, scene, state, reuse=True, strategy=strategy,
+                                             settings=settings, verifier=verifier, acquisition_budget=budget):
+                    candidates.append(asset)
+            metadata = _related_media(derive_search_queries(scene, state), candidates) or (dict(candidates[0]) if candidates else None)
+            if metadata is not None:
+                resolved = director.REUSE_PREVIOUS_VISUAL
+        if metadata is None:
+            metadata, resolved = director.resolve_scene_fallback(
+                scene, state, strategy, project_id=project_id, settings=settings,
+                generator=generator, verifier=verifier, failure_reason=reason,
+                run_state=run_state, phase="after_reuse",
+            )
+            if metadata is not None and not destination_asset_allowed(metadata, scene, state):
+                metadata, resolved = None, None
+        scene.setdefault("media_search", {})["acquisition_budget"] = budget.snapshot()
+        if metadata is None or cached_scene_asset_path(metadata, settings) is None:
+            scene.pop("media", None)
+            scene["asset_status"] = "real_media_unavailable"
+            scene["fallback_completion"] = {"status": "exhausted", "reason": reason}
+            director.record_decision(scene, strategy, director.MISSING, None, "permitted_fallbacks_exhausted")
+            continue
+        scene["media"] = refresh_rights_acceptance(dict(metadata))
+        scene["asset_status"] = (
+            "real_media_reused" if media_source(metadata) in REAL_MEDIA_PROVIDERS else "generated_media_reused"
+        ) if resolved == director.REUSE_PREVIOUS_VISUAL else _asset_status(metadata)
+        scene.pop("fallback_reason", None)
+        scene["fallback_completion"] = {"status": "selected", "resolved_type": resolved, "reason": reason}
+        director.record_decision(scene, strategy, director.GENERATE_FALLBACK if resolved == director.GENERATED_IMAGE else director.DEGRADED, resolved, reason)
+    attach_project_overlays(scenes)
+    assets = state.setdefault("assets", {})
+    assets["license_manifest"] = [dict(scene["media"]) for scene in scenes if scene.get("media") and cached_scene_asset_path(scene["media"], settings)]
+    assets["selected_count"] = sum(scene.get("asset_status") != "real_media_unavailable" and bool(scene.get("media")) for scene in scenes)
+    assets["missing_media_count"] = len(scenes) - assets["selected_count"]
+    assets["provider"] = _provider_summary(assets["license_manifest"])
+    assets["status"] = "partial_fallback" if assets["missing_media_count"] else "media_ready"
+    assets["diagnostic"] = "Permitted visual fallbacks exhausted." if assets["missing_media_count"] else None
+    director.summarize_project(state, settings)
 
 
 def excluded_asset_keys(state: dict[str, Any], identities: set[str]) -> set[str]:
