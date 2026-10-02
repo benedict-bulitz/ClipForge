@@ -563,9 +563,10 @@ def test_renderer_blocks_unrelated_primary_answer_reuse_for_final_payoff(monkeyp
 
     assert "repeats_primary_answer_visual" not in issue_codes(review, final["id"], "initial_issues")
     repaired = scene(state, final["id"])
-    assert repaired["media"]["provider_id"] == "id"  # fitting Indonesia footage, accepted before Critic
+    assert repaired["media"]["provider_id"] == "nation"  # an independently fitting asset, distinct from the earlier island shot
     assert repaired["media"]["identity"] != scene(state, answer["id"])["media"]["identity"]
-    assert review["status"] == "passed"
+    assert review["status"] == "repaired"
+    assert "accidental_repeat" not in issue_codes(review, final["id"])
 
 
 # ---------------------------------------------------------------------------

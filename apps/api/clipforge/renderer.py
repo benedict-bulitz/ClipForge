@@ -1133,7 +1133,9 @@ def _create_visual_segment(
     fps = int(state["timeline"]["fps"])
     source, kind = _scene_media_path(scene, settings)
     reused = scene.get("asset_status") in {"related_media_reused", "real_media_reused", "generated_media_reused", "block_visual_continued"}
-    if source is not None and reused and not destination_asset_allowed(scene["media"], scene, state, reuse=True):
+    relevance = (scene.get("media") or {}).get("relevance") or {}
+    rejected = relevance.get("confidence") == "rejected" or (relevance.get("acceptance") or {}).get("accepted") is False
+    if source is not None and (reused or rejected) and not destination_asset_allowed(scene["media"], scene, state, reuse=reused):
         source = None
     if source is None:
         if require_real_media:

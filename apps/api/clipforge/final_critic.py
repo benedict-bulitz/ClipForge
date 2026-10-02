@@ -773,10 +773,6 @@ class _Review:
                 if intentional_continuity(earlier.scene, later.scene):
                     later.dimensions["repetition"] = {"rating": GOOD, "reason": "intentional_continuity", "with": earlier.scene_id}
                     continue
-                if _progresses(earlier, later) and later.dimensions.get("semantic_match", {}).get("rating") == GOOD:
-                    # Same base, but an evolving overlay communicates something new.
-                    later.dimensions["repetition"] = {"rating": GOOD, "reason": "overlay_progression", "with": earlier.scene_id}
-                    continue
                 # Blame the scene that borrowed the footage, never its owner or a user choice.
                 target, other = later, earlier
                 if (_borrowed(earlier) and not _borrowed(later)) or (user_locked_visual(later.scene) and not user_locked_visual(earlier.scene)):
@@ -988,16 +984,6 @@ class _Review:
 
     def row(self, scene_id: str) -> _Row | None:
         return next((row for row in self.rows if row.scene_id == scene_id), None)
-
-
-def _overlay_signature(row: _Row) -> list[Any]:
-    return [item.get("spec") for item in row.entry.get("overlays") or [] if isinstance(item, dict)]
-
-
-def _progresses(earlier: _Row, later: _Row) -> bool:
-    """The later scene draws its own, different information over the shared base."""
-    later_overlays = _overlay_signature(later)
-    return bool(later_overlays) and later_overlays != _overlay_signature(earlier)
 
 
 def _borrowed(row: _Row) -> bool:

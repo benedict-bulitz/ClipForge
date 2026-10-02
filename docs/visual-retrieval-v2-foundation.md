@@ -74,6 +74,10 @@ a fitting base visual; its temporary retrieval constraint cannot erase a user's
 repair constraint. Deliberate graphics and generated images retain their existing
 provenance authority.
 
+The subsequent [real visual regression trace](visual-selection-real-regression.md)
+documents the correction of query-provenance corroboration, relaxed semantic
+overrides, topic-only reuse, future-scene dedupe and diagnostic loss at retiming.
+
 ## Provider contract, registry and budget
 
 `VisualProvider` specifies identity, capability metadata, bounded normalized

@@ -414,70 +414,31 @@ def regression(monkeypatch, tmp_path):
     return state, provider, tmp_path
 
 
-def test_regression_safe_fixes_happen_unsafe_ones_stay_visible_and_explained(regression):
+def test_regression_repair_rolls_back_when_rejected_media_would_be_readmitted(regression):
     state, provider, tmp_path = regression
     before = {item["id"]: item["media"]["identity"] for item in state["scenes"]}
     narration = [item["narration"] for item in state["scenes"]]
     script = state["script"]["text"]
     generator = PaintingGenerator("hand")
-    harness = Harness(tmp_path, provider, generator=generator)
+    review = Harness(tmp_path, provider, generator=generator).review(state)
 
-    review = harness.review(state)
-
-    initial = issue_codes(review, key="initial_issues")
-    assert {"subject_lost_in_render", "unnecessary_asset_switch", "text_heavy", "wrong_media"} <= initial
-    by_scene = {}
-    for item in review["report"]:
-        by_scene.setdefault(item["scene_id"], []).append(item)
-
-    # Safe fixes happen: crop, overlay text and same-fact continuity.
-    crop = next(item for item in by_scene["scene_01_01"] if item["title"] == "Subject leaves the frame")
-    assert crop["status"] == FIXED and crop["after_score"] > crop["before_score"]
-    assert scene(state, "scene_01_01")["media"]["identity"] == before["scene_01_01"]  # reframed, not replaced
-    assert any(item["status"] == FIXED and item["category"] in {"overlay_quality", "overlay_semantics"} for item in by_scene["scene_02_01"])
-    switch = next(item for item in by_scene["scene_02_02"] if item["code"] == "unnecessary_asset_switch")
-    assert switch["status"] == FIXED
-    assert scene(state, "scene_02_02")["media"]["identity"] == scene(state, "scene_02_01")["media"]["identity"]
-    # Unsafe ones stay unresolved, with the reason, and keep their (reported) visual.
-    for scene_id in ("scene_03_01", "scene_05_01"):
-        entries = [item for item in by_scene[scene_id] if item["code"] == "wrong_media"]
-        assert entries and entries[0]["status"] == MANUAL and entries[0]["reason"] == "project_budget_exhausted"
-        assert entries[0]["fix"]["kind"] == "change_media"
-        assert scene(state, scene_id)["media"]["identity"] == before[scene_id]  # no unrelated filler
-    page = next(item for item in by_scene["scene_05_01"] if item["code"] == "text_heavy")
-    assert page["status"] == MANUAL and page["fix"] is not None  # text in the media: another visual helps
-    locked = next(item for item in by_scene["scene_04_01"] if item["code"] == "wrong_media")
-    assert locked["reason"] == "user_locked_visual" and scene(state, "scene_04_01")["media"]["identity"] == before["scene_04_01"]
-    # Fallback order after the budget ran out: real alternative, (blocked) AI
-    # image, at most two fitting project visuals, then an explicit stop.
-    record = next(item for item in review["repairs"] if item["scene_id"] == "scene_03_01")
-    names = [step["step"] for step in record["steps"]]
-    assert names[:2] == ["real_alternative", "generated_image"]
-    assert record["steps"][1]["reason"] == "project_budget_exhausted"
-    assert set(names[2:]) <= {"fitting_base_visual", "planned_graphic"} and names.count("fitting_base_visual") <= final_critic.MAX_BASE_CANDIDATES
-    # The AI image budget is never exceeded or bypassed.
+    # Some composition changes can be trialled, but a new complete render
+    # cannot reuse the rejected originals when no replacement is acceptable.
+    # The existing bounded Critic transaction restores the previous render.
+    assert "No real scene media" in review["repair_error"]
+    assert review["status"] == "issues_remain" and review["repaired_scenes"] == []
+    assert {"subject_lost_in_render", "unnecessary_asset_switch", "text_heavy", "wrong_media"} <= issue_codes(review)
+    assert not any(item["status"] == FIXED for item in review["report"])
+    assert all(record.get("blocked_reason") == "repair_render_failed" for record in review["repairs"])
+    assert {item["id"]: item["media"]["identity"] for item in state["scenes"]} == before
+    assert [item["narration"] for item in state["scenes"]] == narration and state["script"]["text"] == script
     assert generator.prompts == []
     assert visual_director.generation_counts(state)["auto_generated_images"] == 3
-    # Narration and captions are never rewritten to satisfy a visual issue.
-    assert [item["narration"] for item in state["scenes"]] == narration and state["script"]["text"] == script
-    # Bounded loop.
-    assert harness.renders == review["repair_pass_count"] <= DEFAULT_MAX_REPAIR_PASSES
-
-    # Counts match the report, and the report matches the critic's final state.
+    locked = next(item for item in review["report"] if item["scene_id"] == "scene_04_01" and item["code"] == "wrong_media")
+    assert locked["reason"] == "user_locked_visual"
     counts = report_counts(review["report"])
     summary = review["summary"]
     assert (summary["fixed_count"], summary["manual_count"], summary["unfixable_count"]) == (counts[FIXED], counts[MANUAL], counts[UNFIXABLE])
-    assert counts[FIXED] > 0 and counts[MANUAL] > 0
-    final_ids = {item["id"] for item in review["issues"]}
-    for item in review["report"]:
-        if item["status"] == FIXED:
-            assert not set(item["issue_ids"]) & final_ids
-        else:
-            assert set(item["issue_ids"]) <= set(review["unresolved"])
+    assert counts[FIXED] == 0
     reported = [value for item in review["report"] if item["status"] != FIXED for value in item["issue_ids"]]
-    assert sorted(reported) == sorted(review["unresolved"])  # nothing hidden, nothing twice
-    # The UI can tell the three outcomes apart from the data alone.
-    for item in review["report"]:
-        assert item["status"] in {FIXED, MANUAL, UNFIXABLE}
-        assert (item["fix"] is not None) == (item["status"] == MANUAL)
-        assert item["title"] and "_" not in item["title"]
+    assert sorted(reported) == sorted(review["unresolved"])

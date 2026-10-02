@@ -928,7 +928,10 @@ def _dimensions(aspect_ratio: str) -> tuple[int, int]:
     return {"1:1": (1080, 1080), "16:9": (1920, 1080)}.get(aspect_ratio, (1080, 1920))
 
 
-_PERSISTENT_SCENE_KEYS = ("user_locked_visual", "render_adjustments", "rejected_media_identities", "visual_continuity")
+_PERSISTENT_SCENE_KEYS = (
+    "user_locked_visual", "render_adjustments", "rejected_media_identities", "visual_continuity",
+    "media_search", "visual_query_plan",
+)
 
 
 def _build_scenes(

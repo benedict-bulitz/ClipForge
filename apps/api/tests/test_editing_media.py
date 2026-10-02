@@ -44,6 +44,14 @@ def sample_state(settings: Settings) -> dict:
     )
 
 
+def lighthouse_media_state(settings: Settings) -> dict:
+    """Transport/cache tests need a scene-local shot, not topic-only stock."""
+    state = sample_state(settings)
+    state["scenes"][0]["visual_goal"] = "lighthouse"
+    state["scenes"][0]["visual_intent"] = {"visual_goal": "lighthouse", "media_queries": ["lighthouse"]}
+    return state
+
+
 @pytest.mark.parametrize(
     ("instruction", "gender", "tone"),
     [
@@ -377,7 +385,7 @@ def test_media_selection_avoids_duplicate_clips(tmp_path):
 
 def test_media_selection_uses_photo_before_scene_card(tmp_path):
     settings = local_settings(tmp_path, pexels="unit-test-token")
-    state = sample_state(settings)
+    state = lighthouse_media_state(settings)
     state["scenes"] = state["scenes"][:1]
 
     prepare_project_media(
@@ -394,7 +402,7 @@ def test_media_selection_uses_photo_before_scene_card(tmp_path):
 
 def test_media_replacement_prefers_existing_photo_kind(tmp_path):
     settings = local_settings(tmp_path, pexels="unit-test-token")
-    state = sample_state(settings)
+    state = lighthouse_media_state(settings)
     state["scenes"] = state["scenes"][:1]
     state["scenes"][0]["preferred_media"] = "photo"
 
@@ -415,7 +423,7 @@ def test_media_replacement_prefers_existing_photo_kind(tmp_path):
 
 def test_failed_media_replacement_keeps_previous_cached_asset(tmp_path):
     settings = local_settings(tmp_path, pexels="unit-test-token")
-    state = sample_state(settings)
+    state = lighthouse_media_state(settings)
     state["scenes"] = state["scenes"][:1]
     previous = candidate("9", "photo")
     cached = settings.render_root / "project" / "assets" / "pexels" / "photo-9.jpg"
@@ -533,7 +541,7 @@ def test_media_search_retries_with_broader_semantic_query(tmp_path):
 
 def test_wikimedia_is_attempted_after_pexels_before_card_fallback(tmp_path):
     settings = local_settings(tmp_path, pexels="unit-test-token")
-    state = sample_state(settings)
+    state = lighthouse_media_state(settings)
     state["scenes"] = state["scenes"][:1]
     commons = FakeWikimedia(
         [candidate("5", "photo", provider="wikimedia", query="lighthouse storm")]
@@ -556,7 +564,7 @@ def test_wikimedia_is_attempted_after_pexels_before_card_fallback(tmp_path):
 
 def test_wikimedia_is_used_after_relevant_pexels_download_fails(tmp_path):
     settings = local_settings(tmp_path, pexels="unit-test-token")
-    state = sample_state(settings)
+    state = lighthouse_media_state(settings)
     state["scenes"] = state["scenes"][:1]
 
     class DownloadFailure(FakePexels):

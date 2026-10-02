@@ -1026,13 +1026,10 @@ def real_media_quality_gate(
 ) -> tuple[bool, str]:
     """Final acceptance of one real candidate; existence alone never qualifies.
 
-    Reuses the existing verifier thresholds: an OpenCLIP rejection below
-    ``SCENE_VISUAL_THRESHOLD`` always loses, and metadata that shares nothing
-    with the scene ("rejected" relevance) is only overridden by a *strong*
-    visual match (``STRONG_SCENE_VISUAL_SCORE``).  Without OpenCLIP, a
-    candidate needs metadata matching the scene or the project's canonical
-    subject or, when it has no metadata at all, provenance from one of this
-    scene's own planned queries.
+    Reuses the existing verifier thresholds. Rejected semantic evidence and
+    OpenCLIP rejection are authoritative in every path, including relaxed
+    search. Query provenance is retrieval context, never independent proof
+    of fit. Without local vision, metadata must establish scene-local fit.
     """
     rights = evaluate_rights(candidate.rights)
     if rights.status != "usable":
@@ -1051,25 +1048,17 @@ def real_media_quality_gate(
     if verdict in {"rejected", "presentation_risk"}:
         return False, f"visual_{verdict}"
     confidence = relevance.get("confidence")
+    if confidence == "rejected":
+        return False, "semantic_mismatch"
     if verdict == "pass":
-        strong = (
-            scene_score is not None
-            and float(scene_score) >= STRONG_SCENE_VISUAL_SCORE
-            and float(visual.get("score") or scene_score) >= VISUAL_THRESHOLD
-        )
-        if confidence == "rejected" and not strong:
-            return False, "semantic_mismatch"
+        # Callers cannot override a completed negative verdict with a loose
+        # scalar or a "pass" flag from another fallback path.
+        if scene_score is None or float(scene_score) < SCENE_VISUAL_THRESHOLD:
+            return False, "visual_rejected"
         return True, "visual_verified"
     if confidence in {"high", "acceptable"}:
         return True, "metadata_match"
-    if confidence == "unknown" and relevance.get("subject_matches"):
-        # Metadata names the project's canonical subject: plausible context,
-        # never an unrelated scene (book page, bus stop) that merely exists.
-        return True, "topic_metadata_match"
-    has_metadata = bool(candidate.title.strip() or candidate.description.strip() or candidate.tags)
-    if not has_metadata and relevance.get("query_provenance"):
-        return True, "scene_query_provenance"
-    return False, "semantic_mismatch" if confidence == "rejected" else "unverified_without_evidence"
+    return False, "unverified_without_evidence"
 
 
 def media_relevance(candidate: MediaCandidate, scene: dict[str, Any], state: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -1083,7 +1072,7 @@ def media_relevance(candidate: MediaCandidate, scene: dict[str, Any], state: dic
     if explicitly_refreshed:
         structured = scene_goal
         matching_goal = scene_goal
-    elif media_queries or _scene_text_coherent(narration, intent_text):
+    elif media_queries or (intent_text and _scene_text_coherent(narration, intent_text)):
         # The canonical, provider-facing visual intent is trusted the same way
         # the query planner trusts it; it does not need to share words (or a
         # language) with the narration.
@@ -1154,15 +1143,15 @@ def media_relevance(candidate: MediaCandidate, scene: dict[str, Any], state: dic
         # unknown until local visual evidence is available.
         score += 70
     query_agrees = bool(metadata & set(_query_subject_tokens(candidate.query)))
-    # One shared word ("hole") is weak evidence on its own when the project has
-    # a topic: it needs corroboration from the topic, a second scene term, an
-    # expected action, or agreeing provenance from this scene's own plan.
+    # A single incidental word needs independent corroboration from the
+    # subject, another scene term or an expected action. The query that
+    # returned it cannot corroborate the same word in the result's metadata.
+    focused_goal_match = bool(goal_terms) and len(goal_terms) <= 2 and goal_terms <= metadata
     uncorroborated_single_match = (
-        bool(global_terms)
-        and len(local_matches) == 1
+        len(local_matches) == 1
         and not global_matches
         and not action_matches
-        and not (query_provenance and query_agrees)
+        and not focused_goal_match
     )
     if not metadata:
         confidence = "unknown"
@@ -1631,32 +1620,24 @@ def _relaxed_visual_verdict(
     """
     if known is None and acquisition_budget is not None:
         known = acquisition_budget.verification_evidence.get(candidate.identity)
-    if known is not None:
-        visual_data = known.get("visual") or {}
-        if visual_data.get("presentation_risk") or (known.get("presentation_risk") or {}).get("source") == "vision":
-            return "presentation_risk", -1.0
-        if visual_data.get("status") != "verified":
-            return "unverified", -1.0
-        scene_score = visual_data.get("scene_score")
-        scene_score = float(visual_data.get("score") or 0 if scene_score is None else scene_score)
-        if known.get("confidence") == "rejected" or scene_score < SCENE_VISUAL_THRESHOLD:
-            return "rejected", scene_score
-        return "pass", scene_score
-    if acquisition_budget is not None and not acquisition_budget.claim("verifications", candidate.identity):
-        return "rejected", -1.0
-    if getattr(visual, "status", "") != "available":
-        return "unverified", -1.0
-    try:
-        result = visual.verify_candidate(candidate, visual_intent_text(scene, state))
-    except Exception:  # noqa: BLE001 - verification is advisory here
-        return "unverified", -1.0
-    if result is None:
-        return "unverified", -1.0
-    if result.presentation_risk:
+    if known is None:
+        # The same shortlist authority rejects incoherent metadata before
+        # verification, and preserves the complete verdict for later gates.
+        if media_relevance(candidate, scene, state)["confidence"] == "rejected":
+            return "rejected", -1.0
+        rows, _ok = _safe_verify([candidate], scene, state, visual, acquisition_budget)
+        if not rows:
+            return "rejected", -1.0
+        known = rows[0][1]
+    visual_data = known.get("visual") or {}
+    if visual_data.get("presentation_risk") or (known.get("presentation_risk") or {}).get("rejected"):
         return "presentation_risk", -1.0
-    if result.status != "verified":
+    if known.get("confidence") == "rejected":
+        return "rejected", float(visual_data.get("scene_score") or -1)
+    if visual_data.get("status") != "verified":
         return "unverified", -1.0
-    scene_score = float(result.scene_score if result.scene_score is not None else result.score or 0)
+    scene_score = visual_data.get("scene_score")
+    scene_score = float(visual_data.get("score") or 0 if scene_score is None else scene_score)
     return ("rejected" if scene_score < SCENE_VISUAL_THRESHOLD else "pass"), scene_score
 
 
@@ -1951,6 +1932,7 @@ class _SceneQualityGate:
             accepted, reason = False, "protected_reveal_before_story_reveal"
         if accepted and not _meets_strategy(candidate, relevance, self.targets, self.scene_duration, self.strong_required):
             accepted, reason = False, "not_strong_for_graphic_scene"
+        relevance["acceptance"] = {"accepted": accepted, "reason": reason, "authority": "real_media_quality_gate"}
         if not accepted:
             self.rejections[reason] = self.rejections.get(reason, 0) + 1
         return accepted
@@ -2045,7 +2027,7 @@ def prepare_project_media(
         acquisition_budget = AcquisitionBudget()
         existing = scene.get("media") if isinstance(scene.get("media"), dict) else None
         reused = scene.get("asset_status") in {"related_media_reused", "real_media_reused", "generated_media_reused", "block_visual_continued"}
-        cache_allowed = bool(existing and is_scene_asset_allowed(existing) and (not reused or destination_asset_allowed(existing, scene, state, reuse=True)))
+        cache_allowed = bool(existing and destination_asset_allowed(existing, scene, state, reuse=reused))
         if existing:
             identity = str(existing.get("identity") or "")
             path = settings.render_root.resolve() / str(existing.get("cache_path") or "")
@@ -2055,6 +2037,7 @@ def prepare_project_media(
                 manifest.append(existing)
                 if media_source(existing) != GRAPHIC_ASSET_SOURCE:
                     selected_media.append(existing)
+                    block_bases.setdefault(str(scene.get("block_id") or scene.get("id") or scene_index), existing)
                 selected_count += 1
                 report_progress(
                     progress,
@@ -2081,12 +2064,13 @@ def prepare_project_media(
         # again; a requested replacement also avoids footage other scenes show.
         rejected = {str(value) for value in scene.get("rejected_media_identities") or [] if value}
         excluded = used | excluded_asset_keys(state, rejected)
-        if scene.get("asset_status") == "replacement_required":
-            excluded |= {
-                str(other["media"].get("identity"))
-                for other in scenes
-                if other is not scene and isinstance(other.get("media"), dict) and other["media"].get("identity")
-            }
+        # Reserve every other scene's selected asset, including scenes later
+        # in playback order. Retiming/repair can add a new earlier scene; a
+        # fresh search must not silently select a future scene's cached asset.
+        # Intentional continuity still uses the explicit destination gate below.
+        for other in scenes:
+            if other is not scene and isinstance(other.get("media"), dict):
+                excluded.update(asset_keys(other["media"]))
         query_plan = build_visual_query_plan(scene, state)
         queries = query_plan["queries"]
         scene["search_queries"] = queries
@@ -2266,7 +2250,8 @@ def prepare_project_media(
                         visually_rejected += verdict == "rejected"
                         gate_rejections[f"visual_{verdict}"] = gate_rejections.get(f"visual_{verdict}", 0) + 1
                         continue
-                    relevance = dict(known) if known is not None else media_relevance(candidate, scene, state)
+                    evidence = known if known is not None else acquisition_budget.verification_evidence.get(candidate.identity)
+                    relevance = dict(evidence) if evidence is not None else media_relevance(candidate, scene, state)
                     if not accept(candidate, relevance, verdict, scene_score):
                         continue
                     try:

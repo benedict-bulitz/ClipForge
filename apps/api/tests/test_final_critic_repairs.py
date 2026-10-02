@@ -145,23 +145,20 @@ def test_unsuccessful_replacements_are_not_counted_and_no_new_filler_is_selected
     # 14: the exhausted budget is never bypassed ...
     assert generator.prompts == []
     assert visual_director.generation_counts(state)["auto_generated_images"] == 3
-    # ... failed replacements are never reported as successes.  Only the
-    # explanation resolves, through its own planned explanatory graphic.
-    assert review["repaired_scenes"] == ["scene_02_01", "scene_02_02"]
-    assert all(record_for(review, scene_id)["accepted_step"] == "planned_graphic" for scene_id in review["repaired_scenes"])
-    assert review["summary"]["repaired_scene_count"] == 2
+    # No new render can admit the rejected originals after bounded repair
+    # exhausts its alternatives. The existing Critic restores the completed
+    # render and honestly reports that the repair render was blocked.
+    assert review["repaired_scenes"] == []
+    assert review["summary"]["repaired_scene_count"] == 0
     assert review["status"] == "issues_remain"
-    answer = record_for(review, "scene_01_01")
-    assert answer["repair_attempted"] and not answer["repair_effective"] and answer["outcome"] == "unresolved"
-    assert ("real_alternative", False) in steps(answer)
-    assert ("generated_image", False) in steps(answer)
-    assert answer["result_message"] == "no relevant visual found and the AI image budget is used up"
+    assert "No real scene media" in review["repair_error"]
+    assert all(not record.get("repair_effective") for record in review["repairs"])
+    assert {record["blocked_reason"] for record in review["repairs"]} == {"repair_render_failed"}
     assert "scene_01_01:semantic_match:wrong_media" in review["unresolved"]
-    evidence = record_for(review, "scene_03_01")
-    assert not evidence["repair_effective"] and evidence["outcome"] == "unresolved"
-    # Unrelated filler is never swapped in: unresolved scenes keep their (reported) visual.
+    # The completed legacy render stays available, with its issues reported;
+    # it is never replaced by an off-topic trial merely because a file exists.
     after = {item["id"]: item["media"]["identity"] for item in state["scenes"]}
-    assert after["scene_01_01"] == before["scene_01_01"] and after["scene_03_01"] == before["scene_03_01"]
+    assert after == before
     for item in review["scenes"]:
         assert frame_concepts(review, item["scene_id"], tmp_path)["graffiti"] < 0.05
 

@@ -397,10 +397,10 @@ def test_all_searches_failing_is_nonfatal(tmp_path):
     assert commons.calls
 
 
-def test_all_weak_searches_use_existing_relaxed_fallback(tmp_path):
+def test_all_weak_searches_cannot_lower_relaxed_acceptance(tmp_path):
     state = breath_project()
-    # Real media that fails the strict relevance gate is still usable by the
-    # relaxed fallback, which works from the already searched pool.
+    # A winter setting without visible breath cannot become suitable merely
+    # because relaxed search exhausted the candidate pool.
     pexels = Provider(photos={"visible breath winter": [cand("p1", "visible breath winter", "Frosty meadow", kind="photo")]})
 
     scene, _ = run(state, tmp_path, pexels)
@@ -408,8 +408,8 @@ def test_all_weak_searches_use_existing_relaxed_fallback(tmp_path):
     assert scene["media_search"]["logical_queries_executed"] == 3
     assert scene["media_search"]["relaxed_fallback"] is True
     assert "relaxed_queries" not in scene["media_search"]
-    assert scene["media"]["provider_id"] == "p1"
-    assert scene["media"]["relevance"]["fallback_stage"] == "real_media_only_relaxed_fit"
+    assert scene.get("media", {}).get("provider_id") != "p1"
+    assert scene["asset_status"] == "real_media_unavailable"
 
 
 # 13: OpenCLIP unavailable or raising stays nonfatal and conservative.
@@ -893,16 +893,17 @@ def test_german_comparison_matches_english_metadata_and_verifies_it(tmp_path):
 
 def test_last_resort_does_not_pick_openclip_rejected_first_candidate(tmp_path):
     state = breath_project()
-    # Neither title matches the scene, so only the relaxed fallback can choose.
+    # Incoherent metadata loses; truly untitled footage can qualify through
+    # independent local vision, without being rescued by provenance alone.
     pexels = Provider(videos={"visible breath winter": [
         cand("road", "visible breath winter", "Tropical road at noon"),
-        cand("good", "visible breath winter", "Untitled clip 42"),
+        cand("good", "visible breath winter", ""),
     ]})
     verifier = Verifier({"road": POOR, "good": STRONG})
 
     scene, _ = run(state, tmp_path, pexels, verifier=verifier)
 
-    assert scene["media_search"]["relaxed_fallback"] is True
+    assert verifier.calls.count("good") == 1
     assert scene["media"]["provider_id"] == "good"
     assert "quality_degraded" not in scene["media_search"]
 
@@ -913,7 +914,7 @@ def test_last_resort_reuses_staged_openclip_rejection(tmp_path):
     # the last resort must honour that result without calling OpenCLIP again.
     pexels = Provider(videos={"visible breath winter": [
         cand("rejected", "visible breath winter", "Visible breath in cold winter air"),
-        cand("good", "visible breath winter", "Untitled clip 42"),
+        cand("good", "visible breath winter", ""),
     ]})
     verifier = Verifier({"rejected": POOR, "good": STRONG})
 

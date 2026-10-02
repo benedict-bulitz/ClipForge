@@ -47,7 +47,7 @@ def test_broad_queries_find_real_stock_after_empty_specific_searches(tmp_path):
     class Stock(FakeWikimedia):
         def search_photos(self, query, **kwargs):
             self.queries.append(query)
-            return [candidate("3", kind="photo", provider="wikimedia", title="Lighthouse on the ocean coast")] if query not in planned else []
+            return [candidate("3", kind="photo", provider="wikimedia", title="Lighthouse keeper receives a single signal on the coast")] if query not in planned else []
     stock = Stock()
     prepare_project_media(state, "project", settings, client=FakePexels([]), fallback_client=stock, visual_verifier=SimpleNamespace(status="unavailable"))
     search = state["scenes"][0]["media_search"]
