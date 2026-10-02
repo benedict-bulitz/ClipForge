@@ -59,6 +59,11 @@ PROVIDERS: dict[IntegrationProvider, ProviderConfig] = {
         settings_field="pexels_api_key",
         url="https://api.pexels.com/v1/curated",
     ),
+    "europeana": ProviderConfig(
+        secret_name="EUROPEANA_API_KEY",
+        settings_field="europeana_api_key",
+        url="https://api.europeana.eu/record/v2/search.json",
+    ),
 }
 
 
@@ -81,8 +86,15 @@ class ProviderValidator:
             return ValidationResult("network_error", "The provider could not be reached.")
 
         if 200 <= response.status_code < 300:
+            if provider == "europeana":
+                try:
+                    payload = response.json()
+                    if payload.get("success") is not True:
+                        return ValidationResult("invalid_credentials", "The provider rejected the API key.")
+                except (ValueError, AttributeError):
+                    return ValidationResult("provider_error", "The provider returned an invalid response.")
             return ValidationResult("connected", "Connection successful.")
-        if response.status_code == 401:
+        if response.status_code == 401 or provider == "europeana" and response.status_code == 403:
             return ValidationResult("invalid_credentials", "The provider rejected the API key.")
         if response.status_code == 429:
             return ValidationResult("rate_limited", "The provider rate limit was reached.")
@@ -102,6 +114,9 @@ class ProviderValidator:
         elif provider == "brave":
             headers["X-Subscription-Token"] = api_key
             params = {"q": "ClipForge", "count": 1}
+        elif provider == "europeana":
+            headers["X-Api-Key"] = api_key
+            params = {"query": "*", "rows": 0}
         else:
             headers["Authorization"] = api_key
             params = {"per_page": 1}

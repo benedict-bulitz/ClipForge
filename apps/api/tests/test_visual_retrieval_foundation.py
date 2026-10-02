@@ -356,7 +356,7 @@ def test_registry_capabilities_and_cleanup(tmp_path):
     settings.pexels_api_key = None
     settings.pixabay_api_key = None
     registry = create_provider_registry(settings)
-    assert [item.provider for item in registry.enabled()] == ["wikimedia"]
+    assert [item.provider for item in registry.enabled()] == ["wikimedia", "openverse", "nasa", "loc"]
     assert registry.enabled("video") == []
     assert registry.get("wikimedia").capabilities.evidence == "imageinfo.extmetadata"
     registry.close()

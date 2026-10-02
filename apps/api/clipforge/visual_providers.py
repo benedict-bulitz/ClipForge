@@ -10,7 +10,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qsl, unquote, urlencode, urlparse
 
 import httpx
 
@@ -61,7 +61,7 @@ class ProviderCapabilities:
     kinds: tuple[str, ...]
     page_limit: int = 24
     evidence: str = "provider metadata"
-    suitability: tuple[str, ...] = ()  # descriptive catalog data; no routing
+    suitability: tuple[str, ...] = ()  # descriptive catalog data for source routing
 
 
 class VisualProvider(Protocol):
@@ -210,13 +210,13 @@ class ProviderAdapter:
 
 
 class ProviderRegistry:
-    def __init__(self, providers: list[ProviderAdapter]):
+    def __init__(self, providers: list[VisualProvider]):
         self._providers = {item.provider: item for item in providers}
 
-    def get(self, provider: str) -> ProviderAdapter | None:
+    def get(self, provider: str) -> VisualProvider | None:
         return self._providers.get(provider)
 
-    def enabled(self, kind: str | None = None) -> list[ProviderAdapter]:
+    def enabled(self, kind: str | None = None) -> list[VisualProvider]:
         return [
             item
             for item in self._providers.values()
@@ -228,7 +228,7 @@ class ProviderRegistry:
 
         for provider in self.enabled():
             try:
-                provider.close()
+                provider_call(provider.close)
             except MediaProviderError:
                 pass
 
@@ -238,9 +238,23 @@ def canonical_source(url: str) -> str | None:
     path = unquote(parsed.path).strip("/")
     if not parsed.netloc or path.casefold() in {"", "video", "videos", "photo", "photos", "wiki"}:
         return None
-    # Preserve case in asset paths (including Commons filenames), strip tracking
-    # queries/fragments and normalize scheme/host/www/trailing slash only.
-    return f"{parsed.netloc.casefold().removeprefix('www.')}/{path}"
+    # Preserve case and identity query parameters; tracking/presentation/auth
+    # parameters do not identify a different original asset.
+    host = parsed.netloc.casefold().removeprefix('www.')
+    if host == "commons.wikimedia.org":
+        path = path.replace("wiki/Special:FilePath/", "wiki/File:")
+        path = path.replace(" ", "_")
+    # Commons originals and thumbnails share a filename; dimensions/rehosting
+    # must not create independent assets. This is exact origin evidence only.
+    if host == "upload.wikimedia.org" and path.startswith("wikipedia/commons/"):
+        parts = path.split("/")
+        filename = parts[-2] if "thumb" in parts else parts[-1]
+        return f"commons.wikimedia.org/wiki/File:{filename.replace(' ', '_')}"
+    ignored = {"ref", "download", "width", "height", "w", "h", "size", "token", "signature", "expires", "api_key", "apikey", "wskey", "key"}
+    params = [(key, value) for key, value in parse_qsl(parsed.query)
+              if key.casefold() not in ignored and not key.casefold().startswith(("utm_", "x-amz-"))]
+    suffix = f"?{urlencode(sorted(params))}" if params else ""
+    return f"{host}/{path}{suffix}"
 
 
 def asset_keys(value: Any) -> set[str]:
@@ -255,6 +269,13 @@ def asset_keys(value: Any) -> set[str]:
     canonical = data.get("canonical_asset_key")
     if canonical:
         keys.add(str(canonical))
+    origin = data.get("origin") or {}
+    for address in (data.get("download_url"), origin.get("media_url"), origin.get("source_url")):
+        key = canonical_source(str(address or ""))
+        if key:
+            keys.add(f"source:{key}")
+    if origin.get("canonical_id") and origin.get("provider"):
+        keys.add(f"origin:{origin['provider']}:{origin['canonical_id']}")
     return keys
 
 
@@ -291,6 +312,13 @@ def create_provider_registry(
         providers.append(ProviderAdapter("pexels", primary, owned=client is None))
     providers.append(ProviderAdapter("wikimedia", fallback, owned=fallback_client is None))
     providers.extend(
-        ProviderAdapter(extra.provider, extra, owned=extra_clients is None) for extra in extras
+        extra if getattr(extra, "budget_supported", False) else ProviderAdapter(extra.provider, extra, owned=extra_clients is None) for extra in extras
     )
+    # Explicit client injection describes a caller-owned provider universe.
+    # Production uses the catalog; tests/custom clients never open hidden APIs.
+    if client is None and fallback_client is None and extra_clients is None:
+        from .open_media import EuropeanaProvider, LOCProvider, NASAProvider, OpenverseProvider
+        providers.extend([OpenverseProvider(), NASAProvider(), LOCProvider()])
+        if getattr(settings, "europeana_api_key", None):
+            providers.append(EuropeanaProvider(settings.europeana_api_key))
     return ProviderRegistry(providers)

@@ -14,6 +14,7 @@ from .image_generation import generation_message, get_image_generator, model_lab
 from .media import (
     MediaCandidate,
     MediaProviderError,
+    asset_filename_id,
     build_visual_query_plan,
     candidate_evidence,
     candidate_reveals_protected,
@@ -170,19 +171,20 @@ def discover_scene_media_candidates(
     if commons:
         passes.append([(commons, "photo")])
     try:
-        for search_pass in passes:
-            for query in queries:
-                for provider, kind in search_pass:
-                    if len(eligible) >= limit:
-                        break
-                    try:
-                        results = provider.search(query, kind, portrait=portrait, scene_duration=scene_duration, budget=acquisition_budget)
-                        found.extend(item for item in results if ledger.admit(item))
-                    except MediaProviderError:
-                        continue
-                    accept_new()
-                if len(eligible) >= limit:
-                    break
+        from .source_router import route_sources
+        routed = any(p.provider in {"openverse", "nasa", "loc", "europeana"} for p in registry.enabled())
+        work = [(query, [(s.adapter, s.kind) for s in group])
+                for query in queries[:3] for group in route_sources(registry, scene, state, query, preferred)] if routed else [(query, group) for group in passes for query in queries]
+        for query, search_pass in work:
+            if len(eligible) >= limit:
+                break
+            for provider, kind in search_pass:
+                try:
+                    results = provider.search(query, kind, portrait=portrait, scene_duration=scene_duration, budget=acquisition_budget)
+                    found.extend(item for item in results if ledger.admit(item))
+                except MediaProviderError:
+                    continue
+            accept_new()
     finally:
         registry.close()
     selected = tuple(eligible.values())[: max(1, min(limit, MAX_CANDIDATES))]
@@ -241,7 +243,7 @@ def apply_scene_media_candidate(
         registry.close()
         raise CandidateError("The selected media provider is not configured.")
     suffix = ".mp4" if candidate.kind == "video" else ".jpg"
-    destination = settings.render_root.resolve() / project.id / "replacements" / candidate.provider / f"{candidate.kind}-{candidate.provider_id}{suffix}"
+    destination = settings.render_root.resolve() / project.id / "replacements" / candidate.provider / f"{candidate.kind}-{asset_filename_id(candidate.provider_id)}{suffix}"
     try:
         downloaded = downloader.download(candidate, destination, budget=AcquisitionBudget())
         if not downloaded.is_file() or downloaded.stat().st_size <= 0:

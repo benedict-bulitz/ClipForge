@@ -84,7 +84,7 @@ def test_get_integrations_returns_only_safe_metadata(integrations):
 
     assert response.status_code == 200
     body = response.json()
-    assert [item["provider"] for item in body] == ["openai", "brave", "pexels"]
+    assert [item["provider"] for item in body] == ["openai", "brave", "pexels", "europeana"]
     assert body[0] == {
         "provider": "openai",
         "configured": True,
@@ -235,11 +235,13 @@ def test_env_import_uses_env_source_preserves_file_and_refreshes_cache(
         "imported",
         "imported",
         "imported",
+        "skipped",  # Optional Europeana key absent.
     ]
     assert [item["last_four"] for item in response.json()["results"]] == [
         "1111",
         "2222",
         "3333",
+        None,
     ]
     assert "credential" not in response.text
     assert "unit-env" not in response.text

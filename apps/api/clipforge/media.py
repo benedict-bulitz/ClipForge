@@ -21,6 +21,7 @@ from .visual_providers import (
     CandidateLedger,
     ProviderAdapter,
     ProviderCapabilities,
+    ProviderRegistry,
     asset_keys,
     canonical_source,
     create_provider_registry,
@@ -43,7 +44,7 @@ from .visual_verifier import (
 
 PEXELS_API = "https://api.pexels.com/v1"
 WIKIMEDIA_API = "https://commons.wikimedia.org/w/api.php"
-REAL_MEDIA_PROVIDERS = ("pexels", "wikimedia", "pixabay")
+REAL_MEDIA_PROVIDERS = ("pexels", "wikimedia", "pixabay", "openverse", "nasa", "europeana", "loc")
 # Final scene assets that are not real provider media; each carries provenance.
 GENERATED_ASSET_SOURCE = "generated_openai"
 GRAPHIC_ASSET_SOURCE = "simple_graphic"
@@ -78,6 +79,7 @@ class MediaCandidate:
     verification_url: str = ""
     rights: MediaRights = field(default_factory=MediaRights)
     canonical_asset_key: str | None = None
+    origin: dict[str, Any] = field(default_factory=dict)
 
     @property
     def identity(self) -> str:
@@ -1667,8 +1669,15 @@ def run_staged_scene_search(
     budget: int = MAX_SCENE_QUERY_BUDGET,
     extra_clients: list[Any] | None = None,
     acquisition_budget: AcquisitionBudget | None = None,
+    registry: ProviderRegistry | None = None,
 ) -> StagedSearchResult:
     """Execute planned queries one stage at a time within a hard query budget."""
+    if registry is not None:
+        from .routed_search import run_routed_scene_search
+        return run_routed_scene_search(queries, scene, state, query_plan, registry=registry,
+                                      preferred_kind=preferred_kind, portrait=portrait,
+                                      scene_duration=scene_duration, used=used, verifier=verifier,
+                                      query_budget=budget, acquisition_budget=acquisition_budget)
     acquisition_budget = acquisition_budget or AcquisitionBudget()
     budget = max(1, min(int(budget), MAX_SCENE_QUERY_BUDGET))
     planned = list(dict.fromkeys(query for query in queries if query))
@@ -1860,6 +1869,11 @@ def normalize_cached_photo(path: Path) -> Path:
         raise MediaProviderError("provider_error", f"The provider returned a file that is not a usable image ({exc}).") from exc
 
 
+def asset_filename_id(identifier: str) -> str:
+    """Keep canonical external IDs in evidence, never in unsafe file paths."""
+    return identifier if re.fullmatch(r"[\w-]{1,100}", identifier) else hashlib.sha256(identifier.encode()).hexdigest()[:32]
+
+
 def _cache_candidate(
     candidate: MediaCandidate,
     relevance: dict[str, Any],
@@ -1872,10 +1886,10 @@ def _cache_candidate(
     if not is_real_media_allowed(candidate):
         raise MediaProviderError("ineligible_media", "Cards and synthetic placeholders are not allowed.")
     suffix = ".mp4" if candidate.kind == "video" else ".jpg"
-    destination = asset_root / candidate.provider / f"{candidate.kind}-{candidate.provider_id}{suffix}"
+    destination = asset_root / candidate.provider / f"{candidate.kind}-{asset_filename_id(candidate.provider_id)}{suffix}"
     if downloader is None:
         raise MediaProviderError("provider_error", "No downloader is available for this candidate.")
-    if isinstance(downloader, ProviderAdapter):
+    if isinstance(downloader, ProviderAdapter) or getattr(downloader, "budget_supported", False):
         downloaded = downloader.download(candidate, destination, budget=acquisition_budget or AcquisitionBudget())
     else:
         if acquisition_budget is not None and not acquisition_budget.claim("downloads"):
@@ -1898,6 +1912,7 @@ def candidate_evidence(candidate: MediaCandidate) -> dict[str, Any]:
         "verification_url": candidate.verification_url, "download_url": candidate.download_url,
         "rights": accepted_rights(candidate.rights),
         "rights_acceptance": vars(evaluate_rights(candidate.rights)),
+        "origin": candidate.origin,
         "canonical_asset_key": candidate.canonical_asset_key or (
             f"source:{canonical_source(candidate.source_url)}" if canonical_source(candidate.source_url) else candidate.identity),
     }
@@ -2130,6 +2145,7 @@ def prepare_project_media(
             verifier=visual_verifier,
             extra_clients=extras,
             acquisition_budget=acquisition_budget,
+            registry=registry if any(p.provider in {"openverse", "nasa", "loc", "europeana"} for p in registry.enabled()) else None,
         )
         search_provenance = staged.provenance
         # Later fallbacks follow the scene-aware query order, not the global plan.
@@ -2154,9 +2170,40 @@ def prepare_project_media(
         # failed in the staged search is not retried.
         scene_verifier = _METADATA_ONLY_VERIFIER if staged.verifier_failed else visual_verifier
 
+        if metadata is None and staged.ranked and search_provenance.get("routed"):
+            # Strong coverage stopped discovery, but none of that pool could
+            # be downloaded/admitted. Widen the SAME executed queries, skipping
+            # all attempted provider/kind pairs, under the remaining budget.
+            from .routed_search import run_routed_scene_search
+            attempted = {(stage["query"], row["provider"], row["kind"])
+                         for stage in search_provenance["stages"] for row in stage["providers"]}
+            recovery = run_routed_scene_search(
+                search_provenance["executed_queries"], scene, state, query_plan,
+                registry=registry, preferred_kind=preferred_kind, portrait=portrait,
+                scene_duration=duration, used=excluded | set().union(*(asset_keys(c) for c in staged.candidates)),
+                verifier=scene_verifier, acquisition_budget=acquisition_budget,
+                skip_searches=attempted, widen_fully=True,
+            )
+            search_provenance["download_recovery"] = recovery.provenance
+            _count_provider_request(search_provenance, "routed_download_recovery", recovery.provenance["provider_requests_executed"])
+            staged.candidates.extend(recovery.candidates)
+            staged.verified.update(recovery.verified)
+            staged.evaluated.update(recovery.evaluated)
+            if recovery.verifier_failed:
+                scene_verifier = _METADATA_ONLY_VERIFIER
+            for candidate, relevance in recovery.ranked:
+                if accept(candidate, relevance):
+                    try:
+                        metadata = cache(candidate, relevance)
+                        winning_source = "routed_download_recovery"
+                        break
+                    except MediaProviderError as exc:
+                        failure = exc
+            pexels_candidates = staged.candidates
+
         # A failed Pexels download must not skip the remaining free source.
         # Only already executed query strings are reused: no new logical query.
-        if metadata is None and pexels is not None:
+        if metadata is None and pexels is not None and not search_provenance.get("routed"):
             winning_source = "wikimedia_fallback"
             fallback_ledger = CandidateLedger(excluded | set().union(*(asset_keys(item) for item in staged.candidates)))
             for query in list(search_provenance["executed_queries"]):
@@ -2229,7 +2276,10 @@ def prepare_project_media(
                     if not _claim_logical_query(search_provenance, broad_query):
                         break  # logical query budget exhausted
                     search_provenance.setdefault("relaxed_queries", []).append(broad_query)
-                    for provider in (pexels, wikimedia):
+                    from .source_router import route_sources
+                    routed = route_sources(registry, scene, state, broad_query, "photo") if search_provenance.get("routed") else []
+                    providers = [s.adapter for s in (routed[0] if routed else [])] if routed else [p for p in (pexels, wikimedia) if p is not None]
+                    for provider in providers:
                         if provider is None:
                             continue
                         before = acquisition_budget.search_requests
@@ -2596,6 +2646,7 @@ def persisted_candidate(media: dict[str, Any]) -> MediaCandidate:
         description=str(media.get("description") or ""), tags=tuple(media.get("tags") or ()),
         preview_url=str(media.get("preview_url") or ""), verification_url=str(media.get("verification_url") or ""),
         rights=MediaRights.read(media.get("rights")), canonical_asset_key=media.get("canonical_asset_key"),
+        origin=media.get("origin") or {},
     )
 
 

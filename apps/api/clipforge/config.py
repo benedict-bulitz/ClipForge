@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     brave_search_api_key: str | None = None
     pexels_api_key: str | None = None
     pixabay_api_key: str | None = None
+    europeana_api_key: str | None = None
     # Visual Director V2: paid generated-image fallback after free media fails.
     generated_image_fallback_enabled: bool = True
     generated_image_model: str = "gpt-image-2"
@@ -90,6 +91,7 @@ SECRET_SETTING_FIELDS: dict[SecretName, str] = {
     "OPENAI_API_KEY": "openai_api_key",
     "BRAVE_SEARCH_API_KEY": "brave_search_api_key",
     "PEXELS_API_KEY": "pexels_api_key",
+    "EUROPEANA_API_KEY": "europeana_api_key",
     "YOUTUBE_OAUTH_CLIENT_ID": "youtube_oauth_client_id",
     "YOUTUBE_OAUTH_CLIENT_SECRET": "youtube_oauth_client_secret",
 }

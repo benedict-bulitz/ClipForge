@@ -83,6 +83,21 @@ def forbid_real_image_generation(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def forbid_live_open_media(monkeypatch):
+    """Contract tests inject MockTransport; the full suite never calls new APIs."""
+    from clipforge import open_media
+
+    def forbidden(*_args, **_kwargs):
+        import httpx
+        return httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(200, json={"results": [], "collection": {"items": []}, "items": [], "success": True}, request=request)))
+
+    open_media.clear_search_cache()
+    monkeypatch.setattr(open_media, "HTTP_CLIENT_FACTORY", forbidden)
+    yield
+    open_media.clear_search_cache()
+
+
+@pytest.fixture(autouse=True)
 def forbid_real_visual_translation(monkeypatch):
     """The fact -> visual translator must be mocked; no real worker-model calls."""
     from clipforge import visual_translation

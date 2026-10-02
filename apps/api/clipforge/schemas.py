@@ -275,6 +275,7 @@ class SceneMediaCandidateRead(BaseModel):
     rights: dict[str, Any] = Field(default_factory=dict)
     rights_acceptance: dict[str, Any] = Field(default_factory=dict)
     canonical_asset_key: str | None = None
+    origin: dict[str, Any] = Field(default_factory=dict)
     # Generated alternatives (Visual Director manual generation).
     generated: bool = False
     new: bool = False
@@ -348,7 +349,7 @@ class HealthRead(BaseModel):
     ai_mode: str
 
 
-IntegrationProvider = Literal["openai", "brave", "pexels"]
+IntegrationProvider = Literal["openai", "brave", "pexels", "europeana"]
 IntegrationStatus = Literal[
     "configured",
     "connected",

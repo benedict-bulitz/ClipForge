@@ -295,7 +295,7 @@ export type ProjectOverview = {
   updated_at: string;
 };
 
-export type IntegrationProvider = "openai" | "brave" | "pexels";
+export type IntegrationProvider = "openai" | "brave" | "pexels" | "europeana";
 
 export type IntegrationStatus =
   | "configured"

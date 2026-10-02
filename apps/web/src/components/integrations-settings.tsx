@@ -48,9 +48,17 @@ type ProviderDetails = {
 type Notice = { tone: "success" | "error" | "info"; text: string };
 type BusyAction = "save" | "test" | "delete";
 
-const providerOrder: IntegrationProvider[] = ["openai", "brave", "pexels"];
+const providerOrder: IntegrationProvider[] = ["openai", "brave", "pexels", "europeana"];
 
 const providers: Record<IntegrationProvider, ProviderDetails> = {
+  europeana: {
+    name: "Europeana",
+    description: "Finds openly licensed cultural and historical images.",
+    usedFor: "Archival photography and cultural collections",
+    dashboard: "https://pro.europeana.eu/page/get-api",
+    icon: Images,
+    iconClass: "bg-[#74865f]/12 text-[#60734e]",
+  },
   openai: {
     name: "OpenAI",
     description: "Directs each video and creates its narration.",
