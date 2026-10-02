@@ -42,6 +42,7 @@ from .visual_providers import (
     CandidateLedger,
     asset_keys,
     create_provider_registry,
+    provider_relative_ranks,
 )
 
 MAX_CANDIDATES = 8
@@ -96,10 +97,12 @@ def _ordered(candidates: list[MediaCandidate], preferred: str, used: set[str], s
             if media_relevance(item, scene, state).get("confidence") in {"high", "acceptable", "unknown"}
         ]
 
+    provider_ranks = provider_relative_ranks(verified)
+
     def key(item: MediaCandidate) -> tuple[int, float, int, float, str, str]:
         relevance = media_relevance(item, scene, state) if scene is not None else {"score": 0}
         confidence_weight = {"high": 3, "acceptable": 2, "unknown": 1, "rejected": 0}.get(relevance.get("confidence"), 0)
-        return (confidence_weight, float(relevance["score"]), int(item.kind == preferred), item.rank, item.provider, item.provider_id)
+        return (confidence_weight, float(relevance["score"]), int(item.kind == preferred), provider_ranks[item.identity], item.provider, item.provider_id)
     return sorted(verified, key=key, reverse=True)
 
 

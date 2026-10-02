@@ -6,6 +6,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from .visual_context import HISTORICAL_WORDS, positive_intent, scene_story_context
 from .visual_providers import ProviderRegistry, VisualProvider
 
 
@@ -27,34 +28,20 @@ def route_sources(
     # destination-scene evidence at the existing acceptance authorities.
     intent = scene.get("visual_intent") or {}
     plan = scene.get("visual_query_plan") or {}
-    arc = state.get("story_arc") or {}
-    script = state.get("script") or {}
-    blocks = script.get("blocks", []) if isinstance(script, dict) else []
-    block = next(
-        (b for b in blocks if isinstance(b, dict) and b.get("id") == scene.get("block_id")), {}
-    )
-    fact_ids = set(scene.get("fact_ids") or block.get("fact_ids") or [])
-    units = arc.get("units", []) if isinstance(arc, dict) else []
-    claims = [u.get("claim") for u in units if isinstance(u, dict) and u.get("id") in fact_ids]
-    text = " ".join(
-        str(v or "")
-        for v in (
-            query,
-            scene.get("visual_goal"),
-            intent,
-            scene.get("story_role"),
-            block.get("visual_intent"),
-            block.get("statement"),
-            claims,
-            plan.get("primary_subjects"),
-        )
-    ).casefold()
+    text = " ".join((
+        query, str(scene.get("narration") or ""), str(scene.get("visual_goal") or ""),
+        positive_intent(intent), scene_story_context(scene, state, routing=True),
+        " ".join(plan.get("primary_subjects") or []),
+    )).casefold()
     words = set(re.findall(r"[\w]+", text))
     objects = intent.get("objects") or [] if isinstance(intent, dict) else []
     named_object = any(
         re.fullmatch(r"[A-Z][\w'-]+(?: [A-Z][\w'-]+)+", str(obj).strip()) for obj in objects
     )
-    if words & {
+    atmospheric = bool(words & {"atmosphere", "atmospheric", "atmosphäre"}) and bool(
+        words & {"dust", "particles", "climate", "weather", "meteorology", "staub", "staubteilchen", "partikel"}
+    )
+    if atmospheric or words & {
         "space",
         "astronomy",
         "planet",
@@ -68,22 +55,11 @@ def route_sources(
         "cosmos",
         "weltraum",
         "astronomie",
+        "planetary",
     }:
         order = ("nasa", "wikimedia", "openverse", "pexels", "pixabay")
         reason = "space_or_earth_observation"
-    elif words & {
-        "history",
-        "historical",
-        "archival",
-        "archive",
-        "historic",
-        "war",
-        "century",
-        "museum",
-        "antique",
-        "geschichte",
-        "historisch",
-    } or re.search(r"\b(?:1[0-8]\d{2}|190\d|191\d|192\d|193\d|194\d)\b", text):
+    elif words & HISTORICAL_WORDS or re.search(r"\b1\d{3}\b", text):
         order = ("loc", "europeana", "wikimedia", "openverse", "pexels", "pixabay")
         reason = "historical_or_archival"
     elif words & {

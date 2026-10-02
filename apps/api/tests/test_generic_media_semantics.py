@@ -55,9 +55,9 @@ def test_unseen_topic_with_german_narration_reaches_visual_verification(tmp_path
     assert scene["media_search"]["coverage_targets"] == {"firefly": "primary"}
 
 
-def test_query_provenance_preserves_candidate_with_zero_narration_overlap():
+def test_query_provenance_without_canonical_intent_cannot_grant_fit():
     # No visual intent and no shared word with the German narration: only the
-    # fact that this scene planned (and ran) the query ties the asset to it.
+    # fact that this scene ran a query is insufficient independent evidence.
     scene = {"narration": "Warum leuchten Glühwürmchen nachts?", "search_queries": ["glowing firefly night"]}
     planned = cand("ff", "glowing firefly night", "Firefly glowing in dark forest")
     unplanned = cand("ff2", "summer evening", "Firefly glowing in dark forest")
@@ -65,8 +65,14 @@ def test_query_provenance_preserves_candidate_with_zero_narration_overlap():
     relevance = media_relevance(planned, scene, FIREFLY_STATE)
 
     assert relevance["query_provenance"] is True
-    assert relevance["confidence"] in {"high", "acceptable"}
+    assert relevance["confidence"] == "rejected"
     assert media_relevance(unplanned, scene, FIREFLY_STATE)["confidence"] == "rejected"
+    # A canonical visual direction may bridge languages independently of
+    # which provider query happened to return the asset.
+    scene["visual_intent"] = {"objects": ["firefly"], "actions": ["glowing"],
+                              "media_queries": ["glowing firefly night"]}
+    assert media_relevance(planned, scene, FIREFLY_STATE)["confidence"] == "high"
+    assert media_relevance(unplanned, scene, FIREFLY_STATE)["confidence"] == "high"
 
 
 def test_openclip_rejects_metadata_and_provenance_false_positive():

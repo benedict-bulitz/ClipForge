@@ -5,7 +5,14 @@ from __future__ import annotations
 from typing import Any
 
 from .source_router import route_sources
-from .visual_providers import AcquisitionBudget, CandidateLedger, ProviderRegistry, provider_call
+from .visual_providers import (
+    AcquisitionBudget,
+    CandidateLedger,
+    ProviderRegistry,
+    canonical_source,
+    provider_call,
+    provider_relative_ranks,
+)
 from .visual_rights import evaluate_rights
 
 
@@ -77,6 +84,7 @@ def run_routed_scene_search(
             "errors": [],
             "providers": [],
             "widening_reasons": [],
+            "candidate_evidence": [],
         }
         groups = route_sources(registry, scene, state, query, preferred_kind)
         stage["routed_providers"] = [
@@ -125,6 +133,18 @@ def run_routed_scene_search(
                 stats["cache_hit"] = bool(results and not stats["requests"])
                 stage["requests"] += stats["requests"]
                 for candidate in results:
+                    rights = evaluate_rights(candidate.rights)
+                    initial = media_relevance(candidate, scene, state)
+                    if len(stage["candidate_evidence"]) < 24:
+                        stage["candidate_evidence"].append({
+                            "identity": candidate.identity, "provider": candidate.provider,
+                            "source_key": canonical_source(candidate.source_url),
+                            "title": candidate.title[:240], "rights_status": rights.status,
+                            "rights_reason": rights.reason, "metadata_score": initial["score"],
+                            "metadata_confidence": initial["confidence"],
+                            "metadata_evidence": initial["metadata_evidence"][:320],
+                            "temporal_evidence": initial["temporal_evidence"],
+                        })
                     if evaluate_rights(candidate.rights).status != "usable":
                         stats["rights_rejects"] += 1
                     elif not _usable_quality(candidate, scene_duration):
@@ -134,7 +154,7 @@ def run_routed_scene_search(
                         stage["duplicates"] += 1
                     else:
                         candidates[candidate.identity] = candidate
-                        if media_relevance(candidate, scene, state)["confidence"] == "rejected":
+                        if initial["confidence"] == "rejected":
                             stats["relevance_rejects"] += 1
                         else:
                             pool.append(candidate)
@@ -154,6 +174,11 @@ def run_routed_scene_search(
                 active_verifier = _METADATA_ONLY_VERIFIER
             for candidate, relevance in verified:
                 rows[candidate.identity] = (candidate, relevance)
+                evidence = next((e for e in stage["candidate_evidence"] if e["identity"] == candidate.identity), None)
+                if evidence is not None:
+                    evidence["visual"] = relevance.get("visual") or {}
+                    accepted, reason = real_media_quality_gate(candidate, relevance)
+                    evidence["acceptance"] = {"accepted": accepted, "reason": reason}
                 if not real_media_quality_gate(candidate, relevance)[0]:
                     for stats in stage["providers"]:
                         if (
@@ -175,6 +200,7 @@ def run_routed_scene_search(
             stop_reason = "acquisition_budget_exhausted"
             break
         stop_reason = "budget_exhausted" if len(stages) == query_budget else "plan_exhausted"
+    provider_ranks = provider_relative_ranks(list(candidates.values()))
     ranked = sorted(
         (row for row in rows.values() if real_media_quality_gate(*row)[0]),
         key=lambda row: (
@@ -183,7 +209,7 @@ def run_routed_scene_search(
             float((row[1].get("visual") or {}).get("scene_score") or -1),
             float(row[1]["score"]),
             int(row[0].kind == preferred_kind),
-            row[0].rank,
+            provider_ranks[row[0].identity],
         ),
         reverse=True,
     )

@@ -16,6 +16,7 @@ import httpx
 from . import still_image
 from .config import Settings
 from .progress import ProgressCallback, report_progress
+from .visual_context import HISTORICAL_WORDS, historical_requirement, scene_story_context
 from .visual_providers import (
     AcquisitionBudget,
     CandidateLedger,
@@ -26,6 +27,7 @@ from .visual_providers import (
     canonical_source,
     create_provider_registry,
     provider_call,
+    provider_relative_ranks,
 )
 from .visual_rights import (
     MediaRights,
@@ -1063,6 +1065,36 @@ def real_media_quality_gate(
     return False, "unverified_without_evidence"
 
 
+def _source_caption(candidate: MediaCandidate) -> str:
+    parsed = urlparse(candidate.source_url)
+    if candidate.provider != "pexels" or parsed.hostname not in {"www.pexels.com", "pexels.com"}:
+        return ""
+    match = re.fullmatch(r"/(?:video|photo)/([\w-]+)-\d+/?", parsed.path)
+    return match.group(1).replace("-", " ") if match else ""
+
+
+def _metadata_evidence(candidate: MediaCandidate) -> str:
+    # Long descriptions may contain OCR/transcribed documents, not a visual
+    # description. Their entire vocabulary must not masquerade as a caption.
+    description = _plain_metadata(candidate.description)
+    if len(description) > 600:
+        description = re.split(r"[.!?]\s", description, maxsplit=1)[0][:320]
+    return " ".join((candidate.title[:320], _source_caption(candidate), description, *(tag[:100] for tag in candidate.tags[:20])))
+
+
+def _temporal_evidence(candidate: MediaCandidate, requirement: dict) -> dict:
+    text = _metadata_evidence(candidate)
+    origin = candidate.origin or {}
+    text += " " + " ".join(str(origin.get(k) or "") for k in ("date", "date_created", "year"))
+    years = sorted({int(y) for y in re.findall(r"(?<!\d)(1\d{3}|20\d{2})(?!\d)", text)})
+    expected = requirement["years"]
+    matches = [y for y in years if expected and min(expected) <= y <= max(expected)]
+    archival = bool(set(re.findall(r"\w+", text.casefold())) & HISTORICAL_WORDS)
+    established = bool(matches or archival and not years) if expected else bool(archival or any(y < 2000 for y in years))
+    return {**requirement, "asset_years": years, "matched_years": matches,
+            "established": established, "mismatch": bool(requirement["required"] and not established)}
+
+
 def media_relevance(candidate: MediaCandidate, scene: dict[str, Any], state: dict[str, Any] | None = None) -> dict[str, Any]:
     visual_intent = scene.get("visual_intent") if isinstance(scene.get("visual_intent"), dict) else {}
     narration = str(scene.get("narration") or "")
@@ -1094,10 +1126,10 @@ def media_relevance(candidate: MediaCandidate, scene: dict[str, Any], state: dic
     # a match as context, never make a candidate eligible on their own.
     global_terms = _semantic_terms(global_subject_text(state))
     negated_terms = _negated_terms(narration)
-    metadata = _semantic_terms(" ".join((candidate.title, candidate.description, *candidate.tags)))
+    metadata = _semantic_terms(_metadata_evidence(candidate))
     query_terms = _semantic_terms(candidate.query)
-    # Provider-query provenance: a candidate returned for one of this scene's
-    # planned queries carries that query's canonical concepts as evidence.
+    # Preserve query provenance for diagnostics, never as additional semantic
+    # evidence. Only the scene's own intended concepts may establish a fit.
     scene_queries = scene.get("search_queries") if isinstance(scene.get("search_queries"), list) else []
     planned_queries = {
         form
@@ -1106,7 +1138,7 @@ def media_relevance(candidate: MediaCandidate, scene: dict[str, Any], state: dic
         if form
     }
     query_provenance = bool(query_terms) and str(candidate.query or "").strip().casefold() in planned_queries
-    local_terms = (_semantic_terms(scene_text) | (query_terms if query_provenance else set())) - negated_terms
+    local_terms = _semantic_terms(scene_text) - negated_terms
     goal_terms = _semantic_terms(matching_goal)
     # A concise visual direction may name a principal object plus its setting
     # ("lighthouse by the sea").  Matching its principal object is useful
@@ -1155,7 +1187,10 @@ def media_relevance(candidate: MediaCandidate, scene: dict[str, Any], state: dic
         and not action_matches
         and not focused_goal_match
     )
-    if not metadata:
+    temporal = _temporal_evidence(candidate, historical_requirement(scene, state))
+    if temporal["mismatch"]:
+        confidence = "rejected"
+    elif not metadata:
         confidence = "unknown"
     elif presentation_risk["rejected"] or uncorroborated_single_match:
         confidence = "rejected"
@@ -1180,6 +1215,8 @@ def media_relevance(candidate: MediaCandidate, scene: dict[str, Any], state: dic
             confidence = "acceptable"
     return {
         "score": float(score),
+        "metadata_evidence": _metadata_evidence(candidate)[:1200],
+        "temporal_evidence": temporal,
         "matched_terms": matched,
         "confidence": confidence,
         "subject_terms": sorted(global_terms),
@@ -1225,9 +1262,10 @@ def verify_media_shortlist(
             # cannot be prepared in this process.
             pass
     rows: list[tuple[MediaCandidate, dict[str, Any]]] = []
+    provider_ranks = provider_relative_ranks(candidates)
     metadata_rows = sorted(
         ((candidate, media_relevance(candidate, scene, state)) for candidate in candidates if is_real_media_allowed(candidate)),
-        key=lambda row: (row[1]["confidence"] != "rejected", row[1]["score"], row[0].rank),
+        key=lambda row: (row[1]["confidence"] != "rejected", row[1]["score"], provider_ranks[row[0].identity]),
         reverse=True,
     )
     metadata_rows = [row for row in metadata_rows if row[1]["confidence"] != "rejected"][:limit]
@@ -2710,6 +2748,7 @@ def destination_asset_allowed(media: dict[str, Any], scene: dict[str, Any], stat
 def scene_acceptance_key(scene: dict[str, Any], state: dict[str, Any]) -> str:
     evidence = {key: scene.get(key) for key in ("narration", "visual_goal", "visual_intent")}
     evidence["intent"] = state.get("intent")
+    evidence["story_context"] = scene_story_context(scene, state)
     return hashlib.sha256(json.dumps(evidence, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
 

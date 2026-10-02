@@ -18,6 +18,8 @@ from typing import Any
 import httpx
 from PIL import Image
 
+from .visual_context import scene_story_context
+
 MODEL_NAME = "ViT-B-32"
 MODEL_PRETRAINED = "laion2b_s34b_b79k"
 VISUAL_THRESHOLD = 0.18
@@ -480,7 +482,13 @@ def global_subject_text(state: dict[str, Any] | None = None) -> str:
 
 
 def visual_intent_text(scene: dict[str, Any], state: dict[str, Any] | None = None) -> list[str]:
-    intent = scene.get("visual_intent") if isinstance(scene.get("visual_intent"), dict) else {}
+    # Sentence fragments retain the director's existing same-block plan; a
+    # narration-word fallback must not displace that concrete visual intent.
+    from .visual_director import _planned_intent
+
+    intent = (_planned_intent(scene, state) if state is not None else None) or (
+        scene.get("visual_intent") if isinstance(scene.get("visual_intent"), dict) else {}
+    )
     goal = str(intent.get("visual_goal") or scene.get("visual_goal") or "").strip()
     objects = [str(v).strip() for v in intent.get("objects", []) if str(v).strip()]
     actions = [str(v).strip() for v in intent.get("actions", []) if str(v).strip()]
@@ -497,7 +505,8 @@ def visual_intent_text(scene: dict[str, Any], state: dict[str, Any] | None = Non
     planned_subject = next((str(value) for value in plan.get("primary_subjects") or [] if str(value).strip()), "")
     subject_topic = planned_subject or global_subject_text(state)
     prompts = [narration] if narration else []
-    prompts.extend(provider_queries[:1])
+    if goal:
+        prompts.append(goal)
     if objects or actions or context:
         subject = " ".join([*actions, *objects]).strip() or "visual subject"
         prompts.append(
@@ -505,8 +514,10 @@ def visual_intent_text(scene: dict[str, Any], state: dict[str, Any] | None = Non
             + (f" in {' '.join(context)}" if context else "")
         )
         prompts.append(" ".join([*actions, *objects, *context]).strip())
-    if goal:
-        prompts.append(goal)
+    story_context = scene_story_context(scene, state)
+    if story_context:
+        prompts.append(story_context[:600])
+    prompts.extend(provider_queries[:1])
     scene_prompts = list(dict.fromkeys(v for v in prompts if v))
     if state is None:
         return scene_prompts[:4] or ["a relevant visual scene"]

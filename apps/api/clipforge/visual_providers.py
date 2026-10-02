@@ -209,6 +209,19 @@ class ProviderAdapter:
             provider_call(self.client.close)
 
 
+def provider_relative_ranks(candidates: list[Any]) -> dict[str, float]:
+    """Provider rank is meaningful only inside its own returned result page."""
+    groups: dict[str, list[Any]] = {}
+    for candidate in candidates:
+        groups.setdefault(candidate.provider, []).append(candidate)
+    result = {}
+    for group in groups.values():
+        ranks = sorted({candidate.rank for candidate in group}, reverse=True)
+        positions = {rank: 1.0 - i / max(1, len(ranks) - 1) for i, rank in enumerate(ranks)}
+        result.update({candidate.identity: positions[candidate.rank] for candidate in group})
+    return result
+
+
 class ProviderRegistry:
     def __init__(self, providers: list[VisualProvider]):
         self._providers = {item.provider: item for item in providers}
