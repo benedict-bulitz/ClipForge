@@ -55,9 +55,10 @@ MAX_PHOTO_BYTES = 30 * 1024 * 1024
 
 
 class MediaProviderError(RuntimeError):
-    def __init__(self, category: str, message: str):
+    def __init__(self, category: str, message: str, *, diagnostics: dict | None = None):
         super().__init__(message)
         self.category = category
+        self.diagnostics = diagnostics
 
 
 @dataclass(frozen=True)

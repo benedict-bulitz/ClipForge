@@ -365,6 +365,9 @@ KINDS = [OpenverseProvider, NASAProvider, EuropeanaProvider, LOCProvider]
     ],
 )
 def test_each_provider_failure_is_isolated_and_other_route_continues(kind, error, category):
+    if kind is LOCProvider and error == 401:
+        category = "provider_error"  # Public API has no configured credentials.
+
     def handle(request):
         if error == "timeout":
             raise httpx.ReadTimeout("private endpoint detail", request=request)

@@ -127,6 +127,8 @@ def run_routed_scene_search(
                 except MediaProviderError as exc:
                     failure = exc
                     stats["failure"] = exc.category
+                    if exc.diagnostics:
+                        stats["failure_evidence"] = exc.diagnostics
                     stage["errors"].append(exc.category)
                     results = []
                 stats["requests"] = budget.search_requests - before

@@ -15,7 +15,7 @@ from dataclasses import replace
 from pathlib import Path
 from threading import RLock
 from typing import Any
-from urllib.parse import quote, urlparse
+from urllib.parse import quote, urljoin, urlparse
 
 import httpx
 from PIL import ImageFile
@@ -83,6 +83,7 @@ class OpenMediaProvider:
     capabilities = ProviderCapabilities(("photo",), page_limit=20)
     per_minute: int | None = None
     rate_window = 60.0
+    denial_category = "invalid_credentials"
 
     def __init__(self, *, client: httpx.Client | None = None):
         self.client = client or HTTP_CLIENT_FACTORY(
@@ -101,11 +102,20 @@ class OpenMediaProvider:
     def headers(self) -> dict:
         return {"Accept": "application/json"}
 
+    def _check_response(self, response: httpx.Response) -> None:
+        response.raise_for_status()
+
+    def _response_json(self, response: httpx.Response) -> dict:
+        value = response.json()
+        if not isinstance(value, dict):
+            raise TypeError("Expected provider object")
+        return value
+
     def _json(self, address: str, budget: AcquisitionBudget, *, params: dict | None = None) -> dict:
         from .media import MediaProviderError
 
         if self.disabled:
-            raise MediaProviderError("invalid_credentials", "Provider path is disabled.")
+            raise MediaProviderError(self.denial_category, "Provider path is disabled.")
         now = time.monotonic()
         with _LOCK:
             recent = _REQUESTS.setdefault(self.provider, deque())
@@ -137,11 +147,8 @@ class OpenMediaProvider:
                 delay = 60
             with _LOCK:
                 _COOLDOWN[self.provider] = now + delay
-        response.raise_for_status()
-        value = response.json()
-        if not isinstance(value, dict):
-            raise TypeError("Expected provider object")
-        return value
+        self._check_response(response)
+        return self._response_json(response)
 
     def search(
         self,
@@ -220,7 +227,7 @@ class OpenMediaProvider:
         parser = ImageFile.Parser()
         consumed = 0
         with self.client.stream("GET", address) as response:
-            response.raise_for_status()
+            self._check_response(response)
             for chunk in response.iter_bytes(16384):
                 consumed += len(chunk)
                 if consumed > 512 * 1024:
@@ -243,7 +250,7 @@ class OpenMediaProvider:
             partial = destination.with_suffix(destination.suffix + ".part")
             try:
                 with self.client.stream("GET", candidate.download_url) as response:
-                    response.raise_for_status()
+                    self._check_response(response)
                     total = 0
                     with partial.open("wb") as handle:
                         for chunk in response.iter_bytes(65536):
@@ -667,6 +674,73 @@ class LOCProvider(OpenMediaProvider):
     endpoint = "https://www.loc.gov/search/"
     capabilities = ProviderCapabilities(("photo",), page_limit=12, suitability=("archival",))
     per_minute = 20  # Official JSON/YAML limit; no blocking sleeps.
+    # https://www.loc.gov/apis/json-and-yaml/: public, no key/authentication.
+    # Access denial is not an invalid configured credential. Preserve the
+    # existing credential category for providers that actually use credentials.
+    denial_category = "provider_error"
+
+    def headers(self) -> dict:
+        return super().headers() | {"User-Agent": "ClipForge (public LOC JSON client)"}
+
+    @staticmethod
+    def _http_evidence(response: httpx.Response) -> dict:
+        def public_address(address: httpx.URL) -> dict:
+            result = {"endpoint": f"{address.scheme}://{address.host}{address.path}"[:300]}
+            if address.host == "www.loc.gov":
+                result["parameters"] = {
+                    k: v[:240] for k, v in address.params.items()
+                    if k in {"q", "fo", "c", "sp", "fa", "at"}
+                }
+            return result
+
+        evidence = {
+            **public_address(response.request.url),
+            "http_status": response.status_code,
+            "user_agent": response.request.headers.get("user-agent", "")[:120],
+            "response_headers": {
+                key: response.headers[key][:160]
+                for key in ("content-type", "retry-after", "server", "x-cache", "cf-mitigated")
+                if key in response.headers
+            },
+            "redirects_followed": len(response.history),
+        }
+        if response.headers.get("location"):
+            evidence["redirect_target"] = public_address(httpx.URL(urljoin(
+                str(response.request.url), response.headers["location"]
+            )))
+        # Never persist raw bodies (which can echo headers/tokens). API bodies
+        # are already loaded; failed streamed media must not trigger a read.
+        if response.is_stream_consumed:
+            prefix = response.content[:4096].lstrip().lower()
+            evidence["body_format"] = (
+                "html" if prefix.startswith((b"<!doctype html", b"<html"))
+                else "json" if prefix.startswith((b"{", b"[")) else "text"
+            )
+            evidence["captcha_indicated"] = b"captcha" in prefix
+        else:
+            evidence["body_format"] = "unread_stream"
+        return evidence
+
+    def _check_response(self, response: httpx.Response) -> None:
+        from .media import MediaProviderError
+
+        if not 200 <= response.status_code < 300:
+            raise MediaProviderError(
+                "rate_limited" if response.status_code == 429 else "provider_error",
+                f"Public LOC request failed (HTTP {response.status_code}).",
+                diagnostics=self._http_evidence(response),
+            )
+
+    def _response_json(self, response: httpx.Response) -> dict:
+        from .media import MediaProviderError
+
+        try:
+            return super()._response_json(response)
+        except (ValueError, TypeError):
+            raise MediaProviderError(
+                "malformed_response", "Public LOC request returned malformed JSON.",
+                diagnostics=self._http_evidence(response),
+            ) from None
 
     def params(self, query: str) -> dict:
         return {"q": query, "fo": "json", "c": 12, "sp": 1, "fa": "online-format:image"}
