@@ -43,6 +43,7 @@ def run_routed_scene_search(
         _safe_verify,
         _scene_query_order,
         _usable_quality,
+        candidate_target_coverage,
         media_relevance,
         real_media_quality_gate,
         scene_coverage_targets,
@@ -216,6 +217,16 @@ def run_routed_scene_search(
         ),
         reverse=True,
     )
+    from .visual_diversity import prefer_useful_novelty
+
+    ranked = prefer_useful_novelty(
+        ranked, scene, state,
+        coverage=lambda row: tuple(candidate_target_coverage(*row, target, scene_duration) for target in targets),
+    )
+    for stage in stages:
+        for evidence in stage["candidate_evidence"]:
+            if evidence["identity"] in rows:
+                evidence["diversity"] = rows[evidence["identity"]][1].get("diversity")
     reasons = [reason for stage in stages for reason in stage["widening_reasons"]]
     provenance = {
         "version": 2,

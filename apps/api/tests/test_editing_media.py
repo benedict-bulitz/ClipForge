@@ -1,4 +1,5 @@
 import copy
+import re
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -740,7 +741,14 @@ def test_still_zoompan_keeps_headroom_and_integer_window_origins(monkeypatch, tm
 
     assert "-loop" in commands[0]
     still_filter = commands[0][commands[0].index("-vf") + 1]
-    assert f"scale={int(width * 1.08 * 2)}:{int(height * 1.08 * 2)}:force_original_aspect_ratio=increase" in still_filter
+    # Duration-aware headroom is bounded; the 2x work frame must still cover
+    # the output without distortion, with the same integer window origins.
+    match = re.match(r"scale=(\d+):(\d+):force_original_aspect_ratio=increase", still_filter)
+    assert match is not None
+    work_width, work_height = map(int, match.groups())
+    assert width * 2 <= work_width <= int(width * 1.08 * 2)
+    assert height * 2 <= work_height <= int(height * 1.08 * 2)
+    assert abs(work_width / work_height - width / height) < 0.001
     assert f"crop={width}:{height}:" not in still_filter
     assert "zoompan=z=" in still_filter
     assert "x='trunc((iw-" in still_filter

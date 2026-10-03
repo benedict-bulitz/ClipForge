@@ -1044,6 +1044,16 @@ def safe_pan_range(focal_x: float, zoom: float, margin: float = FOCAL_MARGIN) ->
     return (low, high) if high - low >= _MIN_SAFE_PAN else None
 
 
+def document_still(scene: dict) -> bool:
+    """Explicit document/plate evidence needs its whole frame for readability."""
+    media = scene.get("media") or {}
+    intent = scene.get("visual_intent") or {}
+    if intent.get("shot_type") in {"document", "full_document"}:
+        return True
+    caption = str(media.get("title") or media.get("description") or "")[:320]
+    return bool(re.search(r"\b(?:manuscript|newspaper|document|map|chart|engraving)\b", caption, re.IGNORECASE))
+
+
 def still_motion_plan(
     scene: dict,
     index: int,
@@ -1065,8 +1075,10 @@ def still_motion_plan(
     ``limit="reduced"`` (a repair) allows only a very small anchored push.
     """
     step = _ZOOM_STEPS.get(motion, 0.0)
+    if document_still(scene):
+        return {"type": "static", "max_zoom": 1.0, "zoom": "1.0", "x": "0.5000", "reason": "document_readability", "framing": "contain"}
     anchor = focal[0] if focal is not None else center_x
-    if not step:
+    if not step or frames <= 1:
         return {"type": "static", "max_zoom": 1.0, "zoom": "min(zoom+0.0000,1.0)", "x": f"{anchor:.4f}"}
     media = scene.get("media") if isinstance(scene.get("media"), dict) else {}
     if media_source(media) == GRAPHIC_ASSET_SOURCE:
@@ -1076,22 +1088,26 @@ def still_motion_plan(
             "type": "push_in", "max_zoom": REDUCED_MAX_ZOOM, "reduced": True,
             "zoom": f"min(zoom+{min(step, 0.0003):.4f},{REDUCED_MAX_ZOOM})", "x": f"{anchor:.4f}",
         }
-    max_zoom = 1.08
+    # Keep the existing treatment's speed on short scenes; spread its capped
+    # movement over long scenes instead of reaching 8% early and then freezing.
+    max_zoom = round(1.0 + min(0.08, step * max(0, frames - 1)), 6)
+    step = (max_zoom - 1.0) / max(1, frames - 1)
+    pan_zoom = 1.0 + (max_zoom - 1.0) * 0.75
     pattern = ("push_in", "pan", "pull_out")[index % 3]
     if pattern == "pan" and focal is not None:
-        window = safe_pan_range(focal[0], max_zoom - 0.02)
+        window = safe_pan_range(focal[0], pan_zoom)
         if window is None:
-            return {"type": "push_in", "max_zoom": max_zoom, "zoom": f"min(zoom+{step:.4f},{max_zoom})", "x": f"{anchor:.4f}", "reason": "no_safe_pan"}
+            return {"type": "push_in", "max_zoom": max_zoom, "zoom": f"min(zoom+{step:.6f},{max_zoom})", "x": f"{anchor:.4f}", "reason": "no_safe_pan"}
         start, end = window if focal[0] >= 0.5 else window[::-1]
         return {
-            "type": "pan", "max_zoom": max_zoom, "zoom": f"{max_zoom - 0.02:.2f}", "safe_range": [round(window[0], 4), round(window[1], 4)],
+            "type": "pan", "max_zoom": max_zoom, "zoom": f"{pan_zoom:.6f}", "safe_range": [round(window[0], 4), round(window[1], 4)],
             "x": f"({start:.4f}+{end - start:.4f}*on/{max(1, frames - 1)})",
         }
     if pattern == "pull_out":
         return {
             "type": "pull_out",
             "max_zoom": max_zoom,
-            "zoom": f"if(eq(on,0),{max_zoom},max(zoom-{step:.4f},1.0))",
+            "zoom": f"if(eq(on,0),{max_zoom},max(zoom-{step:.6f},1.0))",
             "x": f"{anchor:.4f}",
         }
     if pattern == "pan":
@@ -1099,10 +1115,10 @@ def still_motion_plan(
         return {
             "type": "pan",
             "max_zoom": max_zoom,
-            "zoom": f"{max_zoom - 0.02:.2f}",
+            "zoom": f"{pan_zoom:.6f}",
             "x": f"({start:.4f}+{end - start:.4f}*on/{max(1, frames - 1)})",
         }
-    return {"type": "push_in", "max_zoom": max_zoom, "zoom": f"min(zoom+{step:.4f},{max_zoom})", "x": f"{anchor:.4f}"}
+    return {"type": "push_in", "max_zoom": max_zoom, "zoom": f"min(zoom+{step:.6f},{max_zoom})", "x": f"{anchor:.4f}"}
 
 
 def _source_size(source: Path, media: dict) -> tuple[int, int] | None:
@@ -1221,7 +1237,7 @@ def _create_visual_segment(
         motion = "" if adjustments.get("motion") == "static" else str(scene.get("motion") or "")
         limit = "reduced" if adjustments.get("motion") == "reduced" else None
         plan = still_motion_plan(scene, index, motion, center_x, frames, focal=focal, limit=limit)
-        scene["still_motion"] = {key: plan[key] for key in ("type", "max_zoom", "reason", "safe_range", "reduced") if key in plan}
+        scene["still_motion"] = {key: plan[key] for key in ("type", "max_zoom", "reason", "safe_range", "reduced", "framing") if key in plan}
         if focal is not None:
             scene["still_motion"]["focal"] = [round(focal[0], 4), round(focal[1], 4)]
         anchor_y = focal[1] if focal is not None else center_y
@@ -1247,6 +1263,14 @@ def _create_visual_segment(
             f"d={frames}:s={output_w}x{output_h}:fps={fps},"
             f"scale={width}:{height}:flags=lanczos,format=yuv420p"
         )
+        if plan.get("framing") == "contain":
+            # Preserve page/map edges; this still remains an actual accepted
+            # image, never a synthesized text card. No crop or zoom of text.
+            zoom_filter = (
+                f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
+                f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black,"
+                f"fps={fps},format=yuv420p"
+            )
         try:
             # FFmpeg picks the demuxer from content: a GIF saved as .jpg has no
             # ``-loop`` option.  Stills reach it only as matching JPEG/PNG files.

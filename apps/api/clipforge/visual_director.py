@@ -676,6 +676,7 @@ def resolve_visual_description(
     nothing reveal-safe and visible remains.
     """
     from .media import canonical_visual_subjects, protected_candidate_terms
+    from .visual_diversity import translation_context
     from .visual_translation import translate_statement
 
     plan = plan or (scene.get("visual_query_plan") if isinstance(scene.get("visual_query_plan"), dict) else {})
@@ -719,6 +720,7 @@ def resolve_visual_description(
             subjects=subjects,
             story_role=strategy.get("visual_role") or strategy.get("story_role"),
             must_not_show=sorted(blocked | protected_terms),
+            progression=translation_context(scene, state),
         )
         if translation is not None:
             cache[key] = translation
@@ -726,7 +728,10 @@ def resolve_visual_description(
         main = " ".join(part for part in (translation.get("main_subject"), translation.get("visible_state_or_action")) if part)
         phrases = _keep_visible([main, str(translation.get("setting") or ""), *translation.get("details", [])], blocked, protected_terms)
         if phrases and phrases[0].startswith(str(translation.get("main_subject") or "")[:20]):
-            return {"subject": phrases[0], "details": phrases[1:5], "source": "fact_translation"}
+            return {
+                "subject": phrases[0], "details": phrases[1:5], "source": "fact_translation",
+                "concept": {"subject": translation.get("main_subject"), "action": translation.get("visible_state_or_action"), "environment": translation.get("setting")},
+            }
     words = _concrete_words(statement)
     phrases = _keep_visible([" ".join(subjects[:3]), " ".join(words[:6])], blocked, protected_terms)
     if not phrases:
@@ -775,6 +780,7 @@ def build_generation_prompt(
         "summary": "; ".join(phrases[:3])[:200],
         "reveal_safe": reveal_safe,
         "visual_source": description["source"],
+        "visual_concept": description.get("concept") or {"subject": description["subject"]},
         "verification_texts": [f"a photo of {phrase}" for phrase in phrases[:3]],
     }
 
@@ -863,6 +869,7 @@ def _generated_metadata(
         "duration": None,
         "query": prompt["summary"],
         "title": f"AI-generated image: {prompt['summary']}",
+        "visual_concept": prompt.get("visual_concept") or {},
         "description": prompt["summary"],
         "tags": [],
         "license": "AI-generated with the OpenAI API; not stock media",
