@@ -474,4 +474,17 @@ def summarize_fact(statement: str, *, settings: Any, story_role: str | None = No
 def explanatory_overlay(scene: dict[str, Any], state: dict[str, Any], settings: Any | None = None, story_role: str | None = None) -> dict[str, Any] | None:
     """The overlay spec for a scene's fact: model summary when configured, else deterministic."""
     statement = fact_statement(scene, state)
-    return summarize_fact(statement, settings=settings, story_role=story_role) or overlay_spec_for(statement)
+    result = summarize_fact(statement, settings=settings, story_role=story_role) or overlay_spec_for(statement)
+    if result is not None:
+        return result
+    return linked_fact_overlay(scene, state)
+
+
+def linked_fact_overlay(scene: dict[str, Any], state: dict[str, Any]) -> dict[str, Any] | None:
+    # The source claim may be verbose while the spoken, fact-linked blocks
+    # express the same relation clearly. Never pull in unrelated script beats.
+    blocks = (state.get("script") or {}).get("blocks") or []
+    own = next((block for block in blocks if block.get("id") == scene.get("block_id")), {})
+    ids = set(own.get("fact_ids") or [])
+    linked = [str(block.get("text") or "") for block in blocks if ids.intersection(block.get("fact_ids") or [])]
+    return overlay_spec_for(" ".join(linked)) if len(linked) >= 2 else None

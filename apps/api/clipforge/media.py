@@ -1108,11 +1108,14 @@ def media_relevance(candidate: MediaCandidate, scene: dict[str, Any], state: dic
     scene_goal = str(scene.get("visual_goal") or "")
     explicitly_refreshed = isinstance(scene.get("search_queries"), list) and not scene["search_queries"]
     media_queries = [str(value) for value in visual_intent.get("media_queries") or [] if str(value).strip()]
+    # Only explicit provenance establishes an emergency narration extraction.
+    # A concise authored intent can have the same shape as the legacy heuristic.
+    provisional = visual_intent.get("source") == "narration_fallback"
     canonical_intent = False
     if explicitly_refreshed:
         structured = scene_goal
         matching_goal = scene_goal
-    elif media_queries or (intent_text and _scene_text_coherent(narration, intent_text)):
+    elif not provisional and (media_queries or (intent_text and _scene_text_coherent(narration, intent_text))):
         # The canonical, provider-facing visual intent is trusted the same way
         # the query planner trusts it; it does not need to share words (or a
         # language) with the narration.
@@ -1201,11 +1204,16 @@ def media_relevance(candidate: MediaCandidate, scene: dict[str, Any], state: dic
         confidence = "unknown"
     elif presentation_risk["rejected"] or uncorroborated_single_match:
         confidence = "rejected"
+    elif provisional and local_matches and not global_matches:
+        # Narration-derived adjectives/verbs are not a physical visual plan.
+        # Without corroboration they require independent scene verification;
+        # two incidental words must not become a high-confidence metadata pass.
+        confidence = "unknown"
     elif contextual_only or global_only_match:
         # Topic overlap is only a plausibility guard. It needs a strong local
         # visual verification before it can become eligible media.
         confidence = "unknown"
-    elif not local_matches:
+    elif not local_matches or (visual_intent.get("source") == "fact_translation" and not (_semantic_terms(intent_text) & metadata)):
         confidence = "rejected"
     else:
         confidence = "high" if len(scene_specific_matches) >= 2 or bool(action_matches) else "acceptable"
@@ -1225,6 +1233,7 @@ def media_relevance(candidate: MediaCandidate, scene: dict[str, Any], state: dic
         "metadata_evidence": _metadata_evidence(candidate)[:1200],
         "temporal_evidence": temporal,
         "setting_evidence": setting,
+        "provisional_intent": provisional,
         "matched_terms": matched,
         "confidence": confidence,
         "subject_terms": sorted(global_terms),
@@ -2101,6 +2110,7 @@ def prepare_project_media(
     block_bases: dict[str, dict[str, Any]] = {}
 
     for scene_index, scene in enumerate(scenes, 1):
+        director.resolve_acquisition_intent(scene, state, settings)
         acquisition_budget = AcquisitionBudget()
         existing = scene.get("media") if isinstance(scene.get("media"), dict) else None
         reused = scene.get("asset_status") in {"related_media_reused", "real_media_reused", "generated_media_reused", "block_visual_continued"}
@@ -2853,9 +2863,18 @@ def complete_project_visuals(
             scene["asset_status"] = "real_media_unavailable"
             scene["fallback_completion"] = {"status": "blocked", "reason": "user_locked_visual"}
             continue
+        director.resolve_acquisition_intent(scene, state, settings)
         strategy = scene.get("visual_director")
         if not isinstance(strategy, dict) or not strategy.get("fallback_chain"):
             strategy = director.plan_scene_strategy(scene, state, build_visual_query_plan(scene, state), settings=settings)
+        elif strategy.get("reason") == "concrete_subject_real_media" and strategy.get("fallback_chain") == [
+            "real_media", director.GENERATED_IMAGE, director.REUSE_PREVIOUS_VISUAL,
+        ]:
+            # Upgrade the automatic legacy default only. Explicit restricted
+            # strategies and user-owned visuals keep their existing contract.
+            refreshed = director.plan_scene_strategy(scene, state, build_visual_query_plan(scene, state))
+            if director.SIMPLE_GRAPHIC in refreshed["fallback_chain"]:
+                strategy = {**strategy, **refreshed}
         stored = (scene.get("media_search") or {}).get("acquisition_budget") or {}
         budget = AcquisitionBudget()
         for work, limit in (stored.get("limits") or {}).items():

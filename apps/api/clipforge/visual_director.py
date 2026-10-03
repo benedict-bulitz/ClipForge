@@ -52,7 +52,7 @@ from .media import (
     scene_coverage_targets,
     visual_target_key,
 )
-from .overlay_copy import explanatory_overlay
+from .overlay_copy import explanatory_overlay, linked_fact_overlay
 from .payoff import reveals_protected_payoff
 from .simple_graphics import (
     GraphicSpecError,
@@ -399,6 +399,11 @@ def plan_scene_strategy(
     if intent_strategy in _GRAPHIC_INTENT_STRATEGIES or story["visual_role"] in {"explanation", "final_payoff"} or story["story_role"] == "explanation":
         # The complete fact as a relation (scenes may split a sentence mid-clause).
         explanatory = explanatory_overlay(scene, state, settings, story.get("visual_role"))
+    if explanatory is None:
+        # A causal/evidence fact can need a relation graphic regardless of the
+        # planner's role label. This bounded deterministic check adds no model
+        # calls and cannot manufacture a card from arbitrary narration.
+        explanatory = linked_fact_overlay(scene, state)
     if planned in {STOCK_VIDEO, STOCK_PHOTO} and intent_strategy in _GRAPHIC_INTENT_STRATEGIES and explanatory:
         steps = list(explanatory["steps"])
         spec = {"kind": "process", "steps": steps}
@@ -702,7 +707,14 @@ def resolve_visual_description(
             protected_terms,
         )
         if phrases:
-            return {"subject": phrases[0], "details": phrases[1:6], "source": "visual_intent"}
+            description = {"subject": phrases[0], "details": phrases[1:6], "source": "visual_intent"}
+            if intent.get("source") == "fact_translation":
+                description.update(source="fact_translation", concept={
+                    "subject": " ".join(intent.get("objects") or []),
+                    "action": " ".join(intent.get("actions") or []),
+                    "environment": " ".join(intent.get("context") or []),
+                })
+            return description
         # The planned subject is entirely the protected answer: nothing
         # reveal-safe to show, and no generic filler is paid for.
         return None
@@ -737,6 +749,39 @@ def resolve_visual_description(
     if not phrases:
         return None
     return {"subject": phrases[0], "details": phrases[1:3], "source": "fact_words"}
+
+
+def resolve_acquisition_intent(scene: dict[str, Any], state: dict[str, Any], settings: Settings) -> None:
+    """Resolve emergency narration fragments once, before search and cache admission.
+
+    Reuse the existing fact translator and its per-statement cache. Authored
+    directions and user edits remain authoritative; translation failure grants
+    no new evidence. Generation and verification subsequently read this intent.
+    """
+    intent = scene.get("visual_intent") or {}
+    user_owned = scene.get("user_locked_visual") or (scene.get("media") or {}).get("manually_selected") or (scene.get("visual_director") or {}).get("manually_selected")
+    if intent.get("source") != "narration_fallback" or user_owned or scene.get("edit_instruction"):
+        return
+    from .media import build_visual_query_plan
+
+    description = resolve_visual_description(
+        scene, state, scene_story_context(scene, state), build_visual_query_plan(scene, state), settings=settings,
+    )
+    if not description or description.get("source") != "fact_translation":
+        return
+    concept = description["concept"]
+    subject, action, environment = (str(concept.get(key) or "") for key in ("subject", "action", "environment"))
+    scene["visual_intent"] = {
+        **intent, "source": "fact_translation", "visual_goal": description["subject"],
+        "objects": [subject], "actions": [action] if action else [],
+        "context": [environment] if environment else [],
+        "media_queries": [f"{subject} {action}".strip(), f"{environment} {subject}".strip()],
+    }
+    scene["visual_goal"] = description["subject"]
+    # An empty list means an explicit editor refresh to the query planner.
+    scene.pop("search_queries", None)
+    scene["visual_query_plan"] = build_visual_query_plan(scene, state)
+    scene["search_queries"] = list(scene["visual_query_plan"]["queries"])
 
 
 def build_generation_prompt(

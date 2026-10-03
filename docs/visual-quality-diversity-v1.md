@@ -189,3 +189,88 @@ confirm repeating same-block fragments are intentionally exempt, unrelated
 alternatives still fail, generated-image spend remains bounded, and documents
 retain page edges without moving text. A relevant repeated view remains the
 correct outcome when no comparably valid distinct visual exists.
+
+## Follow-up: shared intent and fallback audit (2026-10-03)
+
+Scoped to the newest three real projects after `8befb6a`; no repository-wide
+review or provider redesign. Database reads were read-only. Failed acquisition
+snapshots were compared with persisted revisions and actual render layouts.
+
+| Run | Project | Proven finding |
+|---|---|---|
+| Mars | `d0348bbf-d264-4fe1-8ac1-bc296891970c` | Revision 2, `scene_02_01`, 5.0–7.5 s selected an unrelated historical portrait. |
+| Berlin | `97ba7fb7-5c5d-4e24-8449-dfd54153def2` | Latest failed acquisition: `scene_04_01`, economic consequence, missing at render admission. Revision 1 alone predates this failure; the failure evidence is in the acquisition snapshot. |
+| Fridge | `4bc4b44f-133d-4a9c-a16f-43bbc84a0229` | Revision 2 completed, 40.6 s. Its `render_failed` acquisition file is older than the successful revision; do not report a current render failure. |
+
+Mars narrated “Feiner roter Staub wirbelt in der Marsatmosphäre umher.” Its
+`narration_fallback` intent treated “Feiner”, “roter”, “Staub” as objects.
+Relaxation searched `feiner roter`. Wikimedia photo `161273097`,
+“Porträt Anna Magdalena Zellweger-Etter”, contained **feiner** Schleier and
+**roter** Halsschmuck in its description. Those TWO incidental modifiers
+produced score 60 / tier 3 / high metadata confidence, despite no global
+subject match. OpenCLIP was `unavailable_preview`, with no scene score;
+`metadata_match` admitted it through `real_media_only_relaxed_fit`. Public-domain
+rights were valid. The planetary contradiction detector had no recognized
+negative setting marker in this portrait caption. NASA was routed but yielded
+no normalized candidates in the retained staged evidence. This was a metadata
+acceptance defect, not proof that source suitability defeated a better NASA
+candidate. The exact source is Wikimedia Commons
+`File:CH-KBAR_-_Porträt_Anna_Magdalena_Zellweger-Etter_-_KB-023593.tif`.
+
+Berlin narrated “Das belastete den wirtschaftlichen Aufbau der DDR.” Its
+fallback intent searched narration fragments and even used “belastete” as a
+coverage target. A cached concrete translation already described an idle East
+German factory worker beside unattended machinery. Retrieval never used it.
+Three AI images had already been accepted; scene four therefore correctly hit
+`project_budget_exhausted`. The provider budget was not exhausted (9/18
+requests, 3/72 verifications, 0/12 downloads). Reuse did not establish a fit.
+The scene's role was `evidence`, so its chain omitted the existing relation
+graphic despite sharing fact_03 with the preceding flight-of-workers block.
+The long source claim also failed deterministic relation extraction, whereas
+the shorter fact-linked spoken blocks produce a validated relation.
+
+Fridge's final layout used one Pexels clip (`9462939`), three generated stills,
+and a graphic. The absent-minded open-fridge image `538c77f1ceb84a2595cf`
+appeared at 4.9–6.867 s and again at 13.733–27.8 s. Body retrieval searched
+German narration fragments, while concrete English translations were reserved
+for generation/reuse. The three-image budget was spent. Admission's first-pool
+fallback bypassed literal-query novelty ranking, but the retained destination
+scores **do not justify forcing a different winner**: the repeated image
+scored about .299–.301, alternatives .273–.291 and .244–.251. Semantic priority
+therefore remains above variety; no penalty or budget was increased. One
+same-block alternative also had a materially weaker destination score.
+
+### Smallest shared correction
+
+- Resolve the existing fact-to-visual translation **before** automatic search
+  and cache admission for provisional intents. Persist the subject, action,
+  setting and bounded query inputs in the existing scene intent. Reuse the
+  same translation for generation and split-block continuity; authored/user
+  directions retain authority. No new model, provider or judge.
+- Provisional narration-word matches without independent subject evidence are
+  insufficient for metadata-only acceptance. An unavailable verifier cannot
+  legitimize the two-modifier portrait. Resolved intentions also reject
+  narration-only matches absent from the intended visual. Rights, CLIP
+  thresholds, setting/temporal contradictions and relaxed gates stay intact.
+- Give facts split across linked script blocks access to the existing validated
+  relation graphic irrespective of the role label. Never join unrelated facts.
+  Upgrade the old automatic default chain at admission; explicit restricted
+  chains and user locks are respected. No synthetic text-card path.
+- Preserve the V1 novelty comparison guard: each target's coverage must match,
+  not merely the sum. No diversity ranking, reuse threshold or render treatment
+  was changed in this follow-up.
+
+Read-only replay with local output in `/private/tmp` confirmed the saved Berlin
+failure now reaches `graphic_ready` with **the same three billed generations**,
+and the actual Mars portrait fails both fresh and cached admission. This replay
+uses saved translations and policy evidence, not new provider results. A new
+real generation remains necessary to assess stock coverage and visual variety.
+
+Follow-up validation: **1,981 backend tests passed** (172 existing dependency
+warnings), including **18 new shared-intent/fallback regressions**. The focused
+media/rights/diversity/planetary/historical/fallback set passed 303 tests before
+the final manual-selection guard; the full final run includes that guard and
+its extra regression. Ruff and `git diff --check` passed. Frontend unchanged.
+The two critic/repair compatibility regressions found during development were
+resolved by requiring explicit `narration_fallback` provenance, rather than
+inferring an emergency intent from the shape of a concise authored direction.
