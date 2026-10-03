@@ -51,3 +51,64 @@ def historical_requirement(scene: dict, state: dict | None) -> dict:
     years = sorted({int(y) for y in re.findall(r"(?<!\d)(1\d{3})(?!\d)", text)})
     words = set(re.findall(r"\w+", text.casefold()))
     return {"required": bool(years or words & HISTORICAL_WORDS), "years": years}
+
+
+def planetary_setting_evidence(scene: dict, state: dict | None, metadata: str) -> dict:
+    """A topical label cannot override a caption's contradictory setting.
+
+    This is a bounded metadata veto, not another visual judge or a provider
+    authenticity grant. Missing captions still use the existing authorities.
+    Discovery queries and exclusions cannot request an illustrative exception.
+    """
+    own = scene.get("visual_intent") or {}
+    own = {k: v for k, v in own.items() if k != "media_queries"} if isinstance(own, dict) else {}
+    direction = " ".join((str(scene.get("visual_goal") or ""), positive_intent(own)))
+    text = " ".join((str(scene.get("narration") or ""), direction, scene_story_context(scene, state))).casefold()
+    words = set(re.findall(r"\w+", text))
+    named = {"moon", "mond", "lunar", "mars", "martian", "venus", "mercury",
+             "jupiter", "saturn", "uranus", "neptune", "merkur", "neptun"}
+    planetary = bool(words & (named | {"planet", "planets", "planetary", "planetar", "planeten"}))
+    direct = set(re.findall(r"\w+", direction.casefold()))
+    if direct & {"earth", "erde", "terrestrial"} and not direct & named:
+        planetary = False  # An explicit Earth comparison may show Earth.
+    def affirmed_matches(pattern: str, caption: str):
+        for match in re.finditer(pattern, caption, re.IGNORECASE):
+            prefix = caption[max(0, match.start() - 40):match.start()]
+            if not re.search(r"\b(?:no|not|without|avoid|lacks|keine?|ohne)\s+(?:\w+\s+){0,2}$", prefix, re.IGNORECASE):
+                yield match
+
+    illustrative = any(affirmed_matches(
+        r"\b(?:cosplay|costume|themed|reenactment|re[- ]enactment|simulation|simulator|analogue|analog)\b",
+        direction,
+    ))
+    environment = bool(words & {
+        "surface", "landscape", "terrain", "ground", "soil", "crater", "sky", "dust",
+        "atmosphere", "atmospheric", "gravity", "rain", "weather", "environment",
+        "oberfläche", "landschaft", "himmel", "staub", "staubteilchen", "atmosphäre",
+        "schwerkraft", "anziehungskraft", "regen", "actual", "real", "echte",
+    })
+    required = planetary and environment and not illustrative
+    markers = []
+    if required:
+        # Captions describe staged representations or incompatible surroundings;
+        # do not mistake their planet name, sign text or suit for that setting.
+        patterns = {
+            "staged_representation": r"\b(?:cosplay|costume|themed|reenactment|re[- ]enactment|replica|merchandise|souvenir|simulation|simulator|hitchhik\w*)\b",
+            "terrestrial_surroundings": r"\b(?:roadside|highway|asphalt|paved road|grass|grassland|meadow|shopping street)\b",
+            "lookalike_setting": r"\bpretending\b|\b(?:resembling|look(?:s|ing)? like|analogue|analog)\s+(?:\w+\s+){0,3}(?:" + "|".join(sorted(named | {"planet", "planetary"})) + r")\b",
+            "held_prop": r"\b(?:cardboard sign|holding (?:a |the )?sign)\b",
+        }
+        caption = metadata.casefold()
+        for label, pattern in patterns.items():
+            # A caption such as 'surface without grass' does not assert grass.
+            if any(affirmed_matches(pattern, caption)):
+                markers.append(label)
+        # A person 'on <planet>' supplies a topical label, not the requested
+        # environment. Genuine mission captions can establish that setting
+        # with soil/surface/crater evidence; provider identity alone cannot.
+        actor = bool(re.search(r"\b(?:astronaut|spacesuit|space suit|person|couple|cosmonaut)\b", caption))
+        physical = {"surface", "landscape", "terrain", "ground", "soil", "crater", "sky",
+                    "dust", "atmosphere", "oberfläche", "landschaft", "himmel", "staub"}
+        if actor and not set(re.findall(r"\w+", caption)) & physical:
+            markers.append("actor_without_environment_evidence")
+    return {"required": required, "mismatch": bool(markers), "markers": markers}

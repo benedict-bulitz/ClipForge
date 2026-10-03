@@ -16,7 +16,12 @@ import httpx
 from . import still_image
 from .config import Settings
 from .progress import ProgressCallback, report_progress
-from .visual_context import HISTORICAL_WORDS, historical_requirement, scene_story_context
+from .visual_context import (
+    HISTORICAL_WORDS,
+    historical_requirement,
+    planetary_setting_evidence,
+    scene_story_context,
+)
 from .visual_providers import (
     AcquisitionBudget,
     CandidateLedger,
@@ -1189,7 +1194,8 @@ def media_relevance(candidate: MediaCandidate, scene: dict[str, Any], state: dic
         and not focused_goal_match
     )
     temporal = _temporal_evidence(candidate, historical_requirement(scene, state))
-    if temporal["mismatch"]:
+    setting = planetary_setting_evidence(scene, state, _metadata_evidence(candidate))
+    if temporal["mismatch"] or setting["mismatch"]:
         confidence = "rejected"
     elif not metadata:
         confidence = "unknown"
@@ -1218,6 +1224,7 @@ def media_relevance(candidate: MediaCandidate, scene: dict[str, Any], state: dic
         "score": float(score),
         "metadata_evidence": _metadata_evidence(candidate)[:1200],
         "temporal_evidence": temporal,
+        "setting_evidence": setting,
         "matched_terms": matched,
         "confidence": confidence,
         "subject_terms": sorted(global_terms),

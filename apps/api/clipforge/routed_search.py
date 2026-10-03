@@ -146,6 +146,7 @@ def run_routed_scene_search(
                             "metadata_confidence": initial["confidence"],
                             "metadata_evidence": initial["metadata_evidence"][:320],
                             "temporal_evidence": initial["temporal_evidence"],
+                            "setting_evidence": initial["setting_evidence"],
                         })
                     if evaluate_rights(candidate.rights).status != "usable":
                         stats["rights_rejects"] += 1
