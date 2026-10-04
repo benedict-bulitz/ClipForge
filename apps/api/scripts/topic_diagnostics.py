@@ -251,18 +251,30 @@ def print_evaluation(report: dict) -> None:
         print(f"  {auto.get('message')} considered={auto.get('considered')}")
 
 
-def trace(text: str) -> list[dict]:
-    """Every persisted candidate whose question or topic contains ``text``: the full evidence chain."""
+def trace(text: str, settings=None) -> list[dict]:
+    """Every persisted candidate whose question or topic contains ``text``: the full evidence chain.
+
+    Rows are labelled CURRENT (in the latest pool, scored by the current version) or HISTORICAL
+    (an older pool or score version - not what the code does now); current rows come first.
+    """
     from clipforge.models import TopicCandidateRecord
 
     rows = []
     with SessionLocal() as db:
+        version = service.resolve_weights(settings or get_settings())[1]
+        latest = db.scalar(select(TopicDiscoveryRun).where(TopicDiscoveryRun.status.not_in(("failed", "running")))
+                           .order_by(TopicDiscoveryRun.sequence.desc()).limit(1))
+        current_ids = set(latest.ranked_candidate_ids or []) if latest is not None else set()
         for record in db.scalars(select(TopicCandidateRecord)).all():
             if text.casefold() not in f"{record.question} {record.topic}".casefold():
                 continue
             signals = record.signals or {}
             serialized = service.serialize_candidate(record)
+            current = record.candidate_id in current_ids and record.score_version == version
             rows.append({
+                "scope": "CURRENT POOL" if current else "HISTORICAL RECORD",
+                "run_id": record.run_id, "discovered_at": str(record.discovered_at), "current_score_version": version,
+                "excluded_evidence": (record.provenance or {}).get("excluded_evidence"),
                 "question": record.question, "topic": record.topic, "status": record.status, "final_score": record.final_score,
                 "score_version": record.score_version, "sightings": record.source_signals,
                 "outlier": signals.get("outlier"), "trend": signals.get("trend"), "demand": signals.get("demand"),
@@ -270,7 +282,7 @@ def trace(text: str) -> list[dict]:
                 "outlier_component": ((record.score_breakdown or {}).get("components") or {}).get("outlier"),
                 "signal_class": serialized["signal_class"], "reason": serialized["reason"],
             })
-    return rows
+    return sorted(rows, key=lambda row: (row["scope"] != "CURRENT POOL", row["discovered_at"]))
 
 
 def print_trace(rows: list[dict]) -> None:
@@ -280,9 +292,15 @@ def print_trace(rows: list[dict]) -> None:
         outlier = row.get("outlier") or {}
         evidence = outlier.get("evidence") or {}
         video = evidence.get("video") or {}
-        print(f"\n{row['question']}  [{row['status']}, {row['score_version']}, final {row['final_score']}]  topic={row['topic']!r}")
+        scope = row["scope"]
+        note = "" if scope == "CURRENT POOL" else f" - scored by {row['score_version']}, run {row['run_id']}; NOT current behaviour"
+        print(f"\n=== {scope}{note}")
+        print(f"{row['question']}  [{row['status']}, {row['score_version']}, final {row['final_score']}]  topic={row['topic']!r}")
         for item in row["sightings"] or []:
-            print(f"  sighting: {item.get('source'):26} {item.get('kind'):9} {item.get('title')!r} {item.get('metrics') or ''}")
+            used = "" if item.get("attributed", True) else "  [grouped only - NOT used as evidence]"
+            print(f"  sighting: {item.get('source'):26} {item.get('kind'):9} {item.get('title')!r} entity={item.get('entity')} {item.get('metrics') or ''}{used}")
+        if row.get("excluded_evidence"):
+            print(f"  excluded evidence (other entity): {row['excluded_evidence']}")
         if outlier.get("confidence") in (None, "unavailable"):
             no_video = f"none - no scored outlier ({evidence.get('reason')})"
         else:
@@ -318,7 +336,7 @@ def main() -> None:
     prepare_schema()
     settings = get_settings()
     if args.trace:
-        rows = trace(args.trace)
+        rows = trace(args.trace, settings)
         if args.json:
             print(json.dumps(rows, default=str, ensure_ascii=False, indent=2))
         else:

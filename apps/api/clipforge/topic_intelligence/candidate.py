@@ -12,6 +12,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Literal
 
+from .text import subject_equivalent
+
 Confidence = Literal["unavailable", "low", "medium", "high"]
 CONFIDENCE_ORDER: tuple[Confidence, ...] = ("unavailable", "low", "medium", "high")
 
@@ -114,6 +116,8 @@ class RawTopic:
     flags: set[str] = field(default_factory=set)
     # Editorial evergreen seed questions for this subject (``evergreen`` sightings only).
     seed_questions: tuple[str, ...] = ()
+    # Canonical identity where the source has one: the de.wikipedia article ("dewiki:honig").
+    entity: str | None = None
 
     def source_signal(self) -> dict[str, Any]:
         """Compact provenance of this sighting (no raw payload)."""
@@ -124,7 +128,20 @@ class RawTopic:
             "url": self.url,
             "observed_at": self.observed_at.isoformat(),
             "metrics": self.metrics,
+            **({"entity": self.entity} if self.entity else {}),
         }
+
+
+def same_entity(left: RawTopic, right: RawTopic) -> bool:
+    """Strict identity for EVIDENCE: the same canonical article, else a strictly equivalent subject title.
+
+    Two Wikipedia sightings are the same entity only when they are the same article (a pageview
+    spike belongs to its article); otherwise titles must be the same words or inflections of them -
+    containment never counts ("Honig" vs "Honigfrauen").
+    """
+    if left.entity and right.entity:
+        return left.entity == right.entity
+    return subject_equivalent(left.title, right.title)
 
 
 @dataclass
@@ -151,6 +168,29 @@ class TopicGroup:
     @property
     def newest(self) -> datetime:
         return max(item.observed_at for item in self.sightings)
+
+    @property
+    def anchor(self) -> RawTopic:
+        """The sighting that defines the subject: an editorial evergreen subject, else an article, else the first."""
+        order = {"evergreen": 0, "article": 1, "news": 2, "video": 2}
+        return min(self.sightings, key=lambda item: order[item.kind])
+
+    @property
+    def evidence_sightings(self) -> list[RawTopic]:
+        """Sightings allowed to supply trend / demand / outlier evidence: the anchor's own entity only.
+
+        Discovery may group loosely related sightings; evidence attribution is strict.
+        """
+        anchor = self.anchor
+        return [item for item in self.sightings if item is anchor or same_entity(anchor, item)]
+
+    @property
+    def excluded_evidence(self) -> list[dict[str, str]]:
+        anchor = self.anchor
+        return [
+            {"title": item.title[:120], "source": item.source, "reason": "different_entity" if item.entity and anchor.entity else "not_the_same_subject"}
+            for item in self.sightings if item is not anchor and not same_entity(anchor, item)
+        ]
 
     @property
     def seed_questions(self) -> tuple[str, ...]:

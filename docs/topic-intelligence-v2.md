@@ -570,3 +570,54 @@ PYTHONPATH=. ../../.venv/bin/python scripts/topic_diagnostics.py --trace "Mikrow
 
 Compare the new top 3 with the old one; check `stopped_by`, `evaluated_sources`,
 `shortlist.deferred_duplicates`, and that outliers now name a video on the same subject.
+
+---
+
+## Part 5 — Entity evidence collision (Honig ← Honigfrauen)
+
+Real Mac (`ba863de`): "Warum wird Honig praktisch nie schlecht?" (topic "Honig") carried the
+pageview spike of the article **Honigfrauen** (7,124 vs 50 views/day, ratio 142.48 → trend 1.0,
+high) and was labelled `EVERGREEN_WITH_CURRENT_INTEREST`.
+
+### 5.1 Exact merge
+
+1. Discovery: the Wikipedia top list contained "Honigfrauen" (`WikipediaPageviewsSource`,
+   kind `article`, its own 30-day history → `wikipedia_trend` ratio 142.48); the evergreen catalog
+   offered subject "Honig" (wiki "Honig").
+2. Normalization: `equivalence_tokens("Honig") = ["honig"]`, `equivalence_tokens("Honigfrauen") =
+   ["honigfrau"]` (stem). Keys differ (`honig` / `honigfrau`).
+3. Merge: `service.group_topics` → `same_subject(item.title, topic.title)` →
+   `question_equivalence(...) >= 0.72`. `token_match("honig", "honigfrau")` returns **0.8**
+   because the shorter token (≥ 4 letters) is contained in the longer one — the German-compound
+   rule meant for question similarity. One token per side ⇒ Dice (0.8 + 0.8) / 2 = **0.8 ≥ 0.72**
+   → merged.
+4. Evidence: `build_candidate` took trend/demand/outlier from **every** sighting of the group;
+   `merge_trend` picked the strongest (Honigfrauen's 1.0; Honig's own history was missing or flat).
+   So yes — compound handling via substring containment caused it.
+
+The same rule merged `Mars`/`Marsriegel`, `Sonne`/`Sonnencreme`; the normalized-key rule (which
+drops two-letter words) merged `Apple`/`Apple TV+`; bracket stripping equated `Schwarzes Loch` with
+`Schwarzes Loch (Film)` — while the legitimate `Schwarzes Loch`/`Schwarze Löcher` failed (0.67).
+
+### 5.2 Fix
+
+* **Strict subject identity** (`text.subject_equivalent`, `text.same_word`): same word or a
+  genuine inflection (`-e/-n/-en/-s/-es`; `-er` only with an umlaut change, or on nouns ≥ 8 letters
+  such as Polarlicht → Polarlichter), umlaut-aware; **no containment**; two-letter words kept;
+  titles of ≤ 2 words must match word for word, longer titles need strict Dice ≥ 0.72.
+* **Canonical Wikipedia identity**: every Wikipedia and evergreen sighting carries
+  `entity = "dewiki:<article>"` (underscores/case normalized). Two sightings with an entity are the
+  same subject **only** if it is the same article. The evergreen subject's evidence is the pageview
+  history of its own `wiki` article.
+* **Discovery vs evidence**: grouping (`service.same_subject`) may still pair long paraphrased
+  headlines; **evidence** comes only from `TopicGroup.evidence_sightings` — the anchor (evergreen
+  subject > article > first) and sightings of the *same entity*. Every sighting stays in
+  `source_signals` with `attributed: true|false`; excluded ones are listed in
+  `provenance.excluded_evidence`. The curator also only sees the subject's own sightings.
+* Readable why-now: "gerade rund 3× so viele Wikipedia-Aufrufe zum Thema wie üblich",
+  "deutlich mehr … als üblich" (≥ 10×), never "142.48-fachen".
+* `--trace` labels every row **CURRENT POOL** (latest pool, current score version) or
+  **HISTORICAL RECORD** (older pool/version — not current behaviour), current first, and marks
+  grouped-but-not-attributed sightings.
+
+Tests: `tests/test_topic_intelligence_v2_entity_evidence.py` (26).

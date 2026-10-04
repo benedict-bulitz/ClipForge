@@ -210,7 +210,7 @@ def curated_signal(judgement: dict[str, Any], *, status: str) -> Signal:
 def evidence(group: TopicGroup) -> list[dict[str, str]]:
     return [
         {"source": item.source, "kind": item.kind, "title": compact(item.title, 180), "text": compact(item.description, 320)}
-        for item in group.sightings[:3]
+        for item in group.evidence_sightings[:3]  # the subject's own sightings, not loosely related ones
     ]
 
 

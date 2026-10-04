@@ -37,7 +37,16 @@ from .signals import (
     wikipedia_demand,
     wikipedia_trend,
 )
-from .text import classify_niche, clean_title, compact, content_tokens, fold, similarity, topic_key
+from .text import (
+    canonical_article,
+    classify_niche,
+    clean_title,
+    compact,
+    content_tokens,
+    fold,
+    similarity,
+    topic_key,
+)
 
 USER_AGENT = "ClipForge/0.2 (topic-intelligence; local desktop app)"
 HTTP_TIMEOUT = 8.0
@@ -284,6 +293,7 @@ class WikipediaPageviewsSource:
                 observed_at=observed_at,
                 description=compact(description, 400),
                 url=f"https://de.wikipedia.org/wiki/{quote(title.replace(' ', '_'))}",
+                entity=canonical_article(title),
                 trend=trend,
                 demand=demand,
                 metrics={"views_day": item.get("views"), "rank": item.get("rank"), **{k: v for k, v in trend.evidence.items() if k in {"ratio", "baseline_days"}}},

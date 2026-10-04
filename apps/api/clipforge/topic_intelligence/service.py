@@ -92,6 +92,7 @@ from .text import (
     question_mechanism,
     short_shape_flags,
     similarity,
+    subject_equivalent,
     topic_key,
     topic_obscurity_flags,
 )
@@ -249,26 +250,30 @@ def _collect(ctx: DiscoveryContext, sources: list[TopicSource]) -> tuple[list[Ra
     return topics, reports
 
 
-def same_subject(left: str, right: str) -> bool:
-    """Two source titles name the same subject: same key, or equivalent once qualifiers are dropped.
+def same_subject(left: RawTopic, right: RawTopic) -> bool:
+    """DISCOVERY grouping: do two sightings belong in one topic group?
 
-    V2 (real Mac): the overlap coefficient merged ANY chart video containing "Code" into the
-    evergreen "QR-Code" subject (one shared token = 1.0), so a merely lexically related video
-    lent its chart rank and channel outlier to a question it was not about.  Equivalence needs
-    both titles to share their concepts ("Mars" ~ "Mars (Planet)", not "Mikrowelle" ~ "Alufolie
-    in der Mikrowelle").
+    * both carry a canonical identity (Wikipedia article): only the same article;
+    * otherwise strictly equivalent subject titles (same words or inflections - never one word
+      contained in a longer compound: "Honig" != "Honigfrauen");
+    * long titles (headlines, questions) may also group as paraphrases of one question.
+    Grouping is NOT evidence attribution: only ``TopicGroup.evidence_sightings`` (the anchor's own
+    entity) may supply trend, demand or outlier evidence.
     """
-    if topic_key(left) == topic_key(right):
-        return True
-    return question_equivalence(left.split("(")[0], right.split("(")[0]) >= history_module.DUPLICATE_THRESHOLD
+    if left.entity and right.entity:
+        return left.entity == right.entity
+    if subject_equivalent(left.title, right.title):
+        return True  # (not the normalized key: it drops two-letter words, so "Apple" == "Apple TV+")
+    long_titles = min(len(content_tokens(left.title)), len(content_tokens(right.title))) >= 3
+    return long_titles and question_equivalence(left.title, right.title) >= history_module.DUPLICATE_THRESHOLD
 
 
 def group_topics(topics: list[RawTopic]) -> list[TopicGroup]:
-    """Merge sightings of the same subject (exact key, then subject equivalence of the titles)."""
+    """Merge sightings of the same subject (see ``same_subject``)."""
     groups: list[TopicGroup] = []
     for topic in topics:
         for group in groups:
-            if group.key == topic.key or any(same_subject(item.title, topic.title) for item in group.sightings):
+            if any(same_subject(item, topic) for item in group.sightings):
                 group.sightings.append(topic)
                 break
         else:
@@ -277,8 +282,8 @@ def group_topics(topics: list[RawTopic]) -> list[TopicGroup]:
 
 
 def _preliminary(group: TopicGroup) -> float:
-    trend = merge_trend([item.trend for item in group.sightings if item.trend is not None])
-    outliers = [item.outlier.value or 0.0 for item in group.sightings if item.outlier is not None and item.outlier.available]
+    trend = merge_trend([item.trend for item in group.evidence_sightings if item.trend is not None])
+    outliers = [item.outlier.value or 0.0 for item in group.evidence_sightings if item.outlier is not None and item.outlier.available]
     # Titles that already carry a question are cheap and likely to transform: try them earlier.
     question_like = any(extract_question(item.title)[0] for item in group.sightings)
     return round((trend.value or 0.0) + 0.5 * (max(outliers) if outliers else 0.0) + 0.1 * len(group.sources) + (0.3 if question_like else 0.0), 4)
@@ -286,9 +291,9 @@ def _preliminary(group: TopicGroup) -> float:
 
 def _curation_priority(group: TopicGroup, history: list[history_module.HistoryItem], now: datetime) -> tuple[float, dict[str, Any]]:
     """Which raw topics deserve the bounded AI curation first - cheap evidence only (see ``scoring``)."""
-    trend = merge_trend([item.trend for item in group.sightings if item.trend is not None])
-    demand = merge_demand([item.demand for item in group.sightings])
-    outliers = [item.outlier.value or 0.0 for item in group.sightings if item.outlier is not None and item.outlier.available]
+    trend = merge_trend([item.trend for item in group.evidence_sightings if item.trend is not None])
+    demand = merge_demand([item.demand for item in group.evidence_sightings])
+    outliers = [item.outlier.value or 0.0 for item in group.evidence_sightings if item.outlier is not None and item.outlier.available]
     description = group.description()
     niche, _strength = classify_niche(group.title, description)
     question = evergreen_seed(group, _seen_before(history, group, niche, now)) if group.evergreen else None
@@ -426,9 +431,9 @@ def representative_order(
 
 
 def _best_outlier(group: TopicGroup) -> Signal:
-    available = [item.outlier for item in group.sightings if item.outlier is not None and item.outlier.available]
+    available = [item.outlier for item in group.evidence_sightings if item.outlier is not None and item.outlier.available]
     if not available:
-        reasons = [item.outlier.evidence.get("reason") for item in group.sightings if item.outlier is not None]
+        reasons = [item.outlier.evidence.get("reason") for item in group.evidence_sightings if item.outlier is not None]
         return Signal.unavailable(next((reason for reason in reasons if reason), "no_video_evidence"))
     return max(available, key=lambda signal: (signal.value or 0.0, signal.evidence.get("sample_size") or 0))
 
@@ -498,7 +503,8 @@ def build_candidate(
     if research_value is not None and has_article:
         research_value = max(research_value, 0.8)
     signals = {
-        "trend": merge_trend([item.trend for item in group.sightings if item.trend is not None]),
+        # Evidence only from sightings of the SAME entity (strict attribution, see TopicGroup.evidence_sightings).
+        "trend": merge_trend([item.trend for item in group.evidence_sightings if item.trend is not None]),
         "outlier": _best_outlier(group),
         "competition": Signal.unavailable("not_probed"),
         "novelty": history_module.novelty_signal(question or group.title, group.title, niche, history, now=now),
@@ -511,7 +517,7 @@ def build_candidate(
         "own_performance": own_priors.get(niche, own_default),
         "semantic": transformed.semantic or semantic.pending(),
         # V2 evidence: sustained interest level (never raw views); opportunity needs a search probe.
-        "demand": merge_demand([item.demand for item in group.sightings]),
+        "demand": merge_demand([item.demand for item in group.evidence_sightings]),
         "opportunity": Signal.unavailable("not_probed"),
     }
     features, feature_evidence = quality_signals(
@@ -529,7 +535,8 @@ def build_candidate(
         topic=group.title,
         question=question,
         rationale="",
-        source_signals=[item.source_signal() for item in group.sightings],
+        # Every sighting stays visible (discovery); ``attributed`` says whether it may count as evidence.
+        source_signals=[{**item.source_signal(), "attributed": any(item is other for other in group.evidence_sightings)} for item in group.sightings],
         discovered_at=now,
         language="de",
         region="DE",
@@ -550,6 +557,8 @@ def build_candidate(
             "topic_family": topic_family(subject),
             "aspect": str(sem_evidence.get("aspect") or ""),
             "alternatives": [seed for seed in group.seed_questions if seed != question][:4],
+            # Grouped (discovery) but NOT allowed to supply evidence: another entity.
+            "excluded_evidence": group.excluded_evidence[:5],
             **feature_evidence,
         },
     )
@@ -614,9 +623,22 @@ MECHANISM_REASONS = {
 }
 
 
+def times(ratio: Any, what: str, usual: str) -> str:
+    """Readable multiple for the UI, no decimals: "rund 3× so viele X wie üblich" / "deutlich mehr X als üblich"."""
+    value = float(ratio)
+    if value >= 10:
+        return f"deutlich mehr {what} als {usual}"
+    if value >= 1.5:
+        return f"rund {round(value)}× so viele {what} wie {usual}"
+    return f"etwas mehr {what} als {usual}"
+
+
 def _chart_clause(question: str, source_signals: list[dict[str, Any]]) -> str | None:
     """What the chart evidence literally shows: this very question, or a named video on the same subject."""
-    charts = [str(item.get("title") or "") for item in source_signals if item.get("source") == "youtube_trending_de" and item.get("title")]
+    charts = [
+        str(item.get("title") or "") for item in source_signals
+        if item.get("source") == "youtube_trending_de" and item.get("title") and item.get("attributed", True)
+    ]
     if not charts:
         return None
     title = max(charts, key=lambda text: question_equivalence(question, text))
@@ -654,13 +676,13 @@ def user_reason(
     outlier = (signals.get("outlier") or {}).get("evidence") or {}
     chart = _chart_clause(question, source_signals or []) if trend.get("method") == "youtube_most_popular_de" else None
     if signal_class in {"TRENDING", "EMERGING", "EVERGREEN_WITH_CURRENT_INTEREST"} and trend.get("ratio"):
-        parts.append(f"die Wikipedia-Aufrufe zum Thema liegen gerade beim {trend['ratio']}-fachen des Normalniveaus")
+        parts.append(f"gerade {times(trend['ratio'], 'Wikipedia-Aufrufe zum Thema', 'üblich')}")
     elif signal_class in {"TRENDING", "EMERGING", "EVERGREEN_WITH_CURRENT_INTEREST"} and chart:
         parts.append(chart)
     elif signal_class in {"TIMELY", "EVERGREEN_WITH_CURRENT_INTEREST"} and trend.get("outlets"):
         parts.append(f"aktuell in {trend['outlets']} deutschen Medien")
     elif outlier.get("ratio") and float(outlier["ratio"]) >= 2 and (outlier.get("video") or {}).get("title"):
-        parts.append(f"das Video „{compact(outlier['video']['title'], 60)}“ zum Thema läuft {outlier['ratio']}-mal besser als sonst auf seinem Kanal")
+        parts.append(f"das Video „{compact(outlier['video']['title'], 60)}“ zum Thema hat {times(outlier['ratio'], 'Aufrufe', 'sonst auf seinem Kanal')}")
     elif demand.get("median_views_per_day") and signal_class in {"EVERGREEN", "EVERGREEN_WITH_CURRENT_INTEREST"}:
         parts.append(f"dauerhaft gefragt (~{int(demand['median_views_per_day']):,} Wikipedia-Aufrufe pro Tag)".replace(",", "."))
     elif signal_class == "EVERGREEN":

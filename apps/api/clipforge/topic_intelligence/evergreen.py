@@ -35,7 +35,7 @@ from .sources import (
     SourceResult,
     default_http_get,
 )
-from .text import topic_key
+from .text import canonical_article, topic_key
 
 SOURCE_NAME = "editorial_evergreen"
 CATALOG_VERSION = "evergreen-catalog-v1"
@@ -297,6 +297,8 @@ class EvergreenCatalogSource:
                     **({"ratio": momentum.evidence.get("ratio")} if momentum is not None and momentum.available else {}),
                 },
                 seed_questions=subject.questions,
+                # Its pageview evidence is the article's own - never a similarly named one.
+                entity=canonical_article(subject.wiki),
             ))
         return topics
 

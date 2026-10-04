@@ -626,3 +626,65 @@ def question_equivalence(left: str, right: str) -> float:
     forward = sum(max(token_match(token, other) for other in b) for token in a)
     backward = sum(max(token_match(token, other) for other in a) for token in b)
     return round((forward + backward) / (len(a) + len(b)), 4)
+
+
+# ---------------------------------------------------------------------------
+# Strict subject identity (V2 calibration: "Honig" took the 142x pageview spike of
+# "Honigfrauen").  ``token_match`` above scores a shorter token contained in a longer one
+# as a compound (0.8) - right for "is this question about the same thing?", wrong for
+# "is this the same entity?".  Subject identity allows only the same word or a genuine
+# inflection of it, never containment.
+# ---------------------------------------------------------------------------
+
+# Inflection endings (plural / case / adjective); "-er" only with an umlaut change (Loch -> Löcher)
+# or on a long noun, so a derivation like "Berlin" -> "Berliner" is not the same word.
+_INFLECTIONS = ("es", "en", "e", "n", "s", "er")
+# An "-er" plural without umlaut is accepted only for long nouns ("Polarlicht"/"Polarlichter").
+ER_PLURAL_MIN_LENGTH = 8
+_UMLAUT_BASE = str.maketrans({"ä": "a", "ö": "o", "ü": "u"})
+
+
+def _subject_words(text: str) -> list[str]:
+    """Lowercased words of a subject title (two-letter acronyms like "QR" kept, stop words dropped)."""
+    value = unicodedata.normalize("NFKC", str(text or "")).casefold().replace("ß", "ss")
+    words = [word for word in re.findall(r"[a-z0-9äöü]+", value) if len(word) >= 2]
+    return [word for word in words if fold(word) not in STOP_WORDS]
+
+
+def same_word(left: str, right: str) -> bool:
+    """The same word or an inflection of it ("Mikrowelle"/"Mikrowellen", "Loch"/"Löcher") - never a compound."""
+    if left == right:
+        return True
+    shorter, longer = sorted((left, right), key=len)
+    for ending in _INFLECTIONS:
+        if not longer.endswith(ending):
+            continue
+        stem = longer[: -len(ending)]
+        umlaut_changed = stem != stem.translate(_UMLAUT_BASE)
+        if ending == "er" and not umlaut_changed and len(shorter) < ER_PLURAL_MIN_LENGTH:
+            continue  # "Berlin"/"Berliner", "Kind"/"Kinder": too short to tell a plural from a derivation
+        if stem == shorter or stem.translate(_UMLAUT_BASE) == shorter.translate(_UMLAUT_BASE):
+            return True
+    return False
+
+
+def subject_equivalent(left: str, right: str) -> bool:
+    """Two titles name the same subject: every word matches (short titles) or strict Dice >= 0.72 (headlines).
+
+    "Honig" != "Honigfrauen", "Mars" != "Marsriegel", "Schwarzes Loch" != "Schwarzes Loch (Film)";
+    "QR-Code" == "QR Code", "Mikrowelle" == "Mikrowellen", "Schwarzes Loch" == "Schwarze Löcher".
+    """
+    a, b = _subject_words(left), _subject_words(right)
+    if not a or not b:
+        return False
+    if min(len(a), len(b)) <= 2:
+        return len(a) == len(b) and all(any(same_word(x, y) for y in b) for x in a) and all(any(same_word(y, x) for x in a) for y in b)
+    matched = sum(1 for x in a if any(same_word(x, y) for y in b)) + sum(1 for y in b if any(same_word(y, x) for x in a))
+    return matched / (len(a) + len(b)) >= 0.72
+
+
+def canonical_article(title: str | None) -> str | None:
+    """Canonical de.wikipedia article identity: spaces for underscores, trimmed, case-insensitive."""
+    if not title:
+        return None
+    return "dewiki:" + " ".join(unicodedata.normalize("NFKC", str(title)).replace("_", " ").split()).casefold()
