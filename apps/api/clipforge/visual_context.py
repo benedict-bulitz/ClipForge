@@ -5,6 +5,8 @@ Exclusions, research citations and unrelated story units are not visual intent.
 from __future__ import annotations
 
 import re
+from functools import lru_cache
+from importlib.resources import files
 from typing import Any
 
 POSITIVE_INTENT_FIELDS = (
@@ -53,6 +55,38 @@ def historical_requirement(scene: dict, state: dict | None) -> dict:
     return {"required": bool(years or words & HISTORICAL_WORDS), "years": years}
 
 
+# Geographic evidence, not a topic blacklist or a provider authenticity rule.
+# Country names come from the public-domain ISO table shipped by the existing
+# tzdata dependency. US state names cover captions that omit their country.
+_US_STATES = [
+    "Alabama", "Alaska", "Arizona", "Arkansas", "California", "Colorado", "Connecticut",
+    "Delaware", "Florida", "Georgia", "Hawaii", "Idaho", "Illinois", "Indiana", "Iowa",
+    "Kansas", "Kentucky", "Louisiana", "Maine", "Maryland", "Massachusetts", "Michigan",
+    "Minnesota", "Mississippi", "Missouri", "Montana", "Nebraska", "Nevada", "New Hampshire",
+    "New Jersey", "New Mexico", "New York", "North Carolina", "North Dakota", "Ohio",
+    "Oklahoma", "Oregon", "Pennsylvania", "Rhode Island", "South Carolina", "South Dakota",
+    "Tennessee", "Texas", "Utah", "Vermont", "Virginia", "Washington", "West Virginia",
+    "Wisconsin", "Wyoming",
+]
+
+
+@lru_cache(maxsize=1)
+def _earth_landscape_location_pattern() -> str:
+    countries = [
+        line.split("\t", 1)[1].strip()
+        for line in files("tzdata").joinpath("zoneinfo", "iso3166.tab").read_text().splitlines()
+        if line and not line.startswith("#")
+    ]
+    regions = "|".join(re.escape(name) for name in sorted(set(countries + _US_STATES), key=len, reverse=True))
+    # A place must locate the depicted environment. Credits such as 'Mars
+    # landscape processed by a laboratory in California' are not that claim.
+    return (
+        r"\b(?:landscape|desert|terrain|canyon|mountains?|valley|beach|coast|forest|"
+        r"landschaft|wüste|gebirge|tal)\s+(?:in|near|at|of|bei|nahe|aus|von)\s+"
+        r"(?:[\w'-]+[ ,]+){0,4}(?:" + regions + r")\b"
+    )
+
+
 def planetary_setting_evidence(scene: dict, state: dict | None, metadata: str) -> dict:
     """A topical label cannot override a caption's contradictory setting.
 
@@ -95,6 +129,10 @@ def planetary_setting_evidence(scene: dict, state: dict | None, metadata: str) -
         patterns = {
             "staged_representation": r"\b(?:cosplay|costume|themed|reenactment|re[- ]enactment|replica|merchandise|souvenir|simulation|simulator|hitchhik\w*)\b",
             "terrestrial_surroundings": r"\b(?:roadside|highway|asphalt|paved road|grass|grassland|meadow|shopping street)\b",
+            "earth_geography": _earth_landscape_location_pattern(),
+            # Explicit terrestrial descriptions are contradictions. Blue sky
+            # or clouds alone are not: real planetary imagery may contain them.
+            "terrestrial_sky": r"\b(?:earth(?:[- ]like)?|terrestrial|irdisch(?:er|en|e)?)\s+(?:\w+\s+){0,2}(?:sky|clouds?|himmel|wolken)\b",
             "lookalike_setting": r"\bpretending\b|\b(?:resembling|look(?:s|ing)? like|analogue|analog)\s+(?:\w+\s+){0,3}(?:" + "|".join(sorted(named | {"planet", "planetary"})) + r")\b",
             "held_prop": r"\b(?:cardboard sign|holding (?:a |the )?sign)\b",
         }
