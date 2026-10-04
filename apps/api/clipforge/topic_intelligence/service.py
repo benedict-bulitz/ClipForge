@@ -35,6 +35,8 @@ from . import history as history_module
 from . import runtime, scoring, semantic
 from .cache import CallMeter, prune_expired
 from .candidate import RawTopic, Signal, TopicCandidate, TopicGroup, candidate_id_for
+from .evergreen import EvergreenCatalogSource
+from .evidence import CandidateEvidenceProvider, apply_evidence
 from .scoring import (
     RankedItem,
     curation_priority,
@@ -52,8 +54,14 @@ from .signals import (
     broad_appeal,
     channel_fit,
     competition_estimate,
+    curiosity,
+    knowledge_value,
+    merge_demand,
     merge_trend,
+    opportunity,
+    payoff,
     question_form,
+    related_video_demand,
     short_worthiness,
     suitability,
 )
@@ -75,8 +83,10 @@ from .text import (
     content_tokens,
     de_shout,
     extract_question,
+    fold,
     has_universal_subject,
     prior_knowledge_flags,
+    question_equivalence,
     question_flags,
     question_mechanism,
     short_shape_flags,
@@ -90,9 +100,16 @@ from .transform import (
     Transformed,
     curated_transform,
     deterministic_transform,
+    evergreen_seed,
 )
 
 SKIP_MEMORY = timedelta(hours=24)
+# A used question never returns (candidate id + novelty); its SUBJECT may return with a
+# different question after this cool-down - one video must not block a whole domain.
+USED_TOPIC_COOLDOWN = timedelta(days=21)
+# Curation work order: at most this share of one curator batch may be evergreen while live
+# (trend/news/YouTube) topics are still waiting - and vice versa (quality order otherwise).
+SOURCE_MIX_SHARE = 0.6
 RETENTION = timedelta(days=14)
 PREFILTER_FLAGS = frozenset({"person", "tragedy", "disambiguation"})
 # Obvious garbage never reaches the curator (calendar pages have no story of their own).
@@ -118,6 +135,11 @@ EVALUATION_BUDGET = 60
 # All AI requests of one pool (combined curation), shared with its broadening pass - including
 # the one retry of a failed batch.  Each request carries ``topic_curator_batch_size`` topics.
 AI_REQUEST_BUDGET = 3
+# A widening pass (once per pool) always gets at least this much, even when the first pass
+# spent the pool's budget: the next evergreen window and the next raw topics.  Bounded total
+# per pool chain: AI_REQUEST_BUDGET + WIDEN_AI_REQUESTS requests, EVALUATION_BUDGET + WIDEN_EVALUATIONS topics.
+WIDEN_AI_REQUESTS = 1
+WIDEN_EVALUATIONS = 20
 SEMANTIC_REPORT = "semantic_validation"
 # Last startup warm-up (idle | running | done | failed), for diagnostics.
 WARMUP: dict[str, Any] = {"state": "idle", "started_at": None, "finished_at": None, "result": None, "error": None}
@@ -156,6 +178,8 @@ class DiscoveryDeps:
     sources: list[TopicSource]
     probe: YouTubeCompetitionProbe
     extra_reports: list[SourceReport] = field(default_factory=list)
+    # Future analytics evidence (see ``evidence.py``); empty in cold start.
+    evidence_providers: list[CandidateEvidenceProvider] = field(default_factory=list)
 
 
 def default_deps(db: Session, settings: Settings, store: SecretStore, provider: YouTubeProvider) -> DiscoveryDeps:
@@ -171,6 +195,8 @@ def default_deps(db: Session, settings: Settings, store: SecretStore, provider: 
             WikipediaPageviewsSource(),
             YouTubeTrendingSource(youtube_provider, token),
             BraveNewsSource(settings.brave_search_api_key),
+            # V2: evergreen subjects - works without any key, evidence from Wikipedia pageviews.
+            EvergreenCatalogSource(),
         ],
         probe=YouTubeCompetitionProbe(youtube_provider, token),
     )
@@ -234,14 +260,17 @@ def _preliminary(group: TopicGroup) -> float:
 def _curation_priority(group: TopicGroup, history: list[history_module.HistoryItem], now: datetime) -> tuple[float, dict[str, Any]]:
     """Which raw topics deserve the bounded AI curation first - cheap evidence only (see ``scoring``)."""
     trend = merge_trend([item.trend for item in group.sightings if item.trend is not None])
+    demand = merge_demand([item.demand for item in group.sightings])
     outliers = [item.outlier.value or 0.0 for item in group.sightings if item.outlier is not None and item.outlier.available]
     description = group.description()
     niche, _strength = classify_niche(group.title, description)
-    question = next((q for q in (extract_question(item.title)[0] for item in group.sightings) if q), None)
+    question = evergreen_seed(group, _seen_before(history, group, niche, now)) if group.evergreen else None
+    question = question or next((q for q in (extract_question(item.title)[0] for item in group.sightings) if q), None)
     novelty = history_module.novelty_signal(question or group.title, group.title, niche, history, now=now)
     text = question or group.title
     features = {
-        "demand": (trend.value or 0.0) + 0.5 * (max(outliers) if outliers else 0.0),
+        # Evidence only: momentum, sustained demand level, channel-relative outliers (never raw views).
+        "demand": max(trend.value or 0.0, demand.value or 0.0) + 0.5 * (max(outliers) if outliers else 0.0),
         # A statement can still become a question - the curator decides; it just starts lower.
         "question_strength": LOCAL_SHORT_BASE.get(question_mechanism(question), 0.45) if question else 0.45,
         "universal": 1.0 if has_universal_subject(text) else 0.5,
@@ -258,7 +287,42 @@ def _curation_priority(group: TopicGroup, history: list[history_module.HistoryIt
         "duplicate_of_previous_topic": history_module.is_duplicate(novelty),
     }
     value, applied = curation_priority(features, penalties)
-    return value, {"features": {name: round(float(v), 3) for name, v in features.items()}, "penalties": applied, "niche": niche}
+    return value, {"features": {name: round(float(v), 3) for name, v in features.items()}, "penalties": applied, "niche": niche,
+                   "origin": "evergreen" if group.evergreen else "live"}
+
+
+def _seen_before(history: list[history_module.HistoryItem], group: TopicGroup, niche: str, now: datetime) -> Any:
+    """Predicate: this question repeats something ClipForge already made (novelty duplicate)."""
+    def seen(question: str) -> bool:
+        return history_module.is_duplicate(history_module.novelty_signal(question, group.title, niche, history, now=now))
+    return seen
+
+
+def mix_sources(groups: list[TopicGroup], batch: int) -> list[TopicGroup]:
+    """Keep the given (priority) order, but no curator batch is all-evergreen or all-live while both exist.
+
+    Evergreen subjects are reliable but should not crowd out a strong fresh topic,
+    and a flood of weak trend items must not crowd out strong evergreen ones.
+    """
+    evergreen = [group for group in groups if group.evergreen]
+    live = [group for group in groups if not group.evergreen]
+    cap = max(1, round(batch * SOURCE_MIX_SHARE))
+    position = {id(group): index for index, group in enumerate(groups)}
+    result: list[TopicGroup] = []
+    window: Counter[bool] = Counter()
+    while evergreen or live:
+        if len(result) % batch == 0:
+            window.clear()
+        heads = [queue for queue in (evergreen, live) if queue]
+        # The earlier one in priority order, unless its class already filled its share of this batch.
+        heads.sort(key=lambda queue: position[id(queue[0])])
+        pick = heads[0]
+        if len(heads) == 2 and window[pick is evergreen] >= cap:
+            pick = heads[1]
+        group = pick.pop(0)
+        window[pick is evergreen] += 1
+        result.append(group)
+    return result
 
 
 def _best_outlier(group: TopicGroup) -> Signal:
@@ -329,7 +393,7 @@ def build_candidate(
     assessment = transformed.assessment
     method = transformed.method
     confidence = transformed.assessment_confidence
-    has_article = any(item.kind == "article" for item in group.sightings)
+    has_article = any(item.kind in {"article", "evergreen"} for item in group.sightings)
     research_value = assessment.get("researchability")
     if research_value is not None and has_article:
         research_value = max(research_value, 0.8)
@@ -346,11 +410,20 @@ def build_candidate(
         ),
         "own_performance": own_priors.get(niche, own_default),
         "semantic": transformed.semantic or semantic.pending(),
+        # V2 evidence: sustained interest level (never raw views); opportunity needs a search probe.
+        "demand": merge_demand([item.demand for item in group.sightings]),
+        "opportunity": Signal.unavailable("not_probed"),
     }
     features, feature_evidence = quality_signals(
         question, group.title, group.description(), niche, assessment, method, transformed.notes, signals["semantic"],
     )
     signals.update(features)
+    mechanism = str(feature_evidence["mechanism"])
+    signals["curiosity"] = curiosity(mechanism, signals["semantic"])
+    signals["payoff"] = payoff(mechanism, signals["semantic"])
+    signals["knowledge_value"] = knowledge_value(signals["semantic"], has_article=has_article)
+    sem_evidence = signals["semantic"].evidence if signals["semantic"].available else {}
+    subject = str(sem_evidence.get("subject") or "") or group.title
     return TopicCandidate(
         candidate_id=candidate_id_for(topic_key(question) if question else f"raw:{group.key}"),
         topic=group.title,
@@ -371,9 +444,30 @@ def build_candidate(
             "flags": transformed.flags,
             "question_issues": transformed.issues,
             "run_id": run_id,
+            # V2: topic != question.  The subject (family) groups related questions for diversity;
+            # subject + aspect identify "the same video" for semantic dedupe.
+            "origin": "evergreen" if group.evergreen else "live",
+            "topic_family": topic_family(subject),
+            "aspect": str(sem_evidence.get("aspect") or ""),
+            "alternatives": [seed for seed in group.seed_questions if seed != question][:4],
             **feature_evidence,
         },
     )
+
+
+def topic_family(subject: str) -> str:
+    """Normalized subject key ("Mars (Planet)" / "der Mars" -> "mars")."""
+    tokens = content_tokens(subject.split("(")[0]) or [fold(subject).strip()]
+    return " ".join(sorted(tokens))[:60]
+
+
+def same_video(left: TopicCandidateRecord | TopicCandidate, right: TopicCandidateRecord | TopicCandidate) -> float:
+    """How strongly two candidates are the same video: question equivalence, or the curator's subject + aspect."""
+    score = question_equivalence(left.question, right.question)
+    a, b = left.provenance or {}, right.provenance or {}
+    if a.get("aspect") and b.get("aspect") and a.get("topic_family") and a.get("topic_family") == b.get("topic_family"):
+        score = max(score, question_equivalence(str(a["aspect"]), str(b["aspect"])))
+    return score
 
 
 def rationale_for(candidate: TopicCandidate) -> str:
@@ -397,6 +491,65 @@ def rationale_for(candidate: TopicCandidate) -> str:
     return f"{text} Angle: {angle}" if angle else text
 
 
+def selection_reason(candidate: TopicCandidate) -> str:
+    """Why this candidate sits where it does (diagnostics: "why did this question win?")."""
+    if candidate.rejected:
+        return "rejected: " + ", ".join(candidate.rejection_reasons[:4])
+    components = candidate.score_breakdown.get("components") or {}
+    top = sorted(
+        ((name, float(item.get("contribution") or 0.0)) for name, item in components.items() if float(item.get("weight") or 0) > 0),
+        key=lambda entry: -entry[1],
+    )[:3]
+    signal_class = candidate.score_breakdown.get("signal_class") or "no time signal"
+    return (f"score {candidate.final_score:.3f} ({candidate.confidence} confidence, -{candidate.score_breakdown.get('confidence_penalty', 0)}); "
+            f"{signal_class}; strongest: " + ", ".join(f"{name} {value:.3f}" for name, value in top))
+
+
+MECHANISM_REASONS = {
+    "paradox": "Frage mit eingebautem Widerspruch, der nach einer Auflösung verlangt",
+    "what_if": "Gedankenexperiment mit einer konkreten Antwort",
+    "why": "Fragt nach der Ursache eines bekannten Phänomens",
+    "how": "Erklärt einen Mechanismus, der sich gut zeigen lässt",
+    "yes_no": "Prüft eine verbreitete Annahme",
+}
+
+
+def user_reason(breakdown: dict[str, Any], signals: dict[str, Any], signal_class: str | None) -> str:
+    """One or two short German clauses for the UI ("Warum das funktionieren könnte") - no scores."""
+    def value(name: str) -> float | None:
+        item = signals.get(name) or {}
+        return None if item.get("confidence") == "unavailable" else item.get("value")
+
+    parts: list[str] = []
+    curious, answer = value("curiosity"), value("payoff")
+    judged = (signals.get("payoff") or {}).get("confidence") not in {None, "low", "unavailable"}  # a real judgement, not the form
+    if judged and curious is not None and answer is not None and curious >= 0.75 and answer >= 0.75:
+        parts.append("Starke Neugier-Frage mit konkreter, überraschender Antwort")
+    elif judged and answer is not None and answer >= 0.7:
+        parts.append("Klare Frage mit konkreter Antwort, gut in einem Short erklärbar")
+    else:
+        # Without a curator judgement only the question's form is known - say what that form offers.
+        mechanism = ((signals.get("curiosity") or {}).get("evidence") or {}).get("mechanism")
+        parts.append(MECHANISM_REASONS.get(str(mechanism), "Verständliche Wissensfrage"))
+    trend = (signals.get("trend") or {}).get("evidence") or {}
+    demand = (signals.get("demand") or {}).get("evidence") or {}
+    outlier = (signals.get("outlier") or {}).get("evidence") or {}
+    if signal_class in {"TRENDING", "EMERGING", "EVERGREEN_WITH_CURRENT_INTEREST"} and trend.get("ratio"):
+        parts.append(f"das Interesse liegt gerade beim {trend['ratio']}-fachen des Normalniveaus (Wikipedia)")
+    elif signal_class in {"TRENDING", "EMERGING", "EVERGREEN_WITH_CURRENT_INTEREST"} and trend.get("method") == "youtube_most_popular_de":
+        parts.append("ein Video dazu ist gerade in den deutschen YouTube-Charts")
+    elif signal_class in {"TIMELY", "EVERGREEN_WITH_CURRENT_INTEREST"} and trend.get("outlets"):
+        parts.append(f"aktuell in {trend['outlets']} deutschen Medien")
+    elif outlier.get("ratio") and float(outlier["ratio"]) >= 2:
+        parts.append(f"ein ähnliches Video lief {outlier['ratio']}-mal besser als sonst auf seinem Kanal")
+    elif demand.get("median_views_per_day") and signal_class in {"EVERGREEN", "EVERGREEN_WITH_CURRENT_INTEREST"}:
+        parts.append(f"dauerhaft gefragt (~{int(demand['median_views_per_day']):,} Wikipedia-Aufrufe pro Tag)".replace(",", "."))
+    elif signal_class == "EVERGREEN":
+        parts.append("zeitloses Thema")
+    text = "; ".join(parts)
+    return text + "."
+
+
 def _recent_status_keys(db: Session, now: datetime) -> tuple[set[str], set[str]]:
     """(candidate ids to keep out, group keys to keep out): used ever, skipped within 24 h."""
     ids: set[str] = set()
@@ -406,6 +559,8 @@ def _recent_status_keys(db: Session, now: datetime) -> tuple[set[str], set[str]]
             continue
         ids.add(record.candidate_id)
         key = (record.provenance or {}).get("group_key")
+        if record.status == "used" and (_utc(record.selected_at) or now) < now - USED_TOPIC_COOLDOWN:
+            continue  # the subject may return with another question; this question never does
         if key:
             groups.add(str(key))
     return ids, groups
@@ -513,7 +668,7 @@ def _discover(
     ai_deadline = _FLIGHT.deadline(runtime.AI_DEADLINE_SECONDS)
     weights, version = resolve_weights(settings)
     meter = CallMeter(quota_budget=max(0, int(settings.topic_youtube_quota_budget)))
-    ctx = DiscoveryContext(db=db, settings=settings, now=now, meter=meter)
+    ctx = DiscoveryContext(db=db, settings=settings, now=now, meter=meter, widen=broaden_from is not None)
     sequence = int(db.scalar(select(func.max(TopicDiscoveryRun.sequence))) or 0) + 1
     run = TopicDiscoveryRun(
         sequence=sequence, score_version=version, weights=weights, started_at=now, status="running",
@@ -560,6 +715,8 @@ def _discover(
             continue
         groups.append(group)
     budget = EVALUATION_BUDGET - (evaluated_in(broaden_from) if broaden_from is not None else 0)
+    if broaden_from is not None:
+        budget = max(budget, WIDEN_EVALUATIONS)
     history = history_module.load_history(db)
     semantic_on = semantic.semantic_enabled(settings)
     priorities: dict[str, tuple[float, dict[str, Any]]] = {}
@@ -568,10 +725,19 @@ def _discover(
         # (cheap evidence only - demand, audience, evidence, question hint; garbage last).
         priorities = {group.key: _curation_priority(group, history, now) for group in groups}
         groups.sort(key=lambda group: (-priorities[group.key][0], group.key))
+        batch_size = max(1, min(20, int(getattr(settings, "topic_curator_batch_size", semantic.MAX_CURATION_BATCH) or semantic.MAX_CURATION_BATCH)))
+        groups = mix_sources(groups, batch_size)
     else:
         # Local mode: a topic without a locally derivable question can never pass, so topics that
         # can become one are evaluated first (ordering only - the rest still follow within budget).
         groups.sort(key=lambda group: (deterministic_transform(group).method == "none", -_preliminary(group), group.key))
+        transformable = [group for group in groups if group.evergreen or deterministic_transform(group).method != "none"]
+        chosen_ids = {id(group) for group in transformable}
+        groups = mix_sources(transformable, MAX_BATCH) + [group for group in groups if id(group) not in chosen_ids]
+
+    def unused_seeds(group: TopicGroup) -> list[str]:
+        seen = _seen_before(history, group, classify_niche(group.title, group.description())[0], now)
+        return [seed for seed in group.seed_questions if not seen(seed)]
     own_priors, own_default = history_module.own_performance_priors(db, settings)
     candidates: list[TopicCandidate] = []
     extras: dict[str, tuple[list[str], list[str]]] = {}
@@ -579,6 +745,8 @@ def _discover(
     semantic_errors: list[str] = []
     evaluated = curation_requests = curated = cached_curations = 0
     ai_left = AI_REQUEST_BUDGET - (ai_requests_in(broaden_from) if broaden_from is not None else 0)
+    if broaden_from is not None:
+        ai_left = max(ai_left, WIDEN_AI_REQUESTS)
     batch: list[TopicGroup] = []
     accepted = len(carried)
     queue = list(groups)
@@ -595,6 +763,7 @@ def _discover(
             if group.key in priorities:
                 candidate.provenance["curation_priority"] = priorities[group.key][0]
             extras[candidate.candidate_id] = (item.issues, item.flags)
+            apply_evidence(candidate, deps.evidence_providers)
             score_candidate(candidate, weights=weights, version=version, now=now, issues=item.issues, flags=item.flags, degraded_sources=degraded)
             candidates.append(candidate)
         accepted = len(carried) + sum(1 for candidate in candidates if not candidate.rejected)
@@ -603,7 +772,7 @@ def _discover(
         queue, evaluated, curation_requests, curated, cached_curations, ai_left = _curate_pool(
             db, settings, queue, now=now, budget=budget, ai_left=ai_left, ai_deadline=ai_deadline,
             evaluate=evaluate, target_left=lambda: TARGET_ACCEPTED - accepted,
-            batches=curation_batches, unevaluated=unevaluated, errors=semantic_errors, methods=methods,
+            batches=curation_batches, unevaluated=unevaluated, errors=semantic_errors, methods=methods, seeds=unused_seeds,
         )
     # Local mode: backfill through the raw pool with the deterministic question step.
     # The discovery pre-rank orders the work, it is not a gate.
@@ -614,7 +783,8 @@ def _discover(
         transformed: list[Transformed] = []
         _FLIGHT.stage("curation_batch", "local_rules")
         for group in batch:
-            item = deterministic_transform(group)
+            seen = _seen_before(history, group, classify_niche(group.title, group.description())[0], now)
+            item = deterministic_transform(group, avoid=seen)
             item.semantic = semantic.unavailable("semantic_curator_unavailable")
             transformed.append(item)
         methods.append("template")
@@ -641,10 +811,14 @@ def _discover(
                 break
             fetched = fetched or not cached
             probe_report.items += 1
-            competition, outlier = competition_estimate(candidate.question, candidate.topic, payload.get("videos") or [])
+            videos = payload.get("videos") or []
+            competition, outlier = competition_estimate(candidate.question, candidate.topic, videos)
             candidate.signals["competition"] = competition
             if not candidate.signal("outlier").available and outlier.available:
                 candidate.signals["outlier"] = outlier
+            # Supply is evidence of demand too: related Shorts' median views/day (never one giant's raw views).
+            candidate.signals["demand"] = merge_demand([candidate.signal("demand"), related_video_demand(candidate.question, candidate.topic, videos, now)])
+            candidate.signals["opportunity"] = opportunity(competition, candidate.signal("demand"))
             candidate.source_signals.append({"source": deps.probe.name, "kind": "search", "title": payload.get("query"), "metrics": competition.evidence})
         if probe_report.status == "ok" and probe_report.items and not fetched:
             probe_report.status = "cached"
@@ -684,12 +858,22 @@ def _discover(
     ranked = rank(candidates)
     kept: list[TopicCandidate] = []
     for candidate in ranked:
-        if not candidate.rejected and any(similarity(candidate.question, other.question) >= history_module.DUPLICATE_THRESHOLD for other in kept):
-            candidate.rejection_reasons.append("duplicate_in_pool")
+        if not candidate.rejected:
+            # Semantic dedupe (V2): the same video in other words collapses into the stronger one.
+            duplicate = next((other for other in kept if same_video(candidate, other) >= history_module.DUPLICATE_THRESHOLD), None)
+            if duplicate is not None:
+                candidate.rejection_reasons.append("duplicate_in_pool")
+                candidate.provenance["duplicate_of"] = {
+                    "candidate_id": duplicate.candidate_id, "question": duplicate.question,
+                    "equivalence": round(same_video(candidate, duplicate), 3),
+                }
         if not candidate.rejected:
             kept.append(candidate)
         candidate.rationale = rationale_for(candidate)
     ranked = rank(ranked)
+    for position, candidate in enumerate(ranked, 1):
+        candidate.provenance["rank"] = position
+        candidate.provenance["selection_reason"] = selection_reason(candidate)
     _FLIGHT.stage("persistence")
     _persist(db, run.id, ranked, now)
     order = [(rank_key(candidate.rejected, candidate.final_score, candidate.candidate_id), candidate.candidate_id) for candidate in ranked]
@@ -725,6 +909,7 @@ def _curate_pool(
     unevaluated: dict[str, tuple[str, str]],
     errors: list[str],
     methods: list[str],
+    seeds: Any = None,
 ) -> tuple[list[TopicGroup], int, int, int, int, int]:
     """Curate the prioritized raw pool within the AI budget.
 
@@ -737,7 +922,7 @@ def _curate_pool(
     """
     evaluated = requests = curated = cached = 0
     _FLIGHT.stage("curation_cache", "openai_curator")
-    lookup = semantic.curate(db, settings, queue, requests_left=0, now=now)
+    lookup = semantic.curate(db, settings, queue, requests_left=0, now=now, seeds=seeds)
     fresh: list[TopicGroup] = []
     pairs: list[tuple[TopicGroup, Transformed]] = []
     for group in queue:
@@ -767,7 +952,7 @@ def _curate_pool(
         _FLIGHT.stage("curation_batch", "openai_curator")
         size = min(batch_size, budget - evaluated)
         batch, fresh = fresh[:size], fresh[size:]
-        outcome = semantic.curate(db, settings, batch, requests_left=ai_left, now=now, batch_size=size)
+        outcome = semantic.curate(db, settings, batch, requests_left=ai_left, now=now, batch_size=size, seeds=seeds)
         requests += outcome.requests
         ai_left -= outcome.requests
         errors.extend(outcome.errors)
@@ -838,10 +1023,22 @@ def _next_record(db: Session, run: TopicDiscoveryRun) -> TopicCandidateRecord | 
     return None
 
 
-def serialize_candidate(record: TopicCandidateRecord) -> dict[str, Any]:
+def candidate_class(record: TopicCandidateRecord, now: datetime | None = None) -> tuple[str | None, dict[str, Any]]:
+    """The signal class re-checked NOW: stale evidence loses its trend status even in a reused pool."""
+    candidate = candidate_from_record(record)
+    candidate.score_breakdown = dict(record.score_breakdown or {})
+    return scoring.classify_signal(candidate, now or _now())
+
+
+def serialize_candidate(record: TopicCandidateRecord, now: datetime | None = None) -> dict[str, Any]:
     breakdown = record.score_breakdown or {}
     components = breakdown.get("components") or {}
+    signal_class, _basis = candidate_class(record, now)
     return {
+        # V2 user-facing: concise reasoning + an evidence-backed signal label (or none).
+        "reason": user_reason(breakdown, record.signals or {}, signal_class),
+        "signal_class": signal_class,
+        "signal_label": scoring.SIGNAL_LABELS_DE.get(signal_class) if signal_class else None,
         "candidate_id": record.candidate_id,
         "question": record.question,
         "topic": record.topic,
@@ -929,7 +1126,7 @@ def _next_topic_locked(db: Session, settings: Settings, deps: DiscoveryDeps, *, 
         record.status = "proposed"
         record.proposed_at = now
         db.commit()
-    return {"status": "proposed", "message": None, "candidate": serialize_candidate(record), "pool": _pool_info(db, run)}
+    return {"status": "proposed", "message": None, "candidate": serialize_candidate(record, now), "pool": _pool_info(db, run)}
 
 
 def skip_topic(
@@ -944,6 +1141,80 @@ def skip_topic(
         record.skipped_at = now
         db.commit()
     return next_topic(db, settings, deps, now=now)
+
+
+# ---------------------------------------------------------------------------
+# Full Auto ("Generate automatically"): the strongest eligible question, or none
+# ---------------------------------------------------------------------------
+
+AUTO_NONE_MESSAGE = "Gerade keine ausreichend starke Frage gefunden. Gib eine eigene Frage ein oder versuche es später erneut."
+
+
+def _auto_pick(db: Session, run: TopicDiscoveryRun) -> tuple[TopicCandidateRecord | None, list[dict[str, Any]]]:
+    """First usable candidate in rank order that meets Full Auto's own minimum quality."""
+    considered: list[dict[str, Any]] = []
+    for candidate_id in run.ranked_candidate_ids or []:
+        record = db.get(TopicCandidateRecord, candidate_id)
+        if record is None or record.status not in {"pooled", "proposed"} or record.rejection_reasons:
+            continue
+        eligible, reasons = scoring.auto_eligibility(
+            record.score_breakdown or {}, rejected=False, confidence=record.confidence, score=record.final_score,
+        )
+        considered.append({"candidate_id": record.candidate_id, "question": record.question, "final_score": record.final_score,
+                           "confidence": record.confidence, "eligible": eligible, "reasons": reasons})
+        if eligible:
+            return record, considered
+    return None, considered
+
+
+def auto_topic(db: Session, settings: Settings, deps: DiscoveryDeps, *, now: datetime | None = None) -> dict[str, Any]:
+    """Full Auto: select the next question itself - never garbage just because something must win.
+
+    Uses the fresh pool (or one discovery); if nothing meets ``scoring.auto_eligibility``,
+    widens discovery ONCE (next raw topics + the next evergreen window, bounded), then
+    answers ``no_strong_candidate``.  Generation is started by the caller through the
+    normal generation entry point, with Topic Intelligence provenance.
+    """
+    now = now or _now()
+    if not _FLIGHT.acquire(timeout=runtime.FLIGHT_WAIT_SECONDS):
+        return {"status": "discovering", "message": "Topic discovery is running.", "candidate": None,
+                "retry_after_seconds": DISCOVERY_RETRY_SECONDS}
+    try:
+        return _auto_locked(db, settings, deps, now=now)
+    except Exception as exc:  # noqa: BLE001 - a failed discovery is a state, not a 500
+        logger.warning("Topic Intelligence auto selection failed: %s", exc)
+        return {"status": "unavailable", "message": DISCOVERY_FAILED_MESSAGE, "candidate": None}
+    finally:
+        _FLIGHT.release()
+
+
+def _auto_locked(db: Session, settings: Settings, deps: DiscoveryDeps, *, now: datetime) -> dict[str, Any]:
+    run = current_run(db, now, resolve_weights(settings)[1], semantic.semantic_enabled(settings))
+    if run is None:
+        run = discover(db, settings, deps, now=now)
+        if run.status == "unavailable":
+            return _unavailable(run)
+    record, considered = _auto_pick(db, run)
+    widened = False
+    if record is None and not was_broadened(run):
+        widened = True
+        broadened = _discover_or_none(db, settings, deps, now=now, broaden_from=run)
+        if broadened is not None and broadened.status != "unavailable":
+            run = broadened
+            record, considered = _auto_pick(db, run)
+    if record is None:
+        return {"status": "no_strong_candidate", "message": AUTO_NONE_MESSAGE, "candidate": None, "widened": widened,
+                "considered": considered[:5], "pool": _pool_info(db, run)}
+    record.status = "proposed"
+    record.proposed_at = now
+    record.provenance = {**(record.provenance or {}), "auto_selection": {
+        "selected_at": now.isoformat(), "widened": widened, "considered": len(considered),
+        "thresholds": {"min_score": scoring.AUTO_MIN_SCORE, "min_curiosity": scoring.AUTO_MIN_CURIOSITY,
+                       "min_payoff": scoring.AUTO_MIN_PAYOFF, "fallback_min_score": scoring.AUTO_FALLBACK_MIN_SCORE},
+    }}
+    db.commit()
+    return {"status": "selected", "message": None, "candidate": serialize_candidate(record, now),
+            "selection_reason": (record.provenance or {}).get("selection_reason"), "widened": widened, "pool": _pool_info(db, run)}
 
 
 # ---------------------------------------------------------------------------
@@ -970,9 +1241,9 @@ def _available_records(db: Session, run: TopicDiscoveryRun, exclude: set[str]) -
     what the client currently shows).
     """
     excluded_records = [record for record in (db.get(TopicCandidateRecord, item) for item in exclude) if record is not None]
-    taken = [record.question for record in excluded_records]
+    taken: list[TopicCandidateRecord] = list(excluded_records)
     shown = [
-        (record.niche, str((record.provenance or {}).get("mechanism") or "other"))
+        (record.niche, str((record.provenance or {}).get("mechanism") or "other"), str((record.provenance or {}).get("topic_family") or ""))
         for record in excluded_records if record.status == "proposed"
     ]
     chosen: list[TopicCandidateRecord] = []
@@ -982,13 +1253,14 @@ def _available_records(db: Session, run: TopicDiscoveryRun, exclude: set[str]) -
         record = db.get(TopicCandidateRecord, candidate_id)
         if record is None or record.status not in {"pooled", "proposed"} or record.rejection_reasons:
             continue
-        if any(similarity(record.question, other) >= history_module.DUPLICATE_THRESHOLD for other in taken):
+        if any(same_video(record, other) >= history_module.DUPLICATE_THRESHOLD for other in taken):
             continue
         chosen.append(record)
-        taken.append(record.question)
+        taken.append(record)
     by_id = {record.candidate_id: record for record in chosen}
     items = [
-        RankedItem(record.candidate_id, record.final_score, record.niche, str((record.provenance or {}).get("mechanism") or "other"))
+        RankedItem(record.candidate_id, record.final_score, record.niche, str((record.provenance or {}).get("mechanism") or "other"),
+                   str((record.provenance or {}).get("topic_family") or ""))
         for record in chosen
     ]
     return [by_id[item.candidate_id] for item in diversify(items, shown)]
@@ -1085,7 +1357,7 @@ def _suggestions_locked(
     return {
         "status": status,
         "message": None if records else EXHAUSTED_MESSAGE,
-        "candidates": [serialize_candidate(record) for record in records],
+        "candidates": [serialize_candidate(record, now) for record in records],
         "pool": _pool_info(db, run),
         # Why fewer than requested: how many were evaluated and why they were rejected.
         "summary": pool_summary(db, run),
@@ -1269,6 +1541,27 @@ def diagnostics(
             "transformation": (record.provenance or {}).get("transformation"),
             "served_at": _utc(record.proposed_at),
             "persisted": _score_view(record.score_breakdown or {}, record.final_score, record.confidence, record.score_version, record.rejection_reasons or []),
+            # V2: why did this question win (or lose)?
+            "v2": {
+                "origin": (record.provenance or {}).get("origin"),
+                "topic_family": (record.provenance or {}).get("topic_family"),
+                "aspect": (record.provenance or {}).get("aspect"),
+                "alternatives": (record.provenance or {}).get("alternatives") or [],
+                "rank": (record.provenance or {}).get("rank"),
+                "selection_reason": (record.provenance or {}).get("selection_reason"),
+                "duplicate_of": (record.provenance or {}).get("duplicate_of"),
+                "signal_class": candidate_class(record)[0],
+                "signal_class_basis": candidate_class(record)[1],
+                "evidence_freshness": {
+                    name: {key: ((record.signals or {}).get(name) or {}).get("evidence", {}).get(key) for key in ("fetched_at", "ttl_hours")}
+                    for name in ("trend", "demand", "outlier")
+                    if ((record.signals or {}).get(name) or {}).get("confidence") not in {None, "unavailable"}
+                },
+                "auto": dict(zip(("eligible", "reasons"), scoring.auto_eligibility(
+                    record.score_breakdown or {}, rejected=bool(record.rejection_reasons), confidence=record.confidence,
+                    score=record.final_score,
+                ), strict=True)),
+            },
         }
         if rescore:
             candidate = rescore_record(record, settings)
@@ -1466,6 +1759,29 @@ def diagnose(db: Session, settings: Settings, *, now: datetime | None = None) ->
     return "ok"
 
 
+def budgets(settings: Settings | None) -> dict[str, Any]:
+    """Every explicit request/candidate budget of one discovery (and its one widening pass)."""
+    from . import evergreen
+    from .sources import BraveNewsSource, WikipediaPageviewsSource, YouTubeTrendingSource
+
+    return {
+        "wikipedia_requests": f"1-2 top list + {WikipediaPageviewsSource.META_LIMIT // 20} metadata + <= {WikipediaPageviewsSource.HISTORY_LIMIT} histories",
+        "evergreen_requests": evergreen.SAMPLE_SIZE,
+        "evergreen_catalog": {"version": evergreen.CATALOG_VERSION, "subjects": len(evergreen.CATALOG)},
+        "brave_requests": len(BraveNewsSource.QUERIES),
+        "youtube_chart_categories": len(YouTubeTrendingSource.CATEGORIES),
+        "youtube_quota_units": None if settings is None else int(settings.topic_youtube_quota_budget),
+        "youtube_search_probes": None if settings is None else int(settings.topic_youtube_search_probes),
+        "candidates_evaluated": EVALUATION_BUDGET,
+        "target_accepted": TARGET_ACCEPTED,
+        "ai_requests": AI_REQUEST_BUDGET,
+        "widen_once": {"ai_requests": WIDEN_AI_REQUESTS, "evaluations": WIDEN_EVALUATIONS},
+        "curator_batch_size": None if settings is None else int(getattr(settings, "topic_curator_batch_size", semantic.MAX_CURATION_BATCH)),
+        "timeouts_seconds": {"provider": runtime.PROVIDER_TIMEOUT_SECONDS, "curator": runtime.CURATOR_TIMEOUT_SECONDS,
+                             "ai_deadline": runtime.AI_DEADLINE_SECONDS, "flight": runtime.FLIGHT_MAX_SECONDS},
+    }
+
+
 def discovery_status(db: Session, settings: Settings | None = None, *, now: datetime | None = None) -> dict[str, Any]:
     """Internal state of Topic Intelligence: diagnosis, sources, pool, rejections, caches."""
     now = now or _now()
@@ -1477,6 +1793,7 @@ def discovery_status(db: Session, settings: Settings | None = None, *, now: date
     report_settings = settings
     return {
         "diagnosis": diagnose(db, report_settings, now=now) if report_settings is not None else None,
+        "budgets": budgets(report_settings),
         "current_score_version": resolve_weights(report_settings)[1] if report_settings is not None else None,
         "discovery_running": _FLIGHT.locked(),
         # Live while discovery runs: stage, provider, elapsed, timeouts, lock state.

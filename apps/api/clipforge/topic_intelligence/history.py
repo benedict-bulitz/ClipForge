@@ -26,7 +26,7 @@ from ..models import (
 from ..youtube.connection import active_connection
 from ..youtube.learning import api_snapshots, eligible_uploads, latest_with_data, metric_value
 from .candidate import Signal, clamp
-from .text import classify_niche, content_tokens, similarity
+from .text import classify_niche, content_tokens, question_equivalence, similarity
 
 DUPLICATE_THRESHOLD = 0.72  # same question in other words -> rejected
 ANSWER_REPEAT_THRESHOLD = 0.8
@@ -107,7 +107,9 @@ def novelty_signal(question: str, topic: str, niche: str, history: list[HistoryI
                 if score > answer_repeat[0]:
                     answer_repeat = (score, item)
             continue
-        score = max(similarity(question_tokens, item_tokens), similarity(topic_tokens, item_tokens) if len(topic_tokens) >= 2 else 0.0)
+        # V2: question vs question by semantic equivalence (both must share their concepts), so
+        # "Warum ist der Mars rot?" repeats "Was macht den Mars rot?" but not "... Staubstürme?".
+        score = max(question_equivalence(question, item.text), similarity(topic_tokens, item_tokens) if len(topic_tokens) >= 2 else 0.0)
         at = item.at
         if at is not None and now - at > RECENT_WINDOW:
             score *= OLDER_WEIGHT

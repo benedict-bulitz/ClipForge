@@ -11,6 +11,11 @@ written and no external call is made.
     PYTHONPATH=. python scripts/topic_diagnostics.py --shown 9      # what Home was served, in order
     PYTHONPATH=. python scripts/topic_diagnostics.py --rescore      # + score with the current version
     PYTHONPATH=. python scripts/topic_diagnostics.py --json         # full structured output
+    PYTHONPATH=. python scripts/topic_diagnostics.py --evaluate     # V2 real run: top 3 + Full Auto winner
+
+``--evaluate`` is the one exception to "read-only": it runs the REAL Topic Intelligence path
+(configured providers, the curator if an OpenAI key is set, provider caches and budgets)
+exactly as Home and "Generate automatically" do - it never starts a generation.
 """
 
 import argparse
@@ -24,9 +29,10 @@ from clipforge.models import TopicDiscoveryRun
 from clipforge.topic_intelligence import service
 
 COLUMNS = (
-    ("trend", "trend"), ("outlier", "outl"), ("competition", "comp"), ("novelty", "nov"),
-    ("channel_fit", "fit"), ("suitability", "suit"), ("broad_appeal", "broad"), ("accessibility", "acc"),
-    ("question_form", "form"), ("visual", "vis"), ("researchability", "res"), ("own_performance", "own"),
+    ("curiosity", "cur"), ("payoff", "pay"), ("knowledge_value", "know"), ("short_worthiness", "shrt"),
+    ("demand", "dem"), ("trend", "trend"), ("outlier", "outl"), ("opportunity", "opp"), ("novelty", "nov"),
+    ("channel_fit", "fit"), ("broad_appeal", "broad"), ("accessibility", "acc"),
+    ("visual", "vis"), ("researchability", "res"), ("own_performance", "own"),
 )
 
 
@@ -194,6 +200,52 @@ def print_status(settings, live: str | None = None) -> None:
         print(f"  {cache['provider']:28} fresh={cache['fresh']} fetched={cache['fetched_at']} expires={cache['expires_at']}")
 
 
+def evaluate(settings) -> dict:
+    """The real path: Home's three suggestions, then Full Auto - with the evidence behind each."""
+    from clipforge.integrations import get_secret_store
+    from clipforge.youtube.routes import get_youtube_provider
+
+    with SessionLocal() as db:
+        deps = service.default_deps(db, settings, get_secret_store(), get_youtube_provider())
+        chips = service.suggestions(db, settings, deps, count=3)
+        auto = service.auto_topic(db, settings, deps)
+        status = service.discovery_status(db, settings)
+        rows = service.diagnostics(db, settings, limit=60)["candidates"]
+    return {"suggestions": chips, "auto": auto, "sources": (status.get("run") or {}).get("sources"), "candidates": rows}
+
+
+def print_evaluation(report: dict) -> None:
+    by_id = {row["candidate_id"]: row for row in report["candidates"]}
+
+    def block(index: int | str, item: dict) -> None:
+        row = by_id.get(item["candidate_id"], {})
+        v2 = row.get("v2") or {}
+        persisted = row.get("persisted") or {}
+        evidence = []
+        for name in ("demand", "trend", "outlier", "opportunity"):
+            component = (persisted.get("components") or {}).get(name) or {}
+            if component.get("value") is not None:
+                evidence.append(f"{name}={component['value']} ({component.get('confidence')})")
+        print(f"{index}.\nQUESTION: {item['question']}\nCATEGORY: {item.get('signal_class') or 'no time/evergreen claim'}"
+              f" ({item.get('signal_label') or '-'})\nWHY: {item.get('reason')}\n     ranked: {v2.get('selection_reason')}"
+              f"\nEVIDENCE: {', '.join(evidence) or 'none (no live evidence)'}; freshness={v2.get('evidence_freshness') or {}}"
+              f"; sources={','.join(row.get('sources') or [])}\nCONFIDENCE: {item.get('confidence')}\n")
+
+    print("SOURCES:")
+    for source in report.get("sources") or []:
+        print(f"  {source['name']:28} {source['status']:8} items={source.get('items')} calls={source.get('calls')} {source.get('error') or ''}")
+    chips = report["suggestions"]
+    print(f"\nASSISTED ({chips['status']}):")
+    for index, item in enumerate(chips.get("candidates") or [], 1):
+        block(index, item)
+    auto = report["auto"]
+    print(f"AUTO WINNER ({auto['status']}):")
+    if auto.get("candidate"):
+        block("*", auto["candidate"])
+    else:
+        print(f"  {auto.get('message')} considered={auto.get('considered')}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--limit", type=int, default=20)
@@ -203,11 +255,19 @@ def main() -> None:
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--curated", action="store_true",
                         help="every curated candidate: all v2 dimensions, short-worthiness, issues, rejecting gates")
+    parser.add_argument("--evaluate", action="store_true", help="V2 real run: top 3 suggestions + Full Auto winner with evidence")
     parser.add_argument("--live", nargs="?", const="http://localhost:8000", metavar="API_URL",
                         help="with --status: read the running API (live discovery stage, warm-up, lock)")
     args = parser.parse_args()
     prepare_schema()
     settings = get_settings()
+    if args.evaluate:
+        report = evaluate(settings)
+        if args.json:
+            print(json.dumps(report, default=str, ensure_ascii=False, indent=2))
+        else:
+            print_evaluation(report)
+        return
     if args.curated:
         with SessionLocal() as db:
             run = db.scalar(select(TopicDiscoveryRun).where(TopicDiscoveryRun.status.not_in(("failed", "running")))
@@ -241,6 +301,10 @@ def main() -> None:
         print(f"{index:2}. {row['question']}  [{row['status']}]")
         print(f"    topic={row['topic']!r} sources={','.join(row['sources'])} niche={row['niche']} mechanism={row['mechanism']} via={row['transformation']}")
         _print_view("persisted", row["persisted"])
+        v2 = row.get("v2") or {}
+        print(f"    {'':9} v2: rank={v2.get('rank')} class={v2.get('signal_class')} family={v2.get('topic_family')} "
+              f"origin={v2.get('origin')} auto={v2.get('auto')} duplicate_of={(v2.get('duplicate_of') or {}).get('question')}")
+        print(f"    {'':9}     {v2.get('selection_reason')}")
         if "rescored" in row:
             _print_view("rescored", row["rescored"])
 

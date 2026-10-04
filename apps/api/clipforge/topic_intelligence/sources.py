@@ -27,10 +27,14 @@ from ..youtube.provider import YouTubeApiError, YouTubeProvider
 from .cache import BudgetExceeded, CallMeter, get_or_fetch
 from .candidate import RawTopic
 from .signals import (
+    DEMAND_TTL_HOURS,
+    EVIDENCE_TTL_HOURS,
     news_trend,
     outlier_vs_channel,
+    stamp,
     trending_chart_trend,
     views_per_day,
+    wikipedia_demand,
     wikipedia_trend,
 )
 from .text import classify_niche, clean_title, compact, content_tokens, fold, similarity, topic_key
@@ -73,6 +77,9 @@ class DiscoveryContext:
     meter: CallMeter
     language: str = "de"
     region: str = "DE"
+    # A widening pass (Full Auto / too few strong candidates): sources that rotate
+    # their sample (evergreen) take the next window instead of the same one.
+    widen: bool = False
 
 
 @dataclass
@@ -254,7 +261,10 @@ class WikipediaPageviewsSource:
             title = str(item.get("title") or "")
             if not title:
                 continue
-            trend = wikipedia_trend(item.get("history") or [], rank=int(item.get("rank") or 0), top_size=self.TOP_LIMIT)
+            history = item.get("history") or []
+            trend = stamp(wikipedia_trend(history, rank=int(item.get("rank") or 0), top_size=self.TOP_LIMIT), observed_at,
+                          ttl_hours=EVIDENCE_TTL_HOURS[self.name])
+            demand = stamp(wikipedia_demand(history), observed_at, ttl_hours=DEMAND_TTL_HOURS) if history else None
             description = " ".join(part for part in (item.get("description"), item.get("extract")) if part)
             topics.append(RawTopic(
                 key=topic_key(title),
@@ -265,6 +275,7 @@ class WikipediaPageviewsSource:
                 description=compact(description, 400),
                 url=f"https://de.wikipedia.org/wiki/{quote(title.replace(' ', '_'))}",
                 trend=trend,
+                demand=demand,
                 metrics={"views_day": item.get("views"), "rank": item.get("rank"), **{k: v for k, v in trend.evidence.items() if k in {"ratio", "baseline_days"}}},
                 flags=set(item.get("flags") or []),
             ))
@@ -396,8 +407,9 @@ class YouTubeTrendingSource:
                 observed_at=observed_at,
                 description=compact(video.get("description"), 240),
                 url=f"https://www.youtube.com/watch?v={video.get('video_id')}",
-                trend=trending_chart_trend(int(video.get("rank") or 1), int(video.get("chart_size") or self.CHART_SIZE), category=str(video.get("category") or "")),
-                outlier=outlier,
+                trend=stamp(trending_chart_trend(int(video.get("rank") or 1), int(video.get("chart_size") or self.CHART_SIZE), category=str(video.get("category") or "")),
+                            observed_at, ttl_hours=EVIDENCE_TTL_HOURS[self.name]),
+                outlier=stamp(outlier, observed_at, ttl_hours=EVIDENCE_TTL_HOURS[self.name]),
                 metrics={"views": video.get("views"), "rank": video.get("rank"), "views_per_day": round(vpd), "channel": video.get("channel_title")},
             ))
         return topics
@@ -483,7 +495,7 @@ class BraveNewsSource:
                 observed_at=observed_at,
                 description=compact(lead.get("description"), 280),
                 url=lead.get("url"),
-                trend=news_trend(outlets, len(cluster)),
+                trend=stamp(news_trend(outlets, len(cluster)), observed_at, ttl_hours=EVIDENCE_TTL_HOURS[self.name]),
                 metrics={"outlets": outlets, "articles": len(cluster)},
                 flags=flags,
             ))

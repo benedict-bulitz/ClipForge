@@ -9,6 +9,11 @@
  *   scoring, caching and quota limits).
  * - A chip only fills the textarea.  Generation starts solely from the
  *   existing Generate button, and never waits for topic discovery.
+ * - Topic Intelligence V2: each chip carries a short "why this could work" and an
+ *   evidence-backed signal label (Trend / Zeitlos / ...) - never internal scores.
+ *   "Generate automatically" (Full Auto) asks the backend for the strongest eligible
+ *   question and starts it through the same generation entry point - or says that no
+ *   strong question exists right now.
  */
 
 export type TopicSuggestion = {
@@ -16,6 +21,10 @@ export type TopicSuggestion = {
   question: string;
   rationale: string;
   confidence: string;
+  /** User-facing "why this could work" (German, no scores). */
+  reason?: string;
+  /** Evidence-backed signal label ("Trend", "Zeitlos", ...) or null when nothing is claimed. */
+  signal_label?: string | null;
   /** Client receipt time (ms), for background reserve freshness only. */
   fetched_at: number;
 };
@@ -25,9 +34,51 @@ export type TopicSuggestionsResponse = {
    *  unavailable: discovery failed | discovering: a refresh is running, ask again shortly. */
   status: "ok" | "partial" | "exhausted" | "unavailable" | "discovering";
   message: string | null;
-  candidates: { candidate_id: string; question: string; rationale?: string; confidence?: string }[];
+  candidates: SuggestionCandidate[];
   retry_after_seconds?: number;
 };
+
+export type SuggestionCandidate = {
+  candidate_id: string;
+  question: string;
+  rationale?: string;
+  confidence?: string;
+  reason?: string;
+  signal_label?: string | null;
+};
+
+/** Full Auto: the strongest eligible question - or none, never a forced pick. */
+export type TopicAutoResponse = {
+  status: "selected" | "no_strong_candidate" | "discovering" | "unavailable";
+  message: string | null;
+  candidate: SuggestionCandidate | null;
+  retry_after_seconds?: number;
+};
+
+export const AUTO_BUSY = "Die Themensuche läuft gerade. Bitte gleich noch einmal versuchen.";
+export const AUTO_UNAVAILABLE = "Die automatische Themenwahl ist gerade nicht erreichbar.";
+export const AUTO_NO_STRONG = "Gerade keine ausreichend starke Frage gefunden. Gib eine eigene Frage ein oder versuche es später erneut.";
+
+export type AutoOutcome =
+  | { kind: "selected"; question: string; reason: string; signalLabel: string | null; source: TopicGenerationSource }
+  | { kind: "none" | "busy" | "unavailable"; message: string };
+
+/** What Home does with a Full Auto answer: start that question with provenance, or say why not. */
+export function autoTopicOutcome(response: TopicAutoResponse): AutoOutcome {
+  const candidate = response.candidate;
+  if (response.status === "selected" && candidate?.candidate_id && candidate.question?.trim()) {
+    return {
+      kind: "selected",
+      question: candidate.question.trim(),
+      reason: candidate.reason ?? "",
+      signalLabel: candidate.signal_label ?? null,
+      source: { topic_source: "topic_intelligence", topic_candidate_id: candidate.candidate_id },
+    };
+  }
+  if (response.status === "discovering") return { kind: "busy", message: AUTO_BUSY };
+  if (response.status === "no_strong_candidate") return { kind: "none", message: response.message || AUTO_NO_STRONG };
+  return { kind: "unavailable", message: AUTO_UNAVAILABLE };
+}
 
 export type TopicSuggestionsRequest = {
   count: number;
@@ -60,8 +111,8 @@ export const RECENT_LIMIT = 60;
 /** Hidden reserve entries older than this are refetched; visible chips are never replaced by time. */
 export const RESERVE_TTL_MS = 6 * 60 * 60 * 1000;
 export const TOPIC_SUGGESTIONS_KEY = "clipforge-topic-suggestions";
-/** Bumped with the backend score version (ti-score-v6 + semantic-curator-v2) so chips vetted by an older version are dropped once. */
-export const TOPIC_SUGGESTIONS_VERSION = 4;
+/** Bumped with the backend score version (ti-score-v7 + semantic-curator-v3) so chips vetted by an older version are dropped once. */
+export const TOPIC_SUGGESTIONS_VERSION = 5;
 /** Shown (with "Neue Vorschläge" as the retry) when discovery failed, timed out or never answered. */
 export const DISCOVERY_UNAVAILABLE = "Themenvorschläge konnten nicht geladen werden.";
 export const NO_STRONG_SUGGESTIONS = "Gerade keine starken Themenvorschläge. Gib eine eigene Frage ein oder versuche es später erneut.";
@@ -100,7 +151,10 @@ export function mergeSuggestions(state: SuggestionState, candidates: TopicSugges
     if (!candidate.candidate_id || !question || ids.has(candidate.candidate_id) || questions.has(key)) continue;
     ids.add(candidate.candidate_id);
     questions.add(key);
-    fresh.push({ candidate_id: candidate.candidate_id, question, rationale: candidate.rationale ?? "", confidence: candidate.confidence ?? "low", fetched_at: now });
+    fresh.push({
+      candidate_id: candidate.candidate_id, question, rationale: candidate.rationale ?? "", confidence: candidate.confidence ?? "low",
+      reason: candidate.reason ?? "", signal_label: candidate.signal_label ?? null, fetched_at: now,
+    });
   }
   const visible = [...state.visible];
   const shownNow: string[] = [];
@@ -195,6 +249,8 @@ function parseSuggestion(value: unknown): TopicSuggestion | null {
     question: item.question,
     rationale: typeof item.rationale === "string" ? item.rationale : "",
     confidence: typeof item.confidence === "string" ? item.confidence : "low",
+    reason: typeof item.reason === "string" ? item.reason : "",
+    signal_label: typeof item.signal_label === "string" ? item.signal_label : null,
     fetched_at: typeof item.fetched_at === "number" ? item.fetched_at : 0,
   };
 }

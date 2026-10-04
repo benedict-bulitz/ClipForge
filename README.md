@@ -94,7 +94,16 @@ cd apps/api && PYTHONPATH=. ../../.venv/bin/python scripts/youtube_diagnostics.p
 Due analytics snapshots (~1 h, 6 h, 24 h, 72 h, 7 d after publication) are taken by
 **Refresh analytics** or `POST /api/youtube/analytics/sync-due`, which is safe to call from cron.
 
-## Live topic suggestions (Topic Intelligence V1)
+## Live topic suggestions (Topic Intelligence V2)
+
+Three modes: type your own question (manual, unchanged), pick one of three suggestions
+(assisted), or **Generate automatically** (Full Auto: the strongest eligible question is started
+through the normal generation entry point - or nothing starts when no question is strong enough).
+V2 adds evergreen discovery with real Wikipedia pageview evidence, explicit curiosity/payoff
+gates, evidence-backed labels (Trend / Aktuell / Im Kommen / Zeitlos) with freshness TTLs,
+semantic dedupe and confidence-aware ranking (`ti-score-v7`, `semantic-curator-v3`). Audit,
+design, budgets and the Real-Mac retest: [docs/topic-intelligence-v2.md](./docs/topic-intelligence-v2.md).
+The V1 notes below still describe the shared runtime, caching and curator mechanics.
 
 The three suggestion chips under the prompt are live German Topic Intelligence questions.
 Clicking one only copies it into the prompt (generation still starts with the normal
@@ -180,7 +189,7 @@ before the page opens; video generation never waits for it.
 - **Novelty** compares against projects, queued requests, uploaded videos and the Learning
   Archive with a light German-aware similarity (compounds, umlauts, synonyms), so rephrasings of an
   earlier video are rejected.
-- **Scoring**: one versioned authority (`topic_intelligence/scoring.py`, `ti-score-v6`) with
+- **Scoring** (V1 history; V2 weights and gates: see docs/topic-intelligence-v2.md): one versioned authority (`topic_intelligence/scoring.py`, now `ti-score-v7`) with
   documented weights. Mass-audience quality (suitability, broad appeal, accessibility without prior
   niche knowledge, question form) carries the score; a trend spike counts only as much as its
   corroboration and the topic's quality allow; date pages, identifiers, isolated events, acronyms,
@@ -275,6 +284,7 @@ The API tests run from the repository virtualenv installed by bootstrap:
 | `POST` | `/api/projects/{id}/edits` | Apply a natural-language change |
 | `POST` | `/api/projects/{id}/undo` | Move to the previous revision |
 | `POST` | `/api/topic-intelligence/suggestions` | Ranked chip suggestions, excluding what is shown |
+| `POST` | `/api/topic-intelligence/auto` | Full Auto: the strongest eligible question, or `no_strong_candidate` |
 | `POST` | `/api/topic-intelligence/next` | Propose the single next topic (reuses the fresh pool) |
 | `POST` | `/api/topic-intelligence/candidates/{id}/skip` | Skip a candidate and propose the next |
 | `GET` | `/api/topic-intelligence/status` | Discovery pool and cache freshness |

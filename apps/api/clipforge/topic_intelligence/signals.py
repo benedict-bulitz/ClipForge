@@ -54,19 +54,17 @@ def wikipedia_trend(history: Sequence[float], *, rank: int | None = None, top_si
             },
             ["wikipedia_pageviews"],
         )
-    if rank is not None:
-        return Signal(
-            round(0.5 * clamp(1 - rank / max(1, top_size)), 4),
-            "low",
-            {"method": "wikipedia_top_rank_only", "rank": rank},
-            ["wikipedia_pageviews"],
-        )
-    return Signal.unavailable("no_pageview_history")
+    # V2: a place in the most-viewed list without history is popularity, not momentum.
+    return Signal.unavailable("no_pageview_history", **({"rank": rank} if rank is not None else {}))
 
 
 def trending_chart_trend(rank: int, chart_size: int, *, category: str) -> Signal:
-    """Being on YouTube's German most-popular chart is direct current demand."""
-    value = 0.55 + 0.35 * clamp(1 - (rank - 1) / max(1, chart_size))
+    """Being on YouTube's German most-popular chart: current attention for that video.
+
+    V2: the chart is a raw-popularity ranking, so it counts as moderate momentum
+    (0.4-0.7); how unusual the video is comes from its channel-relative outlier.
+    """
+    value = 0.4 + 0.3 * clamp(1 - (rank - 1) / max(1, chart_size))
     return Signal(
         round(value, 4),
         "medium",
@@ -393,4 +391,202 @@ def short_worthiness(mechanism: str, shape_flags: set[str], semantic: Signal | N
         {"basis": basis, "base": round(base, 4), "penalties": penalties, "shape_flags": sorted(shape_flags),
          "single_question_focus": focus, "dimensions": short},
         ["short_worthiness"],
+    )
+
+
+# ---------------------------------------------------------------------------
+# Topic Intelligence V2 (ti-score-v7): freshness, demand, worth-watching, opportunity
+# ---------------------------------------------------------------------------
+
+# How long time-sensitive evidence may be used.  Past its TTL a signal is stale: it keeps
+# no momentum value and can never carry a TRENDING / EMERGING / TIMELY label.
+EVIDENCE_TTL_HOURS: dict[str, float] = {
+    "wikipedia_pageviews": 72.0,  # daily data, published with a day's lag
+    "wikipedia_evergreen": 72.0,
+    "youtube_trending_de": 24.0,
+    "brave_news_de": 36.0,
+    "youtube_search_competition": 72.0,
+}
+DEMAND_TTL_HOURS = 24.0 * 30  # an interest LEVEL changes slowly
+
+
+def stamp(signal: Signal | None, fetched_at: datetime, *, ttl_hours: float) -> Signal | None:
+    """Attach source fetch time + TTL to a time-sensitive signal (evidence, not opinion)."""
+    if signal is None or not signal.available:
+        return signal
+    signal.evidence = {**signal.evidence, "fetched_at": fetched_at.isoformat(), "ttl_hours": ttl_hours}
+    return signal
+
+
+def evidence_age_hours(signal: Signal, now: datetime) -> float | None:
+    fetched = signal.evidence.get("fetched_at")
+    if not fetched:
+        return None
+    try:
+        at = datetime.fromisoformat(str(fetched))
+    except ValueError:
+        return None
+    if at.tzinfo is None:
+        at = at.replace(tzinfo=now.tzinfo)
+    return max(0.0, (now - at).total_seconds() / 3600)
+
+
+def is_stale(signal: Signal, now: datetime) -> bool:
+    """True when time-sensitive evidence is older than its TTL (or carries no fetch time at all)."""
+    if not signal.available:
+        return False
+    age = evidence_age_hours(signal, now)
+    ttl = signal.evidence.get("ttl_hours")
+    if age is None or ttl is None:
+        return False  # not time-stamped: scoring falls back to the candidate's freshness decay
+    return age > float(ttl)
+
+
+# Average daily article views mapped to 0..1 on a log scale: 30/day -> 0, ~1,000 -> 0.5, 30,000 -> 1.
+DEMAND_FLOOR_VIEWS, DEMAND_FULL_VIEWS = 30.0, 30_000.0
+
+
+def wikipedia_demand(history: Sequence[float]) -> Signal:
+    """Sustained reader interest: the article's typical daily views (median), not today's spike."""
+    values = [float(item) for item in history if item is not None]
+    if len(values) < 10:
+        return Signal.unavailable("no_pageview_history", days=len(values))
+    baseline = values[:-3] if len(values) > 13 else values
+    level = statistics.median(baseline)
+    value = clamp(math.log(max(level, 1.0) / DEMAND_FLOOR_VIEWS) / math.log(DEMAND_FULL_VIEWS / DEMAND_FLOOR_VIEWS))
+    return Signal(
+        round(value, 4),
+        "medium" if len(baseline) >= 28 else "low",
+        {"method": "wikipedia_median_daily_views", "median_views_per_day": round(level), "days": len(baseline)},
+        ["wikipedia_pageviews"],
+    )
+
+
+# Related YouTube Shorts' median views/day on a log scale: 50/day -> 0, 50,000/day -> 1.
+RELATED_DEMAND_FLOOR, RELATED_DEMAND_FULL = 50.0, 50_000.0
+
+
+def related_video_demand(question: str, topic: str, results: Sequence[dict[str, Any]], now: datetime) -> Signal:
+    """Viewer demand for the subject on YouTube: age-normalized views of related recent Shorts.
+
+    The median (not the biggest hit) of several related videos, so one viral video
+    of a giant channel cannot carry it; fewer than 3 related videos = no evidence.
+    """
+    related = []
+    for item in results:
+        if not isinstance(item, dict):
+            continue
+        title = str(item.get("title") or "")
+        if max(similarity(question, title), similarity(topic, title)) < 0.5:
+            continue
+        try:
+            published = datetime.fromisoformat(str(item.get("published_at")))
+        except ValueError:
+            continue
+        related.append(views_per_day(float(item.get("views") or 0), published, now))
+    if len(related) < 3:
+        return Signal.unavailable("too_few_related_videos", related=len(related))
+    level = statistics.median(related)
+    value = clamp(math.log(max(level, 1.0) / RELATED_DEMAND_FLOOR) / math.log(RELATED_DEMAND_FULL / RELATED_DEMAND_FLOOR))
+    return Signal(
+        round(value, 4),
+        "medium" if len(related) >= 8 else "low",
+        {"method": "related_shorts_median_views_per_day", "median_views_per_day": round(level), "related": len(related)},
+        ["youtube_search_competition"],
+    )
+
+
+def merge_demand(signals: Sequence[Signal | None]) -> Signal:
+    """Strongest demand evidence; two independent sources agreeing raise confidence one step."""
+    available = [signal for signal in signals if signal is not None and signal.available]
+    if not available:
+        return Signal.unavailable("no_demand_evidence")
+    order = ("unavailable", "low", "medium", "high")
+    best = max(available, key=lambda item: (order.index(item.confidence), item.value or 0.0))
+    sources = sorted({source for item in available for source in item.sources})
+    confidence = best.confidence
+    if len(sources) >= 2 and confidence != "high":
+        confidence = "medium" if confidence == "low" else "high"
+    return Signal(best.value, confidence, {**best.evidence, "corroborating_sources": len(sources)}, sources)  # type: ignore[arg-type]
+
+
+# Without a curator judgement only the question's mechanism is known (always low confidence).
+LOCAL_CURIOSITY = {"paradox": 0.75, "what_if": 0.72, "why": 0.65, "how": 0.58, "yes_no": 0.55, "other": 0.4, "what_is": 0.3}
+LOCAL_PAYOFF = {"paradox": 0.65, "what_if": 0.6, "why": 0.65, "how": 0.65, "yes_no": 0.55, "other": 0.45, "what_is": 0.4}
+
+
+def _dims(semantic: Signal | None) -> tuple[dict[str, float], dict[str, float]]:
+    if semantic is None or not semantic.available:
+        return {}, {}
+    return dict(semantic.evidence.get("dimensions") or {}), dict(semantic.evidence.get("short_dimensions") or {})
+
+
+def curiosity(mechanism: str, semantic: Signal | None) -> Signal:
+    """Does the question make a viewer WANT the answer ("I want to know") - not merely understand it?"""
+    _dims_unused, short = _dims(semantic)
+    if short:
+        strength = float(short.get("curiosity_strength", 0.5))
+        gap = float((semantic.evidence.get("extra_dimensions") or {}).get("curiosity_gap", strength)) if semantic else strength
+        return Signal(round(clamp(0.75 * strength + 0.25 * gap), 4), "medium",
+                      {"basis": "curator", "curiosity_strength": strength, "curiosity_gap": gap}, ["semantic_curator"])
+    return Signal(LOCAL_CURIOSITY.get(mechanism, LOCAL_CURIOSITY["other"]), "low", {"basis": "question_mechanism", "mechanism": mechanism}, ["topic_features"])
+
+
+def payoff(mechanism: str, semantic: Signal | None) -> Signal:
+    """Is there one concrete, satisfying answer (curiosity without it is clickbait)?"""
+    dims, short = _dims(semantic)
+    if short:
+        specific = float(short.get("payoff_specificity", 0.5))
+        factual = float(dims.get("clear_factual_payoff", specific))
+        reveal = float(short.get("reveal_potential", 0.5))
+        return Signal(round(clamp(0.5 * specific + 0.3 * factual + 0.2 * reveal), 4), "medium",
+                      {"basis": "curator", "payoff_specificity": specific, "clear_factual_payoff": factual, "reveal_potential": reveal},
+                      ["semantic_curator"])
+    return Signal(LOCAL_PAYOFF.get(mechanism, LOCAL_PAYOFF["other"]), "low", {"basis": "question_mechanism", "mechanism": mechanism}, ["topic_features"])
+
+
+def knowledge_value(semantic: Signal | None, *, has_article: bool) -> Signal:
+    """Will the viewer genuinely learn something (a mechanism, a cause), not just hear a fact?"""
+    dims, short = _dims(semantic)
+    extra = dict(semantic.evidence.get("extra_dimensions") or {}) if semantic is not None and semantic.available else {}
+    if dims:
+        if "knowledge_value" in extra:
+            value, basis = float(extra["knowledge_value"]), "curator"
+        else:
+            value, basis = 0.6 * float(dims.get("knowledge_short_fit", 0.5)) + 0.4 * float(short.get("concreteness", 0.5)), "curator_fit"
+        return Signal(round(clamp(value), 4), "medium", {"basis": basis}, ["semantic_curator"])
+    return Signal.unavailable("not_assessed", encyclopedic_article=has_article)
+
+
+# Opportunity: supply is not "bad" - it is read together with demand.
+OPPORTUNITY_VALUES = {
+    "specific_opportunity": 0.8,  # demand exists, nobody answers this exact question yet
+    "open": 0.6,
+    "low_demand": 0.4,
+    "saturated_generic": 0.3,  # many strong videos already ask the same question
+}
+
+
+def opportunity(competition: Signal, demand: Signal) -> Signal:
+    """HIGH DEMAND + SATURATED GENERIC ANGLE vs HIGH DEMAND + SPECIFIC OPPORTUNITY vs LOW DEMAND."""
+    if not competition.available:
+        return Signal.unavailable("not_probed")
+    evidence = competition.evidence
+    sample, related = int(evidence.get("sample") or 0), int(evidence.get("related") or 0)
+    strong, identical = int(evidence.get("strong") or 0), int(evidence.get("near_identical") or 0)
+    demand_value = demand.value if demand.available else None
+    if identical >= 2 or (strong >= 3 and identical >= 1):
+        state = "saturated_generic"
+    elif related >= 3 or (demand_value is not None and demand_value >= 0.5):
+        state = "specific_opportunity" if identical == 0 else "open"
+    elif demand_value is None or demand_value < 0.3:
+        state = "low_demand"
+    else:
+        state = "open"
+    return Signal(
+        OPPORTUNITY_VALUES[state],
+        "medium" if sample >= 10 else "low",
+        {"method": "youtube_supply_vs_demand", "state": state, "estimate": True, "sample": sample, "related": related,
+         "strong": strong, "near_identical": identical, "demand": demand_value},
+        ["youtube_search_competition"],
     )

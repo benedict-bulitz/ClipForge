@@ -35,6 +35,15 @@ def next_topic_route(db: DbSession, config: SettingsDep, deps: DepsDep, payload:
     return service.next_topic(db, config, deps, refresh=bool(payload and payload.refresh))
 
 
+@router.post("/auto")
+def auto_topic_route(db: DbSession, config: SettingsDep, deps: DepsDep) -> dict:
+    """Full Auto: the strongest eligible next question, or ``no_strong_candidate`` - never a forced pick.
+
+    Selection only; the client starts generation through the normal generation entry point.
+    """
+    return service.auto_topic(db, config, deps)
+
+
 @router.post("/candidates/{candidate_id}/skip")
 def skip_topic_route(candidate_id: str, db: DbSession, config: SettingsDep, deps: DepsDep) -> dict:
     """Try another: remember the skip and propose the next-best candidate."""

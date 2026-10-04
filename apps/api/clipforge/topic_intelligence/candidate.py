@@ -31,6 +31,12 @@ SIGNAL_NAMES = (
     "question_form",
     "semantic",
     "short_worthiness",
+    # ti-score-v7 (Topic Intelligence V2): explicit worth-watching and evidence dimensions.
+    "curiosity",
+    "payoff",
+    "knowledge_value",
+    "demand",
+    "opportunity",
 )
 
 
@@ -94,7 +100,7 @@ class RawTopic:
     key: str
     title: str
     source: str
-    kind: Literal["article", "video", "news"]
+    kind: Literal["article", "video", "news", "evergreen"]
     observed_at: datetime
     description: str = ""
     url: str | None = None
@@ -102,8 +108,12 @@ class RawTopic:
     region: str = "DE"
     trend: Signal | None = None
     outlier: Signal | None = None
+    # Sustained interest (level, not change) - e.g. average daily article views.
+    demand: Signal | None = None
     metrics: dict[str, Any] = field(default_factory=dict)
     flags: set[str] = field(default_factory=set)
+    # Editorial evergreen seed questions for this subject (``evergreen`` sightings only).
+    seed_questions: tuple[str, ...] = ()
 
     def source_signal(self) -> dict[str, Any]:
         """Compact provenance of this sighting (no raw payload)."""
@@ -127,7 +137,7 @@ class TopicGroup:
     @property
     def title(self) -> str:
         # Prefer the encyclopedic article title, then a news headline, then a video title.
-        order = {"article": 0, "news": 1, "video": 2}
+        order = {"evergreen": 0, "article": 1, "news": 2, "video": 3}
         return min(self.sightings, key=lambda item: (order[item.kind], item.title)).title
 
     @property
@@ -141,6 +151,15 @@ class TopicGroup:
     @property
     def newest(self) -> datetime:
         return max(item.observed_at for item in self.sightings)
+
+    @property
+    def seed_questions(self) -> tuple[str, ...]:
+        return tuple(dict.fromkeys(question for item in self.sightings for question in item.seed_questions))
+
+    @property
+    def evergreen(self) -> bool:
+        """An editorial evergreen subject (not merely an old trend)."""
+        return any(item.kind == "evergreen" for item in self.sightings)
 
     def description(self) -> str:
         for item in self.sightings:

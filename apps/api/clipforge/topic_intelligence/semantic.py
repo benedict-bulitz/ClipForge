@@ -37,7 +37,7 @@ from . import runtime
 from .candidate import Signal, TopicGroup
 from .text import compact, extract_question
 
-SEMANTIC_CURATOR_VERSION = "semantic-curator-v2"
+SEMANTIC_CURATOR_VERSION = "semantic-curator-v3"
 SEMANTIC_CLIENT_FACTORY: Any = OpenAI
 # Topics per curator request.  semantic-curator-v2 asks 14 ratings + 14 issue codes per topic
 # (v1: 9 + 8): ~3,000 visible output tokens per 20 topics plus hidden reasoning ran past the
@@ -80,6 +80,12 @@ ISSUES = (
     "generic_advice",
     "broad_overview",
     "no_clear_reveal",
+    # v3 (Topic Intelligence V2): hard eligibility the deterministic rules cannot see
+    "trivial_answer",
+    "speculation_dependent",
+    "misleading_premise",
+    # Only meaningful while the news is fresh: scoring rejects it without fresh timely evidence.
+    "current_event_only",
 )
 
 CURATOR_INSTRUCTIONS = (
@@ -112,9 +118,22 @@ CURATOR_INSTRUCTIONS = (
     "exactly one core question). Also set grounded (true only if the evidence supports every premise of the question). "
     "Issue codes, allowed values only: unexplained_metaphor, unclear_payoff, rhetorical_or_opinion, niche_context_required, "
     "too_narrow_audience, demographic_subgroup_only, unnatural_or_headline_german, unsupported_premise, "
-    "multi_part_question, list_answer, abstract_or_survey, generic_advice, broad_overview, no_clear_reveal. Be strict; "
-    "when in doubt, score low or set usable=false. reason: at most 12 words. Return the supplied id unchanged. "
-    "Structured output only."
+    "multi_part_question, list_answer, abstract_or_survey, generic_advice, broad_overview, no_clear_reveal, "
+    "trivial_answer (the answer is obvious or one boring fact), speculation_dependent (no settled answer exists yet), "
+    "misleading_premise (the premise is a myth or false - a myth may only be asked as 'Stimmt es, dass ...?'), "
+    "current_event_only (the question only makes sense while a specific news story is current). "
+    "TOPIC VS QUESTION (v3): a topic is a subject; the question is what the video answers. Some topics come with "
+    "candidate_questions (editorial evergreen seeds): choose the strongest one, improve its wording if needed, or write a "
+    "better single question about the same subject - never keep a weak question just because it was supplied. For such "
+    "evergreen topics the evidence is the subject itself: set grounded=true only if the premise is established, "
+    "textbook-level knowledge (not a myth, not an open research question). Fit the question form to the actual mechanism - "
+    "do not force 'Warum ...?': 'Wie funktioniert ...?', 'Was würde passieren, wenn ...?', 'Stimmt es, dass ...?', "
+    "'Woher wissen wir ...?', 'Was macht ... anders?' are all fine. Curiosity without a concrete payoff is clickbait; a "
+    "payoff without curiosity is a boring short - both must be high for a strong suggestion. Also return subject (1-3 "
+    "German words: the thing the video is about, e.g. 'Mars') and aspect (1-4 words: what is asked about it, e.g. 'rote "
+    "Farbe'); two questions with the same subject and aspect are the same video. Optionally rate knowledge_value 0-10 (will "
+    "the viewer genuinely learn a mechanism or cause, not just hear one fact). Be strict; when in doubt, score low or set "
+    "usable=false. reason: at most 12 words. Return the supplied id unchanged. Structured output only."
 )
 
 
@@ -140,6 +159,10 @@ class AICuratedTopic(BaseModel):
     grounded: bool = False
     issues: list[str] = Field(default_factory=list)
     reason: str = Field(default="", max_length=200)
+    # v3: LLM-assisted semantic dedupe and knowledge value (optional; derived when absent)
+    subject: str = Field(default="", max_length=60)
+    aspect: str = Field(default="", max_length=60)
+    knowledge_value: int | None = Field(default=None, ge=0, le=10)
 
 
 class AICuratedBatch(BaseModel):
@@ -170,11 +193,16 @@ def curated_signal(judgement: dict[str, Any], *, status: str) -> Signal:
     issues = {str(issue) for issue in judgement.get("issues") or [] if str(issue) in ISSUES}
     if not judgement.get("grounded", False) and judgement.get("usable"):
         issues.add("unsupported_premise")
+    extra = {name: round(max(0, min(10, int(judgement.get(name, 5)))) / 10, 2) for name in ("curiosity_gap", "visual_potential", "dach_relevance")}
+    if judgement.get("knowledge_value") is not None:
+        extra["knowledge_value"] = round(max(0, min(10, int(judgement["knowledge_value"]))) / 10, 2)
     return Signal(
         round(sum(dims.values()) / len(dims), 4),
         "medium",
-        {"status": status, "dimensions": dims, "short_dimensions": short, "issues": sorted(issues), "reason": str(judgement.get("reason") or "")[:200],
-         "grounded": bool(judgement.get("grounded", False)), "curator_version": SEMANTIC_CURATOR_VERSION},
+        {"status": status, "dimensions": dims, "short_dimensions": short, "extra_dimensions": extra, "issues": sorted(issues),
+         "reason": str(judgement.get("reason") or "")[:200], "grounded": bool(judgement.get("grounded", False)),
+         "subject": str(judgement.get("subject") or "")[:60], "aspect": str(judgement.get("aspect") or "")[:60],
+         "curator_version": SEMANTIC_CURATOR_VERSION},
         ["semantic_curator"],
     )
 
@@ -186,7 +214,9 @@ def evidence(group: TopicGroup) -> list[dict[str, str]]:
     ]
 
 
-def local_question(group: TopicGroup) -> str | None:
+def local_question(group: TopicGroup, seeds: list[str] | None = None) -> str | None:
+    if seeds:
+        return seeds[0]
     for item in group.sightings:
         question, _notes = extract_question(item.title)
         if question:
@@ -194,8 +224,8 @@ def local_question(group: TopicGroup) -> str | None:
     return None
 
 
-def _cache_key(group: TopicGroup, model: str) -> str:
-    identity = json.dumps([group.key, sorted(item.title for item in group.sightings)], ensure_ascii=False)
+def _cache_key(group: TopicGroup, model: str, seeds: list[str] | None = None) -> str:
+    identity = json.dumps([group.key, sorted(item.title for item in group.sightings), list(seeds or [])], ensure_ascii=False)
     digest = hashlib.sha1(f"{model}|{identity}".encode()).hexdigest()
     return f"{CACHE_PROVIDER}:{SEMANTIC_CURATOR_VERSION}:{digest}"
 
@@ -224,18 +254,23 @@ def _usage(response: Any) -> dict[str, int | None]:
 
 def curate(
     db: Session, settings: Settings, groups: list[TopicGroup], *, requests_left: int, now: datetime,
-    batch_size: int = MAX_CURATION_BATCH,
+    batch_size: int = MAX_CURATION_BATCH, seeds: Any = None,
 ) -> CurationOutcome:
     """Cache first, then ONE request for the first ``batch_size`` uncached topics if the budget allows.
 
     A failed request (timeout, API or parse error) marks only its own topics ``failed`` -
     not evaluated, never judged low quality - and nothing is cached for them.
+    ``seeds``: group -> the evergreen candidate questions still worth asking (not used before).
     """
     model = settings.openai_worker_model
     outcome = CurationOutcome({}, {})
     missing: list[TopicGroup] = []
+
+    def seeds_for(group: TopicGroup) -> list[str]:
+        return list(seeds(group)) if seeds is not None else list(group.seed_questions)
+
     for group in groups:
-        entry = db.get(TopicSourceCache, _cache_key(group, model))
+        entry = db.get(TopicSourceCache, _cache_key(group, model, seeds_for(group)))
         expires = entry.expires_at if entry is not None else None
         if expires is not None and expires.tzinfo is None:
             expires = expires.replace(tzinfo=now.tzinfo)
@@ -253,10 +288,15 @@ def curate(
     size = max(1, int(batch_size))
     batch, rest = missing[:size], missing[size:]
     outcome.statuses.update({group.key: "not_curated" for group in rest})
-    request = [
-        {"id": f"t{index}", "topic": group.title, "evidence": evidence(group), **({"local_question": q} if (q := local_question(group)) else {})}
-        for index, group in enumerate(batch)
-    ]
+    request = []
+    for index, group in enumerate(batch):
+        candidates = seeds_for(group)
+        item: dict[str, Any] = {"id": f"t{index}", "topic": group.title, "evidence": evidence(group)}
+        if (question := local_question(group, candidates)):
+            item["local_question"] = question
+        if candidates:
+            item["candidate_questions"] = candidates[:3]
+        request.append(item)
     db.commit()  # no open transaction while waiting on OpenAI
     outcome.requests = 1
     runtime.FLIGHT.stage("curator_request", "openai_curator")
@@ -302,7 +342,7 @@ def curate(
             continue
         outcome.judgements[group.key] = judgement
         outcome.statuses[group.key] = "curated"
-        key = _cache_key(group, model)
+        key = _cache_key(group, model, seeds_for(group))
         entry = db.get(TopicSourceCache, key) or TopicSourceCache(key=key, provider=CACHE_PROVIDER)
         entry.payload = judgement
         entry.fetched_at = now

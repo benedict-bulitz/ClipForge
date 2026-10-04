@@ -14,6 +14,7 @@ real question, no embedded answer, no clickbait, no number the evidence lacks.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -30,7 +31,7 @@ from .text import (
 # Topics per evaluation round (one curator request per round when AI is enabled).
 MAX_BATCH = 20
 # Bumped whenever the question step changes, so pools built by an older one are not reused.
-TRANSFORMATION_VERSION = "tq3"
+TRANSFORMATION_VERSION = "tq4"
 
 FLAG_VALUES = (
     "opinion",
@@ -67,7 +68,7 @@ class Transformed:
     key: str
     question: str
     niche: str
-    method: Literal["curator", "source_question", "converted_headline", "template", "none"]
+    method: Literal["curator", "source_question", "converted_headline", "template", "evergreen_seed", "none"]
     assessment: dict[str, float] = field(default_factory=dict)
     assessment_confidence: Literal["low", "medium", "high"] = "low"
     flags: list[str] = field(default_factory=list)
@@ -88,7 +89,8 @@ VISUAL_BY_NICHE = {
 
 
 def _evidence_text(group: TopicGroup) -> str:
-    return " ".join(f"{item.title} {item.description}" for item in group.sightings)
+    # Editorial seed questions are part of a subject's evidence (their numbers are not invented here).
+    return " ".join(f"{item.title} {item.description} {' '.join(item.seed_questions)}" for item in group.sightings)
 
 
 def _group_flags(group: TopicGroup) -> list[str]:
@@ -106,7 +108,7 @@ def _heuristic_assessment(question: str, niche: str, group: TopicGroup, *, templ
     mechanism = question_mechanism(question)
     curiosity = {"paradox": 0.8, "what_if": 0.8, "why": 0.75, "how": 0.7, "yes_no": 0.62}.get(mechanism, 0.5)
     payoff = {"paradox": 0.7, "what_if": 0.65, "why": 0.7, "how": 0.7, "yes_no": 0.6}.get(mechanism, 0.5)
-    has_article = any(item.kind == "article" for item in group.sightings)
+    has_article = any(item.kind in {"article", "evergreen"} for item in group.sightings)
     return {
         "curiosity_gap": curiosity,
         "clear_payoff": payoff,
@@ -133,7 +135,7 @@ def _template_question(group: TopicGroup, niche: str) -> tuple[str, str, set[str
     supported concrete question is not transformed at all.
     """
     evidence = _evidence_text(group)
-    order = {"video": 0, "news": 1, "article": 2}
+    order = {"video": 0, "news": 1, "article": 2, "evergreen": 3}
     for item in sorted(group.sightings, key=lambda sighting: (order[sighting.kind], sighting.title)):
         question, notes = extract_question(item.title)
         if question and detect_text_language(question) != "en" and not question_issues(question, evidence=evidence):
@@ -170,9 +172,28 @@ def _with_article(subject: str, text: str) -> str | None:
     return None
 
 
-def deterministic_transform(group: TopicGroup) -> Transformed:
+def evergreen_seed(group: TopicGroup, avoid: Callable[[str], bool] | None = None) -> str | None:
+    """The strongest editorial seed question not yet used (V2: one topic, several possible questions).
+
+    Strength = the curiosity structure of the question (paradox > what-if > why > how ...);
+    ties keep the catalog order.  Seeds with a weak short shape are never chosen.
+    """
+    from .signals import QUESTION_FORM_VALUES
+    from .text import short_shape_flags
+
+    seeds = [seed for seed in group.seed_questions if not (avoid and avoid(seed)) and not short_shape_flags(seed)]
+    if not seeds:
+        return None
+    return max(seeds, key=lambda seed: (QUESTION_FORM_VALUES.get(question_mechanism(seed), 0.5), -seeds.index(seed)))
+
+
+def deterministic_transform(group: TopicGroup, avoid: Callable[[str], bool] | None = None) -> Transformed:
     niche, _strength = classify_niche(group.title, group.description())
-    question, method, notes = _template_question(group, niche)
+    seed = evergreen_seed(group, avoid) if group.evergreen else None
+    if seed is not None:
+        question, method, notes = seed, "evergreen_seed", set()
+    else:
+        question, method, notes = _template_question(group, niche)
     flags = _group_flags(group)
     if notes & {"shouting", "exclamation"}:
         flags = sorted({*flags, "clickbait_source"})  # styling removed; the premise still counts less
@@ -224,7 +245,7 @@ def curated_transform(group: TopicGroup, judgement: dict[str, Any], semantic_sig
         "premise_clarity": ten("self_contained_clarity"),
         "information_gain": ten("knowledge_short_fit"),
         "visual_potential": ten("visual_potential"),
-        "researchability": 0.8 if any(item.kind == "article" for item in group.sightings) else 0.6,
+        "researchability": 0.8 if any(item.kind in {"article", "evergreen"} for item in group.sightings) else 0.6,
         "dach_relevance": ten("dach_relevance"),
         "broad_appeal": ten("universal_12plus_relevance"),
         "accessibility": ten("prior_knowledge_free"),

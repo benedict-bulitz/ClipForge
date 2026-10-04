@@ -216,6 +216,7 @@ def test_calibration_lists_every_curated_candidate_with_its_gates(db, monkeypatc
 
 
 def test_quality_gates_are_unchanged():
-    assert scoring.SCORE_VERSION == "ti-score-v6" and semantic.SEMANTIC_CURATOR_VERSION == "semantic-curator-v2"
+    # V2 (ti-score-v7 / semantic-curator-v3) adds gates; the V1 thresholds below stay exactly as they were.
+    assert scoring.SCORE_VERSION == "ti-score-v7" and semantic.SEMANTIC_CURATOR_VERSION == "semantic-curator-v3"
     assert scoring.SEMANTIC_DIMENSION_MIN == 0.6 and scoring.SHORT_WORTHINESS_FLOOR == 0.45
     assert scoring.SINGLE_QUESTION_FOCUS_MIN == 0.6 and scoring.QUALITY_FLOOR == 0.55 and scoring.PRIOR_KNOWLEDGE_GATE == 0.5

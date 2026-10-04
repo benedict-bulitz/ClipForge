@@ -26,6 +26,8 @@ from clipforge.topic_intelligence.candidate import (
     candidate_id_for,
 )
 from clipforge.topic_intelligence.routes import diagnostics_route
+from clipforge.topic_intelligence.signals import curiosity as curiosity_signal
+from clipforge.topic_intelligence.signals import payoff as payoff_signal
 
 OBSCURE = [
     {"title": "GICON-Höhenwindturm", "views": 40_000, "description": "Windkraftanlage in Brandenburg",
@@ -123,9 +125,12 @@ def test_curator_reframes_obscure_topics_into_broad_questions_and_they_may_win(d
 
 def candidate(key: str, *, question: str = "Warum passiert das?", topic: str = "Thema", niche: str = "wissenschaft", **signals: Signal) -> TopicCandidate:
     base = {name: Signal.unavailable("not_measured") for name in SIGNAL_NAMES}
-    features, _evidence = service.quality_signals(question, topic, "", niche, {}, "template")
+    features, evidence = service.quality_signals(question, topic, "", niche, {}, "template")
     base["accessibility"] = features["accessibility"]
     base["question_form"] = features["question_form"]
+    # Like build_candidate without a curator: curiosity/payoff from the question's mechanism (low confidence).
+    base["curiosity"] = curiosity_signal(evidence["mechanism"], None)
+    base["payoff"] = payoff_signal(evidence["mechanism"], None)
     base.update(signals)
     return TopicCandidate(
         candidate_id=candidate_id_for(key), topic=topic, question=question, rationale="", source_signals=[], discovered_at=NOW,
@@ -182,18 +187,22 @@ def test_generic_wrapper_loses_to_a_concrete_question_on_the_same_topic():
 
 
 def test_mass_audience_quality_outweighs_a_bigger_spike():
+    # v7: question quality is curiosity + payoff (was: suitability, now weight 0).
     niche_spike = score(candidate(
         "spike", question="Wie funktioniert ein Höhenwindturm?", topic="Höhenwindturm", niche="technik",
         trend=Signal(1.0, "high", sources=["wikipedia_pageviews"]), suitability=Signal(0.55, "low"), broad_appeal=Signal(0.5, "medium"),
+        curiosity=Signal(0.55, "low"), payoff=Signal(0.55, "low"),
     ))
     broad = score(candidate(
         "broad", question="Warum fühlen wir uns nach einem Mittagsschlaf manchmal schlechter?", topic="Schlafträgheit",
         niche="koerper_gesundheit", trend=Signal(0.4, "medium", sources=["wikipedia_pageviews"]),
         suitability=Signal(0.85, "medium"), broad_appeal=Signal(0.9, "medium"),
+        curiosity=Signal(0.85, "medium"), payoff=Signal(0.85, "medium"),
     ))
     assert broad.final_score > niche_spike.final_score
     weights = scoring.DEFAULT_WEIGHTS
-    assert sum(weights[name] for name in scoring.QUALITY_SIGNALS) > 3 * weights["trend"]
+    worth_watching = ("curiosity", "payoff", "short_worthiness", "knowledge_value")
+    assert sum(weights[name] for name in worth_watching) > 3 * (weights["trend"] + weights["demand"])
 
 
 def test_missing_own_analytics_and_quality_data_stay_neutral():

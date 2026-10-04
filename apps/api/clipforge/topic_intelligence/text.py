@@ -223,7 +223,7 @@ def classify_niche(*texts: str) -> tuple[str, float]:
 # ---------------------------------------------------------------------------
 
 _GERMAN_QUESTION_START = re.compile(
-    r"^(?:warum|wieso|weshalb|wie|was|wer|wo|woher|wohin|wann|welche[rsmn]?|wodurch|wozu|wofür|womit|"
+    r"^(?:warum|wieso|weshalb|wie|was|wer|wo|woher|wohin|woraus|worin|woran|wann|welche[rsmn]?|wodurch|wozu|wofür|womit|"
     r"kann|können|ist|sind|gibt|hat|haben|stimmt|macht|machen|muss|müssen|würde|wird|werden|darf|sollte)\b",
     re.IGNORECASE,
 )
@@ -562,3 +562,67 @@ def has_universal_subject(question: str) -> bool:
     """The question is about the viewer, people in general or the everyday/physical world."""
     words = {word.casefold() for word in re.findall(r"[\wÄÖÜäöüß]+", str(question or ""))}
     return bool(words & UNIVERSAL_CUES)
+
+
+# ---------------------------------------------------------------------------
+# V2 semantic question equivalence (dedupe / novelty).  ``similarity`` above is an
+# overlap coefficient: one shared token of a one-word question makes it 1.0
+# ("Warum schlafen wir?" == "Warum träumen wir im Schlaf?"), while an unstemmed
+# adjective or a paraphrase misses ("Mars rot" vs "Rote Planet ... Farbe" = 0.0).
+# ---------------------------------------------------------------------------
+
+# Verbs that only carry the question's grammar ("Warum SIEHT der Mars rot AUS?").
+_LIGHT_VERBS = frozenset({
+    "sieht", "aussieht", "aussehen", "wirkt", "wirken", "erscheint", "erscheinen", "steckt", "stecken",
+    "kommt", "kommen", "liegt", "liegen", "bringt", "geht", "gehen", "lasst", "laesst", "lassen",
+    # possessives carry no concept ("Woher hat der Mars SEINE Farbe?")
+    "seine", "seinen", "seiner", "seinem", "ihre", "ihren", "ihrer", "ihrem", "unsere", "unseren",
+})
+# Fixed paraphrases of one subject (folded, matched on word boundaries before tokenizing).
+_PHRASE_SYNONYMS = (
+    (re.compile(r"\broten? planeten?\b|\brote[rn]? planet\b"), "mars"),
+    (re.compile(r"\bblaue[rn]? planet(?:en)?\b"), "erde"),
+    (re.compile(r"\berdtrabant(?:en)?\b"), "mond"),
+)
+# Colour words: the asked attribute "Farbe" (rot/blau/...) - "Warum ist X rot?" ~ "Woher hat X seine Farbe?".
+_COLOURS = ("rot", "blau", "gruen", "gelb", "orang", "violett", "lila", "braun", "grau", "weiss", "schwarz", "pink", "farb")
+
+
+def _colour(word: str) -> str | None:
+    for colour in _COLOURS:
+        if word.startswith(colour) and len(word) <= len(colour) + 3:
+            return colour
+    return None
+
+
+def equivalence_tokens(text: str) -> list[str]:
+    """Content tokens for question equivalence: paraphrases folded, grammar-only verbs dropped."""
+    folded = fold(text)
+    for pattern, replacement in _PHRASE_SYNONYMS:
+        folded = pattern.sub(replacement, folded)
+    tokens: list[str] = []
+    for word in _WORD_RE.findall(folded):
+        if word in _LIGHT_VERBS:
+            continue
+        colour = _colour(word)
+        if colour is not None:
+            for token in (colour, "farb") if colour != "farb" else ("farb",):
+                if token not in tokens:
+                    tokens.append(token)
+            continue
+        tokens.extend(token for token in content_tokens(word) if token not in tokens)
+    return tokens
+
+
+def question_equivalence(left: str, right: str) -> float:
+    """Soft Dice coefficient (0..1): both questions must share their concepts, not just one word.
+
+    "Warum ist der Mars rot?" ~ "Was macht den Mars eigentlich rot?" = 1.0;
+    vs "Warum hat Mars so große Staubstürme?" = 0.4 (distinct question, same subject).
+    """
+    a, b = equivalence_tokens(left), equivalence_tokens(right)
+    if not a or not b:
+        return 0.0
+    forward = sum(max(token_match(token, other) for other in b) for token in a)
+    backward = sum(max(token_match(token, other) for other in a) for token in b)
+    return round((forward + backward) / (len(a) + len(b)), 4)

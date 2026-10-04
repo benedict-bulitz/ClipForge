@@ -2,6 +2,10 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
+  AUTO_BUSY,
+  AUTO_NO_STRONG,
+  AUTO_UNAVAILABLE,
+  autoTopicOutcome,
   DISCOVERY_POLL_LIMIT,
   DISCOVERY_UNAVAILABLE,
   DISCOVERY_WAIT_MS,
@@ -414,4 +418,52 @@ test("replaceChips dismisses a chip only when another question takes its place",
   const withReserve = replaceChips({ ...state, reserve: [{ ...candidate(5), fetched_at: 1, rationale: "", confidence: "low" }] }, null);
   assert.deepEqual(withReserve.dismissed, []); // the empty third slot is filled first, nothing is discarded
   assert.deepEqual(visibleIds(withReserve.state), ["tc_0", "tc_1", "tc_5"]);
+});
+
+
+// --- Topic Intelligence V2: reasoning, signal labels, Full Auto --------------------------------------
+
+test("chips keep the user-facing reason and evidence label, never scores", () => {
+  const state = mergeSuggestions(emptySuggestions(), [
+    { ...candidate(0), reason: "Starke Neugier-Frage mit konkreter Antwort.", signal_label: "Zeitlos" },
+    { ...candidate(1) },
+  ], 1);
+  assert.equal(state.visible[0]?.reason, "Starke Neugier-Frage mit konkreter Antwort.");
+  assert.equal(state.visible[0]?.signal_label, "Zeitlos");
+  assert.equal(state.visible[1]?.signal_label, null); // no claim without evidence
+  const restored = parseSuggestions(serializeSuggestions(state));
+  assert.equal(restored.visible[0]?.signal_label, "Zeitlos");
+  const chips = home.slice(home.indexOf("function TopicSuggestionChips"), home.indexOf("function bulkDeleteSummary"));
+  assert.match(chips, /item\.signal_label/);
+  assert.match(chips, /Warum es funktionieren könnte: \{item\.reason\}/);
+  assert.doesNotMatch(chips, /final_score|confidence/);
+});
+
+test("Full Auto: a selected question starts with provenance; otherwise nothing starts and the reason is said", () => {
+  const selected = autoTopicOutcome({
+    status: "selected", message: null,
+    candidate: { candidate_id: "tc_7", question: " Warum ist der Mars rot? ", reason: "Zeitloses Thema.", signal_label: "Zeitlos" },
+  });
+  assert.deepEqual(selected, {
+    kind: "selected", question: "Warum ist der Mars rot?", reason: "Zeitloses Thema.", signalLabel: "Zeitlos",
+    source: { topic_source: "topic_intelligence", topic_candidate_id: "tc_7" },
+  });
+  assert.deepEqual(autoTopicOutcome({ status: "no_strong_candidate", message: null, candidate: null }), { kind: "none", message: AUTO_NO_STRONG });
+  assert.deepEqual(autoTopicOutcome({ status: "discovering", message: null, candidate: null }), { kind: "busy", message: AUTO_BUSY });
+  assert.deepEqual(autoTopicOutcome({ status: "unavailable", message: "x", candidate: null }), { kind: "unavailable", message: AUTO_UNAVAILABLE });
+  // A "selected" answer without a usable question never starts anything.
+  assert.equal(autoTopicOutcome({ status: "selected", message: null, candidate: { candidate_id: "tc_8", question: "  " } }).kind, "unavailable");
+});
+
+test("Home offers the three modes without duplicating controls", () => {
+  // Manual: the textarea + Generate; Assisted: the suggestion chips; Full Auto: one button.
+  assert.match(home, /placeholder="What should ClipForge create\?"/);
+  assert.match(home, /<TopicSuggestionChips state=\{suggestions\}/);
+  assert.equal(home.split("/> Generate automatically").length - 1, 1); // exactly one rendered button
+  const auto = home.slice(home.indexOf("async function generateAutomatically"), home.indexOf("/** \"Abbrechen\""));
+  assert.match(auto, /selectAutoTopic\(signal\)/);
+  assert.match(auto, /if \(outcome\.kind !== "selected"\) \{\n\s+setAutoNote\(outcome\.message\);\n\s+return;/);
+  assert.match(auto, /startGeneration\(outcome\.question, options, outcome\.source\)/); // the one generation entry point
+  assert.doesNotMatch(auto, /setPrompt/); // the manual textarea is never touched
+  assert.match(api, /"\/topic-intelligence\/auto"/);
 });

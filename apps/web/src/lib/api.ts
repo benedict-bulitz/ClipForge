@@ -16,7 +16,7 @@ import type {
   BulkProjectDeleteResult,
   MusicTrack,
 } from "./types";
-import type { TopicGenerationSource, TopicSuggestionsRequest, TopicSuggestionsResponse } from "./topic-suggestions";
+import type { TopicAutoResponse, TopicGenerationSource, TopicSuggestionsRequest, TopicSuggestionsResponse } from "./topic-suggestions";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api";
 export const API_ORIGIN = API_URL.replace(/\/api\/?$/, "");
@@ -114,6 +114,11 @@ export function loadTopicSuggestions(body: TopicSuggestionsRequest, signal?: Abo
     body: JSON.stringify(body),
     signal,
   });
+}
+
+/** Full Auto: the backend selects the strongest eligible question (selection only; never starts generation). */
+export function selectAutoTopic(signal?: AbortSignal) {
+  return request<TopicAutoResponse>("/topic-intelligence/auto", { method: "POST", body: "{}", signal });
 }
 
 export function getGenerationJob(jobId: string, signal?: AbortSignal) {

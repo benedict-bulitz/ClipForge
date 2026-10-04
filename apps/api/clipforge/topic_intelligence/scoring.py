@@ -78,10 +78,27 @@ potential; minus weak question shapes) weighs 0.13 and gates:
 No domain is penalized: the signal judges the question's shape and payoff, not
 its niche.  12+ accessibility and grounding gates are unchanged.
 
-Unchanged from v1: missing data is neutral (0.5), never zero, and only lowers
-``confidence``; low-confidence evidence is shrunk towards neutral;
-competition enters as openness; trend decays with evidence age; hard
-rejections are separate from the score.
+v7 (Topic Intelligence V2, see docs/topic-intelligence-v2.md).  The V1 audit found
+curiosity at 3 % and payoff at 2.6 % of the score, clarity outweighing curiosity 4:1,
+and 56 % of the weight coming from one curator answer counted five times:
+
+* Worth-watching core (0.44): ``curiosity`` 0.15, ``payoff`` 0.13, ``short_worthiness``
+  0.09, ``knowledge_value`` 0.07.  Curator answers below 6/10 on curiosity strength or
+  payoff specificity are REJECTED (``low_curiosity`` / ``weak_payoff``), not ranked lower.
+* Evidence (0.22): ``demand`` (sustained interest level) 0.08, ``trend`` (momentum)
+  0.06, ``outlier`` 0.05, ``opportunity`` (supply read against demand) 0.03.  Evidence
+  signals are BONUS-ONLY: missing evidence counts 0 - never neutral, never positive -
+  and stale evidence (past its TTL) counts as missing.
+* Superseded V1 signals stay measured for diagnostics with weight 0 (``suitability``,
+  ``semantic``, ``competition``); the semantic gates are unchanged.
+* Confidence-aware: the final score subtracts a small, explicit penalty for medium/low
+  overall confidence, so thin evidence cannot beat a slightly weaker, well-backed candidate.
+* Labels (TRENDING / EMERGING / TIMELY / EVERGREEN / EVERGREEN_WITH_CURRENT_INTEREST) come
+  only from ``signal_class`` over fresh evidence - never from the LLM.
+* Full Auto (``auto_eligibility``) has its own minimum quality; nothing wins by default.
+
+Unchanged from v1: low-confidence evidence is shrunk towards neutral for quality
+signals; trend decays with evidence age; hard rejections are separate from the score.
 """
 from __future__ import annotations
 
@@ -104,9 +121,10 @@ from .candidate import (
     lower_confidence,
 )
 from .history import is_duplicate
+from .signals import evidence_age_hours, is_stale
 from .transform import REJECT_FLAGS
 
-SCORE_VERSION = "ti-score-v6"
+SCORE_VERSION = "ti-score-v7"
 NEUTRAL_PRIOR = 0.5
 CONFIDENCE_WEIGHT: dict[str, float] = {"high": 1.0, "medium": 0.8, "low": 0.55, "unavailable": 0.0}
 TREND_HALF_LIFE_HOURS = 48.0
@@ -121,21 +139,40 @@ MIN_SUITABILITY = 0.35
 # outlier) still decides between good topics; novelty and fit keep the channel
 # coherent; own performance stays a small optional prior.
 DEFAULT_WEIGHTS: dict[str, float] = {
-    "short_worthiness": 0.13,
-    "accessibility": 0.12,
-    "broad_appeal": 0.10,
-    "trend": 0.10,
-    "semantic": 0.09,
-    "suitability": 0.08,
-    "outlier": 0.08,
-    "novelty": 0.08,
-    "channel_fit": 0.05,
-    "question_form": 0.04,
-    "visual": 0.04,
+    # Worth watching (0.44): "I actually want to know this" AND a concrete answer.
+    "curiosity": 0.15,
+    "payoff": 0.13,
+    "short_worthiness": 0.09,
+    "knowledge_value": 0.07,
+    # Evidence (0.22): real, fresh signals only; bonus-only (missing = 0).
+    "demand": 0.08,
+    "trend": 0.06,
+    "outlier": 0.05,
+    "opportunity": 0.03,
+    # Fit (0.30)
+    "novelty": 0.06,
+    "accessibility": 0.06,
+    "broad_appeal": 0.05,
+    "visual": 0.05,
+    "channel_fit": 0.04,
     "researchability": 0.04,
-    "competition": 0.03,
+    # Small priors (0.04)
+    "question_form": 0.02,
     "own_performance": 0.02,
+    # Measured, gated, but superseded in the sum (kept so overrides stay possible).
+    "semantic": 0.0,
+    "suitability": 0.0,
+    "competition": 0.0,
 }
+# Evidence signals: bonus-only - missing or stale evidence contributes nothing (not a neutral 0.5).
+EVIDENCE_SIGNALS = frozenset({"demand", "trend", "outlier"})
+# Explicit confidence cost in the final score (high: none).
+CONFIDENCE_RANK_PENALTY: dict[str, float] = {"high": 0.0, "medium": 0.02, "low": 0.05, "unavailable": 0.05}
+# Worth-watching gates on the curator's judgement (6/10, like every semantic dimension).
+CURIOSITY_MIN = 0.7  # "technically valid but not worth watching" (6/10) is the V1 failure mode
+PAYOFF_MIN = 0.6
+# Curator issues that only reject when fresh timely evidence is missing.
+CONDITIONAL_ISSUES = frozenset({"current_event_only"})
 WEIGHT_RATIONALE: dict[str, str] = {
     "short_worthiness": "A strong short: immediate curiosity, one specific and surprising reveal, a concrete premise, footage.",
     "semantic": "Independent judgement of the final question: clear, factual payoff, universal, natural German.",
@@ -151,6 +188,11 @@ WEIGHT_RATIONALE: dict[str, str] = {
     "researchability": "Claims must be verifiable by the existing research step.",
     "competition": "Saturated topics are harder to win; an estimate, so a modest weight.",
     "own_performance": "Optional prior from the channel's own published videos; small until data is rich.",
+    "curiosity": "A scrolling viewer must WANT the answer - a fact is not a question worth watching.",
+    "payoff": "One concrete, satisfying answer; curiosity without payoff is clickbait.",
+    "knowledge_value": "The viewer genuinely learns a mechanism or cause.",
+    "demand": "Evidence that viewers care: sustained interest level (Wikipedia, related Shorts), never an LLM opinion.",
+    "opportunity": "High supply can mean high demand; a saturated identical angle is the problem, not supply itself.",
 }
 
 # Mass-audience quality = mean of these (available ones only).
@@ -213,10 +255,14 @@ LABELS = {
     "visual": ("Good visual potential", "Limited visual potential"),
     "researchability": ("Well researchable", "Hard to verify"),
     "own_performance": ("Similar videos did well on your channel", "Similar videos were weaker on your channel"),
+    "curiosity": ("Strong curiosity hook", "Weak curiosity"),
+    "payoff": ("Concrete, satisfying answer", "Unclear payoff"),
+    "knowledge_value": ("Teaches a real mechanism", "Little to learn"),
+    "demand": ("Proven viewer interest", "Little measured interest"),
 }
 NEGATIVE_LABEL_SIGNALS = {
     "novelty", "channel_fit", "suitability", "own_performance", "broad_appeal", "accessibility", "question_form", "semantic",
-    "short_worthiness",
+    "short_worthiness", "curiosity", "payoff", "knowledge_value",
 }
 
 
@@ -349,8 +395,12 @@ def _effective(
 ) -> tuple[float, float | None, dict[str, Any]]:
     """(effective value used in the sum, raw directional value, notes)."""
     notes: dict[str, Any] = {}
+    bonus_only = name in EVIDENCE_SIGNALS
     if not signal.available:
-        return NEUTRAL_PRIOR, None, {"missing": True}
+        return (0.0 if bonus_only else NEUTRAL_PRIOR), None, {"missing": True}
+    if bonus_only and is_stale(signal, now):
+        # Past its TTL: no longer evidence of anything current.
+        return 0.0, None, {"missing": True, "stale": True, "age_hours": round(evidence_age_hours(signal, now) or 0.0, 1)}
     raw = float(signal.value or 0.0)
     if name == "trend":
         decay = _trend_decay(candidate, now)
@@ -365,13 +415,17 @@ def _effective(
         if exceptional:
             notes["exceptional_demand"] = True
         raw = 1.0 - saturation  # openness
+    if bonus_only:
+        return clamp(raw * CONFIDENCE_WEIGHT[signal.confidence]), raw, notes
     effective = NEUTRAL_PRIOR + (raw - NEUTRAL_PRIOR) * CONFIDENCE_WEIGHT[signal.confidence]
     return clamp(effective), raw, notes
 
 
 def rejection_reasons(
     candidate: TopicCandidate, *, issues: list[str], flags: list[str], quality: float | None, floor: float,
+    now: datetime | None = None,
 ) -> list[str]:
+    now = now or candidate.discovered_at
     reasons: list[str] = []
     if is_duplicate(candidate.signal("novelty")):
         reasons.append("duplicate_of_previous_topic")
@@ -388,9 +442,46 @@ def rejection_reasons(
         reasons.append("requires_prior_knowledge")
     reasons.extend(semantic_rejections(candidate, flags))
     reasons.extend(short_rejections(candidate))
+    reasons.extend(worth_watching_rejections(candidate))
+    if stale_current_event(candidate, now):
+        reasons.append("stale_current_event")
     if quality is not None and quality < floor:
         reasons.append("below_quality_floor")
     return list(dict.fromkeys(reasons))
+
+
+def worth_watching_rejections(candidate: TopicCandidate) -> list[str]:
+    """V2 hard gates: a curator-judged question needs real curiosity AND a concrete payoff.
+
+    "Technically valid but not worth watching" (6/10 everywhere except curiosity or
+    payoff) is removed, not ranked slightly lower.  Without a judgement the strict local
+    rules apply instead (``semantic_rejections``).
+    """
+    semantic = candidate.signal("semantic")
+    short = (semantic.evidence.get("short_dimensions") or {}) if semantic.available else {}
+    if not short:
+        return []
+    reasons = []
+    if float(short.get("curiosity_strength", 0.0)) < CURIOSITY_MIN:
+        reasons.append("low_curiosity")
+    if float(short.get("payoff_specificity", 0.0)) < PAYOFF_MIN:
+        reasons.append("weak_payoff")
+    return reasons
+
+
+def _source_kinds(candidate: TopicCandidate) -> set[str]:
+    return {str(item.get("kind")) for item in candidate.source_signals if item.get("kind") and item.get("kind") != "search"}
+
+
+def stale_current_event(candidate: TopicCandidate, now: datetime) -> bool:
+    """A question that only works as news, without fresh timely evidence behind it."""
+    semantic = candidate.signal("semantic")
+    news_only = _source_kinds(candidate) == {"news"}
+    event_only = semantic.available and "current_event_only" in (semantic.evidence.get("issues") or [])
+    if not (news_only or event_only):
+        return False
+    trend = candidate.signal("trend")
+    return not (trend.available and not is_stale(trend, now))
 
 
 def semantic_status(candidate: TopicCandidate) -> str:
@@ -405,7 +496,10 @@ def semantic_rejections(candidate: TopicCandidate, flags: list[str]) -> list[str
     status = semantic_status(candidate)
     if semantic.available:
         dims = semantic.evidence.get("dimensions") or {}
-        reasons = [f"semantic_{issue}" for issue in semantic.evidence.get("issues") or [] if issue not in SOFT_SHORT_ISSUES]
+        reasons = [
+            f"semantic_{issue}" for issue in semantic.evidence.get("issues") or []
+            if issue not in SOFT_SHORT_ISSUES and issue not in CONDITIONAL_ISSUES
+        ]
         reasons += [reason for name, reason in SEMANTIC_DIMENSION_REASONS.items() if float(dims.get(name, 0)) < SEMANTIC_DIMENSION_MIN]
         return reasons
     if status in {"pending", "absent"}:
@@ -442,8 +536,14 @@ def short_rejections(candidate: TopicCandidate) -> list[str]:
     return reasons
 
 
+# Optional evidence (own-channel analytics): its absence must not cost a cold-start candidate confidence.
+OPTIONAL_SIGNALS = frozenset({"own_performance"})
+
+
 def overall_confidence(candidate: TopicCandidate, weights: dict[str, float], *, degraded_sources: bool) -> Confidence:
-    covered = sum(weights[name] * CONFIDENCE_WEIGHT[candidate.signal(name).confidence] for name in weights)
+    counted = {name: weight for name, weight in weights.items() if name not in OPTIONAL_SIGNALS}
+    total = sum(counted.values()) or 1.0
+    covered = sum(weight * CONFIDENCE_WEIGHT[candidate.signal(name).confidence] for name, weight in counted.items()) / total
     confidence: Confidence = "high" if covered >= 0.75 else "medium" if covered >= 0.5 else "low"
     return lower_confidence(confidence) if degraded_sources else confidence
 
@@ -484,12 +584,15 @@ def score_candidate(
     flag_penalty = min(MAX_FLAG_PENALTY, FLAG_PENALTY * len(soft_flags))
     obscurity, obscurity_items = obscurity_penalty(candidate, exceptional)
     penalty = round(flag_penalty + obscurity, 4)
-    final = round(clamp(total - penalty), 4)
     floor = QUALITY_FLOOR_EXCEPTIONAL if exceptional else QUALITY_FLOOR
-    candidate.final_score = final
     candidate.score_version = version
-    candidate.rejection_reasons = rejection_reasons(candidate, issues=list(issues or []), flags=flags, quality=quality, floor=floor)
+    candidate.rejection_reasons = rejection_reasons(candidate, issues=list(issues or []), flags=flags, quality=quality, floor=floor, now=now)
     candidate.confidence = overall_confidence(candidate, weights, degraded_sources=degraded_sources)
+    # Confidence-aware: thin evidence pays an explicit, visible cost in the final score.
+    confidence_penalty = CONFIDENCE_RANK_PENALTY[candidate.confidence]
+    final = round(clamp(total - penalty - confidence_penalty), 4)
+    candidate.final_score = final
+    signal_class, class_basis = classify_signal(candidate, now)
     candidate.score_breakdown = {
         "version": version,
         "components": components,
@@ -528,6 +631,17 @@ def score_candidate(
             },
         },
         "trend_quality": trend_notes,
+        "score_before_confidence": round(clamp(total - penalty), 4),
+        "confidence_penalty": confidence_penalty,
+        "signal_class": signal_class,
+        "signal_class_basis": class_basis,
+        "worth_watching": {
+            "curiosity": candidate.signal("curiosity").value,
+            "payoff": candidate.signal("payoff").value,
+            "knowledge_value": candidate.signal("knowledge_value").value,
+            "curiosity_min": CURIOSITY_MIN,
+            "payoff_min": PAYOFF_MIN,
+        },
         "final": final,
         "neutral_prior": NEUTRAL_PRIOR,
         "confidence": candidate.confidence,
@@ -589,26 +703,46 @@ class RankedItem:
     final_score: float
     niche: str
     mechanism: str
+    family: str = ""  # V2: the subject ("mars"); two questions about one subject are related, not duplicates
 
 
-def diversify(items: Sequence[RankedItem], shown: Sequence[tuple[str, str]] = (), *, tolerance: float = DIVERSITY_TOLERANCE) -> list[RankedItem]:
+# A same-subject candidate may still be shown when it is this much stronger than every alternative.
+FAMILY_TOLERANCE = 0.08
+
+
+def diversify(
+    items: Sequence[RankedItem], shown: Sequence[tuple[str, ...]] = (), *, tolerance: float = DIVERSITY_TOLERANCE,
+) -> list[RankedItem]:
     """Reorder ranked items so near-equal candidates vary in subject and question structure.
 
-    Quality outranks diversity: a candidate is only moved ahead of a better one
-    that is at most ``tolerance`` points stronger.  ``shown`` = (niche,
-    mechanism) of suggestions that are already visible.
+    Quality outranks diversity: a candidate is only moved ahead of a better one that is
+    at most ``tolerance`` points stronger - ``FAMILY_TOLERANCE`` when the better one
+    repeats a subject already chosen (three Mars questions are not three choices).
+    ``shown`` = (niche, mechanism[, family]) of suggestions that are already visible.
     """
     remaining = sorted(items, key=lambda item: (-item.final_score, item.candidate_id))
-    niches = Counter(niche for niche, _mechanism in shown)
-    mechanisms = Counter(mechanism for _niche, mechanism in shown)
+    niches = Counter(entry[0] for entry in shown)
+    mechanisms = Counter(entry[1] for entry in shown)
+    families = Counter(entry[2] for entry in shown if len(entry) > 2 and entry[2])
+
+    def repeats_family(item: RankedItem) -> bool:
+        return bool(item.family) and families[item.family] > 0
+
     result: list[RankedItem] = []
     while remaining:
         best = remaining[0]
         window = [item for item in remaining if best.final_score - item.final_score <= tolerance]
+        if repeats_family(best):
+            # The best repeats a chosen subject: a different subject up to FAMILY_TOLERANCE weaker may go first.
+            window += [
+                item for item in remaining
+                if item not in window and best.final_score - item.final_score <= FAMILY_TOLERANCE and not repeats_family(item)
+            ]
         pick = min(
             window,
             key=lambda item: (
-                (niches[item.niche] > 0 and item.niche != "unknown") + (mechanisms[item.mechanism] > 0),
+                2 * repeats_family(item)
+                + (niches[item.niche] > 0 and item.niche != "unknown") + (mechanisms[item.mechanism] > 0),
                 -item.final_score,
                 item.candidate_id,
             ),
@@ -617,7 +751,103 @@ def diversify(items: Sequence[RankedItem], shown: Sequence[tuple[str, str]] = ()
         remaining.remove(pick)
         niches[pick.niche] += 1
         mechanisms[pick.mechanism] += 1
+        if pick.family:
+            families[pick.family] += 1
     return result
+
+
+# ---------------------------------------------------------------------------
+# Signal classes (trend freshness): labels come ONLY from fresh evidence
+# ---------------------------------------------------------------------------
+
+SIGNAL_CLASSES = ("TRENDING", "EMERGING", "TIMELY", "EVERGREEN_WITH_CURRENT_INTEREST", "EVERGREEN")
+SIGNAL_LABELS_DE = {
+    "TRENDING": "Trend",
+    "EMERGING": "Im Kommen",
+    "TIMELY": "Aktuell",
+    "EVERGREEN_WITH_CURRENT_INTEREST": "Zeitlos · gerade gefragt",
+    "EVERGREEN": "Zeitlos",
+}
+TRENDING_MIN, EMERGING_MIN = 0.6, 0.35
+STABLE_DEMAND_MIN = 0.35
+TIMELY_MIN_OUTLETS = 2
+
+
+def classify_signal(candidate: TopicCandidate, now: datetime) -> tuple[str | None, dict[str, Any]]:
+    """(class, basis) from evidence that is fresh NOW; None = no claim at all.
+
+    TRENDING / EMERGING / TIMELY need fresh momentum (inside its TTL); stale momentum
+    loses that status.  EVERGREEN needs evergreen evidence (an editorial evergreen
+    subject or a stable measured demand level) - never "evergreen" by default.
+    """
+    trend = candidate.signal("trend")
+    demand = candidate.signal("demand")
+    sources = {str(item.get("source")) for item in candidate.source_signals}
+    semantic = candidate.signal("semantic")
+    event_only = semantic.available and "current_event_only" in (semantic.evidence.get("issues") or [])
+    fresh = trend.available and not is_stale(trend, now) and trend.evidence.get("fetched_at") is not None
+    order = ("unavailable", "low", "medium", "high")
+    corroborated = len(set(trend.sources)) >= 2
+    value = float(trend.value or 0.0) if fresh else 0.0
+    current: str | None = None
+    if fresh and value >= TRENDING_MIN and order.index(trend.confidence) >= 2 and (
+        corroborated or (demand.available and (demand.value or 0) >= 0.5)
+    ):
+        current = "TRENDING"
+    elif fresh and "brave_news_de" in trend.sources and int(trend.evidence.get("outlets") or 0) >= TIMELY_MIN_OUTLETS:
+        current = "TIMELY"
+    elif fresh and value >= EMERGING_MIN:
+        current = "EMERGING"
+    editorial = "editorial_evergreen" in sources
+    stable = demand.available and (demand.value or 0) >= STABLE_DEMAND_MIN and order.index(demand.confidence) >= 2
+    evergreen = (editorial or stable) and not event_only and _source_kinds(candidate) != {"news"}
+    basis = {
+        "momentum_fresh": fresh,
+        "momentum": round(value, 3) if fresh else None,
+        "momentum_age_hours": None if not trend.available else (round(evidence_age_hours(trend, now) or 0.0, 1) if evidence_age_hours(trend, now) is not None else None),
+        "momentum_ttl_hours": trend.evidence.get("ttl_hours") if trend.available else None,
+        "momentum_sources": sorted(trend.sources) if trend.available else [],
+        "stale": bool(trend.available and is_stale(trend, now)),
+        "evergreen_evidence": "editorial_catalog" if editorial else "stable_demand" if stable else None,
+    }
+    if evergreen:
+        return ("EVERGREEN_WITH_CURRENT_INTEREST" if current else "EVERGREEN"), basis
+    return current, basis
+
+
+# ---------------------------------------------------------------------------
+# Full Auto: the strongest eligible question, or nothing
+# ---------------------------------------------------------------------------
+
+AUTO_MIN_SCORE = 0.55
+AUTO_MIN_CURIOSITY = 0.65
+AUTO_MIN_PAYOFF = 0.65
+# Without a curator judgement (or live evidence) confidence is low; then only an editorial
+# evergreen question that passed the strict local rules may be chosen - with this score.
+AUTO_FALLBACK_MIN_SCORE = 0.45
+
+
+def auto_eligibility(breakdown: dict[str, Any], *, rejected: bool, confidence: str, score: float) -> tuple[bool, list[str]]:
+    """Whether Full Auto may pick this candidate, and why not (minimum quality, never 'least bad')."""
+    if rejected:
+        return False, ["rejected"]
+    reasons: list[str] = []
+    worth = breakdown.get("worth_watching") or {}
+    curiosity, payoff = worth.get("curiosity"), worth.get("payoff")
+    evergreen_fallback = (breakdown.get("signal_class_basis") or {}).get("evergreen_evidence") == "editorial_catalog"
+    if confidence in {"medium", "high"}:
+        if score < AUTO_MIN_SCORE:
+            reasons.append("below_auto_min_score")
+        if curiosity is None or curiosity < AUTO_MIN_CURIOSITY:
+            reasons.append("auto_curiosity_too_low")
+        if payoff is None or payoff < AUTO_MIN_PAYOFF:
+            reasons.append("auto_payoff_too_low")
+    elif evergreen_fallback:
+        if score < AUTO_FALLBACK_MIN_SCORE:
+            reasons.append("below_auto_fallback_min_score")
+    else:
+        reasons.append("auto_confidence_too_low")
+    return not reasons, reasons
 
 
 def explain(breakdown: dict[str, Any], *, limit: int = 4) -> list[dict[str, str]]:

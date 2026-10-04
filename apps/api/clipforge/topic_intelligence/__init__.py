@@ -1,16 +1,20 @@
-"""Topic Intelligence V1: discover, score and propose the next German video topic.
+"""Topic Intelligence: discover, judge and propose the next German Knowledge-Short question.
 
-Flow (user-confirmed, never autonomous publishing)::
+V2 flow (docs/topic-intelligence-v2.md; user-confirmed, never autonomous publishing)::
 
-    sources (Wikipedia pageviews, YouTube DE, Brave News)  -> RawTopic
-    transform (topic -> natural German question)           -> TopicCandidate
-    signals (trend, outlier, competition, novelty, fit, own performance)
-    scoring.score_candidate  (the ONE scoring authority)   -> ranked pool
-    service.next_topic / skip_topic                        -> proposal
-    service.resolve_topic_provenance                       -> existing
-        POST /api/generation-jobs -> generation.create_generation_job
+    DISCOVER   sources: Wikipedia pageviews, YouTube DE chart, Brave News,
+               editorial evergreen subjects (evergreen.py)         -> RawTopic
+    NORMALIZE  group sightings of one subject (topic != question)  -> TopicGroup
+    HARD ELIGIBILITY (cheap)  prefilter persons/tragedy/calendar pages
+    DEDUPE     used/skipped topics, novelty vs ClipForge history
+    CHEAP EVIDENCE SCORING    curation priority (demand, momentum, outliers)
+    SHORTLIST  bounded AI budget, evergreen/live source mix
+    QUESTION FORMATION        curator (semantic.py) or seeds/extraction (transform.py)
+    SEMANTIC / SHORT-WORTHINESS EVALUATION   gates in scoring.py
+    CONFIDENCE-AWARE FINAL RANKING            scoring.score_candidate (the ONE authority)
+    SELECT     suggestions (3, diversified) | auto_topic (minimum quality) | next/skip
 
-This package never creates projects or runs the video pipeline itself: a
-confirmed topic is handed to the existing generation entry point exactly like
-a manually typed question.
+A confirmed topic is handed to the existing ``POST /api/generation-jobs`` exactly like a
+manually typed question (``resolve_topic_provenance``); manual questions never pass
+through Topic Intelligence.
 """

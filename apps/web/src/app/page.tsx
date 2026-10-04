@@ -3,15 +3,15 @@
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowRight, ChevronDown, Clapperboard, Clock3, CornerDownLeft, ListVideo, LoaderCircle, Plus, RefreshCw, Settings, Trash2 } from "lucide-react";
-import { ApiError, cancelGenerationJob, clearGenerationQueue, deleteAllProjects, getBulkProjectDeletePlan, getGenerationJob, getProject, listGenerationJobs, listProjectOverview, loadTopicSuggestions, removeQueuedGenerationJob, startGeneration } from "@/lib/api";
+import { ArrowRight, ChevronDown, Clapperboard, Clock3, CornerDownLeft, ListVideo, LoaderCircle, Plus, RefreshCw, Settings, Sparkles, Trash2 } from "lucide-react";
+import { ApiError, cancelGenerationJob, clearGenerationQueue, deleteAllProjects, getBulkProjectDeletePlan, getGenerationJob, getProject, listGenerationJobs, listProjectOverview, loadTopicSuggestions, removeQueuedGenerationJob, selectAutoTopic, startGeneration } from "@/lib/api";
 import { createGenerationWatcher, generationTimeLabel, POLL_TIMEOUT_MS, withTimeout, type GenerationWatcher } from "@/lib/generation-poll";
 import type { BulkProjectDeletePlan, GenerationJob, ProjectOverview } from "@/lib/types";
 import { activeQueueJobs, deletableProjectCount, historyStatusLabel, queueDisplayJobs, visibleProjectHistory } from "@/lib/queue-overview";
 import { applyJob, CANCEL_LABEL, CANCELLED_LABEL, CANCELLING_LABEL, cancelView, createCancelRequester, markCancelling, type CancelRequester } from "@/lib/generation-cancel";
 import { createHomePoller, type HomePoller } from "@/lib/home-poll";
 import { splitQuestions, submitQuestionsInOrder } from "@/lib/multi-question";
-import { browserSuggestionStorage, createTopicSuggestions, emptySuggestions, topicGenerationSource, type SuggestionState, type TopicSuggestion, type TopicSuggestions } from "@/lib/topic-suggestions";
+import { autoTopicOutcome, browserSuggestionStorage, createTopicSuggestions, emptySuggestions, topicGenerationSource, type SuggestionState, type TopicSuggestion, type TopicSuggestions } from "@/lib/topic-suggestions";
 import { AdvancedOptions } from "@/components/advanced-options";
 import { Brand } from "@/components/brand";
 import { Button } from "@/components/ui/button";
@@ -57,6 +57,8 @@ export default function Home() {
   /** The chip the textarea came from (provenance for the existing Generate button). */
   const [chosenTopic, setChosenTopic] = useState<TopicSuggestion | null>(null);
   const suggestionsRef = useRef<TopicSuggestions | null>(null);
+  /** Full Auto: which question was chosen automatically, or why none was (shown under the composer). */
+  const [autoNote, setAutoNote] = useState<string | null>(null);
   /** Jobs + history now; the poller then keeps the right cadence (see home-poll.ts). */
   async function refresh() {
     await poller.current?.refreshAll();
@@ -188,6 +190,38 @@ export default function Home() {
         }
       }
     } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not reach the ClipForge API.");
+    } finally {
+      generationRequest.current = false;
+      setLoading(false);
+    }
+  }
+
+  /**
+   * "Generate automatically" (Full Auto): Topic Intelligence picks the strongest eligible
+   * question; it is started through the same generation entry point with its provenance.
+   * Nothing starts when no question meets the minimum quality.  The textarea is untouched.
+   */
+  async function generateAutomatically() {
+    if (loading || generationRequest.current) return;
+    generationRequest.current = true;
+    setLoading(true);
+    setError(null);
+    setAutoNote("Die stärkste nächste Frage wird gesucht…");
+    try {
+      const outcome = autoTopicOutcome(await withTimeout((signal) => selectAutoTopic(signal), SUGGESTION_TIMEOUT_MS));
+      if (outcome.kind !== "selected") {
+        setAutoNote(outcome.message);
+        return;
+      }
+      const started = await startGeneration(outcome.question, options, outcome.source);
+      if (!started.project_id) throw new Error("The project could not be created.");
+      setAutoNote(`Automatisch gewählt: „${outcome.question}“${outcome.signalLabel ? ` · ${outcome.signalLabel}` : ""}${outcome.reason ? ` – ${outcome.reason}` : ""}`);
+      openWhenComplete(started);
+      setQueueOpen(true);
+      await refresh();
+    } catch (reason) {
+      setAutoNote(null);
       setError(reason instanceof Error ? reason.message : "Could not reach the ClipForge API.");
     } finally {
       generationRequest.current = false;
@@ -346,7 +380,10 @@ export default function Home() {
               <span className="mono hidden pl-2 text-[10px] uppercase tracking-[.08em] text-[#99998f] sm:inline-flex sm:items-center sm:gap-1.5">
                 <CornerDownLeft className="size-3" /> ⌘ Enter
               </span>
-              <Button variant="accent" onClick={() => void generate()} disabled={prompt.trim().length < 3 || loading} className="ml-auto min-w-36">
+              <Button variant="outline" onClick={() => void generateAutomatically()} disabled={loading} className="ml-auto" title="ClipForge wählt die stärkste nächste Frage selbst – oder sagt, dass gerade keine stark genug ist.">
+                <Sparkles className="size-4" /> Generate automatically
+              </Button>
+              <Button variant="accent" onClick={() => void generate()} disabled={prompt.trim().length < 3 || loading} className="min-w-36">
                 {loading ? <><LoaderCircle className="size-4 animate-spin" /> Starting…</> : <>Generate <ArrowRight className="size-4" /></>}
               </Button>
             </div>
@@ -356,6 +393,7 @@ export default function Home() {
             Multiple questions
           </label>
           {multipleQuestions && prompt.trim() && <p className="mt-1 px-2 text-left text-xs text-[var(--muted-foreground)]">{detectedQuestions.length} question{detectedQuestions.length === 1 ? "" : "s"} detected</p>}
+          {autoNote && <p role="status" aria-live="polite" className="mt-2 px-2 text-left text-xs text-[var(--muted-foreground)]">{autoNote}</p>}
           {error && <p role="alert" className="mt-3 text-sm font-medium text-[var(--destructive)]">{error}</p>}
           <div className="mt-3"><AdvancedOptions value={options} onChange={setOptions} prompt={prompt} onReset={() => setOptions(resetCreatePreferences())} queueToggle={<button type="button" aria-expanded={queueOpen} aria-controls="video-queue-panel" onClick={() => setQueueOpen((open) => !open)} className="flex items-center gap-2 rounded-full px-3 py-2 text-sm font-medium text-[var(--muted-foreground)] hover:bg-[var(--surface-hover)] hover:text-[var(--foreground)]"><ListVideo className="size-4" /> Video Queue <span className="rounded-full bg-[var(--accent-soft)] px-2 py-0.5 text-xs font-bold text-[var(--accent)]">{activeJobs.length}</span><ChevronDown className={`size-4 transition-transform ${queueOpen ? "rotate-180" : ""}`} /></button>} /></div>
         </div>
@@ -433,8 +471,15 @@ function TopicSuggestionChips({ state, onUse, onRefreshAll }: { state: Suggestio
       {count > 0 && (
         <div className="flex flex-wrap justify-center gap-2" aria-label="Themenvorschläge">
           {state.visible.map((item, index) => item && (
-            <button key={item.candidate_id} type="button" title={item.rationale || undefined} onClick={() => onUse(index)} className="topic-suggestion cf-surface rounded-full border px-4 py-2 text-xs font-medium text-[var(--muted-foreground)] transition-[transform,background-color,border-color,color] duration-150 ease-[cubic-bezier(.23,1,.32,1)] active:scale-[.97] hover:bg-[var(--surface-hover)] hover:text-[var(--foreground)]">
-              {item.question}
+            <button key={item.candidate_id} type="button" title={item.reason || item.rationale || undefined} onClick={() => onUse(index)} className="topic-suggestion cf-surface flex max-w-[250px] flex-col items-start gap-0.5 rounded-2xl border px-4 py-2 text-left text-xs font-medium text-[var(--muted-foreground)] transition-[transform,background-color,border-color,color] duration-150 ease-[cubic-bezier(.23,1,.32,1)] active:scale-[.97] hover:bg-[var(--surface-hover)] hover:text-[var(--foreground)]">
+              <span className="text-[var(--foreground)]">{item.question}</span>
+              {(item.signal_label || item.reason) && (
+                <span className="line-clamp-2 text-[10px] font-normal leading-4">
+                  {item.signal_label && <span className="font-semibold uppercase tracking-[.06em] text-[var(--accent)]">{item.signal_label}</span>}
+                  {item.signal_label && item.reason ? " · " : ""}
+                  {item.reason && <span>Warum es funktionieren könnte: {item.reason}</span>}
+                </span>
+              )}
             </button>
           ))}
         </div>

@@ -218,18 +218,25 @@ def _score(candidate: TopicCandidate, **kwargs) -> TopicCandidate:
     return scoring.score_candidate(candidate, weights=weights, version=version, now=NOW, **kwargs)
 
 
-def test_missing_data_is_neutral_not_zero():
+def test_missing_quality_data_is_neutral_and_missing_evidence_is_not_positive():
     nothing = _score(_candidate())
-    assert nothing.final_score == pytest.approx(0.5)
+    components = nothing.score_breakdown["components"]
     assert nothing.confidence == "low"
-    assert all(item["effective"] == 0.5 for item in nothing.score_breakdown["components"].values())
-    assert nothing.score_breakdown["components"]["own_performance"]["confidence"] == "unavailable"
+    # A missing quality judgement (or own analytics) is neutral: it neither helps nor hurts.
+    assert all(item["effective"] == 0.5 for name, item in components.items() if name not in scoring.EVIDENCE_SIGNALS)
+    assert components["own_performance"]["confidence"] == "unavailable"
+    # V2: missing demand/momentum/outlier evidence is NOT positive evidence - it counts 0.
+    assert all(components[name]["effective"] == 0.0 for name in scoring.EVIDENCE_SIGNALS)
+    evidence_weight = sum(scoring.DEFAULT_WEIGHTS[name] for name in scoring.EVIDENCE_SIGNALS)
+    assert nothing.final_score == pytest.approx(0.5 * (1 - evidence_weight) - scoring.CONFIDENCE_RANK_PENALTY["low"])
 
 
 def test_no_own_analytics_does_not_hurt_a_strong_candidate():
     strong = {
         "trend": Signal(0.9, "high", sources=["wikipedia_pageviews", "youtube_trending_de"]), "novelty": Signal(1.0, "high"),
         "channel_fit": Signal(0.9, "medium"), "suitability": Signal(0.85, "medium"), "visual": Signal(0.8, "medium"),
+        "curiosity": Signal(0.85, "medium"), "payoff": Signal(0.85, "medium"), "knowledge_value": Signal(0.8, "medium"),
+        "short_worthiness": Signal(0.8, "medium"), "demand": Signal(0.6, "medium"),
         "researchability": Signal(0.85, "medium"), "broad_appeal": Signal(0.85, "medium"),
         "accessibility": Signal(0.9, "medium"), "question_form": Signal(0.8, "high"),
     }
@@ -243,15 +250,18 @@ def test_score_breakdown_is_complete_and_adds_up():
     candidate = _score(_candidate(trend=Signal(0.8, "high"), competition=Signal(0.2, "medium"), novelty=Signal(0.9, "high")))
     components = candidate.score_breakdown["components"]
     assert sum(item["weight"] for item in components.values()) == pytest.approx(1.0)
-    assert sum(item["contribution"] for item in components.values()) == pytest.approx(candidate.final_score, abs=1e-3)
+    # The components add up to the score before the explicit confidence cost (v7).
+    assert sum(item["contribution"] for item in components.values()) == pytest.approx(
+        candidate.final_score + candidate.score_breakdown["confidence_penalty"], abs=1e-3)
     assert components["competition"]["directional_value"] == pytest.approx(0.8)  # openness = 1 - saturation
     assert candidate.score_breakdown["version"] == scoring.SCORE_VERSION
 
 
 def test_low_confidence_evidence_is_shrunk_towards_neutral():
+    nothing = _score(_candidate())
     high = _score(_candidate(trend=Signal(1.0, "high")))
     low = _score(_candidate(trend=Signal(1.0, "low")))
-    assert high.final_score > low.final_score > 0.5
+    assert high.final_score > low.final_score > nothing.final_score
 
 
 def test_exceptional_demand_softens_the_competition_penalty():

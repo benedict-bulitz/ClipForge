@@ -155,7 +155,7 @@ def test_understandable_is_not_the_same_as_universal(db, monkeypatch):
 
 
 def test_gates_are_unchanged(db):
-    assert scoring.SCORE_VERSION == "ti-score-v6"
+    assert scoring.SCORE_VERSION == "ti-score-v7"  # V2 adds gates; these V1 thresholds are unchanged
     assert scoring.SEMANTIC_DIMENSION_MIN == 0.6 and scoring.QUALITY_FLOOR == 0.55 and scoring.PRIOR_KNOWLEDGE_GATE == 0.5
 
 

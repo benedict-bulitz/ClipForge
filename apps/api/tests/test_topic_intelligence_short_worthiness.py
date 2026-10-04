@@ -60,8 +60,11 @@ def record(db, question: str) -> TopicCandidateRecord:
 
 def test_concrete_surprising_question_beats_generic_advice(db, monkeypatch):
     served = pool(db, monkeypatch, {PASSWORT: DRY, KITZELN: STRONG}, trends={PASSWORT: 0.9, KITZELN: 0.5})
-    assert served == [KITZELN, PASSWORT]  # the advice question stays valid - it ranks lower despite more demand
-    assert record(db, PASSWORT).score_breakdown["quality"]["short_worthiness"]["penalties"] == {"issue_generic_advice": 0.12}
+    # V2: useful advice with low curiosity (5/10) is not "ranked slightly lower" - it is not a suggestion at all.
+    assert served == [KITZELN]
+    advice = record(db, PASSWORT)
+    assert "low_curiosity" in advice.rejection_reasons
+    assert advice.score_breakdown["quality"]["short_worthiness"]["penalties"] == {"issue_generic_advice": 0.12}
 
 
 def test_one_payoff_question_beats_a_multi_part_question(db, monkeypatch):
@@ -96,8 +99,9 @@ def test_generic_factor_list_loses_to_a_concrete_causal_question(db, monkeypatch
 def test_useful_but_dry_guidance_does_not_outrank_a_high_curiosity_topic(db, monkeypatch):
     dry = "Wie lässt sich die eigene Reaktionszeit messen?"
     served = pool(db, monkeypatch, {dry: DRY, BRUECKE: STRONG}, trends={dry: 0.95, BRUECKE: 0.45})
-    # Valid content (not rejected for being useful) - it just ranks below, despite twice the demand.
-    assert served == [BRUECKE, dry]
+    # Despite twice the demand: V2 removes "technically valid but not worth watching" (curiosity 5/10).
+    assert served == [BRUECKE]
+    assert record(db, dry).rejection_reasons == ["low_curiosity"]
     assert record(db, dry).final_score < record(db, BRUECKE).final_score
 
 
@@ -183,4 +187,4 @@ def test_short_worthiness_is_one_signal_and_only_scoring_decides():
     local = short_worthiness("why", set())
     assert local.confidence == "low" and local.evidence["basis"] == "question_shape"
     assert "short_worthiness" in scoring.DEFAULT_WEIGHTS and abs(sum(scoring.DEFAULT_WEIGHTS.values()) - 1.0) < 1e-9
-    assert semantic.SEMANTIC_CURATOR_VERSION == "semantic-curator-v2"
+    assert semantic.SEMANTIC_CURATOR_VERSION == "semantic-curator-v3"
