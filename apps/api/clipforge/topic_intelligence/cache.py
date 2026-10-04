@@ -26,6 +26,10 @@ PROVIDER_TTL: dict[str, timedelta] = {
     "youtube_search_competition": timedelta(hours=24),
 }
 
+# A payload cut short by HTTP 429 is cached only briefly: the evidence it lacks comes back
+# on a later refresh, without hammering the provider now.
+RATE_LIMITED_TTL = timedelta(hours=1)
+
 _KEY_LOCKS: dict[str, threading.Lock] = {}
 _KEY_LOCKS_GUARD = threading.Lock()
 
@@ -99,6 +103,8 @@ def get_or_fetch(
         payload = runtime.call_with_timeout(lambda: fetch(meter), runtime.PROVIDER_TIMEOUT_SECONDS, name=provider)
         calls, units = meter.calls - before_calls, meter.quota_units - before_units
         expires = now + (ttl or PROVIDER_TTL.get(provider, timedelta(hours=1)))
+        if isinstance(payload, dict) and payload.get("rate_limited"):
+            expires = min(expires, now + RATE_LIMITED_TTL)
         if entry is None:
             entry = TopicSourceCache(key=cache_key, provider=provider)
             db.add(entry)

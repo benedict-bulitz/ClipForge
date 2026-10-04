@@ -92,31 +92,60 @@ def views_per_day(views: float, published_at: datetime, now: datetime) -> float:
     return float(views) / age_days
 
 
-def outlier_vs_channel(video_vpd: float, channel_recent_vpd: Sequence[float]) -> Signal:
+# Outlier safety (V2 calibration): a ratio needs a real baseline and enough comparisons.
+OUTLIER_MIN_SAMPLE = 3
+OUTLIER_MIN_BASELINE_VPD = 20.0  # channel median views/day below this: a ratio is denominator noise
+# Cap by sample size: a perfect 1.0 needs >= 8 comparison uploads.
+OUTLIER_SAMPLE_CAPS = ((5, 0.6), (8, 0.85))
+# When the channel's own spread is known, an outlier must stand out from it (robust z).
+OUTLIER_MIN_ROBUST_Z = 2.0
+OUTLIER_WEAK_Z_CAP = 0.5
+
+
+def outlier_vs_channel(video_vpd: float, channel_recent_vpd: Sequence[float], *, video: dict[str, Any] | None = None) -> Signal:
     """Video views/day relative to the median views/day of the channel's recent uploads.
 
-    Robust: median and MAD on log values; sample size decides confidence.
+    Robust: median and MAD on log values; sample size decides confidence AND the ceiling.
+    ``1.0`` = at least 10x the channel's normal level with >= 8 comparison uploads, a channel
+    baseline of >= 20 views/day and (when the spread is known) a robust z >= 2.  ``video``
+    (title, channel, age, views) is kept as evidence so every outlier can be traced.
     """
     sample = [float(value) for value in channel_recent_vpd if value is not None and value > 0]
     n = len(sample)
-    if n < 3 or video_vpd <= 0:
-        return Signal.unavailable("channel_sample_too_small", sample_size=n)
+    meta = {"video": video} if video else {}
+    if n < OUTLIER_MIN_SAMPLE or video_vpd <= 0:
+        return Signal.unavailable("channel_sample_too_small", sample_size=n, **meta)
     median = statistics.median(sample)
-    ratio = video_vpd / max(1.0, median)
+    if median < OUTLIER_MIN_BASELINE_VPD:
+        return Signal.unavailable("channel_baseline_too_small", sample_size=n, channel_median_views_per_day=round(median, 1), **meta)
+    ratio = video_vpd / median
     logs = [math.log(value) for value in sample]
     log_median = statistics.median(logs)
     mad = statistics.median(abs(value - log_median) for value in logs)
     robust_z = (math.log(video_vpd) - log_median) / (1.4826 * mad) if mad > 0 else None
+    raw = _log_scale(ratio, 10.0)
+    caps: dict[str, float] = {}
+    for limit, cap in OUTLIER_SAMPLE_CAPS:
+        if n < limit:
+            caps["sample_size"] = cap
+            break
+    if robust_z is not None and robust_z < OUTLIER_MIN_ROBUST_Z:
+        caps["robust_z"] = OUTLIER_WEAK_Z_CAP
+    value = min([raw, *caps.values()])
     confidence = "high" if n >= 10 else "medium" if n >= 5 else "low"
     return Signal(
-        round(_log_scale(ratio, 10.0), 4),
+        round(value, 4),
         confidence,
         {
             "method": "views_per_day_vs_channel_recent_median",
             "ratio": round(ratio, 2),
+            "raw_score": round(raw, 4),
+            "caps": caps,
             "robust_z": None if robust_z is None else round(robust_z, 2),
             "sample_size": n,
             "channel_median_views_per_day": round(median, 1),
+            "video_views_per_day": round(video_vpd, 1),
+            **meta,
         },
         ["youtube_trending_de"],
     )
@@ -173,18 +202,16 @@ def competition_estimate(question: str, topic: str, results: Sequence[dict[str, 
             ratios.append(ratio)
     if not ratios:
         return competition, Signal.unavailable("no_channel_baseline_for_related_videos")
+    # V2: diagnostics only - never a score input.  The best of up to 25 related videos against
+    # its channel's LIFETIME mean is not age-normalized, is a maximum over many comparisons, and
+    # exists only for the few probed (already top-ranked) candidates: it would systematically
+    # reward whoever was probed.  The scored outlier is the chart video vs its recent uploads.
     best = max(ratios)
-    outlier = Signal(
-        round(_log_scale(best, 10.0), 4),
-        "low",
-        {
-            "method": "related_video_views_vs_channel_lifetime_mean",
-            "best_ratio": round(best, 2),
-            "sample_size": len(ratios),
-        },
-        ["youtube_search_competition"],
-    )
-    return competition, outlier
+    competition.evidence["related_outlier"] = {
+        "method": "related_video_views_vs_channel_lifetime_mean", "best_ratio": round(best, 2),
+        "median_ratio": round(statistics.median(ratios), 2), "sample_size": len(ratios), "scored": False,
+    }
+    return competition, Signal.unavailable("related_outlier_is_diagnostic_only", best_ratio=round(best, 2), sample_size=len(ratios))
 
 
 def merge_trend(signals: Sequence[Signal]) -> Signal:

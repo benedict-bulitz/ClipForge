@@ -114,7 +114,10 @@ def test_competition_estimate_counts_related_established_videos():
     assert saturated.value is not None and saturated.value > 0.8
     assert saturated.evidence["estimate"] is True and saturated.evidence["strong"] == 12
     assert empty.value == 0.0
-    assert outlier.available and outlier.confidence == "low"  # lifetime-mean fallback is weak evidence
+    # V2: the lifetime-mean "best related video" ratio is diagnostics only - never a scored outlier
+    # (not age-normalized, a maximum over many videos, and only the probed top candidates get one).
+    assert not outlier.available
+    assert saturated.evidence["related_outlier"]["scored"] is False and saturated.evidence["related_outlier"]["sample_size"] == 12
 
 
 def test_independent_sources_agreeing_raise_trend_confidence():

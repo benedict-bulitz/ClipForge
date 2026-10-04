@@ -199,14 +199,6 @@ def _group(title: str, kind: str) -> TopicGroup:
     return TopicGroup(title, [RawTopic(key=title, title=title, source="s", kind=kind, observed_at=NOW)])  # type: ignore[arg-type]
 
 
-def test_source_mix_keeps_both_classes_in_every_curator_batch():
-    groups = [_group(f"e{index}", "evergreen") for index in range(20)] + [_group(f"l{index}", "news") for index in range(20)]
-    mixed = service.mix_sources(groups, 10)
-    first_batch = mixed[:10]
-    assert sum(group.evergreen for group in first_batch) == 6 and len(mixed) == 40
-    assert [group.title for group in mixed if group.evergreen] == [f"e{index}" for index in range(20)]  # order kept within a class
-
-
 def test_diversity_prefers_another_subject_but_never_a_much_weaker_one():
     items = [
         scoring.RankedItem("a", 0.70, "weltraum", "why", "mars"),

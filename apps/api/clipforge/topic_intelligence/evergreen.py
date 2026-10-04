@@ -29,6 +29,7 @@ from .signals import DEMAND_TTL_HOURS, EVIDENCE_TTL_HOURS, stamp, wikipedia_dema
 from .sources import (
     DiscoveryContext,
     HttpGet,
+    RateLimited,
     SourceFailed,
     SourceReport,
     SourceResult,
@@ -237,6 +238,7 @@ class EvergreenCatalogSource:
         histories: dict[str, list[int]] = {}
         errors: list[str] = []
         failures = 0
+        rate_limited = False
         for subject in subjects:
             if failures >= MAX_CONSECUTIVE_FAILURES:
                 errors.append(f"stopped after {failures} consecutive failures")
@@ -249,6 +251,11 @@ class EvergreenCatalogSource:
                     {},
                     {},
                 )
+            except RateLimited:
+                # HTTP 429: stop at once (no retry storm); what was measured is kept, briefly cached.
+                rate_limited = True
+                errors.append(f"rate limited (HTTP 429) after {len(histories)} subjects; remaining subjects without evidence")
+                break
             except FileNotFoundError:
                 failures = 0  # the article exists under another title: no evidence for this subject only
                 errors.append(f"no article: {subject.wiki}")
@@ -262,7 +269,8 @@ class EvergreenCatalogSource:
         if not histories:
             # Nothing measured: do not cache "no evidence" for a day; the subjects are offered without it.
             raise SourceFailed("; ".join(errors[:3]) or "no pageview history")
-        return {"day": day.strftime("%Y-%m-%d"), "histories": histories, "partial_errors": errors[:10]}
+        return {"day": day.strftime("%Y-%m-%d"), "histories": histories, "partial_errors": errors[:10],
+                **({"rate_limited": True} if rate_limited else {})}
 
     def topics(self, subjects: list[EvergreenSubject], payload: dict[str, Any], observed_at: datetime) -> list[RawTopic]:
         histories = payload.get("histories") or {}

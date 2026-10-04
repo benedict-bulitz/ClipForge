@@ -439,3 +439,134 @@ judged on the Mac with network and keys.
 7. Manual: type your own question → Generate → unchanged behaviour (`topic_source: manual`).
 8. Judge honestly: are the three suggestions ones you would actually make, and better than the
    last V1 suggestions? Which were live vs evergreen?
+
+---
+
+## Part 4 — Real-Mac calibration: selection bias, outliers, why-now, partial sources
+
+Real Mac (`c2f61b0`): top 3 "Warum funktioniert ein QR-Code auch dann noch, wenn er zerkratzt
+ist?", "Warum bleibt Essen in der Mikrowelle in der Mitte kalt?", "Warum brennt Chili im Mund,
+obwohl es gar nicht heiß ist?" — good — but `raw_groups=71 budget=60 evaluated=20 target=9
+accepted=9 remaining=51`, and QR / Mikrowelle both showed `outlier = 1.0` with the reason
+"ein Video dazu ist gerade in den deutschen YouTube-Charts".
+
+### 4.1 Early-stop root cause
+
+`service._curate_pool` ran `while fresh and evaluated < budget and target_left() > 0` with
+`target_left = TARGET_ACCEPTED - accepted`. With 10 topics per curator request, two requests
+produced 9 accepted candidates and the loop ended — with one AI request and 40 evaluations of
+budget left. The local loop had the same condition (`accepted < TARGET_ACCEPTED`).
+
+The first 20 were ordered by the cheap curation priority (demand, question already in the title,
+universal subject, grounding, niche prior, corroboration, novelty, minus penalties), with the
+evergreen/live share capped at 6 of 10 per batch. Biases: no per-source representation (a
+source whose titles are statements started at `question_strength` 0.45 vs 0.7 for evergreen
+"why" seeds); no subject/niche spread (several food topics in a row could fill a batch); and
+the target stop meant the 51 later topics were never compared at all. **Yes, a materially
+stronger candidate could be skipped** — the harness reproduces it (a strong topic with a
+slightly lower pre-score at position 25 was never evaluated).
+
+### 4.2 New evaluation policy (bounded)
+
+```
+all normalized topics -> cheap deterministic pre-score (no raw views)
+  -> representative shortlist (representative_order):
+       reserve each source's 2 best viable topics (pre-score >= 0.35, no hard penalty),
+       order by pre-score - 0.03 x same-niche repeats (max 3), evergreen/live <= 60 % each,
+       drop topics whose cheap question repeats an earlier one (cheap_duplicate, never evaluated)
+  -> expensive evaluation in that order, until ALL of:
+       accepted >= 9                              (enough supply)
+       evaluated >= 20                            (minimum coverage)
+       every shortlisted source has its seeds evaluated
+       no remaining topic within 0.05 of the cheap pre-score of the current top 3
+     or a budget ends it (60 evaluations, 3 AI requests, AI deadline)
+```
+
+The evaluation report records `shortlist` (size, per-source, evergreen/live, deferred
+duplicates), `evaluated_sources`, `stopped_by` and the `stop_rule` (bar, competitive topics).
+
+**Cost:** the AI budget is unchanged (≤ 3 requests × 10 topics per pool, +1 once when widening).
+A pool that used 2 requests on the Mac now typically uses the 3rd while competitive topics
+remain — about one more request (~10 topics, one curator call's latency) per pool refresh,
+in the background warm-up. Local mode (no key) evaluates the whole bounded pool (≤ 60 topics,
+deterministic, negligible cost).
+
+### 4.3 Outlier = 1.0 — the two paths and the calibration
+
+The persisted records of the Mac run are not in this repository, so the exact numbers must be
+read there: `scripts/topic_diagnostics.py --trace "QR-Code"` and `--trace "Mikrowelle"` print
+SOURCE VIDEO, CHANNEL, VIDEO AGE, VIEWS, VIEWS/DAY, CHANNEL BASELINE, SAMPLE SIZE, RAW RATIO,
+NORMALIZED SCORE, CONFIDENCE and the caps for every matching candidate (records persisted by
+`c2f61b0` lack the video identity; run `--evaluate` first). What the code shows:
+
+1. **Chart path (matches the reason text)** — the reason "ein Video dazu ist gerade in den
+   deutschen YouTube-Charts" is only produced when the candidate's group contains a YouTube
+   chart sighting. Neither evergreen subject is a chart video, so a chart video was merged into
+   the group by `group_topics`, whose overlap coefficient gives **1.0 for one shared token**:
+   "QR-Code" has the single content token `code` ("QR" is shorter than 3 letters), so any chart
+   video with "Code" in its title merged; "Mikrowelle" likewise merges any title containing
+   "Mikrowelle". That video's views/day vs its own channel's recent median (≥ 10× → 1.0) was then
+   credited to the QR / Mikrowelle question. The ratio may be legitimate **for that video**; its
+   attribution to the question was not.
+2. **Probe path** — for the top-2 probed candidates, `competition_estimate` filled an empty
+   `outlier` with the BEST related search result's views vs its channel's LIFETIME mean
+   (`log_scale(best, 10)`, ≥ 10× → 1.0, "low" confidence): a maximum over up to 25 videos, not
+   age-normalized, and available only to the already top-ranked candidates.
+
+Changes:
+
+| | Before | After |
+|---|---|---|
+| Grouping | overlap coefficient ≥ 0.72 (one shared token merges) | same key, or question equivalence ≥ 0.72 of the titles (qualifiers in brackets ignored) |
+| Probe "outlier" | scored (max ratio vs lifetime mean) | diagnostics only (`competition.evidence.related_outlier`), never scored |
+| Channel baseline | `max(1, median)` | median < 20 views/day → unavailable (`channel_baseline_too_small`) |
+| Tiny samples | n ≥ 3 could reach 1.0 | n < 5 capped at 0.6, n < 8 at 0.85; 1.0 needs ≥ 8 uploads |
+| Channel spread | ignored | robust z < 2 (when spread is known) → capped at 0.5 |
+| Traceability | ratio, sample, median | + source video title, channel, id, views, age, views/day, raw curve, caps |
+
+A legitimate strong outlier (≥ 10× a stable ≥ 20 views/day baseline over ≥ 8 uploads) still
+scores 1.0 (test).
+
+### 4.4 Why-now wording
+
+Chart wording is now literal: "ein Video mit genau dieser Frage ist gerade in den deutschen
+YouTube-Charts" only when a chart title is equivalent to the question; otherwise "das Video
+„<Titel>“ zum selben Thema ist gerade in den deutschen YouTube-Charts" (same subject is guaranteed
+by the stricter grouping); no chart sighting → no chart claim. Wikipedia: "die Wikipedia-Aufrufe
+zum Thema liegen gerade beim N-fachen des Normalniveaus"; outliers name their video.
+
+### 4.5 Partial sources
+
+* `youtube_trending_de partial — chart Bildung (27) in DE: not_found`: harmless. YouTube offers
+  no most-popular chart for category 27 in DE; the Wissenschaft & Technik chart (28) still
+  delivers. There is no general-chart fallback (only 27/28 are ever requested), the missing
+  category creates no topics and no trend, and the status says `partial` with the reason.
+* `editorial_evergreen partial — HTTP 429`: previously each subject was still requested (429s
+  that were not consecutive never tripped the 3-failure stop). Now `default_http_get` raises
+  `RateLimited` on 429; the evergreen fetch and the Wikipedia history requests **stop at the
+  first 429** in that refresh, keep what was measured (the rest is offered without evidence),
+  and a rate-limited payload is cached for at most 1 hour (`cache.RATE_LIMITED_TTL`) instead of
+  a day — no retry storm, no lost evidence for a whole day.
+* A failing source is recorded as `failed`/`partial`; the others continue (test).
+
+### 4.6 Tests (`tests/test_topic_intelligence_v2_fair_evaluation.py`, 18)
+
+Fair coverage before stopping; a high-potential late candidate reaches the final top; stop once
+nothing competitive remains (no extra request); pre-score ignores raw views; source
+representation without first-batch displacement; evergreen/live bound; duplicate clusters skip
+the semantic budget; tiny samples, near-zero baselines and in-spread videos cannot reach 1.0; a
+legitimate outlier still does; lexically related chart videos no longer join a subject; chart
+wording matches the evidence; 429 stops and short cache; missing chart category; failing source
+isolation.
+
+### 4.7 Real-Mac recheck
+
+```
+cd apps/api
+PYTHONPATH=. ../../.venv/bin/python scripts/topic_diagnostics.py --evaluate
+PYTHONPATH=. ../../.venv/bin/python scripts/topic_diagnostics.py --trace "QR-Code"
+PYTHONPATH=. ../../.venv/bin/python scripts/topic_diagnostics.py --trace "Mikrowelle"
+```
+
+Compare the new top 3 with the old one; check `stopped_by`, `evaluated_sources`,
+`shortlist.deferred_duplicates`, and that outliers now name a video on the same subject.

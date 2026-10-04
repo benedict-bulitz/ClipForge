@@ -51,6 +51,10 @@ class SourceFailed(RuntimeError):
     """The source was attempted and failed; its data is missing, never invented."""
 
 
+class RateLimited(SourceFailed):
+    """HTTP 429: stop sending further requests to this provider in this refresh (no retry storm)."""
+
+
 HttpGet = Callable[[str, dict[str, Any], dict[str, str]], dict[str, Any]]
 
 
@@ -61,6 +65,8 @@ def default_http_get(url: str, params: dict[str, Any], headers: dict[str, str]) 
         raise SourceFailed(f"network error: {type(exc).__name__}") from None
     if response.status_code == 404:
         raise FileNotFoundError(url)
+    if response.status_code == 429:
+        raise RateLimited("HTTP 429")
     if response.status_code != 200:
         raise SourceFailed(f"HTTP {response.status_code}")
     try:
@@ -224,13 +230,14 @@ class WikipediaPageviewsSource:
                 }
         items: list[dict[str, Any]] = []
         history_budget = self.HISTORY_LIMIT
+        rate_limited = False
         start = (day - timedelta(days=29)).strftime("%Y%m%d")
         end = day.strftime("%Y%m%d")
         for title, views, rank in titles[: self.META_LIMIT]:
             info = meta.get(title, {})
             flags = _wiki_flags(title.replace("_", " "), info.get("description", ""), info.get("extract", ""), bool(info.get("disambiguation")))
             history: list[int] = []
-            if history_budget > 0 and not flags & {"person", "disambiguation", "tragedy"}:
+            if history_budget > 0 and not rate_limited and not flags & {"person", "disambiguation", "tragedy"}:
                 history_budget -= 1
                 meter.charge()
                 try:
@@ -241,6 +248,9 @@ class WikipediaPageviewsSource:
                         {},
                     )
                     history = [int(item.get("views") or 0) for item in response.get("items") or []]
+                except RateLimited:
+                    rate_limited = True  # 429: no further history requests this refresh
+                    history = []
                 except (FileNotFoundError, SourceFailed):
                     history = []
             items.append({
@@ -252,7 +262,7 @@ class WikipediaPageviewsSource:
                 "flags": sorted(flags),
                 "history": history,
             })
-        return {"day": day.strftime("%Y-%m-%d"), "items": items}
+        return {"day": day.strftime("%Y-%m-%d"), "items": items, **({"rate_limited": True} if rate_limited else {})}
 
     def topics(self, payload: dict[str, Any], observed_at: datetime) -> list[RawTopic]:
         topics = []
@@ -398,7 +408,11 @@ class YouTubeTrendingSource:
                 continue
             published = _parse_time(video.get("published_at"), observed_at)
             vpd = views_per_day(float(video.get("views") or 0), published, now)
-            outlier = outlier_vs_channel(vpd, video.get("channel_recent_vpd") or [])
+            age_days = max(0.0, (now - published).total_seconds() / 86_400)
+            outlier = outlier_vs_channel(vpd, video.get("channel_recent_vpd") or [], video={
+                "title": title[:120], "channel": video.get("channel_title"), "video_id": video.get("video_id"),
+                "views": video.get("views"), "age_days": round(age_days, 1), "category": video.get("category"),
+            })
             topics.append(RawTopic(
                 key=topic_key(title),
                 title=title,

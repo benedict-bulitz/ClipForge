@@ -12,6 +12,7 @@ written and no external call is made.
     PYTHONPATH=. python scripts/topic_diagnostics.py --rescore      # + score with the current version
     PYTHONPATH=. python scripts/topic_diagnostics.py --json         # full structured output
     PYTHONPATH=. python scripts/topic_diagnostics.py --evaluate     # V2 real run: top 3 + Full Auto winner
+    PYTHONPATH=. python scripts/topic_diagnostics.py --trace "QR-Code"  # outlier / chart / why-now chain of a candidate
 
 ``--evaluate`` is the one exception to "read-only": it runs the REAL Topic Intelligence path
 (configured providers, the curator if an OpenAI key is set, provider caches and budgets)
@@ -234,6 +235,10 @@ def print_evaluation(report: dict) -> None:
     print("SOURCES:")
     for source in report.get("sources") or []:
         print(f"  {source['name']:28} {source['status']:8} items={source.get('items')} calls={source.get('calls')} {source.get('error') or ''}")
+    evaluation = next((item for item in report.get("sources") or [] if item.get("name") == "candidate_evaluation"), {})
+    detail = evaluation.get("detail") or {}
+    print(f"\nEVALUATION: {evaluation.get('error')}\n  stopped_by={detail.get('stopped_by')} rule={detail.get('stop_rule')}"
+          f"\n  shortlist={ {key: value for key, value in (detail.get('shortlist') or {}).items()} }\n  evaluated_sources={detail.get('evaluated_sources')}")
     chips = report["suggestions"]
     print(f"\nASSISTED ({chips['status']}):")
     for index, item in enumerate(chips.get("candidates") or [], 1):
@@ -246,6 +251,56 @@ def print_evaluation(report: dict) -> None:
         print(f"  {auto.get('message')} considered={auto.get('considered')}")
 
 
+def trace(text: str) -> list[dict]:
+    """Every persisted candidate whose question or topic contains ``text``: the full evidence chain."""
+    from clipforge.models import TopicCandidateRecord
+
+    rows = []
+    with SessionLocal() as db:
+        for record in db.scalars(select(TopicCandidateRecord)).all():
+            if text.casefold() not in f"{record.question} {record.topic}".casefold():
+                continue
+            signals = record.signals or {}
+            serialized = service.serialize_candidate(record)
+            rows.append({
+                "question": record.question, "topic": record.topic, "status": record.status, "final_score": record.final_score,
+                "score_version": record.score_version, "sightings": record.source_signals,
+                "outlier": signals.get("outlier"), "trend": signals.get("trend"), "demand": signals.get("demand"),
+                "competition_related_outlier": ((signals.get("competition") or {}).get("evidence") or {}).get("related_outlier"),
+                "outlier_component": ((record.score_breakdown or {}).get("components") or {}).get("outlier"),
+                "signal_class": serialized["signal_class"], "reason": serialized["reason"],
+            })
+    return rows
+
+
+def print_trace(rows: list[dict]) -> None:
+    if not rows:
+        print("no persisted candidate matches")
+    for row in rows:
+        outlier = row.get("outlier") or {}
+        evidence = outlier.get("evidence") or {}
+        video = evidence.get("video") or {}
+        print(f"\n{row['question']}  [{row['status']}, {row['score_version']}, final {row['final_score']}]  topic={row['topic']!r}")
+        for item in row["sightings"] or []:
+            print(f"  sighting: {item.get('source'):26} {item.get('kind'):9} {item.get('title')!r} {item.get('metrics') or ''}")
+        if outlier.get("confidence") in (None, "unavailable"):
+            no_video = f"none - no scored outlier ({evidence.get('reason')})"
+        else:
+            no_video = "(not recorded - persisted before the V2 calibration; rerun --evaluate)"
+        print(f"  SOURCE VIDEO: {video.get('title') or no_video}")
+        print(f"  CHANNEL: {video.get('channel')}   VIDEO AGE: {video.get('age_days')} d   VIEWS: {video.get('views')}")
+        print(f"  VIEWS/DAY: {evidence.get('video_views_per_day')}   CHANNEL BASELINE: {evidence.get('channel_median_views_per_day')} /day"
+              f"   SAMPLE SIZE: {evidence.get('sample_size')}")
+        print(f"  RAW OUTLIER RATIO: {evidence.get('ratio') or evidence.get('best_ratio')}   METHOD: {evidence.get('method') or evidence.get('reason')}")
+        print(f"  NORMALIZED OUTLIER SCORE: {outlier.get('value')}   raw curve: {evidence.get('raw_score')}   caps: {evidence.get('caps')}"
+              f"   robust z: {evidence.get('robust_z')}")
+        print(f"  CONFIDENCE: {outlier.get('confidence')}   scored contribution: {(row.get('outlier_component') or {}).get('contribution')}")
+        print(f"  probe related-video ratio (diagnostic only): {row.get('competition_related_outlier')}")
+        trend = row.get("trend") or {}
+        print(f"  TREND: value={trend.get('value')} conf={trend.get('confidence')} sources={trend.get('sources')} evidence={trend.get('evidence')}")
+        print(f"  CLASS NOW: {row['signal_class']}   WHY (UI): {row['reason']}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--limit", type=int, default=20)
@@ -256,11 +311,19 @@ def main() -> None:
     parser.add_argument("--curated", action="store_true",
                         help="every curated candidate: all v2 dimensions, short-worthiness, issues, rejecting gates")
     parser.add_argument("--evaluate", action="store_true", help="V2 real run: top 3 suggestions + Full Auto winner with evidence")
+    parser.add_argument("--trace", metavar="TEXT", help="evidence chain (outlier, chart, why-now) of candidates containing TEXT")
     parser.add_argument("--live", nargs="?", const="http://localhost:8000", metavar="API_URL",
                         help="with --status: read the running API (live discovery stage, warm-up, lock)")
     args = parser.parse_args()
     prepare_schema()
     settings = get_settings()
+    if args.trace:
+        rows = trace(args.trace)
+        if args.json:
+            print(json.dumps(rows, default=str, ensure_ascii=False, indent=2))
+        else:
+            print_trace(rows)
+        return
     if args.evaluate:
         report = evaluate(settings)
         if args.json:

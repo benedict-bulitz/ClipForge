@@ -80,6 +80,7 @@ from .text import (
     NICHE_PRIORS,
     POOR_FIT_NICHES,
     classify_niche,
+    compact,
     content_tokens,
     de_shout,
     extract_question,
@@ -110,6 +111,18 @@ USED_TOPIC_COOLDOWN = timedelta(days=21)
 # Curation work order: at most this share of one curator batch may be evergreen while live
 # (trend/news/YouTube) topics are still waiting - and vice versa (quality order otherwise).
 SOURCE_MIX_SHARE = 0.6
+# Fair bounded evaluation (real Mac: 71 raw groups, evaluation stopped at 20 the moment 9 were
+# accepted - the best of the FIRST acceptable batch, not of the pool).  "9 accepted" now only
+# means "enough supply"; evaluation also needs coverage and no competitive candidate left.
+MIN_EVALUATION_COVERAGE = 20  # topics evaluated before "enough supply" may stop evaluation
+MIN_PER_SOURCE = 2  # each discovery source's best topics are in the shortlist (and evaluated)
+NICHE_REPEAT_PENALTY = 0.03  # per topic of the same niche already shortlisted (no 10 food topics first) ...
+NICHE_REPEAT_MAX = 3  # ... counted up to 3 repeats: diversity reorders, it never buries a strong topic under garbage
+# Representation never overrides clear evidence: a source's seed needs a viable pre-score and no hard penalty.
+SEED_MIN_PRIORITY = 0.35
+SEED_BLOCKING_PENALTIES = frozenset({"poor_fit_niche", "duplicate_of_previous_topic", "weak_question_shape"})
+COMPETITIVE_MARGIN = 0.05  # a remaining topic within this of the current top 3's cheap pre-score is still evaluated
+COMPETITIVE_TOP = 3
 RETENTION = timedelta(days=14)
 PREFILTER_FLAGS = frozenset({"person", "tragedy", "disambiguation"})
 # Obvious garbage never reaches the curator (calendar pages have no story of their own).
@@ -236,12 +249,26 @@ def _collect(ctx: DiscoveryContext, sources: list[TopicSource]) -> tuple[list[Ra
     return topics, reports
 
 
+def same_subject(left: str, right: str) -> bool:
+    """Two source titles name the same subject: same key, or equivalent once qualifiers are dropped.
+
+    V2 (real Mac): the overlap coefficient merged ANY chart video containing "Code" into the
+    evergreen "QR-Code" subject (one shared token = 1.0), so a merely lexically related video
+    lent its chart rank and channel outlier to a question it was not about.  Equivalence needs
+    both titles to share their concepts ("Mars" ~ "Mars (Planet)", not "Mikrowelle" ~ "Alufolie
+    in der Mikrowelle").
+    """
+    if topic_key(left) == topic_key(right):
+        return True
+    return question_equivalence(left.split("(")[0], right.split("(")[0]) >= history_module.DUPLICATE_THRESHOLD
+
+
 def group_topics(topics: list[RawTopic]) -> list[TopicGroup]:
-    """Merge sightings of the same topic (exact key, then near-identical titles)."""
+    """Merge sightings of the same subject (exact key, then subject equivalence of the titles)."""
     groups: list[TopicGroup] = []
     for topic in topics:
         for group in groups:
-            if group.key == topic.key or similarity(group.title, topic.title) >= history_module.DUPLICATE_THRESHOLD:
+            if group.key == topic.key or any(same_subject(item.title, topic.title) for item in group.sightings):
                 group.sightings.append(topic)
                 break
         else:
@@ -274,7 +301,7 @@ def _curation_priority(group: TopicGroup, history: list[history_module.HistoryIt
         # A statement can still become a question - the curator decides; it just starts lower.
         "question_strength": LOCAL_SHORT_BASE.get(question_mechanism(question), 0.45) if question else 0.45,
         "universal": 1.0 if has_universal_subject(text) else 0.5,
-        "evidence": 1.0 if any(item.kind == "article" or len(item.description or "") >= 60 for item in group.sightings) else 0.4,
+        "evidence": 1.0 if any(item.kind in {"article", "evergreen"} or len(item.description or "") >= 60 for item in group.sightings) else 0.4,
         "mass_appeal": BROAD_APPEAL_PRIORS.get(niche, BROAD_APPEAL_PRIORS["unknown"]),
         "corroboration": 1.0 if len(group.sources) >= 2 else 0.0,
         "novelty": novelty.value if novelty.available and novelty.value is not None else 1.0,
@@ -288,7 +315,7 @@ def _curation_priority(group: TopicGroup, history: list[history_module.HistoryIt
     }
     value, applied = curation_priority(features, penalties)
     return value, {"features": {name: round(float(v), 3) for name, v in features.items()}, "penalties": applied, "niche": niche,
-                   "origin": "evergreen" if group.evergreen else "live"}
+                   "origin": "evergreen" if group.evergreen else "live", "question": question}
 
 
 def _seen_before(history: list[history_module.HistoryItem], group: TopicGroup, niche: str, now: datetime) -> Any:
@@ -298,31 +325,104 @@ def _seen_before(history: list[history_module.HistoryItem], group: TopicGroup, n
     return seen
 
 
-def mix_sources(groups: list[TopicGroup], batch: int) -> list[TopicGroup]:
-    """Keep the given (priority) order, but no curator batch is all-evergreen or all-live while both exist.
+def representative_order(
+    groups: list[TopicGroup], priorities: dict[str, tuple[float, dict[str, Any]]], *, slots: int,
+) -> tuple[list[TopicGroup], dict[str, Any]]:
+    """The work order for the bounded (expensive) evaluation: a representative shortlist first.
 
-    Evergreen subjects are reliable but should not crowd out a strong fresh topic,
-    and a flood of weak trend items must not crowd out strong evergreen ones.
+    1. each discovery source's ``MIN_PER_SOURCE`` best topics (no source is never looked at);
+    2. then by cheap pre-score, minus ``NICHE_REPEAT_PENALTY`` per shortlisted topic of the same
+       niche, with evergreen / live each capped at ``SOURCE_MIX_SHARE`` while the other remains;
+    3. a topic whose cheap question repeats an earlier one is dropped from the work order (it is
+       reported as ``deferred_duplicates``) - a duplicate cluster never spends the budget twice.
+    The rest follows in pre-score order.  Raw views are not a pre-score input.
+    Returns (work order, report); the report also carries the dropped duplicate groups.
     """
-    evergreen = [group for group in groups if group.evergreen]
-    live = [group for group in groups if not group.evergreen]
-    cap = max(1, round(batch * SOURCE_MIX_SHARE))
-    position = {id(group): index for index, group in enumerate(groups)}
-    result: list[TopicGroup] = []
-    window: Counter[bool] = Counter()
-    while evergreen or live:
-        if len(result) % batch == 0:
-            window.clear()
-        heads = [queue for queue in (evergreen, live) if queue]
-        # The earlier one in priority order, unless its class already filled its share of this batch.
-        heads.sort(key=lambda queue: position[id(queue[0])])
-        pick = heads[0]
-        if len(heads) == 2 and window[pick is evergreen] >= cap:
-            pick = heads[1]
-        group = pick.pop(0)
-        window[pick is evergreen] += 1
-        result.append(group)
-    return result
+    def priority(group: TopicGroup) -> float:
+        return priorities[group.key][0]
+
+    def question(group: TopicGroup) -> str | None:
+        return priorities[group.key][1].get("question")
+
+    by_priority = sorted(groups, key=lambda group: (-priority(group), group.key))
+    chosen: list[TopicGroup] = []
+    chosen_ids: set[int] = set()
+    deferred: list[TopicGroup] = []
+
+    def repeats(group: TopicGroup) -> bool:
+        text = question(group)
+        return bool(text) and any(
+            question(other) and question_equivalence(text, str(question(other))) >= history_module.DUPLICATE_THRESHOLD for other in chosen
+        )
+
+    def take(group: TopicGroup) -> None:
+        chosen.append(group)
+        chosen_ids.add(id(group))
+
+    def viable_seed(group: TopicGroup) -> bool:
+        return priority(group) >= SEED_MIN_PRIORITY and not set(priorities[group.key][1].get("penalties") or {}) & SEED_BLOCKING_PENALTIES
+
+    def niche_of(group: TopicGroup) -> str:
+        return str(priorities[group.key][1].get("niche"))
+
+    # 1. Reserve shortlist places for each source's best viable topics (representation) ...
+    reserved: list[TopicGroup] = []
+    for source in sorted({source for group in groups for source in group.sources}):
+        taken = sum(1 for group in reserved if source in group.sources)
+        for group in by_priority:
+            if taken >= MIN_PER_SOURCE or len(reserved) >= slots:
+                break
+            if source not in group.sources or group in reserved or not viable_seed(group):
+                continue
+            reserved.append(group)
+            taken += 1
+    reserved_ids = {id(group) for group in reserved}
+    # 2. ... but ORDER the shortlist by adjusted pre-score: a source's seed is guaranteed a place
+    # (and, by the stopping rule, an evaluation) without pushing stronger topics out of the first batch.
+    pool = list(by_priority)
+    niches: Counter[str] = Counter()
+    classes: Counter[bool] = Counter()
+    cap = max(1, round(slots * SOURCE_MIX_SHARE))
+    open_slots = slots - len(reserved)
+    while pool and len(chosen) < slots:
+        both_classes_left = len({group.evergreen for group in pool}) == 2
+
+        def adjusted(group: TopicGroup, both: bool = both_classes_left) -> float:
+            over_cap = classes[group.evergreen] >= cap and both
+            repeats_niche = 0 if niche_of(group) == "unknown" else min(NICHE_REPEAT_MAX, niches[niche_of(group)])
+            return priority(group) - NICHE_REPEAT_PENALTY * repeats_niche - (1.0 if over_cap else 0.0)
+
+        eligible = pool if open_slots > 0 else [group for group in pool if id(group) in reserved_ids]
+        if not eligible:
+            break
+        best = max(eligible, key=lambda group: (adjusted(group), -by_priority.index(group)))
+        pool.remove(best)
+        if repeats(best):
+            deferred.append(best)
+            continue
+        take(best)
+        if id(best) not in reserved_ids:
+            open_slots -= 1
+        niches[niche_of(best)] += 1
+        classes[best.evergreen] += 1
+    rest: list[TopicGroup] = []
+    for group in pool:
+        if repeats(group) or any(
+            question(group) and question(other) and question_equivalence(str(question(group)), str(question(other))) >= history_module.DUPLICATE_THRESHOLD
+            for other in rest
+        ):
+            deferred.append(group)
+        else:
+            rest.append(group)
+    report = {
+        "shortlist": len(chosen),
+        "slots": slots,
+        "deferred_duplicates": [group.title for group in deferred][:10],
+        "deferred_groups": deferred,
+        "shortlist_sources": dict(Counter(source for group in chosen for source in group.sources)),
+        "shortlist_origin": {"evergreen": classes[True], "live": classes[False]},
+    }
+    return chosen + rest, report
 
 
 def _best_outlier(group: TopicGroup) -> Signal:
@@ -514,8 +614,26 @@ MECHANISM_REASONS = {
 }
 
 
-def user_reason(breakdown: dict[str, Any], signals: dict[str, Any], signal_class: str | None) -> str:
-    """One or two short German clauses for the UI ("Warum das funktionieren könnte") - no scores."""
+def _chart_clause(question: str, source_signals: list[dict[str, Any]]) -> str | None:
+    """What the chart evidence literally shows: this very question, or a named video on the same subject."""
+    charts = [str(item.get("title") or "") for item in source_signals if item.get("source") == "youtube_trending_de" and item.get("title")]
+    if not charts:
+        return None
+    title = max(charts, key=lambda text: question_equivalence(question, text))
+    if question_equivalence(question, title) >= history_module.DUPLICATE_THRESHOLD:
+        return "ein Video mit genau dieser Frage ist gerade in den deutschen YouTube-Charts"
+    return f"das Video „{compact(title, 70)}“ zum selben Thema ist gerade in den deutschen YouTube-Charts"
+
+
+def user_reason(
+    breakdown: dict[str, Any], signals: dict[str, Any], signal_class: str | None, *,
+    question: str = "", source_signals: list[dict[str, Any]] | None = None,
+) -> str:
+    """One or two short German clauses for the UI ("Warum das funktionieren könnte") - no scores.
+
+    Every evidence clause says literally what was measured (V2 calibration): a related chart
+    video is named as such, never presented as a video about this question.
+    """
     def value(name: str) -> float | None:
         item = signals.get(name) or {}
         return None if item.get("confidence") == "unavailable" else item.get("value")
@@ -534,14 +652,15 @@ def user_reason(breakdown: dict[str, Any], signals: dict[str, Any], signal_class
     trend = (signals.get("trend") or {}).get("evidence") or {}
     demand = (signals.get("demand") or {}).get("evidence") or {}
     outlier = (signals.get("outlier") or {}).get("evidence") or {}
+    chart = _chart_clause(question, source_signals or []) if trend.get("method") == "youtube_most_popular_de" else None
     if signal_class in {"TRENDING", "EMERGING", "EVERGREEN_WITH_CURRENT_INTEREST"} and trend.get("ratio"):
-        parts.append(f"das Interesse liegt gerade beim {trend['ratio']}-fachen des Normalniveaus (Wikipedia)")
-    elif signal_class in {"TRENDING", "EMERGING", "EVERGREEN_WITH_CURRENT_INTEREST"} and trend.get("method") == "youtube_most_popular_de":
-        parts.append("ein Video dazu ist gerade in den deutschen YouTube-Charts")
+        parts.append(f"die Wikipedia-Aufrufe zum Thema liegen gerade beim {trend['ratio']}-fachen des Normalniveaus")
+    elif signal_class in {"TRENDING", "EMERGING", "EVERGREEN_WITH_CURRENT_INTEREST"} and chart:
+        parts.append(chart)
     elif signal_class in {"TIMELY", "EVERGREEN_WITH_CURRENT_INTEREST"} and trend.get("outlets"):
         parts.append(f"aktuell in {trend['outlets']} deutschen Medien")
-    elif outlier.get("ratio") and float(outlier["ratio"]) >= 2:
-        parts.append(f"ein ähnliches Video lief {outlier['ratio']}-mal besser als sonst auf seinem Kanal")
+    elif outlier.get("ratio") and float(outlier["ratio"]) >= 2 and (outlier.get("video") or {}).get("title"):
+        parts.append(f"das Video „{compact(outlier['video']['title'], 60)}“ zum Thema läuft {outlier['ratio']}-mal besser als sonst auf seinem Kanal")
     elif demand.get("median_views_per_day") and signal_class in {"EVERGREEN", "EVERGREEN_WITH_CURRENT_INTEREST"}:
         parts.append(f"dauerhaft gefragt (~{int(demand['median_views_per_day']):,} Wikipedia-Aufrufe pro Tag)".replace(",", "."))
     elif signal_class == "EVERGREEN":
@@ -719,21 +838,24 @@ def _discover(
         budget = max(budget, WIDEN_EVALUATIONS)
     history = history_module.load_history(db)
     semantic_on = semantic.semantic_enabled(settings)
-    priorities: dict[str, tuple[float, dict[str, Any]]] = {}
+    # Cheap deterministic pre-score for EVERY normalized topic (demand, question hint, audience,
+    # grounding, novelty - never raw views), then a representative shortlist for the bounded,
+    # expensive evaluation (see ``representative_order``).
+    priorities: dict[str, tuple[float, dict[str, Any]]] = {group.key: _curation_priority(group, history, now) for group in groups}
+    ai_capacity = AI_REQUEST_BUDGET - (ai_requests_in(broaden_from) if broaden_from is not None else 0)
+    if broaden_from is not None:
+        ai_capacity = max(ai_capacity, WIDEN_AI_REQUESTS)
+    batch_size = max(1, min(20, int(getattr(settings, "topic_curator_batch_size", semantic.MAX_CURATION_BATCH) or semantic.MAX_CURATION_BATCH)))
     if semantic_on:
-        # The AI budget is bounded: the most promising raw topics are curated first
-        # (cheap evidence only - demand, audience, evidence, question hint; garbage last).
-        priorities = {group.key: _curation_priority(group, history, now) for group in groups}
-        groups.sort(key=lambda group: (-priorities[group.key][0], group.key))
-        batch_size = max(1, min(20, int(getattr(settings, "topic_curator_batch_size", semantic.MAX_CURATION_BATCH) or semantic.MAX_CURATION_BATCH)))
-        groups = mix_sources(groups, batch_size)
+        groups, shortlist_report = representative_order(groups, priorities, slots=min(budget, ai_capacity * batch_size))
     else:
-        # Local mode: a topic without a locally derivable question can never pass, so topics that
-        # can become one are evaluated first (ordering only - the rest still follow within budget).
-        groups.sort(key=lambda group: (deterministic_transform(group).method == "none", -_preliminary(group), group.key))
+        # Local mode: a topic without a locally derivable question can never pass, so it is never shortlisted.
         transformable = [group for group in groups if group.evergreen or deterministic_transform(group).method != "none"]
         chosen_ids = {id(group) for group in transformable}
-        groups = mix_sources(transformable, MAX_BATCH) + [group for group in groups if id(group) not in chosen_ids]
+        ordered, shortlist_report = representative_order(transformable, priorities, slots=budget)
+        groups = ordered + [group for group in groups if id(group) not in chosen_ids]
+    shortlist_keys = [group.key for group in groups[: shortlist_report["shortlist"]]]
+    cheap_duplicates: list[TopicGroup] = shortlist_report.pop("deferred_groups")
 
     def unused_seeds(group: TopicGroup) -> list[str]:
         seen = _seen_before(history, group, classify_niche(group.title, group.description())[0], now)
@@ -750,13 +872,44 @@ def _discover(
     batch: list[TopicGroup] = []
     accepted = len(carried)
     queue = list(groups)
+    evaluated_keys: set[str] = set()
+    stop: dict[str, Any] = {}
+
+    def keep_going(remaining: list[TopicGroup], done: int) -> bool:
+        """Bounded stopping rule: enough supply AND fair coverage AND nothing competitive left."""
+        if accepted < TARGET_ACCEPTED:
+            return True
+        if done < min(MIN_EVALUATION_COVERAGE, len(groups)):
+            stop.update(reason="coverage_not_reached")
+            return True
+        shortlisted = [group for group in groups if group.key in shortlist_keys]
+        for source in {source for group in shortlisted for source in group.sources}:
+            needed = min(MIN_PER_SOURCE, sum(1 for group in shortlisted if source in group.sources))
+            have = sum(1 for group in shortlisted if source in group.sources and group.key in evaluated_keys)
+            if have < needed and any(source in group.sources for group in remaining):
+                stop.update(reason=f"source_not_covered:{source}")
+                return True
+        top = sorted((candidate for candidate in candidates if not candidate.rejected), key=lambda item: -item.final_score)[:COMPETITIVE_TOP]
+        known = [float(candidate.provenance["curation_priority"]) for candidate in top if "curation_priority" in candidate.provenance]
+        if known:
+            bar = min(known) - COMPETITIVE_MARGIN
+            competitive = [group.title for group in remaining if priorities.get(group.key, (0.0, {}))[0] >= bar]
+            if competitive:
+                stop.update(reason="competitive_candidates_remain", bar=round(bar, 4), competitive=competitive[:5])
+                return True
+            stop.update(bar=round(bar, 4))
+        stop.update(reason="enough_supply_coverage_and_no_competitive_candidate")
+        return False
     curation_batches: list[dict[str, Any]] = []
     unevaluated: dict[str, tuple[str, str]] = {}  # group key -> (topic, reason): NOT judged, never "low quality"
+    for group in cheap_duplicates:
+        unevaluated[group.key] = (group.title, "cheap_duplicate")
 
     def evaluate(pairs: list[tuple[TopicGroup, Transformed]]) -> None:
         nonlocal accepted
         _FLIGHT.stage("scoring")
         for group, item in pairs:
+            evaluated_keys.add(group.key)
             candidate = build_candidate(group, item, history=history, own_priors=own_priors, own_default=own_default, now=now, run_id=run.id)
             if candidate.candidate_id in excluded_ids:
                 continue
@@ -771,12 +924,12 @@ def _discover(
     if semantic_on:
         queue, evaluated, curation_requests, curated, cached_curations, ai_left = _curate_pool(
             db, settings, queue, now=now, budget=budget, ai_left=ai_left, ai_deadline=ai_deadline,
-            evaluate=evaluate, target_left=lambda: TARGET_ACCEPTED - accepted,
+            evaluate=evaluate, keep_going=keep_going,
             batches=curation_batches, unevaluated=unevaluated, errors=semantic_errors, methods=methods, seeds=unused_seeds,
         )
     # Local mode: backfill through the raw pool with the deterministic question step.
     # The discovery pre-rank orders the work, it is not a gate.
-    while not semantic_on and queue and evaluated < budget and accepted < TARGET_ACCEPTED:
+    while not semantic_on and queue and evaluated < budget and keep_going(queue, evaluated):
         batch = queue[: min(MAX_BATCH, budget - evaluated)]
         queue = queue[len(batch):]
         evaluated += len(batch)
@@ -812,10 +965,9 @@ def _discover(
             fetched = fetched or not cached
             probe_report.items += 1
             videos = payload.get("videos") or []
-            competition, outlier = competition_estimate(candidate.question, candidate.topic, videos)
+            # The related-video "outlier" stays diagnostic evidence inside ``competition`` (see signals).
+            competition, _related_outlier = competition_estimate(candidate.question, candidate.topic, videos)
             candidate.signals["competition"] = competition
-            if not candidate.signal("outlier").available and outlier.available:
-                candidate.signals["outlier"] = outlier
             # Supply is evidence of demand too: related Shorts' median views/day (never one giant's raw views).
             candidate.signals["demand"] = merge_demand([candidate.signal("demand"), related_video_demand(candidate.question, candidate.topic, videos, now)])
             candidate.signals["opportunity"] = opportunity(competition, candidate.signal("demand"))
@@ -825,6 +977,15 @@ def _discover(
         probe_report.calls = meter.calls - calls_before
         probe_report.quota_units = meter.quota_units - units_before
     reports.append(probe_report)
+    if not queue:
+        stopped_by = "raw_pool_exhausted"
+    elif evaluated >= budget:
+        stopped_by = "evaluation_budget"
+    elif stop.get("reason") == "enough_supply_coverage_and_no_competitive_candidate":
+        stopped_by = stop["reason"]
+    else:
+        stopped_by = "ai_budget_or_deadline" if semantic_on else "evaluation_budget"
+    evaluated_sources = Counter(source for group in groups if group.key in evaluated_keys for source in group.sources)
     reports.append(SourceReport(
         EVALUATION_REPORT, "ok", items=evaluated, calls=curation_requests,
         error=f"raw_groups={len(groups)} budget={budget} target={TARGET_ACCEPTED} accepted={accepted} remaining={len(queue)}",
@@ -838,6 +999,11 @@ def _discover(
                     {"topic": group.title, "priority": priorities[group.key][0], **priorities[group.key][1]}
                     for group in groups[:12] if group.key in priorities
                 ],
+                "shortlist": shortlist_report,
+                "evaluated_sources": dict(evaluated_sources),
+                "stopped_by": stopped_by,
+                "stop_rule": {**stop, "target": TARGET_ACCEPTED, "min_coverage": MIN_EVALUATION_COVERAGE,
+                              "min_per_source": MIN_PER_SOURCE, "competitive_margin": COMPETITIVE_MARGIN},
                 "broadened_from": broaden_from.id if broaden_from is not None else None},
     ))
     reports.append(SourceReport(
@@ -904,7 +1070,7 @@ def _curate_pool(
     ai_left: int,
     ai_deadline: float,
     evaluate: Any,
-    target_left: Any,
+    keep_going: Any,
     batches: list[dict[str, Any]],
     unevaluated: dict[str, tuple[str, str]],
     errors: list[str],
@@ -940,7 +1106,7 @@ def _curate_pool(
     retried: set[str] = set()
     failed: list[TopicGroup] = []
     stop_reason = ""
-    while fresh and evaluated < budget and target_left() > 0:
+    while fresh and evaluated < budget and keep_going(fresh, evaluated):
         if ai_left <= 0:
             stop_reason = "ai_budget_exhausted"
             break
@@ -1036,7 +1202,7 @@ def serialize_candidate(record: TopicCandidateRecord, now: datetime | None = Non
     signal_class, _basis = candidate_class(record, now)
     return {
         # V2 user-facing: concise reasoning + an evidence-backed signal label (or none).
-        "reason": user_reason(breakdown, record.signals or {}, signal_class),
+        "reason": user_reason(breakdown, record.signals or {}, signal_class, question=record.question, source_signals=list(record.source_signals or [])),
         "signal_class": signal_class,
         "signal_label": scoring.SIGNAL_LABELS_DE.get(signal_class) if signal_class else None,
         "candidate_id": record.candidate_id,
