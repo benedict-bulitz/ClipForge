@@ -855,7 +855,7 @@ def _verification_texts(scene: dict[str, Any], state: dict[str, Any], extra: lis
     try:
         from .visual_verifier import VisualPromptSet
 
-        return VisualPromptSet(list(dict.fromkeys([*scene_texts, *subject])), subject=subject, scene=scene_texts)
+        return VisualPromptSet(list(dict.fromkeys([*scene_texts, *subject])), subject=subject, scene=scene_texts, required_environment=getattr(base, "required_environment", None))
     except ImportError:  # pragma: no cover - same package
         return scene_texts
 
@@ -873,7 +873,7 @@ def _verify_generated(
     if result is None or getattr(result, "status", "") != "verified":
         return {"status": getattr(result, "status", "verification_failed"), "accepted": True, "verified": False}
     scene_score = result.scene_score if result.scene_score is not None else result.score
-    accepted = bool(scene_score is not None and scene_score >= SCENE_VISUAL_THRESHOLD and not result.presentation_risk)
+    accepted = bool(scene_score is not None and scene_score >= SCENE_VISUAL_THRESHOLD and not result.presentation_risk and not (result.setting_evidence or {}).get("mismatch"))
     return {
         "status": "verified",
         "accepted": accepted,
@@ -882,6 +882,7 @@ def _verify_generated(
         "scene_score": scene_score,
         "presentation_risk": bool(result.presentation_risk),
         "threshold": SCENE_VISUAL_THRESHOLD,
+        "setting_evidence": result.setting_evidence,
     }
 
 

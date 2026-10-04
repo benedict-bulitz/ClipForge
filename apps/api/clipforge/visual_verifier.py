@@ -18,7 +18,7 @@ from typing import Any
 import httpx
 from PIL import Image
 
-from .visual_context import scene_story_context
+from .visual_context import SETTING_CONFLICTS, environment_requirement, scene_story_context
 
 MODEL_NAME = "ViT-B-32"
 MODEL_PRETRAINED = "laion2b_s34b_b79k"
@@ -49,13 +49,15 @@ class VisualVerification:
     context_visual_score: float | None = None
     visual_margin: float | None = None
     confidence: str = "low"
+    setting_evidence: dict[str, Any] | None = None
 
 
 class VisualPromptSet(list[str]):
-    def __init__(self, values: list[str], *, subject: list[str], scene: list[str]):
+    def __init__(self, values: list[str], *, subject: list[str], scene: list[str], required_environment: dict | None = None):
         super().__init__(values)
         self.subject = subject
         self.scene = scene
+        self.required_environment = required_environment
 
 
 class UnavailableVisualVerifier:
@@ -194,6 +196,53 @@ class OpenClipVisualVerifier:
         combined = scene_score if not subject_texts else (scene_score * 0.85) + (subject_score * 0.15)
         return subject_score, scene_score, combined
 
+    def _setting_evidence(self, image: Image.Image, texts: list[str], *, asset_identity: str) -> dict | None:
+        """Bounded contrast within the existing local verifier, never a ranking bonus.
+
+        Side/lower views expose small background settings that centre cropping or
+        captions can hide. Four views maximum, shared image/text embeddings, no
+        extra provider requests. Colour, clouds and deserts are not conflicts.
+        """
+        requirement = getattr(texts, "required_environment", None)
+        if not requirement:
+            return None
+        entity = requirement["entity"]
+        actual = [f"a photograph of the actual rocky surface and sky of planet {entity}",
+                  f"a {entity} rover photograph of the barren {entity} landscape"]
+        width, height = image.size
+        views = [("full", image, f"{asset_identity}:scene")]
+        if min(width, height) >= 96:
+            views.extend((name, image.crop(box), f"{asset_identity}:setting:{name}") for name, box in (
+                ("left", (0, 0, width // 3, height)),
+                ("right", (width * 2 // 3, 0, width, height)),
+                ("lower", (0, height * 3 // 5, width, height)),
+            ))
+        witnesses = []
+        for name, view, identity in views:
+            expected = self.score_image(view, actual, asset_identity=identity)
+            for category in requirement["incompatible"]:
+                score = self.score_image(view, list(SETTING_CONFLICTS[category][1]), asset_identity=identity)
+                # A conflict must independently clear the scene threshold AND
+                # beat the required setting by a conservative contrast margin.
+                if score >= SCENE_VISUAL_THRESHOLD and score - expected >= 0.04:
+                    witnesses.append({"category": category, "view": name, "score": round(score, 4),
+                                      "required_score": round(expected, 4)})
+        return {"requirement": requirement, "source": "openclip_setting_contrast", "version": 1,
+                "mismatch": bool(witnesses), "markers": sorted({w["category"] for w in witnesses}),
+                "witnesses": witnesses[:8]}
+
+    @staticmethod
+    def _setting_consensus(evidence: list[dict | None]) -> dict | None:
+        rows = [row for row in evidence if row is not None]
+        if not rows:
+            return None
+        # Video contradiction must persist across a majority of sampled frames.
+        rejected = [row for row in rows if row["mismatch"]]
+        return {**rows[0], "mismatch": len(rejected) > len(rows) / 2,
+                "markers": sorted({marker for row in rejected for marker in row["markers"]}),
+                "witnesses": [w for row in rejected for w in row["witnesses"]][:8],
+                "frame_count": len(rows), "conflicting_frames": len(rejected)}
+
     def _presentation_scores(
         self, image: Image.Image, *, asset_identity: str
     ) -> tuple[float, float, float, bool]:
@@ -233,6 +282,7 @@ class OpenClipVisualVerifier:
         photographic_scores = []
         diagram_scores = []
         presentation_risks = []
+        setting_evidence = []
         for i, frame in enumerate(frames):
             identity = f"{asset_identity}:frame:{i}"
             subject_score, scene_score, combined = self._score_prompt_groups(
@@ -248,6 +298,7 @@ class OpenClipVisualVerifier:
             diagram_scores.append(diagram_score)
             presentation_risks.append(presentation_risk)
             scores.append(combined)
+            setting_evidence.append(self._setting_evidence(frame, texts, asset_identity=identity))
         return (
             VisualVerification(
                 float(statistics.median(scores)),
@@ -261,6 +312,7 @@ class OpenClipVisualVerifier:
                 float(statistics.median(photographic_scores)),
                 float(statistics.median(diagram_scores)),
                 sum(presentation_risks) > len(presentation_risks) / 2,
+                setting_evidence=self._setting_consensus(setting_evidence),
             )
             if scores
             else VisualVerification(None, "unavailable_frames")
@@ -364,6 +416,7 @@ class OpenClipVisualVerifier:
             photographic_score,
             diagram_score,
             presentation_risk,
+            setting_evidence=self._setting_evidence(image, texts, asset_identity=identity),
         )
 
     def verify_candidate(self, candidate: Any, texts: list[str]) -> VisualVerification:
@@ -394,6 +447,7 @@ class OpenClipVisualVerifier:
                             result.photographic_score,
                             result.diagram_score,
                             result.presentation_risk,
+                            setting_evidence=result.setting_evidence,
                         )
             except (OSError, ValueError, RuntimeError, httpx.HTTPError, subprocess.SubprocessError):
                 pass
@@ -424,6 +478,7 @@ class OpenClipVisualVerifier:
                 photographic_score,
                 diagram_score,
                 presentation_risk,
+                setting_evidence=self._setting_evidence(image, texts, asset_identity=str(getattr(candidate, "identity", "image"))),
             )
         except (OSError, ValueError, RuntimeError, ImportError, httpx.HTTPError):
             return VisualVerification(None, "unavailable_preview")
@@ -520,11 +575,13 @@ def visual_intent_text(scene: dict[str, Any], state: dict[str, Any] | None = Non
     prompts.extend(provider_queries[:1])
     scene_prompts = list(dict.fromkeys(v for v in prompts if v))
     if state is None:
-        return scene_prompts[:4] or ["a relevant visual scene"]
+        return VisualPromptSet(scene_prompts[:4] or ["a relevant visual scene"], subject=[], scene=scene_prompts[:4],
+                               required_environment=environment_requirement(scene, state))
     scene_prompts = scene_prompts[:3] or ["a relevant visual scene"]
     subject_prompts = [f"a photo of {subject_topic}"] if subject_topic else []
     return VisualPromptSet(
         list(dict.fromkeys([*scene_prompts, *subject_prompts])),
         subject=subject_prompts,
         scene=scene_prompts,
+        required_environment=environment_requirement(scene, state),
     )

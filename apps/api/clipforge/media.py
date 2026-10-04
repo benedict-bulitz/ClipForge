@@ -18,9 +18,11 @@ from .config import Settings
 from .progress import ProgressCallback, report_progress
 from .visual_context import (
     HISTORICAL_WORDS,
+    environment_requirement,
     historical_requirement,
     planetary_setting_evidence,
     scene_story_context,
+    setting_verdict,
 )
 from .visual_providers import (
     AcquisitionBudget,
@@ -1047,6 +1049,8 @@ def real_media_quality_gate(
     if not is_real_media_allowed(candidate) or (relevance.get("presentation_risk") or {}).get("rejected"):
         return False, "presentation_risk"
     visual = relevance.get("visual") or {}
+    if (visual.get("setting_evidence") or {}).get("mismatch"):
+        return False, "setting_contradiction"
     scene_score = visual.get("scene_score") if visual.get("scene_score") is not None else visual.get("score")
     if scene_score is None and visual_score is not None and visual_score >= 0:
         scene_score = visual_score
@@ -1321,11 +1325,14 @@ def verify_media_shortlist(
                 "photographic_score": result.photographic_score,
                 "diagram_score": result.diagram_score,
                 "presentation_risk": result.presentation_risk,
+                "setting_evidence": result.setting_evidence,
             }
         combined = dict(metadata, visual=visual_data)
         if result is not None and result.status == "verified":
             scene_score = result.scene_score if result.scene_score is not None else result.score
-            if result.presentation_risk:
+            if (result.setting_evidence or {}).get("mismatch"):
+                combined["confidence"] = "rejected"
+            elif result.presentation_risk:
                 combined["confidence"] = "rejected"
                 combined["presentation_risk"] = {
                     "rejected": True,
@@ -2114,7 +2121,7 @@ def prepare_project_media(
         acquisition_budget = AcquisitionBudget()
         existing = scene.get("media") if isinstance(scene.get("media"), dict) else None
         reused = scene.get("asset_status") in {"related_media_reused", "real_media_reused", "generated_media_reused", "block_visual_continued"}
-        cache_allowed = bool(existing and destination_asset_allowed(existing, scene, state, reuse=reused))
+        cache_allowed = bool(existing and destination_asset_allowed(existing, scene, state, reuse=reused, settings=settings, verifier=visual_verifier or get_visual_verifier(), acquisition_budget=acquisition_budget))
         if existing:
             identity = str(existing.get("identity") or "")
             path = settings.render_root.resolve() / str(existing.get("cache_path") or "")
@@ -2751,13 +2758,49 @@ def persisted_candidate(media: dict[str, Any]) -> MediaCandidate:
     )
 
 
+def asset_setting_conflict(media: dict[str, Any], scene: dict[str, Any], state: dict[str, Any]) -> dict | None:
+    """One contradiction authority for fresh, persisted, generated and reused assets."""
+    requirement = environment_requirement(scene, state)
+    if not requirement:
+        return None
+    if media_source(media) in REAL_MEDIA_PROVIDERS:
+        evidence = planetary_setting_evidence(scene, state, _metadata_evidence(persisted_candidate(media)))
+        if evidence["mismatch"]:
+            return evidence
+    # Generation prompts describe the requested output, not observed pixels.
+    # Only actual verification records can establish a generated contradiction.
+    records = [media.get("setting_evidence"),
+               ((media.get("relevance") or {}).get("visual") or {}).get("setting_evidence"),
+               ((media.get("generation") or {}).get("verification") or {}).get("setting_evidence")]
+    records.extend(record.get("setting_evidence") for record in (media.get("destination_verifications") or {}).values())
+    return next((record for record in records if setting_verdict(requirement, record)), None)
+
+
 def destination_asset_allowed(media: dict[str, Any], scene: dict[str, Any], state: dict[str, Any],
                               *, reuse: bool = False, strategy: dict[str, Any] | None = None,
                               settings: Settings | None = None, verifier: Any | None = None,
                               acquisition_budget: AcquisitionBudget | None = None) -> bool:
     """Shared cache/apply/reuse gate; destination fit never inherits A's verdict."""
-    if not is_scene_asset_allowed(media):
+    if not is_scene_asset_allowed(media) or asset_setting_conflict(media, scene, state):
         return False
+    requirement = environment_requirement(scene, state)
+    if requirement and media_source(media) != GRAPHIC_ASSET_SOURCE and settings is not None and verifier is not None:
+        known = media.get("setting_evidence") or ((media.get("relevance") or {}).get("visual") or {}).get("setting_evidence") or {}
+        if known.get("requirement") != requirement:
+            path = cached_scene_asset_path(media, settings)
+            method = "score_video_file" if media.get("kind") == "video" else "verify_local_image"
+            if path and getattr(verifier, "status", "") == "available" and hasattr(verifier, method):
+                identity = f"setting:{media.get('identity')}:{requirement['context_key']}"
+                if acquisition_budget is not None and not acquisition_budget.claim("verifications", identity):
+                    return False
+                try:
+                    result = getattr(verifier, method)(path, visual_intent_text(scene, state), asset_identity=identity)
+                except (OSError, ValueError, RuntimeError, ImportError):
+                    result = None  # Existing metadata fallback, never fabricated permission.
+                if result is not None and result.setting_evidence is not None:
+                    media["setting_evidence"] = result.setting_evidence
+                    if asset_setting_conflict(media, scene, state):
+                        return False
     if media_source(media) in REAL_MEDIA_PROVIDERS:
         prior = media.get("relevance") or {}
         if prior.get("confidence") == "rejected" or (prior.get("acceptance") or {}).get("accepted") is False:
@@ -2810,6 +2853,7 @@ def destination_asset_allowed(media: dict[str, Any], scene: dict[str, Any], stat
 
 def scene_acceptance_key(scene: dict[str, Any], state: dict[str, Any]) -> str:
     evidence = {key: scene.get(key) for key in ("narration", "visual_goal", "visual_intent")}
+    evidence["required_environment"] = environment_requirement(scene, state)
     evidence["intent"] = state.get("intent")
     evidence["story_context"] = scene_story_context(scene, state)
     return hashlib.sha256(json.dumps(evidence, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
@@ -2849,9 +2893,18 @@ def complete_project_visuals(
             run_state["generation_blocked"] = status
             break
     for scene in scenes:
+        stored = (scene.get("media_search") or {}).get("acquisition_budget") or {}
+        budget = AcquisitionBudget()
+        for work, limit in (stored.get("limits") or {}).items():
+            if work in {"search_requests", "verifications", "downloads"}:
+                setattr(budget, f"max_{work}", max(0, int(limit)))
+        for work, count in (stored.get("used") or {}).items():
+            if work in {"search_requests", "verifications", "downloads"}:
+                setattr(budget, work, max(0, int(count)))
         current = scene.get("media") or {}
         reused = scene.get("asset_status") in {"related_media_reused", "real_media_reused", "generated_media_reused", "block_visual_continued"}
-        if cached_scene_asset_path(current, settings) and destination_asset_allowed(current, scene, state, reuse=reused):
+        if cached_scene_asset_path(current, settings) and destination_asset_allowed(current, scene, state, reuse=reused, settings=settings, verifier=verifier, acquisition_budget=budget):
+            scene.setdefault("media_search", {})["acquisition_budget"] = budget.snapshot()
             refresh_rights_acceptance(current)
             scene.pop("fallback_completion", None)
             if scene.get("asset_status") == "real_media_unavailable":
@@ -2875,14 +2928,6 @@ def complete_project_visuals(
             refreshed = director.plan_scene_strategy(scene, state, build_visual_query_plan(scene, state))
             if director.SIMPLE_GRAPHIC in refreshed["fallback_chain"]:
                 strategy = {**strategy, **refreshed}
-        stored = (scene.get("media_search") or {}).get("acquisition_budget") or {}
-        budget = AcquisitionBudget()
-        for work, limit in (stored.get("limits") or {}).items():
-            if work in {"search_requests", "verifications", "downloads"}:
-                setattr(budget, f"max_{work}", max(0, int(limit)))
-        for work, count in (stored.get("used") or {}).items():
-            if work in {"search_requests", "verifications", "downloads"}:
-                setattr(budget, work, max(0, int(count)))
         reason = "no_usable_source_at_render_admission"
         metadata, resolved = director.resolve_scene_fallback(
             scene, state, strategy, project_id=project_id, settings=settings,

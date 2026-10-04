@@ -1174,6 +1174,10 @@ def _create_visual_segment(
     reused = scene.get("asset_status") in {"related_media_reused", "real_media_reused", "generated_media_reused", "block_visual_continued"}
     relevance = (scene.get("media") or {}).get("relevance") or {}
     rejected = relevance.get("confidence") == "rejected" or (relevance.get("acceptance") or {}).get("accepted") is False
+    from .media import asset_setting_conflict
+
+    if source is not None and asset_setting_conflict(scene.get("media") or {}, scene, state):
+        source = None
     if source is not None and (reused or rejected) and not destination_asset_allowed(scene["media"], scene, state, reuse=reused):
         source = None
     if source is None:

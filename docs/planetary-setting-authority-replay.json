@@ -1,0 +1,991 @@
+{
+  "project_id": "327f96b5-9dfb-438d-ac9b-08c86a8c5b1c",
+  "snapshot_revision": 4,
+  "render_revision": 2,
+  "expected_base": "6c51027315091f0b029de4d67b0f1322bb133d3d",
+  "runtime_commit_recorded": false,
+  "video": "warum-ist-der-himmel-auf-dem-mars-rot-055b1fafea.mp4",
+  "method": "Read-only saved state and actual exported frames; existing cached OpenCLIP offline; Final Critic three-frame sampling.",
+  "control_note": "Generated control passes setting/critic; raw file admission is false because export cleanup removed its cache path. No saved-state files were changed.",
+  "results": [
+    {
+      "name": "city",
+      "scene_id": "scene_01_01",
+      "window": {
+        "start": 0.0,
+        "end": 2.267
+      },
+      "narration": "Auf dem Mars bleibt der Himmel sogar",
+      "visual_intent": {
+        "visual_goal": "Wide static landscape with a clear horizon line of Rocky red horizon after sunset, The sun has disappeared, but a warm dusty glow remains above the horizon., A bright twilight band lingering after the sun is gone",
+        "objects": [
+          "Rocky red horizon after sunset"
+        ],
+        "actions": [
+          "The sun has disappeared, but a warm dusty glow remains above the horizon."
+        ],
+        "context": [
+          "A bright twilight band lingering after the sun is gone",
+          "Darkening ground versus glowing sky"
+        ],
+        "visual_strategy": "literal",
+        "media_queries": [
+          "desert twilight after sunset horizon",
+          "dusty desert evening glow",
+          "rocky desert blue hour"
+        ],
+        "media_query_targets": [
+          "context",
+          "shared",
+          "context"
+        ],
+        "must_not_show": [
+          "text overlays",
+          "maps",
+          "labels",
+          "logos"
+        ],
+        "subject": "Rocky red horizon after sunset",
+        "action_state": "The sun has disappeared, but a warm dusty glow remains above the horizon.",
+        "framing": "Wide static landscape with a clear horizon line",
+        "key_detail": "A bright twilight band lingering after the sun is gone",
+        "contrast": "Darkening ground versus glowing sky",
+        "motion": "Slow fade from sunset into twilight",
+        "tension": "The sky stays lit after its light source has vanished.",
+        "subjects_to_show": [
+          "Rocky red horizon after sunset"
+        ],
+        "motion_or_change": "Slow fade from sunset into twilight",
+        "visual_priority": "A bright twilight band lingering after the sun is gone",
+        "source": "triple_hook_v2",
+        "hook_id": "hook_c",
+        "source_fact_ids": [],
+        "format_guidance": "cause/effect, process, or simple explanatory visuals",
+        "format": "explanation",
+        "story_role": null,
+        "story_stage": "open",
+        "reaction_direction": "Keep the visual concrete and relevant to the narration."
+      },
+      "asset": {
+        "provider": "pexels",
+        "provider_id": "38498382",
+        "identity": "pexels:video:38498382",
+        "source_url": "https://www.pexels.com/video/stunning-desert-sunset-over-remote-landscape-38498382/",
+        "query": "desert twilight sunset horizon",
+        "title": "",
+        "description": "",
+        "tags": [],
+        "creator": "Yunus Terk",
+        "rights": {
+          "license_id": "pexels-license",
+          "license_name": "Pexels License",
+          "license_url": "https://www.pexels.com/license/",
+          "public_domain": null,
+          "commercial_use_allowed": true,
+          "modifications_allowed": true,
+          "attribution_required": false,
+          "attribution_text": null,
+          "rights_source": "provider_terms:https://www.pexels.com/license/",
+          "rights_policy_version": "clipforge-commercial-edited-v1",
+          "evidence": {
+            "basis": "provider-wide grant; not per-result API metadata",
+            "reviewed_on": "2026-10-01",
+            "scope": "edited commercial video; provider prohibited uses and third-party rights still apply"
+          }
+        },
+        "rights_acceptance": {
+          "status": "usable",
+          "reason": "established_reuse_rights",
+          "policy_version": "clipforge-commercial-edited-v1"
+        }
+      },
+      "selection": {
+        "score": 76.0,
+        "confidence": "high",
+        "selection_tier": 3,
+        "query_provenance": true,
+        "setting_evidence": {
+          "required": true,
+          "mismatch": false,
+          "markers": []
+        },
+        "visual": {
+          "status": "verified",
+          "score": 0.2989914521574974,
+          "subject_score": 0.2843893766403198,
+          "scene_score": 0.30379006266593933,
+          "provenance": "provider_video_frames",
+          "frame_scores": [
+            0.2989914521574974,
+            0.2983180738985538,
+            0.3047514259815216
+          ],
+          "frame_count": 3,
+          "presentation_score": 0.10830417275428772,
+          "photographic_score": 0.19665289670228958,
+          "diagram_score": 0.09957174956798553,
+          "presentation_risk": false
+        },
+        "acceptance": {
+          "accepted": true,
+          "reason": "visual_verified",
+          "authority": "real_media_quality_gate"
+        }
+      },
+      "original_critic": {
+        "rating": "good",
+        "source": "openclip_rendered_frames",
+        "score": 0.2707,
+        "required": 0.24,
+        "subject_score": 0.2636,
+        "frame_scores": [
+          0.2699,
+          0.2912,
+          0.2336
+        ],
+        "presentation_risk": false
+      },
+      "replay": {
+        "name": "city",
+        "scene": "scene_01_01",
+        "times": [
+          0.272,
+          1.133,
+          1.995
+        ],
+        "metadata": null,
+        "setting_evidence": {
+          "requirement": {
+            "version": 1,
+            "domain": "planetary",
+            "entity": "mars",
+            "representation": "actual",
+            "incompatible": [
+              "built_environment",
+              "road_transport",
+              "vegetation",
+              "open_water"
+            ],
+            "context_key": "30ed55fd314c9698"
+          },
+          "source": "openclip_setting_contrast",
+          "version": 1,
+          "mismatch": true,
+          "markers": [
+            "built_environment"
+          ],
+          "witnesses": [
+            {
+              "category": "built_environment",
+              "view": "full",
+              "score": 0.2516,
+              "required_score": 0.197
+            },
+            {
+              "category": "built_environment",
+              "view": "right",
+              "score": 0.2423,
+              "required_score": 0.1395
+            },
+            {
+              "category": "built_environment",
+              "view": "right",
+              "score": 0.2631,
+              "required_score": 0.1497
+            },
+            {
+              "category": "built_environment",
+              "view": "right",
+              "score": 0.2426,
+              "required_score": 0.1362
+            }
+          ],
+          "frame_count": 3,
+          "conflicting_frames": 3
+        },
+        "positive_scene_score": 0.2765464782714844,
+        "critic": {
+          "rating": "poor",
+          "source": "setting_authority",
+          "setting_evidence": {
+            "requirement": {
+              "version": 1,
+              "domain": "planetary",
+              "entity": "mars",
+              "representation": "actual",
+              "incompatible": [
+                "built_environment",
+                "road_transport",
+                "vegetation",
+                "open_water"
+              ],
+              "context_key": "30ed55fd314c9698"
+            },
+            "source": "openclip_setting_contrast",
+            "version": 1,
+            "mismatch": true,
+            "markers": [
+              "built_environment"
+            ],
+            "witnesses": [
+              {
+                "category": "built_environment",
+                "view": "full",
+                "score": 0.2516,
+                "required_score": 0.197
+              },
+              {
+                "category": "built_environment",
+                "view": "right",
+                "score": 0.2423,
+                "required_score": 0.1395
+              },
+              {
+                "category": "built_environment",
+                "view": "right",
+                "score": 0.2631,
+                "required_score": 0.1497
+              },
+              {
+                "category": "built_environment",
+                "view": "right",
+                "score": 0.2426,
+                "required_score": 0.1362
+              }
+            ],
+            "frame_count": 3,
+            "conflicting_frames": 3
+          }
+        },
+        "admission_after_review": false
+      }
+    },
+    {
+      "name": "hook2",
+      "scene_id": "scene_01_02",
+      "window": {
+        "start": 2.267,
+        "end": 4.533
+      },
+      "narration": "hell, wenn die Sonne schon weg ist.",
+      "visual_intent": {
+        "visual_goal": "Wide static landscape with a clear horizon line of Rocky red horizon after sunset, The sun has disappeared, but a warm dusty glow remains above the horizon., A bright twilight band lingering after the sun is gone",
+        "objects": [
+          "Rocky red horizon after sunset"
+        ],
+        "actions": [
+          "The sun has disappeared, but a warm dusty glow remains above the horizon."
+        ],
+        "context": [
+          "A bright twilight band lingering after the sun is gone",
+          "Darkening ground versus glowing sky"
+        ],
+        "visual_strategy": "literal",
+        "media_queries": [
+          "desert twilight after sunset horizon",
+          "dusty desert evening glow",
+          "rocky desert blue hour"
+        ],
+        "media_query_targets": [
+          "context",
+          "shared",
+          "context"
+        ],
+        "must_not_show": [
+          "text overlays",
+          "maps",
+          "labels",
+          "logos"
+        ],
+        "subject": "Rocky red horizon after sunset",
+        "action_state": "The sun has disappeared, but a warm dusty glow remains above the horizon.",
+        "framing": "Wide static landscape with a clear horizon line",
+        "key_detail": "A bright twilight band lingering after the sun is gone",
+        "contrast": "Darkening ground versus glowing sky",
+        "motion": "Slow fade from sunset into twilight",
+        "tension": "The sky stays lit after its light source has vanished.",
+        "subjects_to_show": [
+          "Rocky red horizon after sunset"
+        ],
+        "motion_or_change": "Slow fade from sunset into twilight",
+        "visual_priority": "A bright twilight band lingering after the sun is gone",
+        "source": "triple_hook_v2",
+        "hook_id": "hook_c",
+        "source_fact_ids": [],
+        "format_guidance": "cause/effect, process, or simple explanatory visuals",
+        "format": "explanation",
+        "story_role": null,
+        "story_stage": "open",
+        "reaction_direction": "Keep the visual concrete and relevant to the narration."
+      },
+      "asset": {
+        "provider": "pexels",
+        "provider_id": "35072752",
+        "identity": "pexels:video:35072752",
+        "source_url": "https://www.pexels.com/video/sunset-over-cappadocia-s-majestic-landscapes-35072752/",
+        "query": "desert twilight sunset horizon",
+        "title": "",
+        "description": "",
+        "tags": [],
+        "creator": "Orkun Uzunsaç",
+        "rights": {
+          "license_id": "pexels-license",
+          "license_name": "Pexels License",
+          "license_url": "https://www.pexels.com/license/",
+          "public_domain": null,
+          "commercial_use_allowed": true,
+          "modifications_allowed": true,
+          "attribution_required": false,
+          "attribution_text": null,
+          "rights_source": "provider_terms:https://www.pexels.com/license/",
+          "rights_policy_version": "clipforge-commercial-edited-v1",
+          "evidence": {
+            "basis": "provider-wide grant; not per-result API metadata",
+            "reviewed_on": "2026-10-01",
+            "scope": "edited commercial video; provider prohibited uses and third-party rights still apply"
+          }
+        },
+        "rights_acceptance": {
+          "status": "usable",
+          "reason": "established_reuse_rights",
+          "policy_version": "clipforge-commercial-edited-v1"
+        }
+      },
+      "selection": {
+        "score": 60.0,
+        "confidence": "high",
+        "selection_tier": 3,
+        "query_provenance": true,
+        "setting_evidence": {
+          "required": true,
+          "mismatch": false,
+          "markers": []
+        },
+        "visual": {
+          "status": "verified",
+          "score": 0.27489723116159437,
+          "subject_score": 0.2686997652053833,
+          "scene_score": 0.27603188157081604,
+          "provenance": "provider_video_frames",
+          "frame_scores": [
+            0.3000648252665996,
+            0.2615087144076824,
+            0.27489723116159437
+          ],
+          "frame_count": 3,
+          "presentation_score": 0.1178826168179512,
+          "photographic_score": 0.2430610954761505,
+          "diagram_score": 0.09416015818715096,
+          "presentation_risk": false
+        },
+        "acceptance": {
+          "accepted": true,
+          "reason": "visual_verified",
+          "authority": "real_media_quality_gate"
+        }
+      },
+      "original_critic": {
+        "rating": "good",
+        "source": "openclip_rendered_frames",
+        "score": 0.2862,
+        "required": 0.24,
+        "subject_score": 0.3027,
+        "frame_scores": [
+          0.2889,
+          0.2594,
+          0.3028
+        ],
+        "presentation_risk": false
+      },
+      "replay": {
+        "name": "hook2",
+        "scene": "scene_01_02",
+        "times": [
+          2.539,
+          3.4,
+          4.261
+        ],
+        "metadata": null,
+        "setting_evidence": {
+          "requirement": {
+            "version": 1,
+            "domain": "planetary",
+            "entity": "mars",
+            "representation": "actual",
+            "incompatible": [
+              "built_environment",
+              "road_transport",
+              "vegetation",
+              "open_water"
+            ],
+            "context_key": "92a9f74b9293ec87"
+          },
+          "source": "openclip_setting_contrast",
+          "version": 1,
+          "mismatch": true,
+          "markers": [
+            "vegetation"
+          ],
+          "witnesses": [
+            {
+              "category": "vegetation",
+              "view": "lower",
+              "score": 0.26,
+              "required_score": 0.2094
+            },
+            {
+              "category": "vegetation",
+              "view": "lower",
+              "score": 0.2576,
+              "required_score": 0.1906
+            },
+            {
+              "category": "vegetation",
+              "view": "lower",
+              "score": 0.2654,
+              "required_score": 0.2031
+            }
+          ],
+          "frame_count": 3,
+          "conflicting_frames": 3
+        },
+        "positive_scene_score": 0.29795651137828827,
+        "critic": {
+          "rating": "poor",
+          "source": "setting_authority",
+          "setting_evidence": {
+            "requirement": {
+              "version": 1,
+              "domain": "planetary",
+              "entity": "mars",
+              "representation": "actual",
+              "incompatible": [
+                "built_environment",
+                "road_transport",
+                "vegetation",
+                "open_water"
+              ],
+              "context_key": "92a9f74b9293ec87"
+            },
+            "source": "openclip_setting_contrast",
+            "version": 1,
+            "mismatch": true,
+            "markers": [
+              "vegetation"
+            ],
+            "witnesses": [
+              {
+                "category": "vegetation",
+                "view": "lower",
+                "score": 0.26,
+                "required_score": 0.2094
+              },
+              {
+                "category": "vegetation",
+                "view": "lower",
+                "score": 0.2576,
+                "required_score": 0.1906
+              },
+              {
+                "category": "vegetation",
+                "view": "lower",
+                "score": 0.2654,
+                "required_score": 0.2031
+              }
+            ],
+            "frame_count": 3,
+            "conflicting_frames": 3
+          }
+        },
+        "admission_after_review": false
+      }
+    },
+    {
+      "name": "cloud",
+      "scene_id": "scene_03_01",
+      "window": {
+        "start": 7.1,
+        "end": 10.967
+      },
+      "narration": "Die Staubkörnchen streuen das Licht der Sonne und erhellen dadurch den Himmel.",
+      "visual_intent": {
+        "visual_goal": "Fine reddish dust suspended across the Martian sky Sunlight passes through the airborne dust, creating a diffuse orange-red glow around the ",
+        "objects": [
+          "Fine reddish dust suspended across the Martian sky"
+        ],
+        "actions": [
+          "Sunlight passes through the airborne dust, creating a diffuse orange-red glow around the low Sun"
+        ],
+        "context": [
+          "Barren, rocky Martian desert beneath a hazy atmosphere"
+        ],
+        "visual_strategy": "literal",
+        "media_queries": [
+          "Fine reddish dust suspended across the Martian sky Sunlight passes through the airborne dust, creating a diffuse orange-red glow around the low Sun",
+          "Barren, rocky Martian desert beneath a hazy atmosphere Fine reddish dust suspended across the Martian sky"
+        ],
+        "source": "fact_translation",
+        "format_guidance": "cause/effect, process, or simple explanatory visuals",
+        "format": "explanation",
+        "story_role": "primary_answer",
+        "story_stage": "reveal",
+        "reaction_direction": "Use a simple process, diagram, or transformation that clarifies the mechanism."
+      },
+      "asset": {
+        "provider": "pexels",
+        "provider_id": "38197878",
+        "identity": "pexels:photo:38197878",
+        "source_url": "https://www.pexels.com/photo/dramatic-red-sunset-cloudscape-38197878/",
+        "query": "himmel auf dem mars rot",
+        "title": "Stunning cloudscape with vibrant red hues during sunset, creating a dramatic sky view.",
+        "description": "Stunning cloudscape with vibrant red hues during sunset, creating a dramatic sky view.",
+        "tags": [],
+        "creator": "İslam Abruev",
+        "rights": {
+          "license_id": "pexels-license",
+          "license_name": "Pexels License",
+          "license_url": "https://www.pexels.com/license/",
+          "public_domain": null,
+          "commercial_use_allowed": true,
+          "modifications_allowed": true,
+          "attribution_required": false,
+          "attribution_text": null,
+          "rights_source": "provider_terms:https://www.pexels.com/license/",
+          "rights_policy_version": "clipforge-commercial-edited-v1",
+          "evidence": {
+            "basis": "provider-wide grant; not per-result API metadata",
+            "reviewed_on": "2026-10-01",
+            "scope": "edited commercial video; provider prohibited uses and third-party rights still apply"
+          }
+        },
+        "rights_acceptance": {
+          "status": "usable",
+          "reason": "established_reuse_rights",
+          "policy_version": "clipforge-commercial-edited-v1"
+        }
+      },
+      "selection": {
+        "score": 56.0,
+        "confidence": "acceptable",
+        "selection_tier": 1,
+        "query_provenance": true,
+        "setting_evidence": {
+          "required": true,
+          "mismatch": false,
+          "markers": []
+        },
+        "visual": {
+          "status": "verified",
+          "score": 0.2411916743963957,
+          "subject_score": 0.16172119975090027,
+          "scene_score": 0.2552158758044243,
+          "provenance": "provider_thumbnail",
+          "frame_scores": [],
+          "frame_count": 1,
+          "presentation_score": 0.09501335024833679,
+          "photographic_score": 0.18583746254444122,
+          "diagram_score": 0.09839998185634613,
+          "presentation_risk": false
+        },
+        "acceptance": {
+          "accepted": true,
+          "reason": "visual_verified",
+          "authority": "real_media_quality_gate"
+        }
+      },
+      "original_critic": {
+        "rating": "good",
+        "source": "openclip_rendered_frames",
+        "score": 0.2765,
+        "required": 0.26,
+        "subject_score": 0.1472,
+        "frame_scores": [
+          0.3042,
+          0.2571,
+          0.2104
+        ],
+        "presentation_risk": false
+      },
+      "replay": {
+        "name": "cloud",
+        "scene": "scene_03_01",
+        "times": [
+          7.4,
+          9.033,
+          10.667
+        ],
+        "metadata": null,
+        "setting_evidence": {
+          "requirement": {
+            "version": 1,
+            "domain": "planetary",
+            "entity": "mars",
+            "representation": "actual",
+            "incompatible": [
+              "built_environment",
+              "road_transport",
+              "vegetation",
+              "open_water"
+            ],
+            "context_key": "4ee1dc0d886df323"
+          },
+          "source": "openclip_setting_contrast",
+          "version": 1,
+          "mismatch": false,
+          "markers": [],
+          "witnesses": [],
+          "frame_count": 3,
+          "conflicting_frames": 0
+        },
+        "positive_scene_score": 0.276274636387825,
+        "critic": {
+          "rating": "good",
+          "source": "openclip_rendered_frames",
+          "score": 0.2763,
+          "required": 0.26,
+          "subject_score": 0.1516,
+          "frame_scores": [
+            0.2978,
+            0.2567,
+            0.1994
+          ],
+          "presentation_risk": false
+        },
+        "admission_after_review": true
+      }
+    },
+    {
+      "name": "ocean",
+      "scene_id": "scene_04_01",
+      "window": {
+        "start": 10.967,
+        "end": 14.833
+      },
+      "narration": "Das passiert sogar noch, wenn die Sonne schon hinter dem Horizont steht.",
+      "visual_intent": {
+        "visual_goal": "A dusty Martian horizon after sunset The Sun is below the horizon, while suspended red dust still glows across the dim orange-brown sky",
+        "objects": [
+          "A dusty Martian horizon after sunset"
+        ],
+        "actions": [
+          "The Sun is below the horizon, while suspended red dust still glows across the dim orange-brown sky"
+        ],
+        "context": [
+          "Rocky Mars desert at twilight"
+        ],
+        "visual_strategy": "literal",
+        "media_queries": [
+          "A dusty Martian horizon after sunset The Sun is below the horizon, while suspended red dust still glows across the dim orange-brown sky",
+          "Rocky Mars desert at twilight A dusty Martian horizon after sunset"
+        ],
+        "source": "fact_translation",
+        "format_guidance": "cause/effect, process, or simple explanatory visuals",
+        "format": "explanation",
+        "story_role": "primary_answer",
+        "story_stage": "reveal",
+        "reaction_direction": "Use a simple process, diagram, or transformation that clarifies the mechanism."
+      },
+      "asset": {
+        "provider": "pexels",
+        "provider_id": "30871873",
+        "identity": "pexels:video:30871873",
+        "source_url": "https://www.pexels.com/video/serene-ocean-sunset-with-vibrant-sky-30871873/",
+        "query": "dusty martian horizon sunset the sun",
+        "title": "",
+        "description": "",
+        "tags": [],
+        "creator": "Oktay Köseoğlu",
+        "rights": {
+          "license_id": "pexels-license",
+          "license_name": "Pexels License",
+          "license_url": "https://www.pexels.com/license/",
+          "public_domain": null,
+          "commercial_use_allowed": true,
+          "modifications_allowed": true,
+          "attribution_required": false,
+          "attribution_text": null,
+          "rights_source": "provider_terms:https://www.pexels.com/license/",
+          "rights_policy_version": "clipforge-commercial-edited-v1",
+          "evidence": {
+            "basis": "provider-wide grant; not per-result API metadata",
+            "reviewed_on": "2026-10-01",
+            "scope": "edited commercial video; provider prohibited uses and third-party rights still apply"
+          }
+        },
+        "rights_acceptance": {
+          "status": "usable",
+          "reason": "established_reuse_rights",
+          "policy_version": "clipforge-commercial-edited-v1"
+        }
+      },
+      "selection": {
+        "score": 76.0,
+        "confidence": "high",
+        "selection_tier": 3,
+        "query_provenance": true,
+        "setting_evidence": {
+          "required": true,
+          "mismatch": false,
+          "markers": []
+        },
+        "visual": {
+          "status": "verified",
+          "score": 0.28447654023766517,
+          "subject_score": 0.1484084129333496,
+          "scene_score": 0.30848856270313263,
+          "provenance": "provider_video_frames",
+          "frame_scores": [
+            0.2874328263103962,
+            0.27069551050662993,
+            0.28447654023766517
+          ],
+          "frame_count": 3,
+          "presentation_score": 0.10666557028889656,
+          "photographic_score": 0.22168905287981033,
+          "diagram_score": 0.11885907873511314,
+          "presentation_risk": false
+        },
+        "acceptance": {
+          "accepted": true,
+          "reason": "visual_verified",
+          "authority": "real_media_quality_gate"
+        }
+      },
+      "original_critic": {
+        "rating": "good",
+        "source": "openclip_rendered_frames",
+        "score": 0.3133,
+        "required": 0.26,
+        "subject_score": 0.1557,
+        "frame_scores": [
+          0.2924,
+          0.2703,
+          0.2941
+        ],
+        "presentation_risk": false
+      },
+      "replay": {
+        "name": "ocean",
+        "scene": "scene_04_01",
+        "times": [
+          11.267,
+          12.9,
+          14.533
+        ],
+        "metadata": {
+          "required": true,
+          "requirement": {
+            "version": 1,
+            "domain": "planetary",
+            "entity": "mars",
+            "representation": "actual",
+            "incompatible": [
+              "built_environment",
+              "road_transport",
+              "vegetation",
+              "open_water"
+            ],
+            "context_key": "0b3ba2e898b9f7eb"
+          },
+          "mismatch": true,
+          "markers": [
+            "open_water"
+          ],
+          "source": "metadata"
+        },
+        "setting_evidence": {
+          "requirement": {
+            "version": 1,
+            "domain": "planetary",
+            "entity": "mars",
+            "representation": "actual",
+            "incompatible": [
+              "built_environment",
+              "road_transport",
+              "vegetation",
+              "open_water"
+            ],
+            "context_key": "0b3ba2e898b9f7eb"
+          },
+          "source": "openclip_setting_contrast",
+          "version": 1,
+          "mismatch": true,
+          "markers": [
+            "open_water"
+          ],
+          "witnesses": [
+            {
+              "category": "open_water",
+              "view": "lower",
+              "score": 0.2836,
+              "required_score": 0.171
+            },
+            {
+              "category": "open_water",
+              "view": "lower",
+              "score": 0.2807,
+              "required_score": 0.1978
+            },
+            {
+              "category": "open_water",
+              "view": "lower",
+              "score": 0.2974,
+              "required_score": 0.1909
+            }
+          ],
+          "frame_count": 3,
+          "conflicting_frames": 3
+        },
+        "positive_scene_score": 0.30990666151046753,
+        "critic": {
+          "rating": "poor",
+          "source": "setting_authority",
+          "setting_evidence": {
+            "required": true,
+            "requirement": {
+              "version": 1,
+              "domain": "planetary",
+              "entity": "mars",
+              "representation": "actual",
+              "incompatible": [
+                "built_environment",
+                "road_transport",
+                "vegetation",
+                "open_water"
+              ],
+              "context_key": "0b3ba2e898b9f7eb"
+            },
+            "mismatch": true,
+            "markers": [
+              "open_water"
+            ],
+            "source": "metadata"
+          }
+        },
+        "admission_after_review": false
+      }
+    },
+    {
+      "name": "valid",
+      "scene_id": "scene_06_01",
+      "window": {
+        "start": 18.067,
+        "end": 21.3
+      },
+      "narration": "Der Himmel wirkt also rot, weil Staub das Sonnenlicht in",
+      "visual_intent": {
+        "visual_goal": "A dusty Martian sky above a rocky desert Fine reddish dust hangs through the atmosphere, bathing the low sunlight and sky in a diffuse red-o",
+        "objects": [
+          "A dusty Martian sky above a rocky desert"
+        ],
+        "actions": [
+          "Fine reddish dust hangs through the atmosphere, bathing the low sunlight and sky in a diffuse red-orange glow"
+        ],
+        "context": [
+          "Open Mars landscape with rust-colored ground, scattered rocks, and a hazy horizon"
+        ],
+        "visual_strategy": "literal",
+        "media_queries": [
+          "A dusty Martian sky above a rocky desert Fine reddish dust hangs through the atmosphere, bathing the low sunlight and sky in a diffuse red-orange glow",
+          "Open Mars landscape with rust-colored ground, scattered rocks, and a hazy horizon A dusty Martian sky above a rocky desert"
+        ],
+        "source": "fact_translation",
+        "format_guidance": "cause/effect, process, or simple explanatory visuals",
+        "format": "explanation",
+        "story_role": "primary_answer",
+        "story_stage": "reveal",
+        "reaction_direction": "Use a simple process, diagram, or transformation that clarifies the mechanism."
+      },
+      "asset": {
+        "provider": "generated_openai",
+        "provider_id": "27179b3bc7d8fb6ab7a6",
+        "identity": "generated_openai:photo:27179b3bc7d8fb6ab7a6",
+        "source_url": "",
+        "query": "A dusty Martian sky above a rocky desert Fine reddish dust hangs through the atmosphere, bathing the low sunlight and sky in a diffuse red-o; Fine reddish dust hangs through the atmosphere, bathing th",
+        "title": "AI-generated image: A dusty Martian sky above a rocky desert Fine reddish dust hangs through the atmosphere, bathing the low sunlight and sky in a diffuse red-o; Fine reddish dust hangs through the atmosphere, bathing th",
+        "description": "A dusty Martian sky above a rocky desert Fine reddish dust hangs through the atmosphere, bathing the low sunlight and sky in a diffuse red-o; Fine reddish dust hangs through the atmosphere, bathing th",
+        "tags": [],
+        "creator": "AI-generated · GPT Image 2",
+        "rights": null,
+        "rights_acceptance": null
+      },
+      "selection": {
+        "score": null,
+        "confidence": "generated",
+        "selection_tier": null,
+        "query_provenance": null,
+        "setting_evidence": null,
+        "visual": {
+          "status": "verified",
+          "accepted": true,
+          "verified": true,
+          "score": 0.36053646355867386,
+          "scene_score": 0.3732210099697113,
+          "presentation_risk": false,
+          "threshold": 0.24
+        },
+        "acceptance": null
+      },
+      "original_critic": {
+        "rating": "good",
+        "source": "openclip_rendered_frames",
+        "score": 0.3169,
+        "required": 0.26,
+        "subject_score": 0.216,
+        "frame_scores": [
+          0.3018,
+          0.3517,
+          0.291
+        ],
+        "presentation_risk": false
+      },
+      "replay": {
+        "name": "valid",
+        "scene": "scene_06_01",
+        "times": [
+          18.367,
+          19.683,
+          21.0
+        ],
+        "metadata": null,
+        "setting_evidence": {
+          "requirement": {
+            "version": 1,
+            "domain": "planetary",
+            "entity": "mars",
+            "representation": "actual",
+            "incompatible": [
+              "built_environment",
+              "road_transport",
+              "vegetation",
+              "open_water"
+            ],
+            "context_key": "32dc02aff2ba2fa4"
+          },
+          "source": "openclip_setting_contrast",
+          "version": 1,
+          "mismatch": false,
+          "markers": [],
+          "witnesses": [],
+          "frame_count": 3,
+          "conflicting_frames": 0
+        },
+        "positive_scene_score": 0.3085090219974518,
+        "critic": {
+          "rating": "good",
+          "source": "openclip_rendered_frames",
+          "score": 0.3085,
+          "required": 0.26,
+          "subject_score": 0.211,
+          "frame_scores": [
+            0.2939,
+            0.3611,
+            0.2813
+          ],
+          "presentation_risk": false
+        },
+        "admission_after_review": false
+      }
+    }
+  ]
+}
