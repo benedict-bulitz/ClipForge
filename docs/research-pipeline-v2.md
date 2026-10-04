@@ -306,8 +306,14 @@ research, planner receives the brief, V2 crash → V1 fallback, V1 selectable.
 
 ### 3.2 Validation run
 
-See the commit message for the exact numbers of this branch's run (new V2 tests, existing
-research/answer/retry/story tests, full backend suite, ruff on changed files, `git diff --check`).
+| Check | Result |
+|---|---|
+| New V2 tests (`test_research_pipeline_v2.py`, `test_research_v2_integration.py`) | 42 passed |
+| Existing research / answer-gate / spine / retry / question-intent / writer / review / story / hook / islands suites + V2 | 466 passed |
+| Full backend suite | **2056 passed** (base `65b9fb5`: 2014 passed) |
+| ruff on every changed/new file | clean (the 56 findings repo-wide are pre-existing, identical on base) |
+| `git diff --check` | clean |
+| Frontend | unaffected (`state.research` is additive; sources keep `label`/`url`) |
 
 ### 3.3 Real project comparison
 
