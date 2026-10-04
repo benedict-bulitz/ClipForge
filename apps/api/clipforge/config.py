@@ -30,6 +30,17 @@ class Settings(BaseSettings):
     caption_alignment_provider: str = "auto"
     caption_alignment_model: str = "tiny"
     brave_search_api_key: str | None = None
+    # Research Pipeline V2 ("v1" = the previous snippet-only path).  Hard
+    # per-run budgets; browser rendering (Scrapling DynamicFetcher, needs the
+    # optional ``scrapling[fetchers]`` extra + Playwright) stays off by default.
+    research_pipeline: str = "v2"
+    research_max_searches: int = 6
+    research_max_documents: int = 6
+    research_max_llm_calls: int = 2
+    research_browser_fetch: bool = False
+    research_max_browser_fetches: int = 1
+    research_fetch_timeout_seconds: float = 8.0
+    research_deadline_seconds: float = 45.0
     pexels_api_key: str | None = None
     pixabay_api_key: str | None = None
     europeana_api_key: str | None = None

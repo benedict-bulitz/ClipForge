@@ -37,6 +37,10 @@ DIRECTOR_INSTRUCTIONS = (
     "user's prompt. Reveal the answer in the next sentence when immediate disclosure is needed for clarity; "
     "when payoff_plan requires a protected payoff, let useful supporting information earn it instead. Never "
     "use a fixed number of seconds to delay a reveal, add filler, or append a generic outro after the payoff. "
+    "A supplied research_brief names which research_evidence items (1-based) the research found to be the direct "
+    "answer, the causal mechanism, the observation, a corrected misconception or a caveat, and which are corroborated "
+    "by independent sources; use it as evidence for primary_answer_index, the explanation roles and answers_why, but "
+    "judge the facts yourself. "
     "The supplied novelty_plan is conservative guidance derived only from the provided research evidence. "
     "Use it to prioritize useful explanatory or comparative value, never to invent or exaggerate novelty. "
     "The supplied hook_playbook is the canonical ClipForge hook manifest. Use its strategy definitions, "
@@ -632,6 +636,7 @@ def plan_with_openai(
     evidence: list[str] | None = None,
     novelty_plan: dict[str, Any] | None = None,
     question_intent: dict[str, Any] | None = None,
+    research_brief: dict[str, Any] | None = None,
 ) -> AIPlanResult:
     """Create a schema-validated semantic plan and report provider failure explicitly."""
     if settings.clipforge_ai_mode != "openai":
@@ -645,6 +650,7 @@ def plan_with_openai(
         "options": options.model_dump(mode="json", exclude_none=True),
         "research_evidence": [clean_research_claim(item) for item in (evidence or []) if item],
         "novelty_plan": novelty_plan or {},
+        **({"research_brief": research_brief} if research_brief else {}),
         "question_intent": {key: value for key, value in (question_intent or {}).items() if key not in {"candidates", "version"}},
         "hook_playbook": generation_playbook([
             {

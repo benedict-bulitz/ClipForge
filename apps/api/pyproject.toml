@@ -14,6 +14,7 @@ dependencies = [
   "openai>=1.100,<3",
   "pillow>=11.3,<13",
   "pydantic-settings>=2.10,<3",
+  "scrapling>=0.4.10,<0.5",
   "psycopg[binary]>=3.2,<4",
   "sqlalchemy>=2.0,<3",
   "tzdata>=2024.1",
@@ -25,6 +26,11 @@ dev = [
   "pytest>=8.4,<9",
   "pytest-cov>=6.2,<7",
   "ruff>=0.12,<1"
+]
+# Optional browser rendering of JS-only research pages (RESEARCH_BROWSER_FETCH=true;
+# also run `playwright install chromium`).  Never needed for normal retrieval.
+research-browser = [
+  "scrapling[fetchers]>=0.4.10,<0.5",
 ]
 visual = [
   "torch>=2.3,<3",

@@ -46,6 +46,14 @@ def content_readiness(state: dict[str, Any]) -> dict[str, Any]:
     for issue in report.get("issues") or []:
         if issue.get("severity") == "error" and issue.get("code") in CONTENT_BLOCKERS:
             blocking.append({"code": f"information_gain_{issue['code']}", "message": str(issue.get("message") or "")[:320]})
+    # Research Pipeline V2: no direct answer was found in any retrieved source.
+    research = state.get("research") if isinstance(state.get("research"), dict) else {}
+    package = research.get("package") if isinstance(research.get("package"), dict) else None
+    if research.get("required") and package is not None and package.get("status") == "insufficient":
+        blocking.append({
+            "code": "research_insufficient",
+            "message": "The retrieved sources do not contain a direct answer to the question.",
+        })
     hook = _hook_text(state)
     if hook:
         if narrates_failure(hook):
@@ -60,9 +68,9 @@ def content_readiness(state: dict[str, Any]) -> dict[str, Any]:
                 "message": "The hook asserts a cause no researched fact supports: " + ", ".join(cause[:4]) + ".",
             })
     sufficiency = report.get("answer_sufficiency") if isinstance(report.get("answer_sufficiency"), dict) else {}
-    research_required = bool(sufficiency.get("research_required")) and any(
+    research_required = (bool(sufficiency.get("research_required")) and any(
         item["code"] == "information_gain_answer_insufficient" for item in blocking
-    )
+    )) or any(item["code"] == "research_insufficient" for item in blocking)
     if not blocking:
         status = "ready"
     elif research_required:

@@ -1,5 +1,6 @@
 import re
 from dataclasses import dataclass
+from typing import Any
 from urllib.parse import quote
 
 import httpx
@@ -14,6 +15,9 @@ class ResearchResult:
     status: str
     provider: str
     error: str | None = None
+    # Research Pipeline V2: the structured research package and compact diagnostics.
+    package: dict[str, Any] | None = None
+    diagnostics: dict[str, Any] | None = None
 
 
 def _query_from_prompt(prompt: str) -> str:
@@ -31,8 +35,33 @@ def _sentences(text: str, limit: int = 4) -> list[str]:
     return [part.strip() for part in parts if len(part.split()) >= 5][:limit]
 
 
-def research_topic(prompt: str, language: str, settings: Settings) -> ResearchResult:
-    """Collect attributable snippets. Brave is used when configured; Wikipedia is the free fallback."""
+def research_topic(
+    prompt: str, language: str, settings: Settings, *, context: dict[str, Any] | None = None
+) -> ResearchResult:
+    """Research one question: V2 (retrieved, attributable evidence) with V1 as the isolated fallback.
+
+    ``context`` carries what the query alone loses: the user's original
+    ``question``, the intent ``content_type`` and a retry ``focus``.
+    """
+    if str(settings.research_pipeline).casefold() != "v1":
+        try:
+            from .research_v2 import run_research
+
+            run = run_research(prompt, language, settings, context=context)
+            return ResearchResult(
+                run.facts, run.sources, run.status, "research_v2", run.error, run.package, run.diagnostics
+            )
+        except Exception as exc:  # noqa: BLE001 - V2 must never be a single point of failure
+            fallback = _research_topic_v1(prompt, language, settings)
+            note = {"v2_error": f"{type(exc).__name__}: {str(exc)[:200]}", "fallback": "v1"}
+            return ResearchResult(
+                fallback.facts, fallback.sources, fallback.status, fallback.provider, fallback.error, None, note
+            )
+    return _research_topic_v1(prompt, language, settings)
+
+
+def _research_topic_v1(prompt: str, language: str, settings: Settings) -> ResearchResult:
+    """V1: attributable snippets. Brave is used when configured; Wikipedia is the free fallback."""
     query = _query_from_prompt(prompt)
     try:
         if settings.brave_search_api_key:

@@ -41,6 +41,7 @@ from .question_intent import research_query as intent_research_query
 from .reactions import plan_viewer_reactions, reaction_arc
 from .readiness import content_readiness, not_ready_message
 from .research import research_topic
+from .research_v2.package import link_package_facts, research_brief
 from .schemas import AdvancedOptions
 from .script_review import (
     OpenAIScriptReviewProvider,
@@ -1168,9 +1169,21 @@ MAX_RESEARCH_RETRIES = 1
 _MECHANISM_QUERY = {"de": "Ursache Mechanismus warum", "en": "cause mechanism why"}
 
 
+def research_retry_focus(state: dict[str, Any]) -> str:
+    """What the one retry must find: the direct answer (``broaden``) or the ``mechanism``."""
+    package = (state.get("research") or {}).get("package")
+    if isinstance(package, dict) and package.get("status") == "insufficient":
+        return "broaden"
+    return "mechanism"
+
+
 def research_retry_query(state: dict[str, Any]) -> str:
     """A research query aimed at the missing mechanism (question + condition + what is missing)."""
     intent = state.get("intent") or {}
+    if research_retry_focus(state) == "broaden":
+        # No direct answer was found at all: search the question's subject itself.
+        question = str(intent.get("question") or state.get("prompt") or "")
+        return (intent_research_query(intent.get("question_intent"), str(intent.get("language") or "en")) or question)[:300]
     question = str(intent.get("question") or state.get("prompt") or "")
     report = current_information_gain(state)
     sufficiency = report.get("answer_sufficiency") if isinstance(report.get("answer_sufficiency"), dict) else {}
@@ -1207,7 +1220,9 @@ def build_initial_state(
         if readiness["ready"] or not readiness["research_required"] or not state["intent"].get("research_required"):
             break
         query = research_retry_query(state)
-        retried = _build_initial_state(prompt, options, settings, research_query=query, **kwargs)
+        retried = _build_initial_state(
+            prompt, options, settings, research_query=query, research_focus=research_retry_focus(state), **kwargs
+        )
         attempts.append({"query": query, "readiness": retried["script"]["readiness"]["status"], "facts": len(retried.get("facts") or [])})
         if retried["script"]["readiness"]["ready"]:
             state = retried
@@ -1226,6 +1241,7 @@ def _build_initial_state(
     script_writer_provider: ScriptWriterProvider | None = None,
     script_review_provider: ScriptReviewProvider | None = None,
     research_query: str | None = None,
+    research_focus: str | None = None,
 ) -> dict[str, Any]:
     intent = _intent(prompt, options)
     # What the user actually asks, before anything is researched (grammar:
@@ -1237,17 +1253,26 @@ def _build_initial_state(
     research_status = "skipped"
     research_provider = "not_needed"
     research_error = None
+    research_package: dict[str, Any] | None = None
+    research_diagnostics: dict[str, Any] | None = None
     if intent["research_required"]:
         report_progress(progress, "research", "Researching the topic", phase="start")
         result = research_topic(
             research_query or intent_research_query(intent["question_intent"], intent["language"]) or prompt,
             intent["language"], settings,
+            context={
+                "question": prompt,
+                "content_type": intent["content_type"],
+                "focus": research_focus if research_query else None,
+            },
         )
         research_status = result.status
         research_provider = result.provider
         research_error = result.error
         sources = result.sources
         facts = result.facts
+        research_package = getattr(result, "package", None)
+        research_diagnostics = getattr(result, "diagnostics", None)
         report_progress(progress, "research", "Researching the topic", phase="complete")
     else:
         report_progress(progress, "research", "Researching the topic", phase="skipped")
@@ -1271,6 +1296,7 @@ def _build_initial_state(
             fact.get("verification")
             or ("source_attributed" if fact["sources"] else "unverified_model_synthesis")
         )
+    link_package_facts(research_package, facts)
 
     novelty_plan = safe_novelty_plan(intent, facts)
     report_progress(progress, "script", "Writing the narration", phase="start")
@@ -1281,6 +1307,7 @@ def _build_initial_state(
         evidence=[fact["claim"] for fact in facts if fact.get("claim")],
         novelty_plan=novelty_plan,
         question_intent=intent["question_intent"],
+        **({"research_brief": brief} if (brief := research_brief(facts)) else {}),
     )
     plan_language_mismatch = False
     if ai_result.plan:
@@ -1311,7 +1338,12 @@ def _build_initial_state(
             )
             label = fact.pop("source_label", None)
             url = fact.pop("source_url", None)
-            fact["sources"] = [{"label": label, "url": url}] if label and url else []
+            # A source the planner names is attributable only if research
+            # actually retrieved it; otherwise the claim is model synthesis.
+            researched = {str(source.get("url") or "") for source in sources}
+            fact["sources"] = [{"label": label, "url": url}] if label and url and url in researched else []
+            if label and url and url not in researched:
+                fact["model_named_source"] = {"label": label, "url": url}
             fact["verification"] = (
                 "source_attributed" if fact["sources"] else "unverified_model_synthesis"
             )
@@ -1518,6 +1550,8 @@ def _build_initial_state(
             "provider": research_provider,
             "error": research_error,
             "sources": sources,
+            **({"package": research_package} if research_package else {}),
+            **({"diagnostics": research_diagnostics} if research_diagnostics else {}),
         },
         "facts": facts,
         "information_plan": {
