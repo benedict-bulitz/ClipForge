@@ -35,6 +35,16 @@ MICROWAVE = Case(
     "Warum bleibt Essen in der Mikrowelle in der Mitte kalt?",
     "Mikrowelle",
     pages=[(
+        # Real Mac shape: how microwaves heat food in general - the parent topic, not the cold centre.
+        "https://www.verbraucherinfo.bund.de/mikrowelle",
+        "So funktioniert die Mikrowelle",
+        [
+            "Mikrowellen erwärmen Lebensmittel mithilfe von elektromagnetischen Wellen, die die Wassermoleküle im Essen "
+            "in Schwingung versetzen und dadurch Wärme erzeugen.",
+            "In der Mitte des Garraums befindet sich oft eine sogenannte tote Zone, in der die Wellen kaum Energie abgeben.",
+        ],
+        {"site": "Verbraucherinformation"},
+    ), (
         "https://www.uni-beispiel.de/physik/mikrowellen-erwaermung",
         "Wie Mikrowellen Lebensmittel erwärmen",
         [
@@ -92,8 +102,9 @@ BERLIN = Case(
                 "Die Berliner Mauer trennte fast drei Jahrzehnte lang Ost- und West-Berlin. "
                 "Gebaut wurde sie 1961, um den Flüchtlingsstrom vom Osten in den Westen zu stoppen.",
                 # A consequence of the wall, with the wall inside the cause clause.
-                "Im Gegenteil: Weil der Mauerbau Freunde und Verwandte trennte, versuchten in den folgenden Jahren viele Menschen, "
-                "unter Lebensgefahr über die Sperranlagen zu fliehen.",
+                # Real Mac shape: a consequence of the building, with the building inside the "weil" clause.
+                "Im Gegenteil: Weil der Mauerbau Freunde und Verwandte in Berlin voneinander getrennt hatte, versuchten besonders "
+                "in Ost-Berlin und im Berliner Umland noch viele Menschen, über die Grenzsperren zu fliehen.",
                 # Two different metrics of the same history - not a contradiction.
                 "Über die Berliner Mauer und die innerdeutsche Grenze flohen bis 1961 rund 3,5 Millionen Menschen aus der DDR.",
             ],

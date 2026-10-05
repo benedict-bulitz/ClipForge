@@ -60,7 +60,7 @@ def test_3_consequence_clauses_cannot_substitute_for_purpose():
     # A phenomenon is not an action: its "deshalb" effect clause may be the explanation.
     microwave = question_frame(MICROWAVE.question)
     assert microwave.relation == "cause"
-    assert not core_issues(microwave, MICROWAVE.pages[0][2][0])
+    assert not core_issues(microwave, MICROWAVE.pages[1][2][0])
 
 
 # 4-6: advice vs explanation -------------------------------------------------------

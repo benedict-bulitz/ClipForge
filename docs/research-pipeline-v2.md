@@ -507,3 +507,21 @@ Kaugummi unchanged. Tests: `tests/test_research_why_relation.py` (1–12).
 Validation: focused 83 passed; research / answer-gate / spine / retry / question-intent / writer /
 review / story / hook suites 507 passed; full backend **2097 passed**; ruff clean on changed files;
 `git diff --check` clean.
+
+---
+
+## Part 7 — Core-answer selection: relation direction and the distinguishing condition
+
+| Problem (Real Mac after `f3268fe`) | Root cause | Fix |
+|---|---|---|
+| Berlin: "Im Gegenteil: Weil der Mauerbau Freunde und Verwandte in Berlin voneinander getrennt hatte, versuchten … im Berliner Umland noch viele Menschen … zu fliehen." beat "Gebaut wurde sie 1961, um den Flüchtlingsstrom … zu stoppen." | the direction check (asked thing only in the reason clause → consequence) was defeated by "**Berliner** Umland" in the effect clause: a multiword name ("Berliner Mauer") was matched by its modifier alone; and "weil" counts as a purpose marker | a multiword name is matched only by its head noun (or acronym); the pronoun antecedent uses the subject *noun phrase*; for a purpose question, the asked action inside a weil/because/denn clause is `asked_action_is_the_cause` even if the effect clause names it again; among eligible answers an explicit purpose ("um … zu", "damit", "Ziel") outranks a reason clause (`answer_fit`, ranked after full-text-over-snippet, before authority) |
+| Microwave: "Mikrowellen erwärmen Lebensmittel mithilfe von … Wellen … Wassermoleküle …" became the core answer | the entity quota lets an answer skip one of ≥ 3 question entities — and it skipped "Mitte", the condition actually asked about | **Distinguishing condition**: with ≥ 3 entities, the last-named one (closest to the asked state, not coordinated by und/oder) must be covered — literally or, for a position, by a small equivalence set (Mitte ↔ innen/Kern/Zentrum/tote Zone/kalte Stelle, and the outer/inner contrast: äußere Schichten/Rand/außen/ungleichmäßig) — else `misses_distinguishing_condition` |
+| (found while testing) a pronoun purpose sentence with another verb ("Errichtet wurde er 1955, um …") never became evidence | the extraction relevance gate scored the sentence alone | a pronoun sentence is scored together with its antecedent (previous sentence, or the page title when it opens the paragraph) |
+
+Fixtures: Berlin → the purpose sentence; Microwave → the penetration-depth mechanism (generic heating rejected,
+`misses_distinguishing_condition`); post-argument, Mars, AI pain, AI image, Kaugummi unchanged; the single
+weak-core retry unchanged. Tests: `tests/test_research_core_selection.py` (1–10).
+
+Validation: focused 93 passed; research / answer-gate / spine / retry / question-intent / writer /
+review / story / hook suites 517 passed; full backend **2107 passed**; ruff clean on changed files;
+`git diff --check` clean.

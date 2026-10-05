@@ -15,7 +15,15 @@ from typing import Any
 from .corroboration import ClaimGroup
 from .evidence import KIND_PATTERNS, EvidenceUnit, numbers_in, related, words
 from .quality import TIER_RANK
-from .answer_relation import QuestionFrame, core_issues, entity_coverage, mechanism_issues, relation_hits, resolves_pronoun, topical_issues
+from .answer_relation import (
+    QuestionFrame,
+    answer_fit,
+    core_issues,
+    entity_coverage,
+    mechanism_issues,
+    resolves_pronoun,
+    topical_issues,
+)
 from .routing import RoutePlan
 
 PACKAGE_VERSION = 1
@@ -118,11 +126,13 @@ def _claim_from_group(group: ClaimGroup, role: str, sources: dict[str, dict[str,
     )
 
 
-def _authority_rank(group: ClaimGroup, sources: dict[str, dict[str, Any]], route: RoutePlan, relation: int = 0) -> tuple:
-    """Among claims that answer the question: full text over snippet, authority, the asked
-    relation stated ("gebaut" for "Warum wurde ... gebaut?"), routing, support, then relevance."""
+def _authority_rank(group: ClaimGroup, sources: dict[str, dict[str, Any]], route: RoutePlan, fit: int = 0) -> tuple:
+    """Among claims that answer the question: full text over snippet, then how directly the claim
+    states the asked relation (``answer_fit``: a direct purpose over a reason clause, the asked
+    predicate and modifier), then authority, routing, support and relevance.  Every candidate here
+    already passed eligibility; low-quality sources are already excluded when better ones exist."""
     band, snippet_only, tier, preference, support, relevance = _group_rank(group, sources, route)
-    return (snippet_only, tier, -relation, preference, support, band, relevance)
+    return (snippet_only, -fit, tier, preference, support, band, relevance)
 
 
 def _antecedent(unit: EvidenceUnit, sources: dict[str, dict[str, Any]]) -> str:
@@ -210,7 +220,9 @@ def select_claims(
                 "issues": core_issues(frame, lead(group).text, _antecedent(lead(group), sources)),
                 "evidence_ids": [unit.id for unit in group.units][:4],
             })
-    answering.sort(key=lambda item: _authority_rank(item[0], sources, route, relation_hits(frame, item[1].text)))
+    answering.sort(key=lambda item: _authority_rank(
+        item[0], sources, route, answer_fit(frame, f"{item[1].text} {_antecedent(item[1], sources) if resolves_pronoun(frame, item[1].text, _antecedent(item[1], sources)) else ''}")
+    ))
     if answering:
         group, unit = answering[0]
         claim = _claim_from_group(group, "core_answer", sources, route)

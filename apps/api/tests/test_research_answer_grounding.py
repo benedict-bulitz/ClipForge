@@ -90,7 +90,7 @@ def test_english_why_uses_the_same_contract():
 
 def test_f_stronger_authoritative_answer_beats_weak_snippet():
     run = _run(MICROWAVE)
-    assert _core_source(run) == MICROWAVE.pages[0][0]
+    assert _core_source(run) == MICROWAVE.pages[1][0]
     weak = MICROWAVE.snippets[0][0]
     core = run.package["core_answer"]
     assert all(source["url"] != weak for source in run.package["source_summary"]["sources"] if source["id"] in core["source_ids"])

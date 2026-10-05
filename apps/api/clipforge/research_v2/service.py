@@ -238,7 +238,7 @@ def run_research(
         if outcome.usable and outcome.page is not None:
             paragraphs = outcome.page.paragraphs + outcome.page.tables[0] if outcome.page.tables else outcome.page.paragraphs
             found = units_from_paragraphs(paragraphs, source_id=source_id, sub_questions=sub_questions,
-                                          core_terms=core_terms, start=len(units) + 1)
+                                          core_terms=core_terms, start=len(units) + 1, title=outcome.page.title)
             texts[source_id] = " ".join(outcome.page.paragraphs)
         elif hit.snippet and outcome.status not in {"robots_disallowed"}:
             # The underlying page could not be retrieved: the snippet is weak,

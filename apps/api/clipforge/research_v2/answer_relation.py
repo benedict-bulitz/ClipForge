@@ -142,7 +142,9 @@ class Entity:
         if _fold(self.head) in acronyms or self.forms & acronyms:
             return True
         for token in tokens:
-            if inflects(self.head, token) or any(inflects(form, token) for form in self.forms if len(form) >= 4):
+            # A multiword name is matched by its head noun ("Mauer"), never by its modifier
+            # alone ("Berliner Umland" is not the Berliner Mauer).
+            if inflects(self.head, token):
                 return True
             # Compound with the entity as its head counts only when the
             # modifier is itself part of the question ("Marshimmel", not "Nachthimmel").
@@ -268,6 +270,41 @@ def _relation(qtype: str, question: str) -> str:
     return {"how": "mechanism", "can": "capability", "when": "time", "where": "place", "what": "identity"}.get(qtype, "other")
 
 
+# Small equivalence set for the most common distinguishing modifier, a position: "in der Mitte"
+# is answered by centre words and by the outer/inner contrast that explains it.
+_POSITION_CENTRE = re.compile(
+    r"(?i)^(?:mitte|mittler\w*|mittelpunkt|zentrum|zentral\w*|innere\w*|innen\w*|inner\w*|kern\w*|center|centre|"
+    r"middle|core|inside|interior)$"
+)
+_POSITION_EQUIVALENT = re.compile(
+    r"(?i)\b(?:mitte|mittler\w*|mittelpunkt|zentrum|zentral\w*|innere\w*|innen\w*|inner\w*|kern\w*|tote\w* zone|kalte\w* stelle\w*|"
+    r"rand\w*|außen|äußer\w*|oberfläche\w*|ungleichmäßig\w*|center|centre|middle|core|inside|interior|cold spots?|dead zones?|"
+    r"edges?|outer|outside|surface|uneven\w*)\b"
+)
+
+
+def distinguishing_entity(frame: QuestionFrame) -> Entity | None:
+    """The question's distinguishing modifier: its last-named entity, closest to the asked state
+    ("Essen in der Mikrowelle in der *Mitte* kalt").  Only when the entity quota would otherwise let
+    an answer skip it (three or more entities), and not when it is coordinated ("Bilder und Videos")."""
+    if len(frame.entities) < 3 or frame.required_entities >= len(frame.entities):
+        return None
+    last = frame.entities[-1]
+    before = re.search(rf"(\w+)\s+{re.escape(last.name.split()[0])}\b", frame.question)
+    if before and before.group(1).casefold() in {"und", "oder", "and", "or", "sowie"}:
+        return None
+    return last
+
+
+def covers_distinguishing(frame: QuestionFrame, text: str, context: str = "") -> bool:
+    entity = distinguishing_entity(frame)
+    if entity is None:
+        return True
+    if entity.name in entity_coverage(frame, f"{text} {context}")[1]:
+        return True
+    return bool(_POSITION_CENTRE.match(_fold(entity.head)) and _POSITION_EQUIVALENT.search(text))
+
+
 def entity_coverage(frame: QuestionFrame, text: str) -> tuple[int, list[str]]:
     tokens = _TOKEN.findall(str(text or ""))
     others = {entity.head for entity in frame.entities} | set(frame.predicate)
@@ -306,15 +343,18 @@ _DETERMINER = {
 _CAUSE_CLAUSE = re.compile(r"(?i)\b(?:weil|because|denn)\b[^,.;:]*")
 
 
-def _subject_token(sentence: str) -> str:
-    """The first noun of a sentence or title - the thing it is about (German subject-first word order)."""
+def _subject_phrase(sentence: str) -> list[str]:
+    """The first noun phrase of a sentence or title - what it is about (German subject-first order):
+    consecutive capitalised words after any determiner ("Die Berliner Mauer trennte" -> Berliner Mauer)."""
+    phrase: list[str] = []
     for token in _TOKEN.findall(str(sentence or "")):
-        if token.casefold() in _DETERMINER:
+        if not phrase and token.casefold() in _DETERMINER:
             continue
-        if token[:1].isupper() or not re.search(r"[A-Za-zÄÖÜäöüß]", token[:1]):
-            return token
-        return ""
-    return ""
+        if token[:1].isupper():
+            phrase.append(token)
+            continue
+        break
+    return phrase
 
 
 def resolves_pronoun(frame: QuestionFrame, text: str, antecedent: str) -> bool:
@@ -328,13 +368,13 @@ def resolves_pronoun(frame: QuestionFrame, text: str, antecedent: str) -> bool:
     """
     if not antecedent or not _PRONOUN.search(text):
         return False
-    subject = _subject_token(antecedent)
+    subject = _subject_phrase(antecedent)
     if not subject:
         return False
     _count, covered = entity_coverage(frame, text)
     others = {entity.head for entity in frame.entities} | set(frame.predicate)
     return any(
-        entity.name not in covered and entity.matched([subject], others, _acronyms([subject]))
+        entity.name not in covered and entity.matched(subject, others, _acronyms(subject))
         for entity in frame.entities
     )
 
@@ -349,6 +389,9 @@ def core_issues(frame: QuestionFrame, text: str, antecedent: str = "") -> list[s
     covered, _names = entity_coverage(frame, f"{text} {resolved}")
     if frame.entities and covered < frame.required_entities:
         issues.append("entity_mismatch")
+    if "entity_mismatch" not in issues and not covers_distinguishing(frame, text, resolved):
+        # "Mikrowellen erwärmen Lebensmittel ..." explains the parent topic, not why the *centre* stays cold.
+        issues.append("misses_distinguishing_condition")
     if frame.qtype in {"why", "how"}:
         if not _CAUSAL.search(text) and not (frame.relation == "purpose" and _PURPOSE.search(text)):
             issues.append("no_cause_or_mechanism")
@@ -370,6 +413,17 @@ def core_issues(frame: QuestionFrame, text: str, antecedent: str = "") -> list[s
     elif frame.qtype == "when" and not _DATE.search(text):
         issues.append("no_time")
     return issues
+
+
+def answer_fit(frame: QuestionFrame, text: str) -> int:
+    """How directly an eligible answer states the asked relation (ranking among answers): an explicit
+    purpose ("um ... zu", "damit", "Ziel") for an action outranks a mere reason clause, plus the asked
+    predicate.  (The distinguishing modifier is an eligibility rule, not a bonus: it must not
+    outrank corroboration among answers that all cover it.)"""
+    fit = relation_hits(frame, text)
+    if frame.relation == "purpose" and re.search(r"(?i)\bum\b[^.;:]{1,80}?\bzu\s+\w+|\bdamit\b|\bziel\w*|\bin order to\b|\bto (?:prevent|stop)\b", text):
+        fit += 2
+    return fit
 
 
 def relation_hits(frame: QuestionFrame, text: str) -> int:
@@ -405,4 +459,10 @@ def relation_issues(frame: QuestionFrame, text: str, context: str = "") -> list[
     of "A, deshalb B" usually *is* the explanation, so no direction check applies there.)"""
     if frame.relation == "purpose" and not _PURPOSE.search(text):
         return ["consequence_not_purpose" if _RESULT.search(text) else "no_purpose_or_reason"]
+    if frame.relation == "purpose" and frame.entities:
+        # "Weil der Mauerbau Familien trennte, versuchten viele zu fliehen": the asked action is the
+        # *reason* of something else (action -> consequence), not the thing being explained.
+        for clause in _CAUSE_CLAUSE.findall(text):
+            if entity_coverage(frame, clause)[0] or relation_hits(frame, clause):
+                return ["asked_action_is_the_cause"]
     return []

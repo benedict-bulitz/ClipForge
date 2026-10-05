@@ -40,6 +40,8 @@ _ANAPHOR = re.compile(
     r"thus|hence|as a result|im gegensatz dazu|demgegenüber|dagegen|in contrast|by contrast|(?:trotz|wegen|aufgrund|neben|bei|mit|nach|despite|because of|with) (?:dies\w*|dessen|deren|this|that|these))\b",
     re.I,
 )
+# A pronoun that can stand for an earlier-named thing (mirrors answer_relation._PRONOUN).
+_PRONOUN = re.compile(r"(?i)\b(?:sie|er|es|ihn|ihm|ihre[nmrs]?|seine[nmrs]?|diese[rsmn]?|it|its|they|them|their)\b")
 # A place/thing named only in the previous sentence ("erscheint der Himmel dort ...").
 _BACK_REFERENCE = re.compile(r"(?i)\b(?:dort|dorthin|ebendort|there)\b")
 KIND_PATTERNS: dict[str, re.Pattern[str]] = {
@@ -218,6 +220,7 @@ def units_from_paragraphs(
     start: int,
     basis: str = "full_text",
     min_relevance: float = 0.3,
+    title: str = "",
 ) -> list[EvidenceUnit]:
     """Relevant evidence units of one source (at most MAX_UNITS_PER_SOURCE)."""
     sub_terms = {sub.id: words(sub.question) | words(sub.query) for sub in sub_questions}
@@ -244,6 +247,10 @@ def units_from_paragraphs(
             if key in seen:
                 continue
             text_words = words(text)
+            if _PRONOUN.search(sentence):
+                # "Errichtet wurde er 1955, um ...": a pronoun sentence is about what it refers to -
+                # the previous sentence, or the page title when it opens the paragraph.
+                text_words |= words(antecedent or (title if index == 0 else ""))
             best: tuple[float, SubQuestion, set[str]] | None = None
             for sub in sub_questions:
                 score, hits = _relevance(text_words, core_terms, sub, sub_terms[sub.id], paragraph_words)
