@@ -1239,6 +1239,15 @@ def build_initial_state(
         else:
             state["script"]["readiness"]["retry_exhausted"] = True
     state["research"]["attempts"] = attempts
+    if len(attempts) > 1:
+        # A saved audit must never claim a retry without accounting for it.
+        research = state["research"]
+        research["retry_attempted"] = True
+        diagnostics = research.get("diagnostics")
+        if isinstance(diagnostics, dict):
+            budget = diagnostics.setdefault("budget", {})
+            used = budget.setdefault("used", {})
+            used["retries"] = max(len(attempts) - 1, int(used.get("retries") or 0))
     return attach_hashes(state)
 
 

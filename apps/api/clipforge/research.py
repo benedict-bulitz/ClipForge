@@ -1,5 +1,5 @@
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 from urllib.parse import quote
 
@@ -101,7 +101,16 @@ def research_with_strengthening(
         },
         "replaced": replaced,
     }
-    return (stronger if replaced else first), report
+    chosen = stronger if replaced else first
+    # The strengthening pass is a research retry even though it is a second
+    # bounded run. Keep its audit flag and counter internally consistent.
+    diagnostics = dict(chosen.diagnostics or {})
+    budget = dict(diagnostics.get("budget") or {})
+    used = dict(budget.get("used") or {})
+    used["retries"] = max(1, int(used.get("retries") or 0))
+    budget["used"] = used
+    diagnostics.update({"retry_attempted": True, "budget": budget})
+    return replace(chosen, diagnostics=diagnostics), report
 
 
 def _research_topic_v1(prompt: str, language: str, settings: Settings) -> ResearchResult:

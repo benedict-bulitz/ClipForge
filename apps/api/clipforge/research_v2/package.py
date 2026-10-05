@@ -12,9 +12,6 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-from .corroboration import ClaimGroup
-from .evidence import KIND_PATTERNS, EvidenceUnit, numbers_in, related, words
-from .quality import TIER_RANK
 from .answer_relation import (
     QuestionFrame,
     answer_fit,
@@ -24,6 +21,9 @@ from .answer_relation import (
     resolves_pronoun,
     topical_issues,
 )
+from .corroboration import ClaimGroup
+from .evidence import KIND_PATTERNS, UNCERTAINTY_PATTERN, EvidenceUnit, numbers_in, related, words
+from .quality import TIER_RANK
 from .routing import RoutePlan
 
 PACKAGE_VERSION = 1
@@ -52,6 +52,7 @@ class PackageClaim:
     best_tier: int
     origin: str = "evidence"  # evidence | synthesis
     kinds: list[str] = field(default_factory=list)
+    provenance: list[str] = field(default_factory=list)
 
     @property
     def support(self) -> int:
@@ -84,6 +85,7 @@ class PackageClaim:
             "origin": self.origin,
             "basis": self.basis,
             "authority_tier": self.best_tier,
+            "evidence_provenance": self.provenance,
         }
 
 
@@ -110,20 +112,44 @@ def _lead(group: ClaimGroup, sources: dict[str, dict[str, Any]], route: RoutePla
     )
 
 
-def _claim_from_group(group: ClaimGroup, role: str, sources: dict[str, dict[str, Any]], route: RoutePlan) -> PackageClaim:
-    lead = _lead(group, sources, route)
-    tiers = [TIER_RANK.get(str(sources.get(unit.source_id, {}).get("authority")), 3) for unit in group.units if unit.basis == "full_text"]
+def _claim_from_units(
+    group: ClaimGroup,
+    role: str,
+    units: list[EvidenceUnit],
+    sources: dict[str, dict[str, Any]],
+    route: RoutePlan,
+) -> PackageClaim:
+    """Build audit fields only from evidence actually accepted for this role."""
+    lead = min(
+        units,
+        key=lambda unit: (
+            unit.basis == "snippet",
+            TIER_RANK.get(str(sources.get(unit.source_id, {}).get("authority")), 3),
+            route.preference(str(sources.get(unit.source_id, {}).get("source_type"))),
+            -unit.relevance,
+        ),
+    )
+    tiers = [
+        TIER_RANK.get(str(sources.get(unit.source_id, {}).get("authority")), 3)
+        for unit in units
+        if unit.basis == "full_text"
+    ]
     return PackageClaim(
         key=group.key,
         role=role,
         text=lead.text,
-        evidence_ids=[unit.id for unit in group.units][:6],
-        source_ids=sorted({unit.source_id for unit in group.units}),
-        clusters=set(group.clusters),
-        basis="full_text" if any(unit.basis == "full_text" for unit in group.units) else "snippet",
+        evidence_ids=[unit.id for unit in units][:6],
+        source_ids=sorted({unit.source_id for unit in units}),
+        clusters={str(sources.get(unit.source_id, {}).get("cluster") or unit.source_id) for unit in units},
+        basis="full_text" if any(unit.basis == "full_text" for unit in units) else "snippet",
         best_tier=min(tiers) if tiers else 3,
         kinds=list(lead.kinds),
+        provenance=sorted({str(unit.provenance) for unit in units if unit.provenance}),
     )
+
+
+def _claim_from_group(group: ClaimGroup, role: str, sources: dict[str, dict[str, Any]], route: RoutePlan) -> PackageClaim:
+    return _claim_from_units(group, role, group.units, sources, route)
 
 
 def _authority_rank(group: ClaimGroup, sources: dict[str, dict[str, Any]], route: RoutePlan, fit: int = 0) -> tuple:
@@ -150,6 +176,18 @@ def _answering_unit(group: ClaimGroup, frame: QuestionFrame, sources: dict[str, 
         route.preference(str(sources.get(unit.source_id, {}).get("source_type"))),
     ))
     return next((unit for unit in ordered if not core_issues(frame, unit.text, _antecedent(unit, sources))), None)
+
+
+def _answering_units(
+    group: ClaimGroup, frame: QuestionFrame, sources: dict[str, dict[str, Any]], route: RoutePlan
+) -> list[EvidenceUnit]:
+    """All corroborating units that independently pass core eligibility."""
+    ordered = sorted(group.units, key=lambda unit: (
+        unit.basis == "snippet",
+        TIER_RANK.get(str(sources.get(unit.source_id, {}).get("authority")), 3),
+        route.preference(str(sources.get(unit.source_id, {}).get("source_type"))),
+    ))
+    return [unit for unit in ordered if not core_issues(frame, unit.text, _antecedent(unit, sources))]
 
 
 def _answer_text(unit: EvidenceUnit, frame: QuestionFrame) -> str:
@@ -202,8 +240,15 @@ def select_claims(
                 return
             if group.key in used:
                 continue
+            accepted_units = group.units
+            if role == "mechanism":
+                accepted_units = [
+                    unit for unit in group.units if not mechanism_issues(frame, unit.text, context(unit))
+                ]
+                if not accepted_units:
+                    continue
             used.add(group.key)
-            chosen.append(_claim_from_group(group, role, sources, route))
+            chosen.append(_claim_from_units(group, role, accepted_units, sources, route))
 
     answering: list[tuple[ClaimGroup, EvidenceUnit]] = []
     for group in eligible:
@@ -225,7 +270,8 @@ def select_claims(
     ))
     if answering:
         group, unit = answering[0]
-        claim = _claim_from_group(group, "core_answer", sources, route)
+        accepted_units = _answering_units(group, frame, sources, route)
+        claim = _claim_from_units(group, "core_answer", accepted_units, sources, route)
         claim.text, claim.kinds = _answer_text(unit, frame), list(unit.kinds)
         used.add(group.key)
         chosen.append(claim)
@@ -269,6 +315,10 @@ def validate_synthesized(text: str, evidence_ids: list[str], evidence: dict[str,
             return "content_not_in_evidence"
     if KIND_PATTERNS["mechanism"].search(text) and not any("mechanism" in unit.kinds for unit in cited):
         return "causal_claim_without_causal_evidence"
+    support = [unit for unit in cited if "mechanism" in unit.kinds] if KIND_PATTERNS["mechanism"].search(text) else cited
+    if support and all(UNCERTAINTY_PATTERN.search(unit.text) for unit in support) \
+            and not UNCERTAINTY_PATTERN.search(text):
+        return "uncertainty_not_preserved"
     return None
 
 
@@ -316,6 +366,7 @@ def claims_from_synthesis(
                 best_tier=min(tiers) if tiers else 3,
                 origin="synthesis",
                 kinds=sorted({kind for unit in cited for kind in unit.kinds}),
+                provenance=sorted({str(unit.provenance) for unit in cited if unit.provenance}),
             ))
             if len(accepted) >= MAX_FACTS:
                 return accepted, rejected
@@ -439,7 +490,8 @@ def build_package(
             "types": types,
             "sources": [
                 {key: sources[source_id].get(key) for key in (
-                    "id", "url", "title", "organization", "source_type", "authority", "published_at", "updated_at", "fetched_at",
+                    "id", "url", "title", "organization", "source_type", "authority", "basis", "evidence_provenance",
+                    "retrieval", "published_at", "updated_at", "fetched_at",
                 )}
                 for source_id in sorted(used_sources) if source_id in sources
             ],

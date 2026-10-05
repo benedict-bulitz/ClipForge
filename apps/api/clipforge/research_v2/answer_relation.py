@@ -45,7 +45,7 @@ _FILLER = {
     "überhaupt", "eigentlich", "immer", "erst", "oft", "völlig", "nicht", "manchmal", "genau", "wirklich", "denn", "ohne",
     "dass", "uns", "man", "eine", "einem", "einen", "einer", "ein", "der", "die", "das", "dem", "den", "des", "auf", "in",
     "nach", "vor", "mit", "bei", "von", "und", "oder", "zu", "so", "noch", "schon", "dabei", "even", "really", "actually",
-    "always", "only", "just", "the", "a", "an", "of", "on", "in", "to", "and", "or", "it", "its", "at", "after", "before",
+    "always", "only", "just", "the", "a", "an", "of", "on", "to", "and", "or", "it", "its", "at", "after", "before",
     "wurde", "wurden", "wird", "werden", "war", "waren", "ist", "sind", "hat", "haben", "hatte", "kann", "können", "lässt",
 }
 _ADJ_SUFFIX = ("lich", "isch", "ig", "en", "er", "es", "em", "e", "n", "s", "ish")
@@ -106,6 +106,10 @@ _CONNECTIVES = {
     "weil", "denn", "deshalb", "daher", "darum", "deswegen", "dadurch", "sodass", "damit", "wodurch", "indem", "because",
     "since", "therefore", "thus", "hence", "dort", "there",
 }
+_CONDITION_CLAUSE = re.compile(
+    r"(?i)\b(?:when|while|if|under|during|after|before|wenn|falls|während|unter|bei|nach|vor)\b"
+    r"([^?;,:]{1,100})"
+)
 
 
 def _fold(word: str) -> str:
@@ -186,6 +190,7 @@ class QuestionFrame:
             "entities": [entity.name for entity in self.entities],
             "required_entities": self.required_entities,
             "predicate": sorted(self.predicate),
+            "condition_terms": sorted(self.extra.get("condition_terms") or []),
         }
 
 
@@ -250,6 +255,21 @@ def question_frame(question: str, language: str = "de") -> QuestionFrame:
         entities = [Entity(token, token, frozenset()) for token in content]
         predicate = set()
     terms = frozenset(words(text))
+    condition_terms: set[str] = set()
+    for match in _CONDITION_CLAUSE.finditer(text):
+        condition_terms.update(words(match.group(1)))
+    # A participial modifier is a compact condition without an explicit
+    # clause: "injured cats" / "verletzte Katzen".
+    for index, token in enumerate(tokens[:-1]):
+        if (
+            lang == "en"
+            and re.search(r"(?i)(?:ed|en)$", token)
+            and token.casefold() not in _FILLER
+            and token.casefold() not in _LEAD
+        ):
+            condition_terms.add(token.casefold())
+        if lang == "de" and tokens[index + 1][:1].isupper() and re.search(r"(?i)(?:te|ten|ter|tes)$", token):
+            condition_terms.add(token.casefold())
     return QuestionFrame(
         question=text,
         qtype=qtype,
@@ -261,6 +281,7 @@ def question_frame(question: str, language: str = "de") -> QuestionFrame:
         asks_observation=bool(_OBSERVER.search(text)),
         asks_naming=bool(_NAMING.search(text)) or bool(re.search(r"(?i)\b(?:heißt|genannt|called|named)\b", text)),
         relation=_relation(qtype, text),
+        extra={"condition_terms": sorted(condition_terms)},
     )
 
 
@@ -303,6 +324,22 @@ def covers_distinguishing(frame: QuestionFrame, text: str, context: str = "") ->
     if entity.name in entity_coverage(frame, f"{text} {context}")[1]:
         return True
     return bool(_POSITION_CENTRE.match(_fold(entity.head)) and _POSITION_EQUIVALENT.search(text))
+
+
+def covers_conditions(frame: QuestionFrame, text: str) -> bool:
+    """Whether the answer itself retains the question's explicit condition.
+
+    Paragraph context may establish topic relevance, but an observation near a
+    generic mechanism must not make that mechanism answer a conditional why.
+    """
+    required = set(frame.extra.get("condition_terms") or [])
+    if not required:
+        return True
+    answer_words = words(text)
+    return all(
+        any(inflects(term, candidate) or inflects(candidate, term) for candidate in answer_words)
+        for term in required
+    )
 
 
 def entity_coverage(frame: QuestionFrame, text: str) -> tuple[int, list[str]]:
@@ -392,6 +429,8 @@ def core_issues(frame: QuestionFrame, text: str, antecedent: str = "") -> list[s
     if "entity_mismatch" not in issues and not covers_distinguishing(frame, text, resolved):
         # "Mikrowellen erwärmen Lebensmittel ..." explains the parent topic, not why the *centre* stays cold.
         issues.append("misses_distinguishing_condition")
+    if "entity_mismatch" not in issues and not covers_conditions(frame, f"{text} {resolved}"):
+        issues.append("misses_question_condition")
     if frame.qtype in {"why", "how"}:
         if not _CAUSAL.search(text) and not (frame.relation == "purpose" and _PURPOSE.search(text)):
             issues.append("no_cause_or_mechanism")
@@ -445,6 +484,10 @@ def mechanism_issues(frame: QuestionFrame, text: str, context: str = "") -> list
     """A mechanism step must be causal, on the asked entities (with its paragraph), not advice/naming,
     and state the requested relation (a purpose for an intentional action, not its result)."""
     issues = topical_issues(frame, text, context)
+    if "entity_mismatch" not in issues and (
+        not covers_distinguishing(frame, text) or not covers_conditions(frame, text)
+    ):
+        issues.append("misses_question_condition")
     if not _CAUSAL.search(text):
         issues.append("no_cause_or_mechanism")
     if _NAMING.search(text) and not frame.asks_naming:
