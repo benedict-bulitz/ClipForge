@@ -239,6 +239,19 @@ export function freshnessLine(current: CurrentStatus, now: Date, locale: string,
   return checked;
 }
 
+/**
+ * Whether "Upload to YouTube" is offered for a project: the one rule for every
+ * entry point into the publishing sheet (Results page, Queue Overview).  The
+ * backend still re-checks everything when the sheet submits.
+ */
+export function youtubeUploadAction(connectionStatus: YouTubeConnection["status"], current: ProjectYouTube["current_render"], focus: YouTubeUpload | null): { canUpload: boolean; newRevision: boolean; blockedReason: string | null } {
+  const connected = connectionStatus === "connected";
+  const newRevision = !!focus?.youtube_video_id && current.uploadable && focus.render_revision !== current.render_revision;
+  const canUpload = connected && current.uploadable && (!focus || !focus.youtube_video_id || newRevision);
+  const blockedReason = !connected ? null : current.uploadable ? null : current.code === "already_uploaded" ? null : current.message;
+  return { canUpload, newRevision, blockedReason };
+}
+
 export function lifecycleLabel(upload: YouTubeUpload): string {
   if (upload.lifecycle === "uploading") return upload.progress !== null ? `Uploading · ${Math.round(upload.progress * 100)}%` : "Uploading";
   return upload.current?.label ?? upload.lifecycle;

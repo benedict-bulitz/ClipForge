@@ -519,7 +519,10 @@ function GenerationQueue({ jobs, onRemove, onClear, onCancel, cancelPending, bus
   const [clearConfirmationOpen, setClearConfirmationOpen] = useState(false);
   return (
     <section id="video-queue-panel" className="queue-card cf-surface mt-5 w-full max-w-[780px] border p-4 text-left" aria-label="Video Queue" aria-live="polite">
-      {jobs.length === 0 && <p className="text-sm text-[var(--muted-foreground)]">Keine Videos in der Warteschlange.</p>}
+      <div className="mb-3 flex items-center justify-between gap-3">
+        {jobs.length === 0 ? <p className="text-sm text-[var(--muted-foreground)]">Keine Videos in der Warteschlange.</p> : <span />}
+        <Button asChild variant="outline" size="sm" className="shrink-0"><Link href="/queue"><ListVideo className="size-3.5" /> Open Queue Overview <ArrowRight className="size-3.5" /></Link></Button>
+      </div>
       {running.map((item) => {
         const view = cancelView(item, cancelPending);
         const stopped = view === "cancelled";

@@ -132,6 +132,11 @@ export function listGenerationJobs(signal?: AbortSignal) {
   return request<GenerationJob[]>("/generation-jobs", { cache: "no-store", signal });
 }
 
+/** Queue Overview: the current queue run with compact project summaries (read-only, no YouTube call). */
+export function getQueueOverview(signal?: AbortSignal) {
+  return request<import("./queue-page").QueueOverview>("/generation-jobs/overview", { cache: "no-store", signal });
+}
+
 export function removeQueuedGenerationJob(jobId: string) {
   return request<void>(`/generation-jobs/${jobId}`, { method: "DELETE" });
 }

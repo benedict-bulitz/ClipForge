@@ -30,11 +30,16 @@ export type PageVisibility = {
   subscribe: (onVisible: () => void, onHidden: () => void) => () => void;
 };
 
-export type HomePollerOptions = {
+/**
+ * ``P`` is the event-driven payload: the project history on the home page, the
+ * Queue Overview's project summaries on ``/queue`` (the same authority, one
+ * instance per page).
+ */
+export type HomePollerOptions<P = ProjectOverview[]> = {
   loadJobs: () => Promise<GenerationJob[]>;
-  loadProjects: () => Promise<ProjectOverview[]>;
+  loadProjects: () => Promise<P>;
   onJobs: (jobs: GenerationJob[]) => void;
-  onProjects: (projects: ProjectOverview[]) => void;
+  onProjects: (projects: P) => void;
   timers?: Timers;
   visibility?: PageVisibility;
   now?: () => number;
@@ -76,7 +81,7 @@ export const browserVisibility: PageVisibility = {
   },
 };
 
-export function createHomePoller(options: HomePollerOptions): HomePoller {
+export function createHomePoller<P = ProjectOverview[]>(options: HomePollerOptions<P>): HomePoller {
   const timers = options.timers ?? browserTimers;
   const visibility = options.visibility ?? browserVisibility;
   const now = options.now ?? (() => Date.now());

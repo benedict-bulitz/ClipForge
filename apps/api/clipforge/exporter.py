@@ -283,6 +283,29 @@ def resolve_final_master(
     raise ExportUnavailable("The final video of this revision is not available in ClipForge storage.")
 
 
+def final_master_available(project_id: str, title: str, state: dict[str, Any], settings: Settings) -> bool:
+    """Whether ``resolve_final_master`` has a source for this revision.
+
+    A file check only: it never mixes or writes anything, so a list of
+    projects (the Queue Overview) can ask it for every row.
+    """
+    render = state.get("render") if isinstance(state.get("render"), dict) else {}
+    export = state.get("export") if isinstance(state.get("export"), dict) else {}
+    if render.get("status") != "complete" or render.get("stale"):
+        return False
+    url = str(render.get("url") or "")
+    try:
+        if url.startswith("/media/"):
+            _source_render(state, _project_directory(project_id, settings), settings)
+            return True
+        if export.get("status") == "exported" and render.get("exported") and url == export.get("media_url"):
+            exported_video_path(project_id, title, export, settings)
+            return True
+    except ExportUnavailable:
+        return False
+    return False
+
+
 def cleanup_project_files(project_id: str, settings: Settings) -> CleanupResult:
     project_dir = _project_directory(project_id, settings)
     storage_root = settings.render_root.resolve()

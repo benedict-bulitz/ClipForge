@@ -262,7 +262,7 @@ def _categories(db: Session, settings: Settings, store: SecretStore, provider: Y
         return None, {"code": exc.code, "message": exc.message}
 
 
-def _render_status(db: Session, project, settings: Settings, channel_id: str | None) -> dict[str, Any]:
+def render_upload_status(db: Session, project, settings: Settings, channel_id: str | None) -> dict[str, Any]:
     """Is the current render uploadable? Revision-level check: nothing is hashed or mixed here."""
     state = effective_revision_state(project)
     render = state.get("render") if isinstance(state.get("render"), dict) else {}
@@ -292,6 +292,13 @@ def _render_status(db: Session, project, settings: Settings, channel_id: str | N
     }
 
 
+def focus_upload(rows: list[YouTubeUpload], current: dict[str, Any]) -> YouTubeUpload | None:
+    """The upload a project's YouTube state is about (rows newest first): the one for the
+    current render, else the live mapping, else the newest attempt."""
+    focus = next((item for item in rows if item.id == current.get("existing_upload_id")), None)
+    return focus or next((item for item in rows if item.youtube_video_id and item.idempotency_key), None) or (rows[0] if rows else None)
+
+
 def _project_or_404(db: Session, project_id: str):
     project = get_project(db, project_id)
     if project is None:
@@ -308,9 +315,8 @@ def project_youtube_route(project_id: str, db: DbSession, settings: SettingsDep,
     rows = db.scalars(
         select(YouTubeUpload).where(YouTubeUpload.project_id == project_id).order_by(YouTubeUpload.created_at.desc())
     ).all()
-    current = _render_status(db, project, settings, record.channel_id if record else None)
-    focus = next((item for item in rows if item.id == current.get("existing_upload_id")), None)
-    focus = focus or next((item for item in rows if item.youtube_video_id and item.idempotency_key), None) or (rows[0] if rows else None)
+    current = render_upload_status(db, project, settings, record.channel_id if record else None)
+    focus = focus_upload(rows, current)
     if focus is not None and record is not None and focus.channel_id == record.channel_id:
         uploads.reconcile_if_due(db, focus, settings, store, provider)
     return {
@@ -380,7 +386,7 @@ def publishing_draft_route(
         "allowed_visibilities": publishing.allowed_visibilities(defaults),
         "limits": {"title": publishing.TITLE_LIMIT, "description_bytes": publishing.DESCRIPTION_LIMIT_BYTES, "tags": publishing.TAGS_LIMIT_CHARS},
         "catalog": publishing.settings_catalog(),
-        "render_status": _render_status(db, project, settings, record.channel_id if (record := connection.active_connection(db)) else None),
+        "render_status": render_upload_status(db, project, settings, record.channel_id if (record := connection.active_connection(db)) else None),
     }
 
 

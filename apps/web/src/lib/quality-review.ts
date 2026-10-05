@@ -2,8 +2,11 @@ import type { FinalQualityFix, FinalQualityIssue, FinalQualityRepair, FinalQuali
 
 export type QualityReviewTone = "passed" | "repaired" | "attention" | "muted";
 
+/** The fields the one-line summary reads (a full review, or a compact one such as the Queue Overview's). */
+export type QualityReviewHeadline = Pick<FinalQualityReview, "status" | "revision"> & { summary?: { label: string } | null };
+
 /** Compact one-line state of the Final Video Critic for the finished video. */
-export function qualityReviewSummary(review: FinalQualityReview | undefined | null, renderRevision?: number): { label: string; tone: QualityReviewTone } | null {
+export function qualityReviewSummary(review: FinalQualityReview | QualityReviewHeadline | undefined | null, renderRevision?: number): { label: string; tone: QualityReviewTone } | null {
   if (!review || review.status === "disabled") return null;
   const label = review.summary?.label ?? (review.status === "passed" ? "Passed" : "Not reviewed");
   // A later edit (e.g. Change Media) produced a newer render than the one reviewed.

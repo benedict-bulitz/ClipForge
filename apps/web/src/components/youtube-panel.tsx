@@ -33,6 +33,7 @@ import {
   scheduleLine,
   statusRows,
   visibleSceneRows,
+  youtubeUploadAction,
   type PerformanceReport,
   type ProjectYouTube,
   type ScheduleChoice,
@@ -138,9 +139,7 @@ export function YouTubePanel({ project, disabled, publishOpen, onPublishOpenChan
   const locked = disabled || busy !== null;
   const connected = connection.status === "connected";
   const others = data.uploads.filter((item) => item.id !== focus?.id && item.youtube_video_id);
-  const newRevision = !!focus?.youtube_video_id && current.uploadable && focus.render_revision !== current.render_revision;
-  const canUpload = connected && current.uploadable && (!focus || !focus.youtube_video_id || newRevision);
-  const uploadBlockedReason = !connected ? null : current.uploadable ? null : current.code === "already_uploaded" ? null : current.message;
+  const { canUpload, newRevision, blockedReason: uploadBlockedReason } = youtubeUploadAction(connection.status, current, focus);
 
   return (
     <section className="workspace-card mt-8 p-5" aria-label="YouTube" id="youtube-publishing">

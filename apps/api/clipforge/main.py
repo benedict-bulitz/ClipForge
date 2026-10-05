@@ -19,7 +19,7 @@ from .editor_agent import (
     serialize_agent_turn,
     serialize_chat_message,
 )
-from .exporter import ExportUnavailable, exported_video_path
+from .exporter import ExportUnavailable, exported_video_path, resolve_final_master
 from .generation import (
     active_generation_job,
     clear_queued_generation_jobs,
@@ -46,6 +46,7 @@ from .media_candidates import (
 from .models import GenerationJob, Project, YouTubeUpload
 from .music import available_music_tracks, resolve_track_path
 from .pipeline import UnsupportedEdit
+from .queue_overview import queue_overview
 from .renderer import RenderUnavailable, VoiceGenerationError, readiness
 from .runtime_identity import label as runtime_label
 from .runtime_identity import runtime_identity
@@ -358,6 +359,12 @@ def cancel_generation_job_route(job_id: str, db: DbSession, config: SettingsDep)
     if outcome in {"requested", "cancelling"} and finish_orphaned_cancel(db, job_id, config):
         db.refresh(job)  # no worker held it (e.g. just claimed): ended here, the queue continues
     return serialize_generation_job(job)
+
+
+@app.get("/api/generation-jobs/overview")
+def generation_queue_overview_route(db: DbSession, config: SettingsDep) -> dict:
+    """The current queue run with compact project summaries (see ``queue_overview``)."""
+    return queue_overview(db, config)
 
 
 @app.get("/api/generation-jobs/active", response_model=GenerationJobRead | None)
@@ -809,6 +816,38 @@ def exported_video_route(
     except ExportUnavailable as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return FileResponse(path, media_type="video/mp4", filename=None)
+
+
+@app.get("/api/projects/{project_id}/final-video", response_class=FileResponse)
+def final_video_route(
+    project_id: str,
+    db: DbSession,
+    config: SettingsDep,
+    revision: int | None = None,
+) -> FileResponse:
+    """The canonical final MP4 of the current revision - narration and mixed music.
+
+    The same file a YouTube upload sends (``resolve_final_master``): the
+    render itself, the one mixed master next to it, or the canonical export;
+    never a copy.  ``revision`` is the revision the caller showed: once a newer
+    one exists this answers 409 instead of silently playing other content.
+    """
+    project = get_project(db, project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if revision is not None and revision != project.current_revision:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"status": "stale_revision", "message": "This project changed. Refresh to play its current video."},
+        )
+    try:
+        master = resolve_final_master(project.id, project.title, effective_revision_state(project), config)
+    except ExportUnavailable as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"status": "render_unavailable", "message": str(exc)},
+        ) from exc
+    return FileResponse(master.path, media_type="video/mp4")
 
 
 @app.post("/api/projects/{project_id}/undo", response_model=ProjectRead)
