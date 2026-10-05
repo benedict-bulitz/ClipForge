@@ -19,8 +19,8 @@ from urllib.parse import urlsplit, urlunsplit
 import httpx
 
 from ..config import Settings
-from .corroboration import filter_fresh, find_contradictions, group_claims, independence_clusters
 from .answer_relation import question_frame
+from .corroboration import filter_fresh, find_contradictions, group_claims, independence_clusters
 from .discovery import Discovery
 from .evidence import EvidenceUnit, matched_terms, question_terms, units_from_paragraphs, words
 from .extraction import scrapling_available
@@ -155,6 +155,7 @@ def _source_record(
         "fetched_at": (outcome.fetched_at if outcome else None) or now_iso(),
         "canonical": page.canonical if page else "",
         "basis": "full_text" if page else "snippet",
+        "evidence_provenance": "full_text" if page else "search_snippet",
         "provider": hit.provider,
         "discovery_rank": hit.rank,
         "retrieval": outcome.status if outcome else "not_fetched",
@@ -244,7 +245,8 @@ def run_research(
             # The underlying page could not be retrieved: the snippet is weak,
             # labelled evidence (never treated like full text).
             found = units_from_paragraphs([hit.snippet], source_id=source_id, sub_questions=sub_questions,
-                                          core_terms=core_terms, start=len(units) + 1, basis="snippet")
+                                          core_terms=core_terms, start=len(units) + 1, basis="snippet",
+                                          provenance="search_snippet")
             texts[source_id] = hit.snippet
         else:
             found = []
@@ -341,7 +343,8 @@ def run_research(
         "failures": failures,
         "sources": [
             {key: source.get(key) for key in (
-                "id", "url", "source_type", "authority", "reasons", "basis", "retrieval", "cluster", "independence_note",
+                "id", "url", "source_type", "authority", "reasons", "basis", "evidence_provenance", "retrieval",
+                "cluster", "independence_note",
                 "published_at", "updated_at", "fetched_at", "evidence_units",
             )} | {"used": source_id in {item for claim in claims for item in claim.source_ids}}
             for source_id, source in sources.items()

@@ -4,6 +4,9 @@ from __future__ import annotations
 import functools
 from types import SimpleNamespace
 
+from research_v2_support import research_settings
+from test_research_pipeline_v2 import MICRO, _micro_web
+
 from clipforge import research as research_module
 from clipforge import research_v2
 from clipforge.ai import AIFact
@@ -11,8 +14,6 @@ from clipforge.pipeline import build_initial_state, research_retry_focus, resear
 from clipforge.readiness import content_readiness
 from clipforge.research import ResearchResult, research_topic
 from clipforge.schemas import AdvancedOptions
-from research_v2_support import research_settings
-from test_research_pipeline_v2 import MICRO, _micro_web
 
 KÜCHE = "https://www.uni-delta.de/kueche"
 
@@ -63,6 +64,8 @@ def test_insufficient_research_blocks_readiness_and_broadens_once(monkeypatch, t
     # Exactly one bounded retry, aimed at the relation a why-question lacks: the cause.
     assert len(calls) == 2 and calls[1]["context"]["focus"] == "mechanism"
     assert len(state["research"]["attempts"]) == 2 and state["script"]["readiness"].get("retry_exhausted")
+    assert state["research"]["retry_attempted"] is True
+    assert state["research"]["diagnostics"]["budget"]["used"]["retries"] >= 1
     assert all(block["role"] == "status" for block in state["script"]["blocks"])
 
 
