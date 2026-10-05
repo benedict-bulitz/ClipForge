@@ -18,6 +18,7 @@ from .config import Settings
 
 Platform = Literal["tiktok", "instagram", "youtube"]
 PLATFORMS: tuple[Platform, ...] = ("tiktok", "instagram", "youtube")
+SOCIAL_METADATA_MAX_OUTPUT_TOKENS = 1200
 _SPAM = {"#fyp", "#foryou", "#viral", "#trending", "#xyzbca", "#fun", "#cool", "#video"}
 _STOPWORDS = {
     "und", "der", "die", "das", "den", "dem", "ein", "eine", "einer", "ist", "sind", "mit",
@@ -108,10 +109,12 @@ class OpenAISocialMetadataProvider:
     def generate(self, content: dict) -> SocialHashtagOutput:
         try:
             response = self._client.responses.parse(
-                model=self._settings.openai_director_model,
+                model=self._settings.openai_worker_model,
                 instructions=_INSTRUCTIONS,
                 input=json.dumps(content, ensure_ascii=False),
                 text_format=SocialHashtagOutput,
+                reasoning={"effort": "low"},
+                max_output_tokens=SOCIAL_METADATA_MAX_OUTPUT_TOKENS,
                 store=False,
             )
         except OpenAIError as exc:

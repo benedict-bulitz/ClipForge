@@ -1,4 +1,5 @@
 import copy
+from types import SimpleNamespace
 
 import pytest
 
@@ -8,6 +9,8 @@ from clipforge.models import Project, ProjectRevision
 from clipforge.schemas import SocialMetadataGenerate, SocialMetadataUpdate
 from clipforge.services import regenerate_project_social_metadata, update_project_social_metadata
 from clipforge.social_metadata import (
+    SOCIAL_METADATA_MAX_OUTPUT_TOKENS,
+    OpenAISocialMetadataProvider,
     PlatformHashtags,
     SocialHashtagOutput,
     SocialMetadataError,
@@ -30,6 +33,53 @@ class StubProvider:
 class FailingProvider:
     def generate(self, _content):
         raise SocialMetadataError("provider unavailable")
+
+
+def test_openai_social_metadata_uses_bounded_low_reasoning_worker_route(monkeypatch):
+    captured: dict = {}
+    parsed = SocialHashtagOutput(
+        tiktok=PlatformHashtags(
+            title="Warum leuchten Glühwürmchen? ✨",
+            description="Biolumineszenz kurz erklärt. ✨",
+            hashtags=["#Glühwürmchen", "#Biolumineszenz"],
+        ),
+        instagram=PlatformHashtags(
+            title="Das Licht der Glühwürmchen ✨",
+            description="So erzeugen Glühwürmchen ihr eigenes Licht. ✨",
+            hashtags=["#Naturwissen", "#Biolumineszenz"],
+        ),
+        youtube=PlatformHashtags(
+            title="Glühwürmchen erklärt ✨",
+            description="Die Biolumineszenz der Glühwürmchen. ✨",
+            hashtags=["#Glühwürmchen", "#WissensShorts"],
+        ),
+    )
+
+    def parse(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(output_parsed=parsed)
+
+    monkeypatch.setattr(
+        "clipforge.social_metadata.OpenAI",
+        lambda **_kwargs: SimpleNamespace(responses=SimpleNamespace(parse=parse)),
+    )
+    settings = Settings(
+        openai_api_key="test-key",
+        openai_director_model="terra-must-not-be-used",
+        openai_worker_model="gpt-5.6-luna",
+    )
+
+    result = OpenAISocialMetadataProvider(settings).generate(
+        {"topic": "Warum leuchten Glühwürmchen?", "script": "Biolumineszenz.", "language": "de"}
+    )
+
+    assert result == parsed
+    assert captured["model"] == "gpt-5.6-luna"
+    assert captured["model"] != settings.openai_director_model
+    assert captured["reasoning"] == {"effort": "low"}
+    assert captured["max_output_tokens"] == SOCIAL_METADATA_MAX_OUTPUT_TOKENS
+    assert captured["text_format"] is SocialHashtagOutput
+    assert captured["store"] is False
 
 
 def state():
