@@ -74,12 +74,24 @@ New dimensions are deterministic only (the judge schema is unchanged).
 | `question_restatement` | covers the question and adds nothing (numbers and negation count) | `question_led_opening` soft |
 | `vague_opening` | no concrete anchor in the opening window and no specific content | soft, clarity −0.3 |
 | `early_payoff` | says most (≥ 60 %) of the primary answer / final payoff flatly, with no contrast, number, question or challenge | a reveal that opens a new question, or names only part of the answer, stays |
+| `overstates_certainty` | the hook states as fact what every research clause it rests on only hedges (may, hypothesis, vermutlich, könnte …) | a hook with its own hedge, a question, or a claim another fact states with certainty stays |
 | `delayed_specificity`, `slow_start`, `weak_verb`, `abstract_opening` | never | score penalties |
 | visual `visual_off_topic`, `visual_cluttered`, `visual_crop_risk`, `visual_generic_stock`, `visual_merely_illustrates` | never | first-frame score |
 | on-screen `on_screen_restates_question`, `on_screen_hard_to_read` | never | quality/complementarity |
 
 The user's question as emergency fallback is never rejected by V3. A user's own edited hook
 is unaffected (`verbal_still_valid` only checks safety codes).
+
+### Uncertainty preservation (Research V2 compatibility)
+
+Research V2 keeps hypotheses hedged. `verbal_hook.overstated_certainty` (one gate in
+`assess_verbal`, so deterministic, planner, provider and fallback hooks alike; never relaxed)
+compares each unhedged hook clause with the research clauses it rests on
+(`hooks.uncertainty_scopes`): a hedge's scope ends at a sentence or an adversative turn
+("…, but X was first seen in 1950"), and a modal qualifies only what follows it ("X may cause
+Y": the cause, not X). It rejects only when the hook uses the hedged part and no certain
+clause carries the same claim. `hooks._grounded_insight` no longer cuts a hedge off a long
+claim. A user's own edited hook is not re-judged by this gate.
 
 ## 5. Diversity
 

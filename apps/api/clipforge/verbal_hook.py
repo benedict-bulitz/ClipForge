@@ -32,12 +32,14 @@ from .hooks import (
     _is_question_echo,
     _plain_evidence_explanation,
     canonical_strategy,
+    hedged,
     hook_issues,
     parse_number,
     rounded_number_supported,
     standalone_issue,
     strategy_function,
     strategy_matches,
+    uncertainty_scopes,
 )
 from .media import _mentions, _visual_query_tokens, visual_target_key
 from .narration import clean_narration_text
@@ -681,6 +683,10 @@ def assess_verbal(
     if unsupported_cause:
         # A curiosity hook gets no licence to invent a plausible cause.
         hard.append("unsupported_cause")
+    if overstated_certainty(verbal, context):
+        # Research V2 keeps a hypothesis a hypothesis: the hook may not be
+        # more certain than the facts it rests on.
+        hard.append("overstates_certainty")
     mechanism = explains_mechanism(verbal, context["question"], context.get("mechanisms") or [])
     if mechanism:
         # The opening already says *why*: the video's explanation (its payoff)
@@ -896,6 +902,45 @@ def ungrounded_cause(text: object, context: dict[str, Any]) -> list[str]:
         said = {word for word in proposition_words(clause) if word[:1] not in "+-" and word not in _ATTRIBUTION_FRAME and len(word) >= 3}
         missing += sorted(said - _related(said, grounded))
     return missing
+
+
+def overstated_certainty(text: object, context: dict[str, Any]) -> list[str]:
+    """Words a hook states as certain that the research only states as uncertain.
+
+    Claim-relative: per hook clause, the research clause it rests on (most of
+    its words) decides.  It counts only when the hook uses that clause's
+    hedged part ("X may cause Y": the cause, not X), and no certain research
+    clause carries everything the hook takes from it.  A hook clause with
+    its own hedge, or a question, preserves the uncertainty.
+    """
+    verbal = _clean(text)
+    claims = [_plain(fact.get("claim")) for fact in context.get("facts") or [] if _plain(fact.get("claim"))]
+    if not verbal or not claims:
+        return []
+    certain: list[set[str]] = []
+    uncertain: list[tuple[set[str], set[str]]] = []
+    for claim in claims:
+        for segment, scope in uncertainty_scopes(claim):
+            if scope:
+                uncertain.append((_words(segment), _words(scope)))
+            else:
+                certain.append(_words(segment))
+    if not uncertain:
+        return []
+    overstated: list[str] = []
+    for clause, _scope in uncertainty_scopes(verbal):
+        said = _words(clause)
+        if "?" in clause or hedged(clause) or len(said) < 2:
+            continue
+        for segment, scope in uncertain:
+            rests_on = _related(said, segment)
+            claimed = _related(rests_on, scope)
+            if len(rests_on) / len(said) < 0.5 or not claimed:
+                continue
+            if any(rests_on <= _related(said, words) for words in certain):
+                continue  # another fact establishes the same claim with certainty
+            overstated += sorted(claimed)
+    return list(dict.fromkeys(overstated))
 
 
 def explains_mechanism(text: object, question: object, mechanisms: list[str]) -> list[str]:
@@ -1339,7 +1384,7 @@ def rank_verbal(context: dict[str, Any], candidates: list[dict[str, Any]]) -> li
 # Never relaxed in any tier: truth, safety and reveal rules.
 _NEVER_RELAXED = {
     "non_document_strategy", "cheap_clickbait", "unnecessary_provocation", "meta_language",
-    "unsupported_statistic", "unsupported_trend", "fake_controversy",
+    "unsupported_statistic", "unsupported_trend", "fake_controversy", "overstates_certainty",
 }
 # Only these say "the strategy fits imperfectly" (not "the sentence is untrue").
 _FIT_ONLY = {"strategy_not_supported_by_research", "strategy_not_in_wording", "strategy_evidence_not_used"}
