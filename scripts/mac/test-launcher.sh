@@ -10,6 +10,7 @@ state_dir="$test_root/state"
 cleanup() { [[ "${KEEP_TEST_ROOT:-0}" == "1" ]] || rm -rf "$test_root"; }
 trap cleanup EXIT
 mkdir -p "$fake_repo/.venv/bin" "$fake_repo/node_modules/.bin" "$fake_repo/apps/api" "$fake_bin" "$missing_bin" "$state_dir"
+test "$(/usr/libexec/PlistBuddy -c 'Print :LSUIElement' "$repo_dir/macos/ClipForge.app/Contents/Info.plist")" == "true"
 
 cat > "$fake_repo/.venv/bin/uvicorn" <<'EOF'
 #!/usr/bin/env bash
@@ -23,8 +24,10 @@ cat > "$fake_bin/npm" <<'EOF'
 if [[ "${FAKE_FRONTEND_FAIL:-0}" == "1" ]]; then
   exit 127
 fi
-touch "$FAKE_STATE/frontend-ready"
 echo $$ > "$FAKE_STATE/frontend-process.pid"
+if [[ "${FAKE_FRONTEND_NEVER_READY:-0}" != "1" ]]; then
+  touch "$FAKE_STATE/frontend-ready"
+fi
 trap 'rm -f "$FAKE_STATE/frontend-ready" "$FAKE_STATE/frontend-process.pid"; exit 0' TERM INT EXIT
 while :; do sleep 1; done
 EOF
@@ -76,7 +79,15 @@ chmod +x "$fake_repo/node_modules/.bin/next"
 
 launcher=(env "PATH=$fake_bin:$PATH" "FAKE_STATE=$state_dir" "CLIPFORGE_REPO_DIR=$fake_repo" "$repo_dir/scripts/mac/clipforge-local.sh")
 "${launcher[@]}" --start
+backend_pid="$(<"$state_dir/backend-process.pid")"
+frontend_pid="$(<"$state_dir/frontend-process.pid")"
+kill -0 "$backend_pid"
+kill -0 "$frontend_pid"
+backend_record_before="$(<"$fake_repo/.clipforge-runtime/backend.pid")"
+frontend_record_before="$(<"$fake_repo/.clipforge-runtime/frontend.pid")"
 "${launcher[@]}" --start
+test "$(<"$fake_repo/.clipforge-runtime/backend.pid")" == "$backend_record_before"
+test "$(<"$fake_repo/.clipforge-runtime/frontend.pid")" == "$frontend_record_before"
 test "$(grep -c 'Starting backend' "$fake_repo/.clipforge-runtime/backend.log")" -eq 1
 test "$(grep -c 'Starting frontend' "$fake_repo/.clipforge-runtime/frontend.log")" -eq 1
 grep -q "npm=$fake_bin/npm" "$fake_repo/.clipforge-runtime/frontend.log"
@@ -113,6 +124,17 @@ test ! -e "$fake_repo/.clipforge-runtime/backend.pid"
 test ! -e "$fake_repo/.clipforge-runtime/frontend.pid"
 grep -q "Resolved node=.* npm=$fake_bin/npm" "$fake_repo/.clipforge-runtime/frontend.log"
 grep -q 'Frontend readiness attempt=1 elapsed=.*url=http://localhost:3000/ http_status=none curl_exit=1' "$fake_repo/.clipforge-runtime/frontend.log"
+
+rm -f "$state_dir/backend-ready" "$state_dir/frontend-ready"
+set +e
+FAKE_FRONTEND_NEVER_READY=1 CLIPFORGE_READY_ATTEMPTS=1 "${launcher[@]}" --start
+timeout_status=$?
+set -e
+test "$timeout_status" -ne 0
+test ! -e "$state_dir/backend-process.pid"
+test ! -e "$state_dir/frontend-process.pid"
+test ! -e "$fake_repo/.clipforge-runtime/backend.pid"
+test ! -e "$fake_repo/.clipforge-runtime/frontend.pid"
 
 rm -f "$state_dir/backend-ready" "$state_dir/backend-process.pid"
 set +e

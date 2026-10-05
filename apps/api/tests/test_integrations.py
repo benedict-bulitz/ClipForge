@@ -105,7 +105,7 @@ def test_candidate_key_repr_is_redacted():
     assert candidate not in repr(payload)
 
 
-@pytest.mark.parametrize("provider", ["openai", "brave", "pexels"])
+@pytest.mark.parametrize("provider", ["openai", "brave", "pexels", "europeana"])
 def test_saving_valid_provider_key_uses_secret_store_and_refreshes_cache(
     integrations,
     provider,
@@ -126,7 +126,7 @@ def test_saving_valid_provider_key_uses_secret_store_and_refreshes_cache(
     assert getattr(get_settings(), PROVIDERS[provider].settings_field).endswith("4321")
 
 
-@pytest.mark.parametrize("provider", ["openai", "brave", "pexels"])
+@pytest.mark.parametrize("provider", ["openai", "brave", "pexels", "europeana"])
 def test_invalid_provider_key_is_rejected_without_saving(integrations, provider):
     candidate = f"unit-{provider}-invalid-0000"
     integrations.validator.results[provider] = ValidationResult(
@@ -174,6 +174,22 @@ def test_connection_test_succeeds_without_modifying_credentials(integrations):
     assert response.json()["status"] == "connected"
     assert response.json()["last_four"] == "6789"
     assert integrations.validator.providers_tested == ["pexels"]
+
+
+def test_europeana_test_and_delete_routes_use_the_saved_key(integrations):
+    _seed(integrations.store, "europeana", "6789")
+
+    tested = integrations.client.post("/api/settings/integrations/europeana/test")
+
+    assert tested.status_code == 200
+    assert tested.json()["status"] == "connected"
+    assert tested.json()["last_four"] == "6789"
+    assert integrations.validator.providers_tested == ["europeana"]
+
+    removed = integrations.client.delete("/api/settings/integrations/europeana")
+    assert removed.status_code == 200
+    assert removed.json()["status"] == "not_configured"
+    assert integrations.store.get_metadata("EUROPEANA_API_KEY")["configured"] is False
 
 
 def test_connection_test_reports_not_configured_without_network_call(integrations):
@@ -313,3 +329,113 @@ def test_provider_validator_classifies_timeouts_as_network_errors():
         result = ProviderValidator(client).validate("brave", "unit-test-value")
 
     assert result.status == "network_error"
+
+
+def test_europeana_validator_uses_canonical_endpoint_header_and_success_field():
+    candidate = "unit-europeana-secret-1234"
+
+    def success(request):
+        assert request.url.host == "api.europeana.eu"
+        assert request.url.path == "/record/v2/search.json"
+        assert request.url.params["query"] == "*"
+        assert request.url.params["rows"] == "0"
+        assert request.headers["X-Api-Key"] == candidate
+        assert "wskey" not in request.url.params
+        assert candidate not in str(request.url)
+        return httpx.Response(200, json={"success": True, "items": []}, request=request)
+
+    with httpx.Client(transport=httpx.MockTransport(success)) as client:
+        result = ProviderValidator(client).validate("europeana", candidate)
+
+    assert PROVIDERS["europeana"].url == "https://api.europeana.eu/record/v2/search.json"
+    assert result == ValidationResult("connected", "Connection successful.")
+
+
+@pytest.mark.parametrize(
+    ("response", "expected"),
+    [
+        (httpx.Response(401), "invalid_credentials"),
+        (httpx.Response(403), "invalid_credentials"),
+        (httpx.Response(200, json={"success": False, "error": "Invalid API key"}), "invalid_credentials"),
+        (httpx.Response(200, content=b"not-json"), "provider_error"),
+        (httpx.Response(200, json=[]), "provider_error"),
+    ],
+)
+def test_europeana_validator_rejects_invalid_or_malformed_responses(response, expected):
+    def reply(request):
+        response.request = request
+        return response
+
+    with httpx.Client(transport=httpx.MockTransport(reply)) as client:
+        result = ProviderValidator(client).validate("europeana", "unit-secret")
+
+    assert result.status == expected
+
+
+def test_europeana_validator_does_not_follow_redirects():
+    requests: list[httpx.Request] = []
+
+    def redirect(request):
+        requests.append(request)
+        return httpx.Response(
+            301,
+            headers={"Location": "https://www.europeana.eu/api/v2/search.json"},
+            request=request,
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(redirect), follow_redirects=True) as client:
+        result = ProviderValidator(client).validate("europeana", "unit-secret")
+
+    assert result.status == "provider_error"
+    assert len(requests) == 1
+    assert requests[0].url.host == "api.europeana.eu"
+
+
+def test_europeana_validator_classifies_network_failure_without_leaking_key(caplog):
+    candidate = "unit-europeana-never-log-1234"
+
+    def unavailable(request):
+        raise httpx.ConnectError("connection failed", request=request)
+
+    with httpx.Client(transport=httpx.MockTransport(unavailable)) as client:
+        result = ProviderValidator(client).validate("europeana", candidate)
+
+    assert result == ValidationResult("network_error", "The provider could not be reached.")
+    assert candidate not in result.message
+    assert candidate not in caplog.text
+
+
+def test_europeana_error_payload_cannot_leak_the_echoed_key(caplog):
+    candidate = "unit-europeana-echoed-secret-1234"
+
+    def rejected(request):
+        return httpx.Response(
+            200,
+            json={
+                "success": False,
+                "apikey": candidate,
+                "error": f"Invalid API key: {candidate}",
+            },
+            request=request,
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(rejected)) as client:
+        result = ProviderValidator(client).validate("europeana", candidate)
+
+    assert result == ValidationResult("invalid_credentials", "The provider rejected the API key.")
+    assert candidate not in repr(result)
+    assert candidate not in caplog.text
+
+
+def test_europeana_validator_classifies_timeout_without_leaking_key(caplog):
+    candidate = "unit-europeana-timeout-secret-1234"
+
+    def timeout(request):
+        raise httpx.ReadTimeout("timed out", request=request)
+
+    with httpx.Client(transport=httpx.MockTransport(timeout)) as client:
+        result = ProviderValidator(client).validate("europeana", candidate)
+
+    assert result == ValidationResult("network_error", "The provider request timed out.")
+    assert candidate not in result.message
+    assert candidate not in caplog.text
