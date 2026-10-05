@@ -451,3 +451,8 @@ every gate was topical or structural.
 Tests: `tests/test_research_answer_grounding.py` (classes A–K, English parity, LLM cannot certify
 an off-question core, determinism) and the pipeline test
 `test_off_question_evidence_blocks_and_retries_the_missing_relation`.
+
+Validation (`07d197c`): semantic + V2 + integration tests 59 passed; existing research,
+answer-gate, spine, retry, question-intent, writer/review, story, hook and islands suites
+483 passed (incl. the new ones); full backend **2073 passed**; ruff clean on changed files;
+`git diff --check` clean.
