@@ -25,6 +25,7 @@ from ..models import (
     YouTubeRetentionPoint,
     YouTubeUpload,
 )
+from . import content_type as content_types
 from . import status as status_authority
 from .analytics import SOURCE_API, SOURCE_MANUAL
 from .uploads import aware, lifecycle, serialize_upload
@@ -293,15 +294,16 @@ def eligible_uploads(db: Session, channel_id: str) -> list[YouTubeUpload]:
     ).all())
 
 
-def channel_baseline(db: Session, channel_id: str, *, min_sample: int, exclude_upload_id: str | None = None, age_hours: float | None = None, content_type: str = "SHORTS") -> dict[str, Any]:
+def channel_baseline(db: Session, channel_id: str, *, min_sample: int, exclude_upload_id: str | None = None, age_hours: float | None = None, content_type: str = content_types.SHORTS) -> dict[str, Any]:
     """Median/IQR of comparable Shorts (YouTube-confirmed content type only)."""
     values: dict[str, list[float]] = {name: [] for name in BASELINE_METRICS}
     included, unconfirmed = 0, 0
     for upload in eligible_uploads(db, channel_id):
         if upload.id == exclude_upload_id:
             continue
-        if upload.content_type != content_type:
-            unconfirmed += upload.content_type is None
+        kind = content_types.normalize(upload.content_type)
+        if kind != content_types.normalize(content_type):
+            unconfirmed += kind is None
             continue
         snapshots = api_snapshots(db, upload.id)
         snapshot = _snapshot_near_age(snapshots, age_hours)
@@ -313,7 +315,7 @@ def channel_baseline(db: Session, channel_id: str, *, min_sample: int, exclude_u
             if value is not None:
                 values[name].append(value)
     return {
-        "content_type": content_type,
+        "content_type": content_types.normalize(content_type),
         "sample_size": included,
         "min_sample": min_sample,
         "sufficient": included >= min_sample,
@@ -490,7 +492,7 @@ def performance_report(db: Session, upload: YouTubeUpload, *, min_sample: int) -
         return report
     report["status"] = "ready"
     duration = float((fingerprint.get("content") or {}).get("duration_seconds") or 0) or None
-    report["latest_snapshot"] = {**_snapshot_summary(latest), "content_type": latest.content_type, "metrics": metric_map(latest)} if latest else None
+    report["latest_snapshot"] = {**_snapshot_summary(latest), "content_type": content_types.normalize(latest.content_type), "metrics": metric_map(latest)} if latest else None
     report["opening_retention"] = opening_retention(retention.retention_points if retention else [], duration, hook={
         key: (fingerprint.get("hook") or {}).get(key)
         for key in ("strategy", "verbal_hook", "on_screen_hook", "visual_hook", "score", "reason_codes", "source", "selected_candidate_id")
@@ -506,9 +508,10 @@ def performance_report(db: Session, upload: YouTubeUpload, *, min_sample: int) -
     age = latest.published_age_hours if latest else None
     baseline = channel_baseline(db, upload.channel_id, min_sample=min_sample, exclude_upload_id=upload.id, age_hours=age)
     outcomes = video_outcomes(latest, fingerprint, retention)
-    classification = classify(outcomes, baseline) if upload.content_type == "SHORTS" else {
+    kind = content_types.normalize(upload.content_type)
+    classification = classify(outcomes, baseline) if kind == content_types.SHORTS else {
         "label": "insufficient_data",
-        "reason": "YouTube has not confirmed this video as a Short yet" if upload.content_type is None else f"YouTube classifies this video as {upload.content_type}",
+        "reason": "YouTube has not confirmed this video as a Short yet" if kind is None else f"YouTube classifies this video as {kind}",
         "per_metric": {},
     }
     report["outcomes"] = outcomes
@@ -535,10 +538,10 @@ def _scene_duration_bucket(seconds: float | None) -> str | None:
     return ">=5s"
 
 
-def learning_rows(db: Session, channel_id: str, *, content_type: str = "SHORTS") -> tuple[list[dict[str, Any]], list[dict[str, Any]], int]:
+def learning_rows(db: Session, channel_id: str, *, content_type: str = content_types.SHORTS) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int]:
     videos, scenes, excluded = [], [], 0
     for upload in eligible_uploads(db, channel_id):
-        if upload.content_type != content_type:
+        if content_types.normalize(upload.content_type) != content_types.normalize(content_type):
             excluded += 1
             continue
         snapshots = api_snapshots(db, upload.id)
@@ -632,7 +635,7 @@ def learning_table(db: Session, channel_id: str) -> dict[str, Any]:
     add("format_view_percentage", "Which formats have better averageViewPercentage?", videos, "format", "averageViewPercentage", lambda value: f"The '{value}' format", "averageViewPercentage", scene_level=False)
     return {
         "channel_id": channel_id,
-        "content_type": "SHORTS",
+        "content_type": content_types.SHORTS,
         "video_count": len(videos),
         "scene_count": len(scenes),
         "excluded_other_or_unconfirmed_content_type": excluded,

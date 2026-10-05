@@ -5,7 +5,11 @@ Everything is recomputed from what already exists - the upload mapping
 analytics snapshots and their age buckets, and the production fingerprint -
 so no analytics are duplicated.  Videos are only compared at the same
 snapshot age bucket (never a 7-day-old video against a 2-hour-old one), with
-medians and quartiles, and every window states its sample size.
+medians and quartiles, and every window states its sample size.  A bucket
+snapshot whose reporting window ran far past its bucket (a late capture from
+before windows were bounded, e.g. a "7d" row holding 40 days of data) is not
+used (``analytics.within_bucket_window``).  Only videos YouTube itself
+confirmed as Shorts count, in whatever casing the type was stored.
 
 A learned schedule is only *proposed*: it needs at least
 ``LEARNED_MIN_ELIGIBLE`` eligible published ClipForge Shorts and at least
@@ -22,8 +26,9 @@ from zoneinfo import ZoneInfo
 
 from sqlalchemy.orm import Session
 
-from ..models import YouTubePublishingSchedule
-from . import learning
+from ..models import YouTubePublishingSchedule, YouTubeUpload
+from . import analytics, learning
+from . import content_type as content_types
 from . import slots as planner
 from .schedule import slot_map
 
@@ -55,21 +60,27 @@ def _label(window: int) -> str:
     return f"{_clock(window * WINDOW_MINUTES)}–{_clock((window + 1) * WINDOW_MINUTES)}"
 
 
-def publication_rows(db: Session, channel_id: str, timezone: str) -> list[dict[str, Any]]:
+def publication_rows(
+    db: Session, channel_id: str, timezone: str, uploads: list[YouTubeUpload] | None = None,
+) -> list[dict[str, Any]]:
     """Per published ClipForge Short: local publication time + outcomes per age bucket."""
     zone = ZoneInfo(timezone)
     rows = []
-    for upload in learning.eligible_uploads(db, channel_id):
-        if upload.content_type != "SHORTS" or upload.published_at is None:
+    for upload in learning.eligible_uploads(db, channel_id) if uploads is None else uploads:
+        if not content_types.is_short(upload.content_type) or upload.published_at is None:
             continue
         published = upload.published_at.replace(tzinfo=UTC) if upload.published_at.tzinfo is None else upload.published_at
         local = published.astimezone(zone)
         snapshots = learning.api_snapshots(db, upload.id)
         fingerprint = learning.fingerprint_for(db, upload)
         buckets: dict[str, dict[str, Any]] = {}
+        late: list[str] = []
         for bucket in REFERENCE_BUCKETS:
-            snapshot = next((item for item in reversed(snapshots) if item.age_bucket == bucket and item.status in {"ok", "partial"}), None)
+            candidates = [item for item in snapshots if item.age_bucket == bucket and item.status in {"ok", "partial"}]
+            snapshot = next((item for item in reversed(candidates) if analytics.within_bucket_window(item, upload.published_at)), None)
             if snapshot is None:
+                if candidates:
+                    late.append(bucket)
                 continue
             retention = learning.latest_with_retention([item for item in snapshots if item.fetched_at <= snapshot.fetched_at])
             outcomes = learning.video_outcomes(snapshot, fingerprint, retention)
@@ -87,12 +98,14 @@ def publication_rows(db: Session, channel_id: str, timezone: str) -> list[dict[s
             "slot_time": upload.schedule_slot_time,
             "schedule_source": upload.schedule_source or "unknown",
             "buckets": buckets,
+            "late_buckets": late,
         })
     return rows
 
 
 def analyze(db: Session, schedule: YouTubePublishingSchedule) -> dict[str, Any]:
-    rows = publication_rows(db, schedule.channel_id, schedule.timezone)
+    uploads = learning.eligible_uploads(db, schedule.channel_id)
+    rows = publication_rows(db, schedule.channel_id, schedule.timezone, uploads)
     current = list(slot_map(db, schedule.channel_id).get(None, ()))
     coverage = {bucket: sum(1 for row in rows if bucket in row["buckets"]) for bucket in REFERENCE_BUCKETS}
     bucket = max(REFERENCE_BUCKETS, key=lambda name: (coverage[name], -REFERENCE_BUCKETS.index(name)))
@@ -100,7 +113,12 @@ def analyze(db: Session, schedule: YouTubePublishingSchedule) -> dict[str, Any]:
     result: dict[str, Any] = {
         "available": False,
         "eligible_count": len(sample),
-        "published_count": len(rows),
+        # Published, still existing ClipForge uploads of the channel, of any type.
+        "published_count": len(uploads),
+        # Of those, the ones YouTube confirmed as Shorts.
+        "shorts_count": len(rows),
+        # Bucket snapshots left out because their window ran far past the bucket.
+        "late_snapshot_count": sum(len(row["late_buckets"]) for row in rows),
         "min_eligible": LEARNED_MIN_ELIGIBLE,
         "min_window_samples": MIN_WINDOW_SAMPLES,
         "window_minutes": WINDOW_MINUTES,
@@ -140,7 +158,11 @@ def analyze(db: Session, schedule: YouTubePublishingSchedule) -> dict[str, Any]:
         })
     result["windows"] = windows
     if len(sample) < LEARNED_MIN_ELIGIBLE:
-        result["reason"] = f"Needs at least {LEARNED_MIN_ELIGIBLE} published ClipForge Shorts with {bucket} analytics; has {len(sample)}."
+        analytics_age = bucket if coverage[bucket] else "/".join(REFERENCE_BUCKETS)
+        result["reason"] = (
+            f"Needs at least {LEARNED_MIN_ELIGIBLE} Shorts with {analytics_age} analytics; has {len(sample)} "
+            f"({len(uploads)} published, {len(rows)} confirmed as Shorts by YouTube)."
+        )
         return result
     if baseline <= 0:
         result["reason"] = "Your Shorts have no engaged views yet to compare."

@@ -211,7 +211,7 @@ def _performance(db, record, scope: str, settings) -> None:
         if not history:
             print("    snapshots: none")
         if age is not None:
-            print(f"    due-only refresh now would capture bucket: {analytics.due_bucket(history, age, now)}")
+            print(f"    due-only refresh now would capture bucket: {analytics.due_bucket(history, age, now, published)}")
         print(f"    overview: {verdict}")
     result = performance.performance_overview(db, scope=scope, min_sample=settings.youtube_baseline_min_sample, now=now)
     print(f"\nGET /api/videos/performance?scope={result['scope']}")

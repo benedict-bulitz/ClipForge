@@ -26,6 +26,7 @@ from ..exporter import ExportUnavailable, resolve_final_master
 from ..models import Project, YouTubeUpload
 from ..security.secrets import SecretStore
 from ..services import effective_revision_state
+from . import content_type as content_types
 from . import schedule as schedule_authority
 from . import status as status_authority
 from .connection import access_token
@@ -823,7 +824,7 @@ def serialize_upload(upload: YouTubeUpload) -> dict[str, Any]:
         "processing_status": upload.processing_status,
         "failure_reason": upload.failure_reason,
         "rejection_reason": upload.rejection_reason,
-        "content_type": upload.content_type,
+        "content_type": content_types.normalize(upload.content_type),
         "deleted_on_youtube": upload.deleted_on_youtube,
         "title": upload.title,
         "video_status": video_status(upload),

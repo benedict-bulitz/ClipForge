@@ -42,6 +42,7 @@ from ..models import (
     YouTubeRetentionPoint,
     YouTubeUpload,
 )
+from . import content_type as content_types
 from . import status as status_authority
 from .analytics import SOURCE_API
 from .uploads import ACTIVE_STATES, aware, serialize_upload, youtube_links
@@ -539,7 +540,7 @@ def serialize_video(
         "published_at": current["published_at"],
         "uploaded_at": aware(upload.uploaded_at) or aware(upload.created_at),
         "sort_date": _sort_date(upload),
-        "content_type": upload.content_type,
+        "content_type": content_types.normalize(upload.content_type),
         "duration_seconds": (facts or {}).get("duration_seconds"),
         "format": (facts or {}).get("format"),
         "scene_count": (facts or {}).get("scene_count"),
