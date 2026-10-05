@@ -1066,7 +1066,7 @@ def still_motion_plan(
     """
     step = _ZOOM_STEPS.get(motion, 0.0)
     anchor = focal[0] if focal is not None else center_x
-    if not step:
+    if not step or frames <= 1:
         return {"type": "static", "max_zoom": 1.0, "zoom": "min(zoom+0.0000,1.0)", "x": f"{anchor:.4f}"}
     media = scene.get("media") if isinstance(scene.get("media"), dict) else {}
     if media_source(media) == GRAPHIC_ASSET_SOURCE:
@@ -1076,22 +1076,26 @@ def still_motion_plan(
             "type": "push_in", "max_zoom": REDUCED_MAX_ZOOM, "reduced": True,
             "zoom": f"min(zoom+{min(step, 0.0003):.4f},{REDUCED_MAX_ZOOM})", "x": f"{anchor:.4f}",
         }
-    max_zoom = 1.08
+    # Keep the existing treatment's speed on short scenes; spread its capped
+    # movement over long scenes instead of reaching 8% early and then freezing.
+    max_zoom = round(1.0 + min(0.08, step * max(0, frames - 1)), 6)
+    step = (max_zoom - 1.0) / max(1, frames - 1)
+    pan_zoom = 1.0 + (max_zoom - 1.0) * 0.75
     pattern = ("push_in", "pan", "pull_out")[index % 3]
     if pattern == "pan" and focal is not None:
-        window = safe_pan_range(focal[0], max_zoom - 0.02)
+        window = safe_pan_range(focal[0], pan_zoom)
         if window is None:
-            return {"type": "push_in", "max_zoom": max_zoom, "zoom": f"min(zoom+{step:.4f},{max_zoom})", "x": f"{anchor:.4f}", "reason": "no_safe_pan"}
+            return {"type": "push_in", "max_zoom": max_zoom, "zoom": f"min(zoom+{step:.6f},{max_zoom})", "x": f"{anchor:.4f}", "reason": "no_safe_pan"}
         start, end = window if focal[0] >= 0.5 else window[::-1]
         return {
-            "type": "pan", "max_zoom": max_zoom, "zoom": f"{max_zoom - 0.02:.2f}", "safe_range": [round(window[0], 4), round(window[1], 4)],
+            "type": "pan", "max_zoom": max_zoom, "zoom": f"{pan_zoom:.6f}", "safe_range": [round(window[0], 4), round(window[1], 4)],
             "x": f"({start:.4f}+{end - start:.4f}*on/{max(1, frames - 1)})",
         }
     if pattern == "pull_out":
         return {
             "type": "pull_out",
             "max_zoom": max_zoom,
-            "zoom": f"if(eq(on,0),{max_zoom},max(zoom-{step:.4f},1.0))",
+            "zoom": f"if(eq(on,0),{max_zoom},max(zoom-{step:.6f},1.0))",
             "x": f"{anchor:.4f}",
         }
     if pattern == "pan":
@@ -1099,10 +1103,10 @@ def still_motion_plan(
         return {
             "type": "pan",
             "max_zoom": max_zoom,
-            "zoom": f"{max_zoom - 0.02:.2f}",
+            "zoom": f"{pan_zoom:.6f}",
             "x": f"({start:.4f}+{end - start:.4f}*on/{max(1, frames - 1)})",
         }
-    return {"type": "push_in", "max_zoom": max_zoom, "zoom": f"min(zoom+{step:.4f},{max_zoom})", "x": f"{anchor:.4f}"}
+    return {"type": "push_in", "max_zoom": max_zoom, "zoom": f"min(zoom+{step:.6f},{max_zoom})", "x": f"{anchor:.4f}"}
 
 
 def _source_size(source: Path, media: dict) -> tuple[int, int] | None:
@@ -1158,6 +1162,10 @@ def _create_visual_segment(
     reused = scene.get("asset_status") in {"related_media_reused", "real_media_reused", "generated_media_reused", "block_visual_continued"}
     relevance = (scene.get("media") or {}).get("relevance") or {}
     rejected = relevance.get("confidence") == "rejected" or (relevance.get("acceptance") or {}).get("accepted") is False
+    from .media import asset_setting_conflict
+
+    if source is not None and asset_setting_conflict(scene.get("media") or {}, scene, state):
+        source = None
     if source is not None and (reused or rejected) and not destination_asset_allowed(scene["media"], scene, state, reuse=reused):
         source = None
     if source is None:

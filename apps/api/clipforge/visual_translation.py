@@ -30,7 +30,13 @@ TRANSLATION_INSTRUCTIONS = (
     "Never use abstract or reporting words (researchers, suspect, study, reason, why, maybe, that) as the "
     "subject unless people doing research are literally the topic. No text, labels, diagrams, infographics, "
     "charts, logos or UI. Keep anatomy and physics plausible. Never depict anything listed in "
-    "must_not_show. Keep each field short."
+    "must_not_show. For a new factual beat, show the visible change, material, action or environment "
+    "that advances THIS statement, rather than repeating the topic's default action. The supplied "
+    "previous_visual and previous_statement are continuity context only: when an equally faithful "
+    "distinct concept is supported by this statement, prefer it. Do not invent variety, depict abstract "
+    "mechanisms as literal anatomy, or change the actual setting/date. Relevant repetition is preferable "
+    "to an unrelated visual. Splits of the same statement may deliberately continue the same thought. "
+    "Keep each field short."
 )
 
 
@@ -62,6 +68,7 @@ def translate_statement(
     subjects: list[str] | None = None,
     story_role: str | None = None,
     must_not_show: list[str] | None = None,
+    progression: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """A concrete visual for ``statement``; ``None`` when unavailable (never raises)."""
     statement = " ".join(str(statement or "").split())[:600]
@@ -73,6 +80,9 @@ def translate_statement(
         "canonical_visual_subjects": list(subjects or [])[:6],
         "story_role": story_role,
         "must_not_show": list(must_not_show or [])[:6],
+        "previous_visual": str((progression or {}).get("previous_visual") or "")[:160],
+        "previous_statement": str((progression or {}).get("previous_statement") or "")[:300],
+        "same_statement_continuity": bool((progression or {}).get("same_statement_continuity")),
     }
     key = hashlib.sha256(json.dumps([settings.openai_worker_model, request], sort_keys=True).encode()).hexdigest()
     if key in _CACHE:

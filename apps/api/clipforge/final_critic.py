@@ -410,12 +410,19 @@ class _Review:
 
     def cross_score(self, source: _Row, target: _Row) -> float | None:
         """How well ``source``'s rendered frames fit ``target``'s visual intent."""
+        from .media import asset_setting_conflict
+
+        if asset_setting_conflict(source.scene.get("media") or {}, target.scene, self.state):
+            return 0.0
         key = (source.scene_id, target.scene_id)
         if key not in self._cross_scores:
             result = self._score_frames(
                 source.images, self._texts(target), f"critic:v{self.revision}:p{self.pass_index}:{source.scene_id}->{target.scene_id}"
             )
             value = None if result is None else (result.scene_score if result.scene_score is not None else result.score)
+            if result is not None and (result.setting_evidence or {}).get("mismatch"):
+                source.scene.setdefault("media", {})["setting_evidence"] = result.setting_evidence
+                value = 0.0
             self._cross_scores[key] = value
         return self._cross_scores[key]
 
@@ -459,8 +466,20 @@ class _Review:
         if row.graphic:
             row.dimensions["semantic_match"] = {"rating": NOT_APPLICABLE, "reason": "fullscreen_graphic"}
             return
+        from .media import asset_setting_conflict
+
+        conflict = asset_setting_conflict(row.scene.get("media") or {}, row.scene, self.state)
+        if conflict:
+            row.semantic_score = 0.0
+            row.dimensions["semantic_match"] = {"rating": POOR, "source": "setting_authority", "setting_evidence": conflict}
+            return
         result = self._score_frames(row.images, self._texts(row), f"critic:v{self.revision}:p{self.pass_index}:{row.scene_id}")
         if result is not None:
+            if (result.setting_evidence or {}).get("mismatch"):
+                row.scene.setdefault("media", {})["setting_evidence"] = result.setting_evidence
+                row.semantic_score = 0.0
+                row.dimensions["semantic_match"] = {"rating": POOR, "source": "setting_authority", "setting_evidence": result.setting_evidence}
+                return
             score = result.scene_score if result.scene_score is not None else result.score
             row.semantic_score = float(score)
             row.frame_scores = [float(value) for value in result.frame_scores]

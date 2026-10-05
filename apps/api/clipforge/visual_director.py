@@ -676,6 +676,7 @@ def resolve_visual_description(
     nothing reveal-safe and visible remains.
     """
     from .media import canonical_visual_subjects, protected_candidate_terms
+    from .visual_diversity import translation_context
     from .visual_translation import translate_statement
 
     plan = plan or (scene.get("visual_query_plan") if isinstance(scene.get("visual_query_plan"), dict) else {})
@@ -701,7 +702,14 @@ def resolve_visual_description(
             protected_terms,
         )
         if phrases:
-            return {"subject": phrases[0], "details": phrases[1:6], "source": "visual_intent"}
+            description = {"subject": phrases[0], "details": phrases[1:6], "source": "visual_intent"}
+            if intent.get("source") == "fact_translation":
+                description.update(source="fact_translation", concept={
+                    "subject": " ".join(intent.get("objects") or []),
+                    "action": " ".join(intent.get("actions") or []),
+                    "environment": " ".join(intent.get("context") or []),
+                })
+            return description
         # The planned subject is entirely the protected answer: nothing
         # reveal-safe to show, and no generic filler is paid for.
         return None
@@ -719,6 +727,7 @@ def resolve_visual_description(
             subjects=subjects,
             story_role=strategy.get("visual_role") or strategy.get("story_role"),
             must_not_show=sorted(blocked | protected_terms),
+            progression=translation_context(scene, state),
         )
         if translation is not None:
             cache[key] = translation
@@ -726,12 +735,62 @@ def resolve_visual_description(
         main = " ".join(part for part in (translation.get("main_subject"), translation.get("visible_state_or_action")) if part)
         phrases = _keep_visible([main, str(translation.get("setting") or ""), *translation.get("details", [])], blocked, protected_terms)
         if phrases and phrases[0].startswith(str(translation.get("main_subject") or "")[:20]):
-            return {"subject": phrases[0], "details": phrases[1:5], "source": "fact_translation"}
+            return {
+                "subject": phrases[0], "details": phrases[1:5], "source": "fact_translation",
+                "concept": {"subject": translation.get("main_subject"), "action": translation.get("visible_state_or_action"), "environment": translation.get("setting")},
+            }
     words = _concrete_words(statement)
     phrases = _keep_visible([" ".join(subjects[:3]), " ".join(words[:6])], blocked, protected_terms)
     if not phrases:
         return None
     return {"subject": phrases[0], "details": phrases[1:3], "source": "fact_words"}
+
+
+def resolve_acquisition_intent(scene: dict[str, Any], state: dict[str, Any], settings: Settings) -> None:
+    """Resolve an emergency narration fragment once before search and cache admission.
+
+    Triple Hook owns its opening scenes. Authored directions and user edits
+    remain authoritative; translation failure grants no new evidence.
+    """
+    intent = scene.get("visual_intent") or {}
+    user_owned = (
+        scene.get("user_locked_visual")
+        or (scene.get("media") or {}).get("manually_selected")
+        or (scene.get("visual_director") or {}).get("manually_selected")
+    )
+    if (
+        is_hook_scene(scene, state)
+        or intent.get("source") != "narration_fallback"
+        or user_owned
+        or scene.get("edit_instruction")
+    ):
+        return
+    from .media import build_visual_query_plan
+
+    description = resolve_visual_description(
+        scene,
+        state,
+        scene_story_context(scene, state),
+        build_visual_query_plan(scene, state),
+        settings=settings,
+    )
+    if not description or description.get("source") != "fact_translation":
+        return
+    concept = description["concept"]
+    subject, action, environment = (str(concept.get(key) or "") for key in ("subject", "action", "environment"))
+    scene["visual_intent"] = {
+        **intent,
+        "source": "fact_translation",
+        "visual_goal": description["subject"],
+        "objects": [subject],
+        "actions": [action] if action else [],
+        "context": [environment] if environment else [],
+        "media_queries": [f"{subject} {action}".strip(), f"{environment} {subject}".strip()],
+    }
+    scene["visual_goal"] = description["subject"]
+    scene.pop("search_queries", None)
+    scene["visual_query_plan"] = build_visual_query_plan(scene, state)
+    scene["search_queries"] = list(scene["visual_query_plan"]["queries"])
 
 
 def build_generation_prompt(
@@ -775,6 +834,7 @@ def build_generation_prompt(
         "summary": "; ".join(phrases[:3])[:200],
         "reveal_safe": reveal_safe,
         "visual_source": description["source"],
+        "visual_concept": description.get("concept") or {"subject": description["subject"]},
         "verification_texts": [f"a photo of {phrase}" for phrase in phrases[:3]],
     }
 
@@ -804,7 +864,7 @@ def _verification_texts(scene: dict[str, Any], state: dict[str, Any], extra: lis
     try:
         from .visual_verifier import VisualPromptSet
 
-        return VisualPromptSet(list(dict.fromkeys([*scene_texts, *subject])), subject=subject, scene=scene_texts)
+        return VisualPromptSet(list(dict.fromkeys([*scene_texts, *subject])), subject=subject, scene=scene_texts, required_environment=getattr(base, "required_environment", None))
     except ImportError:  # pragma: no cover - same package
         return scene_texts
 
@@ -822,7 +882,7 @@ def _verify_generated(
     if result is None or getattr(result, "status", "") != "verified":
         return {"status": getattr(result, "status", "verification_failed"), "accepted": True, "verified": False}
     scene_score = result.scene_score if result.scene_score is not None else result.score
-    accepted = bool(scene_score is not None and scene_score >= SCENE_VISUAL_THRESHOLD and not result.presentation_risk)
+    accepted = bool(scene_score is not None and scene_score >= SCENE_VISUAL_THRESHOLD and not result.presentation_risk and not (result.setting_evidence or {}).get("mismatch"))
     return {
         "status": "verified",
         "accepted": accepted,
@@ -831,6 +891,7 @@ def _verify_generated(
         "scene_score": scene_score,
         "presentation_risk": bool(result.presentation_risk),
         "threshold": SCENE_VISUAL_THRESHOLD,
+        "setting_evidence": result.setting_evidence,
     }
 
 
@@ -863,6 +924,7 @@ def _generated_metadata(
         "duration": None,
         "query": prompt["summary"],
         "title": f"AI-generated image: {prompt['summary']}",
+        "visual_concept": prompt.get("visual_concept") or {},
         "description": prompt["summary"],
         "tags": [],
         "license": "AI-generated with the OpenAI API; not stock media",

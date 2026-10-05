@@ -4,7 +4,10 @@ Exclusions, research citations and unrelated story units are not visual intent.
 """
 from __future__ import annotations
 
+import hashlib
 import re
+from functools import lru_cache
+from importlib.resources import files
 from typing import Any
 
 POSITIVE_INTENT_FIELDS = (
@@ -53,12 +56,50 @@ def historical_requirement(scene: dict, state: dict | None) -> dict:
     return {"required": bool(years or words & HISTORICAL_WORDS), "years": years}
 
 
-def planetary_setting_evidence(scene: dict, state: dict | None, metadata: str) -> dict:
-    """A topical label cannot override a caption's contradictory setting.
+# Geographic evidence, not a topic blacklist or a provider authenticity rule.
+# Country names come from the public-domain ISO table shipped by the existing
+# tzdata dependency. US state names cover captions that omit their country.
+_US_STATES = [
+    "Alabama", "Alaska", "Arizona", "Arkansas", "California", "Colorado", "Connecticut",
+    "Delaware", "Florida", "Georgia", "Hawaii", "Idaho", "Illinois", "Indiana", "Iowa",
+    "Kansas", "Kentucky", "Louisiana", "Maine", "Maryland", "Massachusetts", "Michigan",
+    "Minnesota", "Mississippi", "Missouri", "Montana", "Nebraska", "Nevada", "New Hampshire",
+    "New Jersey", "New Mexico", "New York", "North Carolina", "North Dakota", "Ohio",
+    "Oklahoma", "Oregon", "Pennsylvania", "Rhode Island", "South Carolina", "South Dakota",
+    "Tennessee", "Texas", "Utah", "Vermont", "Virginia", "Washington", "West Virginia",
+    "Wisconsin", "Wyoming",
+]
 
-    This is a bounded metadata veto, not another visual judge or a provider
-    authenticity grant. Missing captions still use the existing authorities.
-    Discovery queries and exclusions cannot request an illustrative exception.
+
+@lru_cache(maxsize=1)
+def _earth_landscape_location_pattern() -> str:
+    countries = [
+        line.split("\t", 1)[1].strip()
+        for line in files("tzdata").joinpath("zoneinfo", "iso3166.tab").read_text().splitlines()
+        if line and not line.startswith("#")
+    ]
+    regions = "|".join(re.escape(name) for name in sorted(set(countries + _US_STATES), key=len, reverse=True))
+    # A place must locate the depicted environment. Credits such as 'Mars
+    # landscape processed by a laboratory in California' are not that claim.
+    return (
+        r"\b(?:landscape|desert|terrain|canyon|mountains?|valley|beach|coast|forest|"
+        r"landschaft|wüste|gebirge|tal)\s+(?:in|near|at|of|bei|nahe|aus|von)\s+"
+        r"(?:[\w'-]+[ ,]+){0,4}(?:" + regions + r")\b"
+    )
+
+
+def affirmed_matches(pattern: str, caption: str):
+    for match in re.finditer(pattern, caption, re.IGNORECASE):
+        prefix = caption[max(0, match.start() - 40):match.start()]
+        if not re.search(r"\b(?:no|not|without|avoid|lacks|keine?|ohne)\s+(?:\w+\s+){0,2}$", prefix, re.IGNORECASE):
+            yield match
+
+
+def _infer_planetary_environment(scene: dict, state: dict | None) -> dict | None:
+    """Derive the actual setting from local factual direction, never queries.
+
+    Explicit Earth comparisons and illustrative demonstrations retain their
+    existing exception; query text and exclusions cannot grant that exception.
     """
     own = scene.get("visual_intent") or {}
     own = {k: v for k, v in own.items() if k != "media_queries"} if isinstance(own, dict) else {}
@@ -71,12 +112,6 @@ def planetary_setting_evidence(scene: dict, state: dict | None, metadata: str) -
     direct = set(re.findall(r"\w+", direction.casefold()))
     if direct & {"earth", "erde", "terrestrial"} and not direct & named:
         planetary = False  # An explicit Earth comparison may show Earth.
-    def affirmed_matches(pattern: str, caption: str):
-        for match in re.finditer(pattern, caption, re.IGNORECASE):
-            prefix = caption[max(0, match.start() - 40):match.start()]
-            if not re.search(r"\b(?:no|not|without|avoid|lacks|keine?|ohne)\s+(?:\w+\s+){0,2}$", prefix, re.IGNORECASE):
-                yield match
-
     illustrative = any(affirmed_matches(
         r"\b(?:cosplay|costume|themed|reenactment|re[- ]enactment|simulation|simulator|analogue|analog)\b",
         direction,
@@ -88,6 +123,64 @@ def planetary_setting_evidence(scene: dict, state: dict | None, metadata: str) -
         "schwerkraft", "anziehungskraft", "regen", "actual", "real", "echte",
     })
     required = planetary and environment and not illustrative
+    if not required:
+        return None
+    aliases = {"martian": "mars", "lunar": "moon", "mond": "moon", "merkur": "mercury", "neptun": "neptune"}
+    entities = sorted({aliases.get(word, word) for word in words & named})
+    entity = entities[0] if len(entities) == 1 else "planetary"
+    incompatible = ["built_environment", "road_transport"]
+    if entity in {"mars", "moon", "venus", "mercury"}:
+        incompatible.append("vegetation")
+        # An explicitly requested ancient ocean/reconstruction or another
+        # body's sea is not inferred to require a dry present-day surface.
+        if not direct & {"ocean", "sea", "lake", "oceans", "seas", "ozean", "meer"}:
+            incompatible.append("open_water")
+    return {"version": 1, "domain": "planetary", "entity": entity,
+            "representation": "actual", "incompatible": incompatible,
+            "context_key": hashlib.sha256(text.encode()).hexdigest()[:16]}
+
+
+def environment_requirement(scene: dict, state: dict | None) -> dict | None:
+    """Persist a factual constraint, refreshing it after edits from local context.
+
+    The scene/block/facts establish it, never the search query or an exclusion.
+    Re-derivation also upgrades old snapshots which predate this field.
+    """
+    requirement = _infer_planetary_environment(scene, state)
+    if requirement:
+        scene["required_environment"] = requirement
+    else:
+        scene.pop("required_environment", None)
+    return requirement
+
+
+# Four observable conflict classes, shared by metadata and the existing local
+# verifier. Colour/sky/cloud/desert similarity supplies no contradiction.
+SETTING_CONFLICTS = {
+    "built_environment": (r"\b(?:city(?:scape)?|skyline|buildings?|skyscrapers?|town|village|urban|stadt|gebäude)\b",
+                          ["a landscape on Earth with city buildings on the horizon", "a photograph of a city skyline with buildings"]),
+    "open_water": (r"\b(?:ocean|open sea|sea surface|seascape|shoreline|ozean|meer)\b",
+                   ["an ocean sunset over open water with waves", "a seascape with a sea surface and shoreline"]),
+    "vegetation": (r"\b(?:trees?|forest|vegetation|scrub|bushes|grass|meadow|wald|bäume)\b",
+                   ["a terrestrial landscape with trees and bushes", "a desert landscape with scrub bushes and living vegetation"]),
+    "road_transport": (r"\b(?:highway|paved road|asphalt|traffic|cars|roadside)\b",
+                       ["a terrestrial landscape with roads and cars", "a photograph of a paved highway with vehicles"]),
+}
+
+
+def setting_verdict(requirement: dict | None, evidence: dict | None) -> bool:
+    """A recorded contradiction is authoritative only for the matching constraint."""
+    evidence = evidence or {}
+    recorded = evidence.get("requirement") or {}
+    return bool(requirement and evidence.get("mismatch") and all(
+        recorded.get(key) == requirement.get(key) for key in ("domain", "entity", "representation", "incompatible")
+    ))
+
+
+def planetary_setting_evidence(scene: dict, state: dict | None, metadata: str) -> dict:
+    requirement = environment_requirement(scene, state)
+    required = bool(requirement)
+    named = {"moon", "mond", "lunar", "mars", "martian", "venus", "mercury", "jupiter", "saturn", "uranus", "neptune", "merkur", "neptun"}
     markers = []
     if required:
         # Captions describe staged representations or incompatible surroundings;
@@ -95,9 +188,14 @@ def planetary_setting_evidence(scene: dict, state: dict | None, metadata: str) -
         patterns = {
             "staged_representation": r"\b(?:cosplay|costume|themed|reenactment|re[- ]enactment|replica|merchandise|souvenir|simulation|simulator|hitchhik\w*)\b",
             "terrestrial_surroundings": r"\b(?:roadside|highway|asphalt|paved road|grass|grassland|meadow|shopping street)\b",
+            "earth_geography": _earth_landscape_location_pattern(),
+            # Explicit terrestrial descriptions are contradictions. Blue sky
+            # or clouds alone are not: real planetary imagery may contain them.
+            "terrestrial_sky": r"\b(?:earth(?:[- ]like)?|terrestrial|irdisch(?:er|en|e)?)\s+(?:\w+\s+){0,2}(?:sky|clouds?|himmel|wolken)\b",
             "lookalike_setting": r"\bpretending\b|\b(?:resembling|look(?:s|ing)? like|analogue|analog)\s+(?:\w+\s+){0,3}(?:" + "|".join(sorted(named | {"planet", "planetary"})) + r")\b",
             "held_prop": r"\b(?:cardboard sign|holding (?:a |the )?sign)\b",
         }
+        patterns.update({name: SETTING_CONFLICTS[name][0] for name in requirement["incompatible"]})
         caption = metadata.casefold()
         for label, pattern in patterns.items():
             # A caption such as 'surface without grass' does not assert grass.
@@ -111,4 +209,4 @@ def planetary_setting_evidence(scene: dict, state: dict | None, metadata: str) -
                     "dust", "atmosphere", "oberfläche", "landschaft", "himmel", "staub"}
         if actor and not set(re.findall(r"\w+", caption)) & physical:
             markers.append("actor_without_environment_evidence")
-    return {"required": required, "mismatch": bool(markers), "markers": markers}
+    return {"required": required, "requirement": requirement, "mismatch": bool(markers), "markers": markers, "source": "metadata"}
