@@ -15,6 +15,7 @@ from typing import Any
 from .corroboration import ClaimGroup
 from .evidence import KIND_PATTERNS, EvidenceUnit, numbers_in, related, words
 from .quality import TIER_RANK
+from .answer_relation import QuestionFrame, core_issues, mechanism_issues, topical_issues
 from .routing import RoutePlan
 
 PACKAGE_VERSION = 1
@@ -115,14 +116,40 @@ def _claim_from_group(group: ClaimGroup, role: str, sources: dict[str, dict[str,
     )
 
 
+def _authority_rank(group: ClaimGroup, sources: dict[str, dict[str, Any]], route: RoutePlan) -> tuple:
+    """Among claims that answer the question: full text over snippet, authority, routing, support, then relevance."""
+    band, snippet_only, tier, preference, support, relevance = _group_rank(group, sources, route)
+    return (snippet_only, tier, preference, support, band, relevance)
+
+
+def _answering_unit(group: ClaimGroup, frame: QuestionFrame, sources: dict[str, dict[str, Any]], route: RoutePlan) -> EvidenceUnit | None:
+    """The best-sourced wording of this claim that passes core-answer eligibility, if any."""
+    ordered = sorted(group.units, key=lambda unit: (
+        unit.basis == "snippet",
+        TIER_RANK.get(str(sources.get(unit.source_id, {}).get("authority")), 3),
+        route.preference(str(sources.get(unit.source_id, {}).get("source_type"))),
+    ))
+    return next((unit for unit in ordered if not core_issues(frame, unit.text)), None)
+
+
 def select_claims(
     groups: list[ClaimGroup],
     sources: dict[str, dict[str, Any]],
     route: RoutePlan,
     *,
-    explanatory: bool,
+    frame: QuestionFrame,
+    rejected: list[dict[str, Any]] | None = None,
 ) -> list[PackageClaim]:
-    """Deterministic roles over the eligible claim groups (bounded to MAX_FACTS)."""
+    """Question-relative roles over the eligible claim groups (bounded to MAX_FACTS).
+
+    The core answer must answer the question (``answer_relation.core_issues``:
+    entities, requested relation, no advice/naming/observer/restatement
+    substitutes); among answering claims authority beats lexical overlap.
+    Mechanism steps must be causal and about the asked entities; every other
+    role must at least be about the asked entities.  If nothing answers, there
+    is no core answer - never the most similar sentence instead.
+    """
+    explanatory = frame.qtype in {"why", "how"}
     eligible = [group for group in groups if group.status == "ok"]
     eligible.sort(key=lambda group: _group_rank(group, sources, route))
     # Low-quality / user-generated evidence needs more caution: it is used only
@@ -132,11 +159,15 @@ def select_claims(
     chosen: list[PackageClaim] = []
     used: set[str] = set()
 
-    def primary(group: ClaimGroup) -> str:
-        return _lead(group, sources, route).kind
+    def lead(group: ClaimGroup) -> EvidenceUnit:
+        return _lead(group, sources, route)
 
-    def has(group: ClaimGroup, kind: str) -> bool:
-        return kind in _lead(group, sources, route).kinds
+    def context(unit: EvidenceUnit) -> str:
+        # The paragraph and the page title: a sentence on a page titled with the asked entity is about it.
+        return f"{unit.excerpt} {sources.get(unit.source_id, {}).get('title') or ''}"
+
+    def topical(group: ClaimGroup) -> bool:
+        return not topical_issues(frame, lead(group).text, context(lead(group)))
 
     def take(candidates: list[ClaimGroup], role: str, limit: int) -> None:
         for group in candidates:
@@ -147,19 +178,34 @@ def select_claims(
             used.add(group.key)
             chosen.append(_claim_from_group(group, role, sources, route))
 
-    relevant = [group for group in eligible if _group_rank(group, sources, route)[0] <= 1]
-    # The direct answer: the most relevant claim; for why/how questions a causal one.
-    core_pool = sorted(
-        relevant, key=lambda group: (explanatory and primary(group) != "mechanism",) + _group_rank(group, sources, route)
-    )
-    take(core_pool, "core_answer", 1)
+    answering: list[tuple[ClaimGroup, EvidenceUnit]] = []
+    for group in eligible:
+        unit = _answering_unit(group, frame, sources, route)
+        if unit is not None:
+            answering.append((group, unit))
+        elif rejected is not None and len(rejected) < 40 and _group_rank(group, sources, route)[0] <= 1:
+            rejected.append({
+                "text": lead(group).text[:200], "reason": "not_a_core_answer",
+                "issues": core_issues(frame, lead(group).text), "evidence_ids": [unit.id for unit in group.units][:4],
+            })
+    answering.sort(key=lambda item: _authority_rank(item[0], sources, route))
+    if answering:
+        group, unit = answering[0]
+        claim = _claim_from_group(group, "core_answer", sources, route)
+        claim.text, claim.kinds = unit.text, list(unit.kinds)
+        used.add(group.key)
+        chosen.append(claim)
     if explanatory:
-        take([group for group in eligible if primary(group) == "mechanism"], "mechanism", 3)
-    take([group for group in eligible if primary(group) in {"observation", "definition"}], "observation", 1)
-    take([group for group in eligible if has(group, "number") or has(group, "date")], "number", 2)
-    take([group for group in eligible if has(group, "misconception")], "misconception", 1)
-    take([group for group in eligible if has(group, "caveat")], "caveat", 1)
-    take(relevant, "supporting", 2)
+        take([
+            group for group in eligible
+            if lead(group).kind == "mechanism" and not mechanism_issues(frame, lead(group).text, context(lead(group)))
+        ], "mechanism", 3)
+    on_topic = [group for group in eligible if topical(group)]
+    take([group for group in on_topic if lead(group).kind in {"observation", "definition"}], "observation", 1)
+    take([group for group in on_topic if {"number", "date"} & set(lead(group).kinds)], "number", 2)
+    take([group for group in on_topic if "misconception" in lead(group).kinds], "misconception", 1)
+    take([group for group in on_topic if "caveat" in lead(group).kinds], "caveat", 1)
+    take([group for group in on_topic if _group_rank(group, sources, route)[0] <= 1], "supporting", 2)
     return chosen
 
 
@@ -197,7 +243,10 @@ def claims_from_synthesis(
     evidence: dict[str, EvidenceUnit],
     sources: dict[str, dict[str, Any]],
     clusters: dict[str, dict[str, Any]],
+    frame: QuestionFrame | None = None,
 ) -> tuple[list[PackageClaim], list[dict[str, Any]]]:
+    """Synthesised claims supported by their cited evidence; the core answer and
+    mechanism steps must also answer the question (same rules as the deterministic path)."""
     accepted: list[PackageClaim] = []
     rejected: list[dict[str, Any]] = []
     sections = (
@@ -212,6 +261,11 @@ def claims_from_synthesis(
             text = " ".join(str((item or {}).get("text") or "").split())
             ids = [str(value) for value in (item or {}).get("evidence_ids") or []][:6]
             reason = validate_synthesized(text, ids, evidence)
+            if reason is None and frame is not None and role in {"core_answer", "mechanism"}:
+                context = " ".join(evidence[item_id].excerpt for item_id in ids if item_id in evidence)
+                issues = core_issues(frame, text) if role == "core_answer" else mechanism_issues(frame, text, context)
+                if issues:
+                    reason = f"{'core_answer_not_entailed' if role == 'core_answer' else 'mechanism_off_question'}:{','.join(issues)}"
             if reason:
                 rejected.append({"text": text[:200], "role": role, "reason": reason, "evidence_ids": ids})
                 continue
@@ -238,14 +292,21 @@ def claims_from_synthesis(
 # Sufficiency, package and legacy facts
 # ---------------------------------------------------------------------------
 
-def sufficiency(claims: list[PackageClaim], *, explanatory: bool) -> dict[str, Any]:
+def sufficiency(claims: list[PackageClaim], *, frame: QuestionFrame) -> dict[str, Any]:
+    """Does the package answer the original question? (not: are the fields filled)
+
+    The core answer exists only if it passed ``core_issues`` - for why/how it
+    already states a cause, so it is the first mechanism step.  Without a
+    core answer the package is ``insufficient``; a why/how question that
+    found only on-topic observations is ``missing_mechanism``.
+    """
+    explanatory = frame.qtype in {"why", "how"}
     roles = {claim.role for claim in claims}
     core = next((claim for claim in claims if claim.role == "core_answer"), None)
-    mechanism = [claim for claim in claims if claim.role == "mechanism"] or (
-        [core] if core is not None and explanatory and "mechanism" in core.kinds else []
-    )
+    mechanism = ([core] if core is not None and explanatory else []) + [claim for claim in claims if claim.role == "mechanism"]
     checks = {
         "direct_answer": core is not None,
+        "relation": frame.qtype,
         "mechanism": (bool(mechanism) if explanatory else None),
         "supporting_detail": bool(roles & {"supporting", "number", "observation"}) or len(mechanism) >= 2,
         "misconception_or_caveat": bool(roles & {"misconception", "caveat"}),
@@ -260,21 +321,20 @@ def sufficiency(claims: list[PackageClaim], *, explanatory: bool) -> dict[str, A
         gaps.append("mechanism_single_secondary_source")
     if not checks["supporting_detail"]:
         gaps.append("no_supporting_detail")
+    weak_core = core is not None and (core.basis == "snippet" or core.best_tier >= TIER_RANK["unknown"])
     if core is not None and core.basis == "snippet":
         gaps.append("core_answer_snippet_only")
     if core is not None and core.best_tier >= TIER_RANK["low"]:
         gaps.append("core_answer_low_authority_source")
     if core is None:
-        status = "insufficient"
-    elif explanatory and not mechanism:
-        status = "missing_mechanism"
-    elif not checks["supporting_detail"]:
+        status = "missing_mechanism" if explanatory and roles & {"observation", "supporting", "number"} else "insufficient"
+    elif weak_core or not checks["supporting_detail"]:
         status = "partial"
     else:
         status = "sufficient"
     if core is None or core.verification() == "source_snippet":
         confidence = "low"
-    elif core.verification() == "supported" and (not explanatory or any(claim.verification() == "supported" for claim in mechanism)):
+    elif core.verification() == "supported":
         confidence = "high"
     else:
         confidence = "medium"
@@ -294,18 +354,17 @@ def build_package(
     sources: dict[str, dict[str, Any]],
     contradictions: list[dict[str, Any]],
     rejected: list[dict[str, Any]],
-    explanatory: bool,
+    frame: QuestionFrame,
     synthesis_mode: str,
     takeaway: str = "",
 ) -> dict[str, Any]:
     by_role: dict[str, list[dict[str, Any]]] = {}
     for claim in claims:
         by_role.setdefault(claim.role, []).append(claim.ref())
+    explanatory = frame.qtype in {"why", "how"}
     core = (by_role.get("core_answer") or [None])[0]
-    mechanism = by_role.get("mechanism") or []
-    core_claim = next((claim for claim in claims if claim.role == "core_answer"), None)
-    if not mechanism and core is not None and core_claim is not None and explanatory and "mechanism" in core_claim.kinds:
-        mechanism = [core]  # the direct answer itself states the cause
+    # For why/how the core answer passed the causal check: it is the first step of the explanation.
+    mechanism = ([core] if core is not None and explanatory else []) + (by_role.get("mechanism") or [])
     # WHY (cause / reason / purpose) vs HOW (the process); a lone process step still answers why.
     why = [ref for ref in mechanism if _WHY.search(ref["text"])]
     how = [ref for ref in mechanism if ref not in why]
@@ -317,7 +376,7 @@ def build_package(
     for source_id in used_sources:
         kind = str(sources.get(source_id, {}).get("source_type") or "unknown")
         types[kind] = types.get(kind, 0) + 1
-    state = sufficiency(claims, explanatory=explanatory)
+    state = sufficiency(claims, frame=frame)
     if any(record["resolution"].startswith("unresolved") for record in contradictions):
         state["gaps"].append("unresolved_contradiction")
     return {
@@ -356,6 +415,12 @@ def build_package(
         "confidence": state["confidence"],
         "gaps": state["gaps"],
         "rejected_claims": rejected[:10],
+        "answer_grounding": {
+            **frame.as_dict(),
+            "core_answer": "entailed" if core is not None else "missing",
+            "rejected_core_candidates": [item for item in rejected if item.get("reason") in {"not_a_core_answer"}
+                                         or str(item.get("reason", "")).startswith("core_answer_not_entailed")][:6],
+        },
         "synthesis": synthesis_mode,
     }
 

@@ -36,10 +36,12 @@ _STOP = {
 }
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+(?=[A-ZÄÖÜ0-9\"„“(])")
 _ANAPHOR = re.compile(
-    r"^(?:dies\w*|das|diese[rsmn]?|er|sie|es|dabei|dadurch|deshalb|daher|so|hierbei|this|that|these|those|it|they|he|she|"
+    r"^(?:dies\w*|das|diese[rsmn]?|er|sie|es|dabei|dadurch|deshalb|daher|damit|dafür|darum|dazu|so|hierbei|this|that|these|those|it|they|he|she|"
     r"thus|hence|as a result|im gegensatz dazu|demgegenüber|dagegen|in contrast|by contrast|(?:trotz|wegen|aufgrund|neben|bei|mit|nach|despite|because of|with) (?:dies\w*|dessen|deren|this|that|these))\b",
     re.I,
 )
+# A place/thing named only in the previous sentence ("erscheint der Himmel dort ...").
+_BACK_REFERENCE = re.compile(r"(?i)\b(?:dort|dorthin|ebendort|there)\b")
 KIND_PATTERNS: dict[str, re.Pattern[str]] = {
     "misconception": re.compile(
         r"(?i)\b(?:myth\w*|misconception\w*|misunderstand\w*|common belief|widely believed|contrary to|"
@@ -223,7 +225,8 @@ def units_from_paragraphs(
         paragraph_words = words(paragraph)
         for index, sentence in enumerate(parts):
             text = sentence
-            if _ANAPHOR.match(sentence) and index > 0 and len((parts[index - 1] + " " + sentence).split()) <= MAX_WORDS:
+            refers_back = _ANAPHOR.match(sentence) or _BACK_REFERENCE.search(sentence)
+            if refers_back and index > 0 and len((parts[index - 1] + " " + sentence).split()) <= MAX_WORDS:
                 text = f"{parts[index - 1]} {sentence}"  # the claim keeps the context it refers to
             count = len(text.split())
             if count < MIN_WORDS or count > MAX_WORDS or "?" in text[-2:] or _CHROME.search(text):

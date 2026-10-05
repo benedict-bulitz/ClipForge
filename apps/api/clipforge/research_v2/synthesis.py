@@ -26,6 +26,7 @@ _QUESTION_WORDS = re.compile(
     re.IGNORECASE,
 )
 _MECHANISM_TERMS = {"de": "Ursache Erklärung wie funktioniert", "en": "cause explanation how it works"}
+_CAPABILITY_TERMS = {"de": "möglich Forschung Fähigkeit Grenzen", "en": "possible research capability limits"}
 
 DECOMPOSITION_INSTRUCTIONS = (
     "You plan web research for one short explainer video. Split the question into at most four research "
@@ -130,6 +131,9 @@ def deterministic_sub_questions(question: str, query: str, language: str, *, foc
         # The first pass found no direct answer: search the subject words only.
         content = [word for word in re.findall(r"[\wÄÖÜäöüß-]+", topic_query(question)) if len(word) > 3]
         core_query = " ".join(content[:6]) or core_query
+    if focus == "capability":
+        # "Kann X Y?": the retry asks for evidence about X itself doing Y, not about related uses of X.
+        core_query = f"{topic_query(question)[:120]} {_CAPABILITY_TERMS[lang]}"
     subs = [SubQuestion("q_core", "core", question, core_query)]
     if is_explanatory_question(question) or focus == "mechanism":
         base = topic_query(question)[:120]

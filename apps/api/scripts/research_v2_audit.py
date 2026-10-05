@@ -50,6 +50,11 @@ def print_v2(question: str, language: str) -> dict:
         print(f"  {source['id']} {source['source_type']:<20} {source['authority']:<7} {source.get('published_at') or '-':<10} {source['url']}")
     print(f"SOURCE TYPES {(package.get('source_summary') or {}).get('types')} "
           f"independent={(package.get('source_summary') or {}).get('independent')}")
+    grounding = package.get("answer_grounding") or {}
+    print(f"QUESTION FRAME type={grounding.get('question_type')} entities={grounding.get('entities')} "
+          f"predicate={grounding.get('predicate')} core={grounding.get('core_answer')}")
+    for item in grounding.get("rejected_core_candidates") or []:
+        print(f"  not an answer {item.get('issues') or item.get('reason')}: {_short(item.get('text'), 110)}")
     core = package.get("core_answer") or {}
     print(f"CORE ANSWER  {_short(core.get('text'), 300)} [{core.get('verification')}, {core.get('independent_sources')} indep., "
           f"{core.get('evidence_ids')}]")

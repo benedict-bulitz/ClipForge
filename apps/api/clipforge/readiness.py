@@ -49,10 +49,14 @@ def content_readiness(state: dict[str, Any]) -> dict[str, Any]:
     # Research Pipeline V2: no direct answer was found in any retrieved source.
     research = state.get("research") if isinstance(state.get("research"), dict) else {}
     package = research.get("package") if isinstance(research.get("package"), dict) else None
-    if research.get("required") and package is not None and package.get("status") == "insufficient":
+    if research.get("required") and package is not None and package.get("status") in {"insufficient", "missing_mechanism"}:
         blocking.append({
             "code": "research_insufficient",
-            "message": "The retrieved sources do not contain a direct answer to the question.",
+            "message": (
+                "The retrieved sources do not explain why or how this happens."
+                if package.get("status") == "missing_mechanism"
+                else "The retrieved sources do not contain a direct answer to the question."
+            ),
         })
     hook = _hook_text(state)
     if hook:

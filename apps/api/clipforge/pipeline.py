@@ -1170,18 +1170,23 @@ _MECHANISM_QUERY = {"de": "Ursache Mechanismus warum", "en": "cause mechanism wh
 
 
 def research_retry_focus(state: dict[str, Any]) -> str:
-    """What the one retry must find: the direct answer (``broaden``) or the ``mechanism``."""
+    """The relation the one retry must find: ``mechanism`` (why/how), ``capability`` (can X do Y) or ``broaden``."""
     package = (state.get("research") or {}).get("package")
-    if isinstance(package, dict) and package.get("status") == "insufficient":
-        return "broaden"
+    if not isinstance(package, dict):
+        return "mechanism"
+    relation = str((package.get("answer_grounding") or {}).get("question_type") or "")
+    if package.get("status") == "missing_mechanism" or relation in {"why", "how"}:
+        return "mechanism"
+    if package.get("status") == "insufficient":
+        return "capability" if relation == "can" else "broaden"
     return "mechanism"
 
 
 def research_retry_query(state: dict[str, Any]) -> str:
     """A research query aimed at the missing mechanism (question + condition + what is missing)."""
     intent = state.get("intent") or {}
-    if research_retry_focus(state) == "broaden":
-        # No direct answer was found at all: search the question's subject itself.
+    if research_retry_focus(state) in {"broaden", "capability"}:
+        # No direct answer was found at all: search the question itself (V2 adds the relation's terms).
         question = str(intent.get("question") or state.get("prompt") or "")
         return (intent_research_query(intent.get("question_intent"), str(intent.get("language") or "en")) or question)[:300]
     question = str(intent.get("question") or state.get("prompt") or "")

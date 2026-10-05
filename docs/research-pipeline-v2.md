@@ -369,3 +369,85 @@ the three videos in the app and check `state.research.package` / `diagnostics` o
 projects: the hook and script claims should map to `core_answer` / mechanism facts, numbers
 should exist in `package.evidence`, and readiness should not need the retry for these
 questions.
+
+---
+
+## Part 4 — Semantic answer grounding (Real-Mac blocker fix)
+
+### 4.1 Real-Mac regression
+
+With retrieval working, the package still certified wrong answers in deterministic mode
+(0 LLM calls): the Mars *planet's* colour for "Warum ist der Himmel auf dem Mars rot?", the
+street the Wall ran along for "Warum wurde die Berliner Mauer gebaut?", AI *analysing* pain
+signals for "Kann eine KI Schmerz empfinden?", reverse image search for "Warum erfindet KI
+Bilder … nicht völlig neu?", conflict advice for "Warum fallen uns gute Antworten erst nach
+einem Streit ein?", and a weak snippet for the microwave question. Kaugummi correctly stayed
+`missing_mechanism`.
+
+### 4.2 Common root cause (traced, `tests/research_semantic_fixtures.py`)
+
+One architectural gap: **no step checked that a claim answers the question's relation** —
+every gate was topical or structural.
+
+1. `evidence._relevance` = share of question words the sentence (or its paragraph) mentions;
+   suffix-compound matching let "Nachthimmel" count as "Himmel". Topic overlap, not entailment.
+2. Evidence kind `mechanism` = any causal word anywhere, so advice with "um … zu"/"damit",
+   naming ("wird als roter Planet bezeichnet, weil …") and observer sentences ("analysiert …,
+   um Schmerz zu erkennen") became mechanisms.
+3. `select_claims` ranked by lexical relevance band first; for why-questions a causal shape was
+   only *preferred* — with no causal claim in band, a geographic detail became the core answer.
+   Authority came after lexical overlap, so a weak snippet with more matching words won.
+4. `group_claims` merged sentences that shared ≥ 4 words — usually the topic words themselves —
+   so a weak snippet stating a different factor counted as independent agreement.
+5. `sufficiency` checked that fields were filled (core present, any mechanism-kind claim), not
+   that the core answer answered the question.
+
+### 4.3 Fix (`research_v2/answer_relation.py`, `package.py`, `corroboration.py`)
+
+* **Question frame**: question type (why · how · can · when · where · what · which · other via
+  `story_arc.is_explanatory_question` and interrogatives), the asked **entities** (German nouns
+  by capitalisation; proper adjectives fuse — "Berliner Mauer"; adjective + noun gets its
+  acronym — "künstliche Intelligenz" = "KI"), and the asked **predicate** (lower-case content
+  words). Non-German questions use content words with a 60 % quota.
+* **Entity preservation**: an entity matches its inflections/derivations ("rot" ~ "rötlich",
+  "Mikrowelle" ~ "Mikrowellen"); a compound with the entity as head counts only if its modifier
+  is part of the question ("Marshimmel" yes, "Nachthimmel" no). All entities required (one may be
+  missing when the question names ≥ 3).
+* **Core-answer eligibility** (`core_issues`, sentence-only): entities covered; why/how → a cause
+  or mechanism, not a naming/definition, ≥ 3 content words beyond the question (no restatement);
+  can/does → the asked predicate ("empfinden"), not an observer relation (X detects/analyses Y);
+  when → a time; never advice for an explanation. Sentences that start with or contain a back
+  reference ("Damit …", "… dort …") keep their antecedent sentence.
+* **Selection**: only eligible claims can be the core answer; among them **authority beats lexical
+  overlap** (full text over snippet, authority tier, routing, independent support, then
+  relevance). If none is eligible: no core answer — never the most similar sentence.
+* **Role classification**: mechanism steps must be causal and about the asked entities (sentence
+  + paragraph + page title) and not advice/naming/observer; every other role must be about the
+  asked entities.
+* **Claim grouping**: agreement is measured on words *beyond* the question's topic words and
+  connectives.
+* **Semantic sufficiency**: no eligible core → `insufficient` (why/how with only on-topic
+  observations → `missing_mechanism`, the Kaugummi behaviour); weak core (snippet-only or
+  unknown/low authority) → `partial`. `package.answer_grounding` records the frame, the verdict
+  and the rejected core candidates with their reasons.
+* **LLM synthesis** is held to the same rules (`core_answer_not_entailed:…`); it is attempted only
+  over eligible evidence and can never rescue an off-question core.
+* **Readiness / retry**: `research_insufficient` now also blocks `missing_mechanism`; the existing
+  single retry targets the missing relation — `mechanism` for why/how, `capability` for can-questions
+  (adds "möglich Forschung Fähigkeit Grenzen"), `broaden` otherwise. Still exactly one retry.
+
+### 4.4 Regression fixtures (deterministic, offline)
+
+| Case | OLD core answer (status) | NEW core answer (status) | Why |
+|---|---|---|---|
+| Microwave | university wording, but the weak "Tiefe Speisen …" snippet counted as independent agreement via topic words (partial) | university penetration-depth mechanism, 1 independent source (sufficient) | authority among eligible; topic words are no agreement |
+| Mars | "Der Mars wird häufig als der rote Planet bezeichnet, weil …" (sufficient) | dust in the atmosphere scatters sunlight → sky orange-brown (partial: single secondary source, no supporting detail) | naming + "Nachthimmel" ≠ sky of Mars |
+| Berlin | "Beim Bau der Berliner Mauer 1961 zog die DDR die Sperranlagen … Ebertstraße" (missing_mechanism) | construction began → "Damit wollte die SED-Führung die Massenflucht … stoppen" (sufficient) | no cause in the geographic detail; antecedent kept |
+| Post-argument | conflict advice with "Damit … hilft …" (partial) | none (insufficient) | advice is not an explanation; "Streiten ist wichtig, weil …" misses "Antworten" |
+| AI pain | "… analysiert Biosignale, um Schmerz bei Patienten … zu erkennen" (partial) | none (insufficient) → capability retry | observer relation, predicate "empfinden" absent |
+| AI image | Google reverse image search (partial) | none (insufficient) → mechanism retry | observer/search relation, no generative mechanism |
+| Kaugummi | observation (missing_mechanism) | none, observation kept (missing_mechanism) | preserved |
+
+Tests: `tests/test_research_answer_grounding.py` (classes A–K, English parity, LLM cannot certify
+an off-question core, determinism) and the pipeline test
+`test_off_question_evidence_blocks_and_retries_the_missing_relation`.

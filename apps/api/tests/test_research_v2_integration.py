@@ -60,8 +60,8 @@ def test_insufficient_research_blocks_readiness_and_broadens_once(monkeypatch, t
     readiness = state["script"]["readiness"]
     assert not readiness["ready"] and readiness["research_required"]
     assert any(item["code"] == "research_insufficient" for item in readiness["blocking"])
-    # Exactly one bounded retry, aimed at the direct answer.
-    assert len(calls) == 2 and calls[1]["context"]["focus"] == "broaden"
+    # Exactly one bounded retry, aimed at the relation a why-question lacks: the cause.
+    assert len(calls) == 2 and calls[1]["context"]["focus"] == "mechanism"
     assert len(state["research"]["attempts"]) == 2 and state["script"]["readiness"].get("retry_exhausted")
     assert all(block["role"] == "status" for block in state["script"]["blocks"])
 
@@ -71,6 +71,10 @@ def test_retry_focus_follows_the_package():
     assert research_retry_focus(insufficient) == "broaden"
     assert research_retry_query(insufficient) == MICRO
     assert research_retry_focus({"research": {"package": {"status": "missing_mechanism"}}}) == "mechanism"
+    why = {"status": "insufficient", "answer_grounding": {"question_type": "why"}}
+    can = {"status": "insufficient", "answer_grounding": {"question_type": "can"}}
+    assert research_retry_focus({"research": {"package": why}}) == "mechanism"
+    assert research_retry_focus({"research": {"package": can}}) == "capability"
     assert research_retry_focus({"research": {}}) == "mechanism"
 
 
@@ -134,3 +138,16 @@ def test_v1_remains_selectable(monkeypatch):
                         lambda *_a: ResearchResult([], [], "unavailable", "wikipedia", "offline"))
     monkeypatch.setattr(research_v2, "run_research", lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("V2 must not run")))
     assert research_topic(MICRO, "de", research_settings(research_pipeline="v1")).provider == "wikipedia"
+
+
+def test_off_question_evidence_blocks_and_retries_the_missing_relation(monkeypatch, tmp_path):
+    from research_semantic_fixtures import AI_PAIN
+
+    calls = _wire(monkeypatch, AI_PAIN.web())
+    state = build_initial_state(AI_PAIN.question, AdvancedOptions(), _settings(tmp_path))
+    assert state["facts"] == [] and state["render"]["status"] == "blocked_by_research"
+    assert state["research"]["package"]["answer_grounding"]["core_answer"] == "missing"
+    readiness = state["script"]["readiness"]
+    assert not readiness["ready"] and any(item["code"] == "research_insufficient" for item in readiness["blocking"])
+    # One retry, aimed at the asked capability - never a second one.
+    assert len(calls) == 2 and calls[1]["context"]["focus"] == "capability"

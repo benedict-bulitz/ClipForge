@@ -103,16 +103,35 @@ class ClaimGroup:
         return len(self.clusters)
 
 
-def _same_claim(first: EvidenceUnit, second: EvidenceUnit) -> bool:
-    """Two sources stating the same proposition (sentences of one page never merge)."""
+_GROUPING_NOISE = {
+    "weil", "denn", "deshalb", "daher", "darum", "deswegen", "dadurch", "sodass", "damit", "wodurch", "because", "therefore",
+    "since", "thus", "hence", "dass", "that", "which", "wird", "werden", "wurde", "nur", "only",
+}
+
+
+def _proposition(unit: EvidenceUnit, topic: frozenset[str]) -> set[str]:
+    """What a sentence says beyond the question's own topic words and connectives."""
+    return {
+        word for word in words(unit.text)
+        if word not in _GROUPING_NOISE and not any(related(word, term) for term in topic)
+    }
+
+
+def _same_claim(first: EvidenceUnit, second: EvidenceUnit, topic: frozenset[str] = frozenset()) -> bool:
+    """Two sources stating the same proposition (sentences of one page never merge).
+
+    Agreement is measured on what the sentences say *beyond* the question's
+    topic words: every sentence about microwaves shares "Mikrowelle" and
+    "Essen", which is no evidence that two sources state the same cause.
+    """
     if first.source_id == second.source_id:
         return False
-    a, b = words(first.text), words(second.text)
+    a, b = _proposition(first, topic), _proposition(second, topic)
     if not a or not b:
         return False
     shared = {word for word in a if any(related(word, other) for other in b)}
     overlap = len(shared) / min(len(a), len(b))
-    if overlap < 0.4 or len(shared) < 4:
+    if overlap < 0.4 or len(shared) < 3:
         return False
     numbers_a, numbers_b = set(first.numbers), set(second.numbers)
     if numbers_a and numbers_b and not numbers_a & numbers_b:
@@ -120,10 +139,13 @@ def _same_claim(first: EvidenceUnit, second: EvidenceUnit) -> bool:
     return bool(_NEGATION.search(first.text)) == bool(_NEGATION.search(second.text))
 
 
-def group_claims(units: list[EvidenceUnit], clusters: dict[str, dict[str, Any]]) -> list[ClaimGroup]:
+def group_claims(
+    units: list[EvidenceUnit], clusters: dict[str, dict[str, Any]], topic: frozenset[str] | set[str] = frozenset()
+) -> list[ClaimGroup]:
     groups: list[ClaimGroup] = []
+    topic = frozenset(topic)
     for unit in units:
-        target = next((group for group in groups if _same_claim(group.lead, unit)), None)
+        target = next((group for group in groups if _same_claim(group.lead, unit, topic)), None)
         if target is None:
             target = ClaimGroup(key=f"claim_{len(groups) + 1:02d}", units=[])
             groups.append(target)

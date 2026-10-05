@@ -19,8 +19,8 @@ from urllib.parse import urlsplit, urlunsplit
 import httpx
 
 from ..config import Settings
-from ..story_arc import is_explanatory_question
 from .corroboration import filter_fresh, find_contradictions, group_claims, independence_clusters
+from .answer_relation import question_frame
 from .discovery import Discovery
 from .evidence import EvidenceUnit, matched_terms, question_terms, units_from_paragraphs, words
 from .extraction import scrapling_available
@@ -187,7 +187,8 @@ def run_research(
         max_llm_calls=settings.research_max_llm_calls,
     )
     provider = llm_for(settings) if llm is True else (llm or None)
-    explanatory = is_explanatory_question(question) or focus == "mechanism"
+    # What the question asks (entities + requested relation): the answer-grounding contract.
+    frame = question_frame(question, language)
 
     # 1. Decomposition (bounded; deterministic fallback).
     decomposition = "deterministic"
@@ -259,21 +260,21 @@ def run_research(
     for source_id, cluster in clusters.items():
         sources[source_id]["cluster"] = cluster["cluster"]
         sources[source_id]["independence_note"] = cluster["reason"]
-    groups = group_claims(fresh_units, clusters)
+    groups = group_claims(fresh_units, clusters, frame.terms)
     contradictions = find_contradictions(groups, sources)
 
     # 6. Claim selection: validated synthesis when available, verbatim evidence otherwise.
     evidence_by_id = {unit.id: unit for unit in fresh_units}
-    deterministic = select_claims(groups, sources, route, explanatory=explanatory)
-    claims = deterministic
     rejected: list[dict[str, Any]] = [*stale]
+    deterministic = select_claims(groups, sources, route, frame=frame, rejected=rejected)
+    claims = deterministic
     for group in groups:
         if group.status != "ok":
             rejected.append({"text": group.lead.text[:200], "reason": group.status, "notes": group.notes[:3]})
     synthesis_mode = "deterministic"
     takeaway = ""
     eligible_ids = [unit.id for group in groups if group.status == "ok" for unit in group.units]
-    if provider is not None and deterministic and budget.take("llm_calls"):
+    if provider is not None and eligible_ids and budget.take("llm_calls"):
         payload = {
             "question": question,
             "language": language,
@@ -287,7 +288,7 @@ def run_research(
         out = provider.synthesize(payload)
         if out is not None:
             allowed_evidence = {item: evidence_by_id[item] for item in eligible_ids}
-            synthesized, synthesis_rejected = claims_from_synthesis(out.model_dump(), allowed_evidence, sources, clusters)
+            synthesized, synthesis_rejected = claims_from_synthesis(out.model_dump(), allowed_evidence, sources, clusters, frame)
             rejected.extend(synthesis_rejected)
             has_core = any(claim.role == "core_answer" for claim in synthesized)
             if has_core:
@@ -310,7 +311,7 @@ def run_research(
         sources=sources,
         contradictions=contradictions,
         rejected=rejected,
-        explanatory=explanatory,
+        frame=frame,
         synthesis_mode=synthesis_mode,
         takeaway=takeaway,
     )
