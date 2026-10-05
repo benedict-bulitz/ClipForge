@@ -10,7 +10,10 @@ Runtime logs and PID records are stored in `.clipforge-runtime/`, which is
 ignored by Git.
 
 The bundles use tiny native arm64 launch stubs; all startup/stop behavior remains
-in `scripts/mac/clipforge-local.sh`. To rebuild them after changing the stubs:
+in `scripts/mac/clipforge-local.sh`. `ClipForge.app` is an `LSUIElement` agent
+because its visible UI is the browser; this lets the transient launcher finish
+without leaving a headless foreground application in the Dock. To rebuild the
+executables after changing the stubs:
 
 ```zsh
 clang -O2 -Wall -Wextra -o macos/ClipForge.app/Contents/MacOS/ClipForge macos/clipforge-launcher.c
