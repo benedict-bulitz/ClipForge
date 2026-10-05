@@ -159,7 +159,8 @@ def test_13_weak_core_spends_the_single_retry_and_keeps_a_stronger_answer(monkey
     calls = _wire_weak(monkeypatch, _package("full_text", 0))
     state = build_initial_state(MICROWAVE.question, AdvancedOptions(), research_settings(render_root=tmp_path))
     assert [call.get("focus") for call in calls] == [None, "strengthen"]
-    assert state["research"]["retry"] == {"reason": "weak_core_source", "focus": "strengthen", "replaced": True}
+    retry = state["research"]["retry"]
+    assert retry["attempted"] and retry["reason"] == "weak_core_source" and retry["focus"] == "strengthen" and retry["replaced"]
     assert state["research"]["package"]["core_answer"]["basis"] == "full_text"
 
 

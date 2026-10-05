@@ -488,3 +488,22 @@ Tests: `tests/test_research_grounding_followup.py` (1–13).
 Validation: focused + Research V2 + integration 71 passed; research / answer-gate / spine /
 retry / question-intent / writer / review / story / hook suites 495 passed; full backend
 **2085 passed**; ruff clean on changed files; `git diff --check` clean.
+
+---
+
+## Part 6 — Why-relation entailment and the audited retry
+
+| Problem (Real Mac after `4e2017a`) | Root cause | Fix |
+|---|---|---|
+| Berlin: "Beim Bau der Mauer 1961 zog die DDR die Sperranlagen gerade entlang der Ebertstraße, sodass das Gelände als Zipfel Ost-Berlins abgeschnitten wurde." was the core answer | "sodass" is in the mechanism pattern, so the sentence counted as causal; nothing distinguished the *purpose of an action* from a *result of it* | **Question relation** — `question_frame.relation`: `purpose` for why-questions about an intentional action (passive "wurde … gebaut/eingeführt", action verbs, "why was X built/did X"), `cause` for phenomena, `mechanism` (how), `capability` (can), `time`, `place`, `identity`. A purpose answer must state a purpose/motive/reason of the action ("um … zu", "damit", "Ziel war", "sollte/wollte", "wegen", "aufgrund", "als Reaktion auf", "weil", "in order to", "built … to …"); a sentence with only result markers ("sodass", "wodurch", "infolgedessen", "resulting in", "thereby") is `consequence_not_purpose`, applied to core answers and mechanism steps. For phenomena the effect clause of "A, deshalb B" stays valid (it is usually the explanation). |
+| Post-argument: "Trotzdem kann man fiese Streite umgehen: indem man Kleinigkeiten … gleich anspricht" was the core answer | the advice guard knew "hilft/sollte/Tipps" only; and an acronym bug made the entity "gute Antworten" match any text with words starting g+a ("gleich anspricht") — initials of arbitrary neighbouring words counted as an acronym, and the bare adjective counted as the entity | **Generic-agent advice**: a generic reader as agent with possibility/obligation ("kann man", "man sollte", "solltest du", "am besten", "lässt sich … vermeiden", "you can/should", "the best way to") is `advice_not_explanation` for explanatory questions (not when the question asks for advice). "indem" itself stays valid for process explanations. **Acronyms** now match only upper-case tokens ("KI") or the initials of a name ending in a capitalised noun ("künstliche Intelligenz"); an adjective alone never stands for the entity. |
+| Microwave: snippet-only core from an unknown source, audit showed no retry | **A**: the weak-core retry lived inside `pipeline._build_initial_state`; `scripts/research_v2_audit.py` called `research_topic()` directly and never ran it. The production trigger itself fires for that package (`core_answer_snippet_only` + low authority = `weak_core`). The "retries 0" in the audit output is the HTTP-retry budget, a different counter | One function, `research.research_with_strengthening`, runs the first research pass with its single weak-core retry and returns a report (attempted, reason, result, replaced). Generation uses it through `pipeline.research_request`; the audit uses `pipeline.production_research` — the same query, context and retry as generation — and prints `RETRY attempted=… reason=… result=… replaced_original=…`. Still exactly one retry per generation. |
+
+Fixtures (deterministic, 0 LLM calls): Berlin → "Die Berliner Mauer trennte … Gebaut wurde sie 1961, um den
+Flüchtlingsstrom … zu stoppen." (sufficient; Ebertstraße rejected `consequence_not_purpose`; with only the
+Ebertstraße page → no core answer); post-argument → insufficient; Microwave, Mars, AI pain, AI image,
+Kaugummi unchanged. Tests: `tests/test_research_why_relation.py` (1–12).
+
+Validation: focused 83 passed; research / answer-gate / spine / retry / question-intent / writer /
+review / story / hook suites 507 passed; full backend **2097 passed**; ruff clean on changed files;
+`git diff --check` clean.

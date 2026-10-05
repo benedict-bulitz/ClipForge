@@ -60,6 +60,50 @@ def research_topic(
     return _research_topic_v1(prompt, language, settings)
 
 
+def research_with_strengthening(
+    query: str,
+    language: str,
+    settings: Settings,
+    *,
+    context: dict[str, Any],
+    research: Any = None,
+) -> tuple[ResearchResult, dict[str, Any]]:
+    """The production first research pass, including its single weak-core retry.
+
+    When the package's core answer is valid but rests only on a snippet from an
+    unknown/low-authority source, research runs once more with focus
+    ``strengthen``; the stronger package (core present -> full text -> authority)
+    replaces the original, otherwise the original is kept as it is.  Returns the
+    result and a report: attempted, reason, result, replaced.  Used by the
+    pipeline and by ``scripts/research_v2_audit.py`` so both exercise one path.
+    """
+    from .research_v2.package import core_strength, weak_core
+
+    research = research or research_topic
+    first = research(query, language, settings, context=context)
+    package = getattr(first, "package", None)
+    if not weak_core(package):
+        reason = "no_core_answer" if not (package or {}).get("core_answer") else "core_answer_not_weak"
+        return first, {"attempted": False, "reason": reason, "result": None, "replaced": False}
+    question = str(context.get("question") or query)
+    stronger = research(question, language, settings, context={**context, "focus": "strengthen"})
+    stronger_package = getattr(stronger, "package", None)
+    replaced = core_strength(stronger_package) > core_strength(package)
+    core = (stronger_package or {}).get("core_answer") or {}
+    report = {
+        "attempted": True,
+        "reason": "weak_core_source",
+        "focus": "strengthen",
+        "result": {
+            "status": (stronger_package or {}).get("status"),
+            "core_basis": core.get("basis"),
+            "core_authority_tier": core.get("authority_tier"),
+        },
+        "replaced": replaced,
+    }
+    return (stronger if replaced else first), report
+
+
 def _research_topic_v1(prompt: str, language: str, settings: Settings) -> ResearchResult:
     """V1: attributable snippets. Brave is used when configured; Wikipedia is the free fallback."""
     query = _query_from_prompt(prompt)

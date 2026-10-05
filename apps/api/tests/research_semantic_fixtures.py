@@ -79,7 +79,9 @@ BERLIN = Case(
         (
             "https://www.berlin-stadtgeschichte.de/ebertstrasse",
             "Die Berliner Mauer an der Ebertstraße",
-            ["Beim Bau der Berliner Mauer 1961 zog die DDR die Sperranlagen gerade entlang der Ebertstraße bis zum Brandenburger Tor."],
+            # Real Mac shape: construction layout and its result ("sodass"), not why the wall was built.
+            ["Beim Bau der Mauer 1961 zog die DDR die Sperranlagen gerade entlang der Ebertstraße, "
+             "sodass das Gelände als Zipfel Ost-Berlins abgeschnitten wurde."],
             {},
         ),
         (
@@ -115,6 +117,8 @@ ARGUMENT = Case(
         [
             "Damit uns im nächsten Streit gute Antworten einfallen, hilft schon ein kurzer Gedanke, um einen Streit gar nicht erst entstehen zu lassen.",
             "Streiten ist wichtig, weil Paare dadurch Konflikte offen ansprechen und klären können.",
+            # Real Mac shape: conflict-prevention advice with an "indem" clause.
+            "Trotzdem kann man fiese Streite umgehen: indem man Kleinigkeiten, die einen stören, gleich anspricht, statt sie zu sammeln.",
             # Real Mac shape: the article's own purpose, phrased with "Grund", "warum" and "damit".
             "Ein weiterer Grund, warum es mir so wichtig ist, dir mit diesem Artikel einen Schritt zur Lösung deiner Konflikte "
             "und damit Antworten zu liefern. Damit du und dein Partner nicht mehr im Streitkreislauf gefangen bleibt.",

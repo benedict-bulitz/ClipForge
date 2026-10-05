@@ -23,7 +23,9 @@ import json
 import sys
 
 from clipforge.config import get_settings
-from clipforge.research import _research_topic_v1, research_topic
+from clipforge.pipeline import production_research
+from clipforge.research import _research_topic_v1
+from clipforge.schemas import AdvancedOptions
 
 
 def _short(text: object, limit: int = 150) -> str:
@@ -33,11 +35,14 @@ def _short(text: object, limit: int = 150) -> str:
 
 def print_v2(question: str, language: str) -> dict:
     settings = get_settings()
-    result = research_topic(question, language, settings, context={"question": question})
+    # The production first research pass (same query, context and single weak-core retry as generation).
+    result, retry = production_research(question, settings, AdvancedOptions(language=language))
     package = result.package or {}
     diagnostics = result.diagnostics or {}
     print(f"QUESTION     {question}")
     print(f"PROVIDER     {result.provider} status={result.status} error={result.error}")
+    print(f"RETRY        attempted={'yes' if retry['attempted'] else 'no'} reason={retry['reason']} "
+          f"result={retry['result']} replaced_original={'yes' if retry['replaced'] else 'no'}")
     if diagnostics.get("v2_error"):
         print(f"V2 ERROR     {diagnostics['v2_error']} -> fell back to V1")
         return {}

@@ -53,6 +53,34 @@ _ADVICE = re.compile(
     r"(?i)\b(?:hilft|helfen|hilfreich|tipps?|solltest|sollten sie|sollte man|vermeide\w*|versuch(?:e|t)? |"
     r"helps?|helpful|tips?|you should|try to|avoid\w*)\b"
 )
+# A why-question about something people *did* (passive "wurde ... gebaut", or an action verb) asks
+# for the purpose / motive / reason of that action, not for what followed it.
+_INTENTIONAL_ACTION = re.compile(
+    r"(?i)\b(?:wurde|wurden|worden|wird|werden)\b[^?]*\b(?:ge\w+(?:t|en)|\w+iert)\b|"
+    r"\b(?:baute|bauten|errichtete\w*|gründete\w*|führte\w* [^?]*\bein|erfand\w*|entwickelte\w*|beschloss\w*|"
+    r"verbot\w*|erließ\w*|schuf\w*|plante\w*|eröffnete\w*|schloss\w*|entschied\w*|unterzeichnete\w*|wählte\w*)\b|"
+    r"\b(?:was|were)\b[^?]*\b(?:built|introduced|founded|created|invented|made|developed|banned|closed|opened|"
+    r"launched|chosen|signed|declared|erected)\b|\bwhy did\b"
+)
+# Purpose / motive / reason markers: the cause or aim *of* the action.
+_PURPOSE = re.compile(
+    r"(?i)\bum\b[^.;:]{1,80}?\bzu\s+\w+|\bdamit\b(?!\s+(?:du|ihr|dein\w*|euer\w*)\b)|\bziel\w*\s+(?:war|ist|sollte|waren)\b|"
+    r"\b(?:sollte|sollten|wollte|wollten)\b|\bwegen\b|\baufgrund\b|\bals (?:reaktion|antwort) auf\b|\bweil\b|\bdenn\b|"
+    r"\bgrund (?:dafür|war|ist|waren)\b|\bzweck\b|\bin order to\b|\bso as to\b|\bbecause\b|\bdue to\b|\bin response to\b|"
+    r"\baim(?:ed)?\b|\bintended\b|\bpurpose\b|\bto (?:prevent|stop|keep|protect|ensure|allow|avoid|reduce|control|end)\b|"
+    r"\b(?:built|made|created|introduced|founded|designed|erected|established|developed|passed|signed)\b[^.;]{0,50}?\bto\s+(?!be\b)[a-z]{3,}"
+)
+# Result markers: what happened *after* / *because of* the action ("..., sodass ...").
+_RESULT = re.compile(
+    r"(?i)\b(?:sodass|so dass|wodurch|weshalb|infolgedessen|folglich|als folge|was dazu führte|führte dazu|"
+    r"resulting in|as a result|which led to|thereby|consequently)\b"
+)
+# What the reader could do (generic agent + possibility/obligation): advice, not an explanation.
+_GENERIC_ADVICE = re.compile(
+    r"(?i)\b(?:(?:kann|könnte|sollte|muss|darf) man|man (?:kann|könnte|sollte|muss)|(?:kannst|solltest|musst|könntest) du|"
+    r"du (?:kannst|solltest|musst)|am besten|es (?:lohnt|empfiehlt) sich|lässt sich [^.]{0,40}\b(?:vermeiden|verhindern|umgehen)|"
+    r"you (?:can|could|should|must)\b|one (?:can|should)\b|the best way to|try to|make sure|it helps to)\b"
+)
 # The page talking about itself or its reader: its purpose is not the phenomenon's cause.
 _AUTHOR_PURPOSE = re.compile(
     r"(?i)\b(?:(?:in|mit|mithilfe|nach) (?:diese[mnrs]?|unsere[mnrs]?|meine[mnrs]?) (?:artikel|beitrag|ratgeber|blog\w*|post|video|"
@@ -137,6 +165,9 @@ class QuestionFrame:
     explanation_asked: bool
     asks_observation: bool
     asks_naming: bool
+    # What the answer must state about the asked event: cause (a phenomenon), purpose (an
+    # intentional action: "Warum wurde X gebaut?"), mechanism, capability, time, place, identity.
+    relation: str = "other"
     extra: dict = field(default_factory=dict, compare=False)
 
     @property
@@ -149,6 +180,7 @@ class QuestionFrame:
     def as_dict(self) -> dict[str, object]:
         return {
             "question_type": self.qtype,
+            "relation": self.relation,
             "entities": [entity.name for entity in self.entities],
             "required_entities": self.required_entities,
             "predicate": sorted(self.predicate),
@@ -156,11 +188,15 @@ class QuestionFrame:
 
 
 def _acronyms(tokens: list[str]) -> set[str]:
-    folded = [_fold(token) for token in tokens]
-    found = {token for token in folded if 2 <= len(token) <= 4}
+    """Abbreviations a text spells out or uses: upper-case tokens ("KI") and the initials of a
+    name that ends in a capitalised noun ("künstliche Intelligenz" -> "ki") - never the
+    initials of arbitrary neighbouring words ("gleich anspricht")."""
+    found = {_fold(token) for token in tokens if 2 <= len(token) <= 4 and token.isupper()}
     for size in (2, 3):
-        for index in range(len(folded) - size + 1):
-            found.add("".join(word[0] for word in folded[index:index + size]))
+        for index in range(len(tokens) - size + 1):
+            window = tokens[index:index + size]
+            if window[-1][:1].isupper() and all(re.match(r"[A-Za-zÄÖÜäöüß]", word) for word in window):
+                found.add("".join(_fold(word)[0] for word in window))
     return found
 
 
@@ -197,7 +233,6 @@ def question_frame(question: str, language: str = "de") -> QuestionFrame:
                         and modifier.casefold() not in _LEAD and re.search(r"(?:e|en|er|es)$", modifier):
                     # "künstliche Intelligenz": the adjective is part of the name (acronym "KI").
                     forms.add(_fold(modifier[0] + phrase[-1][0]))
-                    forms.add(_fold(modifier))
                     predicate.discard(modifier.casefold())
                 if len(phrase) > 1:
                     forms.add("".join(_fold(word)[0] for word in phrase))
@@ -223,7 +258,14 @@ def question_frame(question: str, language: str = "de") -> QuestionFrame:
         explanation_asked=explanatory or answer_mode(text) == "explanation" and qtype in {"why", "how"},
         asks_observation=bool(_OBSERVER.search(text)),
         asks_naming=bool(_NAMING.search(text)) or bool(re.search(r"(?i)\b(?:heißt|genannt|called|named)\b", text)),
+        relation=_relation(qtype, text),
     )
+
+
+def _relation(qtype: str, question: str) -> str:
+    if qtype == "why":
+        return "purpose" if _INTENTIONAL_ACTION.search(question) else "cause"
+    return {"how": "mechanism", "can": "capability", "when": "time", "where": "place", "what": "identity"}.get(qtype, "other")
 
 
 def entity_coverage(frame: QuestionFrame, text: str) -> tuple[int, list[str]]:
@@ -245,7 +287,7 @@ def _new_content(frame: QuestionFrame, text: str) -> int:
 
 def _shared_shape_issues(frame: QuestionFrame, text: str) -> list[str]:
     issues: list[str] = []
-    if frame.explanation_asked and _ADVICE.search(text):
+    if frame.explanation_asked and (_ADVICE.search(text) or _GENERIC_ADVICE.search(text)):
         issues.append("advice_not_explanation")
     if _AUTHOR_PURPOSE.search(text):
         issues.append("author_or_article_purpose")  # why the page was written, not why the phenomenon happens
@@ -308,7 +350,7 @@ def core_issues(frame: QuestionFrame, text: str, antecedent: str = "") -> list[s
     if frame.entities and covered < frame.required_entities:
         issues.append("entity_mismatch")
     if frame.qtype in {"why", "how"}:
-        if not _CAUSAL.search(text):
+        if not _CAUSAL.search(text) and not (frame.relation == "purpose" and _PURPOSE.search(text)):
             issues.append("no_cause_or_mechanism")
         if _NAMING.search(text) and not frame.asks_naming:
             issues.append("naming_not_cause")
@@ -319,6 +361,7 @@ def core_issues(frame: QuestionFrame, text: str, antecedent: str = "") -> list[s
             effect_covered, _ = entity_coverage(frame, f"{effect} {resolved if _PRONOUN.search(effect) else ''}")
             if effect_covered < frame.required_entities:
                 issues.append("asked_thing_is_the_cause_not_the_effect")
+        issues += relation_issues(frame, text, resolved)
     elif frame.qtype == "can" or (frame.qtype == "other" and frame.predicate):
         if frame.predicate and not any(
             inflects(term, token) or inflects(token, term) for term in frame.predicate for token in _TOKEN.findall(text)
@@ -345,10 +388,21 @@ def topical_issues(frame: QuestionFrame, text: str, context: str = "") -> list[s
 
 
 def mechanism_issues(frame: QuestionFrame, text: str, context: str = "") -> list[str]:
-    """A mechanism step must be causal, on the asked entities (with its paragraph), and not advice/naming."""
+    """A mechanism step must be causal, on the asked entities (with its paragraph), not advice/naming,
+    and state the requested relation (a purpose for an intentional action, not its result)."""
     issues = topical_issues(frame, text, context)
     if not _CAUSAL.search(text):
         issues.append("no_cause_or_mechanism")
     if _NAMING.search(text) and not frame.asks_naming:
         issues.append("naming_not_cause")
+    issues += relation_issues(frame, text, context)
     return issues
+
+
+def relation_issues(frame: QuestionFrame, text: str, context: str = "") -> list[str]:
+    """For an intentional action ("Warum wurde X gebaut?") the sentence must state its purpose, motive or
+    reason; "X wurde gebaut, sodass Y" states what building X caused.  (For a phenomenon the effect clause
+    of "A, deshalb B" usually *is* the explanation, so no direction check applies there.)"""
+    if frame.relation == "purpose" and not _PURPOSE.search(text):
+        return ["consequence_not_purpose" if _RESULT.search(text) else "no_purpose_or_reason"]
+    return []

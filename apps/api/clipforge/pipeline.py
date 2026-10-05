@@ -40,8 +40,8 @@ from .question_intent import interpret_question, merge_planner_intent
 from .question_intent import research_query as intent_research_query
 from .reactions import plan_viewer_reactions, reaction_arc
 from .readiness import content_readiness, not_ready_message
-from .research import research_topic
-from .research_v2.package import core_strength, link_package_facts, research_brief, weak_core
+from .research import research_topic, research_with_strengthening
+from .research_v2.package import link_package_facts, research_brief
 from .schemas import AdvancedOptions
 from .script_review import (
     OpenAIScriptReviewProvider,
@@ -1242,6 +1242,23 @@ def build_initial_state(
     return attach_hashes(state)
 
 
+def research_request(
+    prompt: str, intent: dict[str, Any], research_query: str | None = None, research_focus: str | None = None
+) -> tuple[str, dict[str, Any]]:
+    """The query and context generation researches with (shared with the read-only audit script)."""
+    query = research_query or intent_research_query(intent["question_intent"], intent["language"]) or prompt
+    context = {"question": prompt, "content_type": intent["content_type"], "focus": research_focus if research_query else None}
+    return query, context
+
+
+def production_research(prompt: str, settings: Settings, options: AdvancedOptions | None = None) -> tuple[Any, dict[str, Any]]:
+    """The first research pass exactly as generation runs it, including the single weak-core retry."""
+    intent = _intent(prompt, options or AdvancedOptions())
+    intent["question_intent"] = interpret_question(prompt, intent["language"])
+    query, context = research_request(prompt, intent)
+    return research_with_strengthening(query, intent["language"], settings, context=context, research=research_topic)
+
+
 def _build_initial_state(
     prompt: str,
     options: AdvancedOptions,
@@ -1268,15 +1285,16 @@ def _build_initial_state(
     research_retry: dict[str, Any] | None = None
     if intent["research_required"]:
         report_progress(progress, "research", "Researching the topic", phase="start")
-        result = research_topic(
-            research_query or intent_research_query(intent["question_intent"], intent["language"]) or prompt,
-            intent["language"], settings,
-            context={
-                "question": prompt,
-                "content_type": intent["content_type"],
-                "focus": research_focus if research_query else None,
-            },
-        )
+        query, context = research_request(prompt, intent, research_query, research_focus)
+        if research_query is None:
+            # First pass: a valid but weak core answer (snippet-only, unknown/low authority)
+            # spends the run's one research retry now, before any script cost.
+            result, retry_report = research_with_strengthening(
+                query, intent["language"], settings, context=context, research=research_topic,
+            )
+            research_retry = retry_report if retry_report["attempted"] else None
+        else:
+            result = research_topic(query, intent["language"], settings, context=context)
         research_status = result.status
         research_provider = result.provider
         research_error = result.error
@@ -1284,21 +1302,6 @@ def _build_initial_state(
         facts = result.facts
         research_package = getattr(result, "package", None)
         research_diagnostics = getattr(result, "diagnostics", None)
-        if research_query is None and weak_core(research_package):
-            # The answer is valid but rests on a weak snippet only: spend the
-            # run's one research retry now (before any script cost) on a
-            # stronger source; keep the original when nothing better is found.
-            stronger = research_topic(
-                prompt, intent["language"], settings,
-                context={"question": prompt, "content_type": intent["content_type"], "focus": "strengthen"},
-            )
-            replaced = core_strength(getattr(stronger, "package", None)) > core_strength(research_package)
-            if replaced:
-                result = stronger
-                research_status, research_provider, research_error = result.status, result.provider, result.error
-                sources, facts = result.sources, result.facts
-                research_package, research_diagnostics = result.package, result.diagnostics
-            research_retry = {"reason": "weak_core_source", "focus": "strengthen", "replaced": replaced}
         report_progress(progress, "research", "Researching the topic", phase="complete")
     else:
         report_progress(progress, "research", "Researching the topic", phase="skipped")
