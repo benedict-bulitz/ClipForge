@@ -268,7 +268,9 @@ def test_judge_prefers_the_complementary_triple_and_can_veto():
     fixture = story(FINGERS_Q, [dict(item) for item in FINGER_FACTS])
     first = ai_candidate("A", "counterintuitive_insight", "Deine Finger schrumpeln nicht, weil sie Wasser aufsaugen.", "wet fingertips with deep wrinkles",
                          ["wrinkled wet fingertips"], action="gripping a wet stone", detail="deep ridges", on_screen="Dein Nervensystem steckt dahinter")
-    second = ai_candidate("B", "evidence_insight", "Nach langem Baden legen sich deine Fingerkuppen in Falten.", "fingertips in a bathtub",
+    # Both open on the subject within the first second (Hook Quality V3), so
+    # the judge's view of the channels decides.
+    second = ai_candidate("B", "evidence_insight", "Deine Fingerkuppen legen sich nach langem Baden in Falten.", "fingertips in a bathtub",
                           ["wrinkled fingertips bath"], action="rising out of the water", detail="wrinkles")
     judge = Judge({"hook_a": {"complementarity": 10, "curiosity": 9}, "hook_b": {"complementarity": 2, "curiosity": 5}})
     assert plan_for(fixture, [first, second], judge=judge)["hook_id"] == "hook_a"

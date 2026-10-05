@@ -31,6 +31,7 @@ import re
 from collections.abc import Callable
 from typing import Any
 
+from .hook_quality import assess_first_frame, on_screen_role, opening_move, quality_report
 from .hooks import CANONICAL_STRATEGIES, HookCandidate, canonical_strategy
 from .media import (
     _VISUAL_QUERY_STOP,
@@ -71,12 +72,14 @@ DIMENSIONS = (
     *VERBAL_DIMENSIONS,
     "visual_intrigue", "visual_feasibility", "on_screen_quality", "complementarity", "payoff_alignment",
     "reveal_safety", "format_fit", "clickbait_free", "production_feasibility",
+    # Hook Quality V3: the first frame is readable instantly (deterministic only).
+    "visual_clarity",
 )
 _WEIGHTS = {
     **VERBAL_WEIGHTS,
     "visual_intrigue": 0.8, "visual_feasibility": 1.0, "on_screen_quality": 0.6, "complementarity": 1.3,
     "payoff_alignment": 1.2, "reveal_safety": 1.0, "format_fit": 0.9, "clickbait_free": 0.8,
-    "production_feasibility": 0.8,
+    "production_feasibility": 0.8, "visual_clarity": 1.0,
 }
 # Safety dimensions: the judge may lower them, never raise them above the checks.
 _SAFETY = {"reveal_safety", "factual_defensibility", "clickbait_free"}
@@ -92,7 +95,6 @@ _NEEDS_TEXT = re.compile(
     r"(?i)\b(?:text|caption|headline|title card|label(?:ed|led|s)?|words?|letters|schrift|beschriftung|"
     r"überschrift|infographic|diagram|chart|logo)\b"
 )
-_CLOSE_FRAMING = re.compile(r"(?i)\b(?:close[- ]?up|macro|detail|nahaufnahme|makro|extreme)\b")
 _FRAGMENT = re.compile(r"(?:\.\.\.|…|\w-\s*$|^\s*[-–—,;:])")
 
 
@@ -282,6 +284,8 @@ def assess_candidate(candidate: dict[str, Any], context: dict[str, Any]) -> dict
     if _NEEDS_TEXT.search(" ".join((subject, visual.get("action_state") or "", visual.get("key_detail") or ""))):
         codes.append("visual_needs_text")
         feasibility = min(feasibility, 0.4)
+    first_frame = assess_first_frame(visual, context)
+    codes.extend(first_frame["reason_codes"])
     reason = visual_leaks(visual, context)
     if reason:
         hard.append(f"visual_{reason}")
@@ -348,6 +352,12 @@ def assess_candidate(candidate: dict[str, Any], context: dict[str, Any]) -> dict
         hard.append("redundant_channels")
     if shown and (_numbers(text) - _numbers(verbal) or ("?" in text) != ("?" in verbal) or shown - _related(shown, spoken)):
         complementarity += 0.1
+    # V3: the text compresses, contrasts, counts, challenges or leaves a clue.
+    role, role_codes = on_screen_role(text, verbal, context)
+    codes.extend(role_codes)
+    candidate["on_screen_role"] = role
+    if "on_screen_restates_question" in role_codes:
+        complementarity -= 0.2
 
     # -- format (structural rules only; no strategy is preferred by name) ----
     format_fit = 1.0
@@ -361,9 +371,14 @@ def assess_candidate(candidate: dict[str, Any], context: dict[str, Any]) -> dict
         format_fit = min(format_fit, 0.2)
 
     # -- dimension scores (0..1) ---------------------------------------------
-    filled = sum(1 for key in ("subject", "action_state", "framing", "key_detail", "motion") if visual.get(key)) + (1 if visual.get("contrast") or visual.get("tension") else 0)
-    intrigue = 0.3 + 0.1 * filled + (0.1 if _CLOSE_FRAMING.search(visual.get("framing") or "") else 0)
-    on_screen_quality = 1.0 if text else (0.5 if not raw_text or dropped == "no_supplementary_text" else 0.2)
+    # V3: motion, change, contrast and a close detail interrupt; an image that
+    # only illustrates the question's words does not.
+    intrigue = first_frame["visual_intrigue"]
+    on_screen_quality = (0.9 if role == "key_phrase" else 1.0) if text else (0.5 if not raw_text or dropped == "no_supplementary_text" else 0.2)
+    if text and text_verbal >= 0.5:
+        on_screen_quality -= 0.3
+    on_screen_quality -= 0.3 if "on_screen_restates_question" in role_codes else 0
+    on_screen_quality -= 0.2 if "on_screen_hard_to_read" in role_codes else 0
     scores = {
         **verbal_result["dimensions"],
         "visual_intrigue": intrigue,
@@ -375,8 +390,11 @@ def assess_candidate(candidate: dict[str, Any], context: dict[str, Any]) -> dict
         "format_fit": format_fit,
         "clickbait_free": 0.0 if {"cheap_clickbait", "fake_controversy", "unnecessary_provocation"} & set(hard) else (0.6 if generic_opener else 1.0),
         "production_feasibility": (feasibility + (1.0 if text or not raw_text else 0.6)) / 2 if queries else 0.2,
+        "visual_clarity": first_frame["visual_clarity"] if queries else 0.0,
     }
     scores = {key: round(max(0.0, min(1.0, value)), 3) for key, value in scores.items()}
+    candidate["opening_move"] = verbal_result.get("opening_move") or opening_move(verbal)
+    candidate["first_second"] = verbal_result.get("first_second", "")
     return {"hard_fail": list(dict.fromkeys(hard)), "reason_codes": list(dict.fromkeys(codes)), "dimensions": scores}
 
 
@@ -463,6 +481,26 @@ def _on_screen_options(context: dict[str, Any]) -> list[str]:
     return list(dict.fromkeys(options))
 
 
+def best_first_frame(visuals: list[dict[str, Any]], context: dict[str, Any], spoken: str = "") -> dict[str, Any] | None:
+    """The planner visual that makes the strongest safe first frame (V3).
+
+    Instant readability and intrigue first; the planner's own order (its hook
+    intent leads) and word overlap with the voice only break ties, so the
+    opening image is not chosen for repeating the narration.
+    """
+    words = _words(spoken)
+    safe = [(index, item) for index, item in enumerate(visuals) if not visual_leaks(item, context)]
+    if not safe:
+        return None
+
+    def rank(entry: tuple[int, dict[str, Any]]) -> tuple[float, int]:
+        index, item = entry
+        frame = assess_first_frame(item, context)
+        return (-(frame["visual_clarity"] + frame["visual_intrigue"]) - 0.05 * _overlap(words, _words(_visual_text(item))), index)
+
+    return min(safe, key=rank)[1]
+
+
 def deterministic_candidates(
     context: dict[str, Any],
     *,
@@ -474,9 +512,7 @@ def deterministic_candidates(
     texts = _on_screen_options(context)
     candidates: list[dict[str, Any]] = []
     for verbal in verbal_candidates(context, planner_hook=planner_hook):
-        spoken = _words(verbal["text"])
-        ranked = sorted(visuals, key=lambda item: -_overlap(spoken, _words(_visual_text(item))))
-        visual = next((item for item in ranked if not visual_leaks(item, context)), None)
+        visual = best_first_frame(visuals, context, verbal["text"])
         if visual is None:
             continue
         on_screen = next((option for option in texts if validate_on_screen(option, verbal["text"], context, visual)[0]), "")
@@ -501,12 +537,22 @@ def deterministic_candidates(
 # Orchestration
 # ---------------------------------------------------------------------------
 
+def _paraphrase(candidate: dict[str, Any], other: dict[str, Any]) -> bool:
+    """Two openings that say the same thing, whatever strategy label they carry."""
+    first, second = candidate["verbal_hook"], other["verbal_hook"]
+    overlap = _overlap(_words(first), _words(second))
+    if overlap >= 0.8:
+        return True
+    # Same strategy and same opening move on mostly the same words: one
+    # approach said twice.
+    return overlap >= 0.65 and candidate["strategy"] == other["strategy"] and opening_move(first) == opening_move(second)
+
+
 def _distinct(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Drop near-paraphrases: distinct candidates must be different approaches."""
     kept: list[dict[str, Any]] = []
     for candidate in candidates:
-        words = _words(candidate["verbal_hook"])
-        if any(_overlap(words, _words(other["verbal_hook"])) >= 0.8 and other["strategy"] == candidate["strategy"] for other in kept):
+        if any(_paraphrase(candidate, other) for other in kept):
             continue
         if any(" ".join(candidate["verbal_hook"].casefold().split()) == " ".join(other["verbal_hook"].casefold().split()) for other in kept):
             continue
@@ -557,6 +603,8 @@ def _compact(candidate: dict[str, Any], result: dict[str, Any]) -> dict[str, Any
         "payoff_fact_id": candidate.get("payoff_fact_id"),
         "supported_by_fact_ids": candidate.get("supported_by_fact_ids") or [],
         "positive_codes": candidate.get("positive_codes") or [],
+        "opening_move": candidate.get("opening_move"),
+        "on_screen_role": candidate.get("on_screen_role"),
         "score": result["score"],
         "eligible": result["eligible"],
         "hard_fail": result["hard_fail"],
@@ -624,7 +672,8 @@ def plan_triple_hook(
     candidates = _distinct([item for item in normalised if item is not None])[:MAX_CANDIDATES]
     assessed = {candidate["id"]: assess_candidate(candidate, context) for candidate in candidates}
     eligible_ai = sum(1 for result in assessed.values() if not result["hard_fail"])
-    if eligible_ai < CANDIDATE_TARGET and visuals:
+    moves = {candidate["opening_move"] for candidate in candidates if not assessed[candidate["id"]]["hard_fail"]}
+    if (eligible_ai < CANDIDATE_TARGET or len(moves) < 2) and visuals:
         # Top up with deterministic complete triples so a failing provider
         # candidate never leaves the opening without a real choice.
         extra = deterministic_candidates(context, visuals=visuals, planner_hook=planner_hook, offset=len(candidates))
@@ -659,6 +708,7 @@ def plan_triple_hook(
         "judge": {"status": judge_status, "error": judge_error},
         "candidate_count": len(candidates),
         "eligible_count": len(ranked),
+        "opening_moves": sorted({candidate.get("opening_move") or "fact" for candidate in candidates}),
         "candidates": [_compact(candidate, results[candidate["id"]]) for candidate in candidates],
     }
     story_brief = {
@@ -693,6 +743,10 @@ def plan_triple_hook(
             "reason_codes": list(dict.fromkeys([*(winner.get("positive_codes") or []), *result["reason_codes"]]))[:10],
             "rationale": winner["rationale"],
             "reveal_contract": story_brief,
+            "hook_quality": quality_report(
+                result["dimensions"], move=winner.get("opening_move") or "fact",
+                codes=[*result["reason_codes"], *assessed[winner["id"]]["reason_codes"]], first_second=winner.get("first_second") or "",
+            ),
             "selection": {**selection, "selected_id": winner["id"]},
         }
     # No complete triple passed: the best document-based verbal hook still
@@ -722,7 +776,7 @@ def fallback_plan(
     text_verbal = _clean((verbal or {}).get("text"))
     strategy = (verbal or {}).get("strategy")
     legacy = fallback_triple_hook(context["intent"], payoff_plan or {}, text_verbal, strategy, reaction, format_plan)
-    visual_source = next((item for item in visuals if not visual_leaks(item, context)), None)
+    visual_source = best_first_frame(visuals, context, text_verbal)
     visual = visual_intent(
         visual_source or {**legacy["visual_hook"], "subject": ", ".join(legacy["visual_hook"].get("subjects_to_show") or [])},
         must_not_show=[context["protected_label"]] if context["withhold"] and context["protected_label"] else [],

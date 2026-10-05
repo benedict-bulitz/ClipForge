@@ -25,6 +25,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from .hook_quality import assess_opening, setup_opener
 from .hooks import (
     CANONICAL_STRATEGIES,
     _grounded_insight,
@@ -173,6 +174,8 @@ _LOOSE_EVIDENCE = {"counterintuitive_insight", "evidence_insight", "high_stakes_
 VERBAL_DIMENSIONS = (
     "spoken_simplicity", "useful_information", "topic_relevance", "attention_value", "factual_defensibility", "natural_language",
     "brevity", "body_transition", "curiosity", "insight", "non_repetition", "strategy_fit",
+    # Hook Quality V3: the first one to three seconds (``hook_quality``).
+    "first_second_clarity", "information_density", "scroll_stop",
 )
 # The document's priority order: useful specific information first.
 VERBAL_WEIGHTS = {
@@ -182,6 +185,8 @@ VERBAL_WEIGHTS = {
     # Said aloud as a person would say it: as important as being easy.
     "natural_language": 1.6, "brevity": 1.1, "body_transition": 1.0, "curiosity": 0.9, "insight": 0.9,
     "non_repetition": 0.8, "strategy_fit": 1.0,
+    # What is heard before the swipe decision.
+    "first_second_clarity": 1.5, "information_density": 0.9, "scroll_stop": 1.3,
 }
 REVEAL_CODES = ("names_protected_answer", "implies_protected_answer", "states_comparison_result", "queries_protected_target", "states_primary_answer")
 
@@ -650,7 +655,7 @@ def assess_verbal(
         hard.append("cheap_clickbait")
     if _FAKE_CONTROVERSY.search(verbal) and not any(_FAKE_CONTROVERSY.search(_plain(fact.get("claim"))) for fact in context["sourced_facts"]):
         hard.append("fake_controversy")
-    generic_opener = bool(_GENERIC_OPENER.search(verbal))
+    generic_opener = bool(_GENERIC_OPENER.search(verbal)) or setup_opener(verbal)
     if generic_opener:
         codes.append("generic_opener")
     reason = leaks(verbal, context)
@@ -720,6 +725,11 @@ def assess_verbal(
     empty_curiosity = not specific and not numbers and not emergency
     if empty_curiosity:
         codes.append("empty_curiosity")
+    # Hook Quality V3: setup formulas, empty teasers, restated questions and
+    # placeholder openings, judged on what is heard in the first seconds.
+    opening = assess_opening(verbal, context, emergency=emergency, specific=bool(specific or numbers))
+    hard.extend(opening["hard_fail"])
+    codes.extend(opening["reason_codes"])
 
     # Strategy fit: supported by research, and performed by the sentence (its
     # rhetorical function, not its vocabulary).
@@ -780,6 +790,13 @@ def assess_verbal(
     question_overlap = len(_related(spoken, question_words)) / max(1, len(spoken))
     non_repetition = 1.0 - (0.5 if "question_echo" in codes + hard else 0) - (0.3 if same_as_first else 0) - (0.2 if question_overlap > 0.8 else 0)
     non_repetition -= 0.4 if spends_payoff else 0
+    if not opening["gain"] and not emergency:
+        # Nothing beyond what the question already says: no novelty.
+        insight = min(insight, 0.2)
+        non_repetition -= 0.3
+    if "empty_teaser" in opening["reason_codes"]:
+        # Announced surprise is not a gap: the viewer gets nothing to wonder about.
+        curiosity = min(curiosity, 0.3 if opening["gain"] else 0.1)
     insight -= 0.3 if states_answer else 0
     transition -= 0.3 if spends_payoff else 0
     if not (contrast or supported_number or self_test or "?" in verbal):
@@ -789,6 +806,13 @@ def assess_verbal(
         attention = min(attention, 0.2)
         curiosity = min(curiosity, 0.1)
         insight -= 0.1
+        spent = [words for flag, words in ((states_answer, answer_words), (spends_payoff, final_words)) if flag and words]
+        if spent and not emergency and not same_as_first and any(len(_related(words, spoken)) / len(words) >= 0.6 for words in spent):
+            # Hook Quality V3 early-payoff gate: most of the answer (or of the
+            # last beat) said flatly, with no contrast, number, question or
+            # challenge left open.  A reveal that opens a new question ("not
+            # X, but Y") or names only part of the answer stays.
+            hard.append("early_payoff")
     if same_as_first and (states_answer or _plain_explanation(verbal, context)):
         # The hook is just the first body sentence: no hook at all, only the
         # explanation said early (the document: neutral information is weak).
@@ -805,6 +829,7 @@ def assess_verbal(
         "factual_defensibility": defensibility, "natural_language": natural, "brevity": brevity,
         "body_transition": transition, "curiosity": curiosity, "insight": insight,
         "non_repetition": non_repetition, "strategy_fit": fit,
+        **opening["dimensions"],
     }
     dimensions = {key: round(max(0.0, min(1.0, value)), 3) for key, value in dimensions.items()}
     if supported_number:
@@ -826,6 +851,8 @@ def assess_verbal(
         "positive_codes": list(dict.fromkeys(positive)),
         "dimensions": dimensions,
         "supported_by_fact_ids": fact_ids,
+        "opening_move": opening["move"],
+        "first_second": opening.get("first_second", ""),
     }
 
 

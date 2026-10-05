@@ -18,6 +18,7 @@ from .config import Settings
 from .dependencies import resolve_edit_scope
 from .format_intelligence import plan_format
 from .hashing import attach_hashes
+from .hook_quality import SPEAKING_RATE_WPM
 from .hooks import _BACK_REFERENCE, STRATEGIES, HookCandidate, canonical_strategy
 from .language import detect_text_language, resolve_language
 from .media import _NON_SIDE_TARGET_KEYS, visual_target_key
@@ -85,7 +86,6 @@ STAGE_LABELS = [
     ("qc", "Reviewing video"),
 ]
 
-SPEAKING_RATE_WPM = 165
 AUTO_MIN_DURATION = 10
 
 
