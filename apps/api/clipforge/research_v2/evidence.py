@@ -38,7 +38,7 @@ _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+(?=[A-ZÄÖÜ0-9\"„“(])")
 _ANAPHOR = re.compile(
     r"^(?:dies\w*|das|diese[rsmn]?|er|sie|es|dabei|dadurch|deshalb|daher|damit|dafür|darum|dazu|so|hierbei|this|that|these|those|it|they|he|she|"
     r"thus|hence|as a result|im gegensatz dazu|demgegenüber|dagegen|in contrast|by contrast|(?:trotz|wegen|aufgrund|neben|bei|mit|nach|despite|because of|with) (?:dies\w*|dessen|deren|this|that|these))\b",
-    re.I,
+    re.IGNORECASE,
 )
 # A pronoun that can stand for an earlier-named thing (mirrors answer_relation._PRONOUN).
 _PRONOUN = re.compile(r"(?i)\b(?:sie|er|es|ihn|ihm|ihre[nmrs]?|seine[nmrs]?|diese[rsmn]?|it|its|they|them|their)\b")
@@ -66,14 +66,17 @@ KIND_PATTERNS: dict[str, re.Pattern[str]] = {
     "date": re.compile(r"\b(?:im jahre?|in|seit|bis|ab|um|anno|von|year|since|until|by|from)\s+(?:1[0-9]{3}|20[0-9]{2})\b|"
                        r"\b(?:1[0-9]{3}|20[0-9]{2})\s+(?:wurde|wurden|begann|endete|kam|was|were|began|ended)\b|"
                        r"\b\d{1,2}\.\s*(?:januar|februar|märz|april|mai|juni|juli|august|september|oktober|november|dezember)\b|"
-                       r"\b\d{4}-\d{2}-\d{2}\b", re.I),
+                       r"\b\d{4}-\d{2}-\d{2}\b", re.IGNORECASE),
     "comparison": re.compile(r"(?i)\b(?:than|compared|unlike|whereas|versus|im vergleich|anders als|während|als die|als der|als das)\b"),
     "caveat": re.compile(
-        r"(?i)\b(?:however|although|only if|depends|not always|in some cases|unclear|disputed|debated|may|might|"
-        r"jedoch|allerdings|obwohl|nur wenn|hängt .{0,30}ab|nicht immer|teilweise|unklar|umstritten|möglicherweise|vermutlich)\b"
+        r"(?i)\b(?:however|although|only if|depends|not always|in some cases|unclear|disputed|debated|may|might|could|"
+        r"possible|possibly|hypothes(?:is|es|ised|ized)|theor(?:y|ies|ised|ized)|suggests?|proposed|"
+        r"jedoch|allerdings|obwohl|nur wenn|hängt .{0,30}ab|nicht immer|teilweise|unklar|umstritten|möglicherweise|"
+        r"vermutlich|könnte\w*|hypothese\w*|theorie\w*|theoretisier\w*|deutet\w*|vorgeschlagen)\b"
     ),
     "definition": re.compile(r"(?i)\b(?:is an?|refers to|is the|bezeichnet|ist ein\w*|nennt man|versteht man)\b"),
 }
+UNCERTAINTY_PATTERN = KIND_PATTERNS["caveat"]
 _KIND_ORDER = ("misconception", "mechanism", "number", "date", "comparison", "caveat", "definition")
 _ADVICE = re.compile(r"(?i)^(?:wer\s|if you want|to (?:avoid|prevent)\b|um\b[^.]{0,60}\bzu (?:vermeiden|verhindern)|tipp:|tip:)")
 _CURRENT = re.compile(
@@ -164,6 +167,9 @@ class EvidenceUnit:
     relevance: float
     matched: list[str]
     basis: str = "full_text"  # full_text | snippet
+    # Exact origin of the statement. ``basis`` remains the compact strength
+    # class used by ranking; provenance survives into the package.
+    provenance: str | None = None  # full_text | abstract | search_snippet | metadata
     numbers: list[str] = field(default_factory=list)
     time_sensitive: bool = False
     # The sentence just before this one in its paragraph (empty when the unit
@@ -176,6 +182,10 @@ class EvidenceUnit:
     def kind(self) -> str:
         return self.kinds[0]
 
+    def __post_init__(self) -> None:
+        if self.provenance is None:
+            self.provenance = "full_text" if self.basis == "full_text" else "search_snippet"
+
     def as_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
@@ -187,6 +197,7 @@ class EvidenceUnit:
             "kinds": self.kinds,
             "relevance": round(self.relevance, 3),
             "basis": self.basis,
+            "provenance": self.provenance,
             "numbers": self.numbers[:6],
             "time_sensitive": self.time_sensitive,
         }
@@ -219,6 +230,7 @@ def units_from_paragraphs(
     core_terms: set[str],
     start: int,
     basis: str = "full_text",
+    provenance: str | None = None,
     min_relevance: float = 0.3,
     title: str = "",
 ) -> list[EvidenceUnit]:
@@ -277,6 +289,7 @@ def units_from_paragraphs(
                 relevance=min(1.0, score),
                 matched=sorted(hits),
                 basis=basis,
+                provenance=provenance,
                 numbers=sorted(numbers_in(text)),
                 time_sensitive=is_time_sensitive(text),
                 antecedent=antecedent,

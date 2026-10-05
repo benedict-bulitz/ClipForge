@@ -28,6 +28,13 @@ _QUESTION_WORDS = re.compile(
 _MECHANISM_TERMS = {"de": "Ursache Erklärung wie funktioniert", "en": "cause explanation how it works"}
 _STRENGTHEN_TERMS = {"de": "wissenschaftliche Erklärung", "en": "scientific explanation"}
 _CAPABILITY_TERMS = {"de": "möglich Forschung Fähigkeit Grenzen", "en": "possible research capability limits"}
+_FOREIGN_QUERY_MARKERS = {
+    "de": re.compile(r"(?i)\b(?:scientific explanation|cause|how it works|possible research|capability|limits)\b"),
+    "en": re.compile(
+        r"(?i)\b(?:wissenschaftlich\w*|erklärung\w*|ursache\w*|wie funktioniert|möglich\w*|forschung|"
+        r"fähigkeit\w*|grenzen)\b"
+    ),
+}
 
 DECOMPOSITION_INSTRUCTIONS = (
     "You plan web research for one short explainer video. Split the question into at most four research "
@@ -47,7 +54,9 @@ SYNTHESIS_INSTRUCTIONS = (
     "leave it empty if the evidence states no cause - never infer one. numbers_dates: important figures exactly "
     "as stated. misconceptions: a common wrong belief the evidence corrects. caveats: a limitation that matters. "
     "viewer_takeaway: what the viewer should understand at the end. Prefer evidence from high-authority sources "
-    "when units disagree, and leave out disputed points."
+    "when units disagree, and leave out disputed points. Preserve epistemic uncertainty exactly: evidence that "
+    "says may, could, might, possible, hypothesis, theorised or equivalent must remain explicitly uncertain in "
+    "the core answer and caveats; never promote a hypothesis to a fact."
 )
 
 
@@ -147,15 +156,32 @@ def deterministic_sub_questions(question: str, query: str, language: str, *, foc
     return subs
 
 
+def _query_in_research_language(candidate: str, fallback: str, language: str) -> str:
+    """Keep generated queries in the requested language.
+
+    This deliberately checks only planner-added research phrases: names and
+    technical terms may legitimately come from another language.
+    """
+    lang = "de" if str(language).startswith("de") else "en"
+    cleaned = topic_query(candidate)[:120]
+    return topic_query(fallback)[:120] if _FOREIGN_QUERY_MARKERS[lang].search(cleaned) else cleaned
+
+
 def sub_questions_from_llm(out: DecompositionOut, question: str, query: str, language: str) -> tuple[list[SubQuestion], str | None]:
     """Validated LLM decomposition (core first, unique kinds, bounded); falls back per field."""
+    fallbacks = deterministic_sub_questions(question, query, language)
+    fallback_by_kind = {sub.kind: sub.query for sub in fallbacks}
+    default_query = fallback_by_kind.get("core", topic_query(query))
     subs: list[SubQuestion] = []
     seen: set[str] = set()
     for item in out.sub_questions:
         if item.kind in seen:
             continue
         seen.add(item.kind)
-        subs.append(SubQuestion(f"q_{item.kind}", item.kind, item.question.strip(), topic_query(item.query)[:120]))
+        planned_query = _query_in_research_language(
+            item.query, fallback_by_kind.get(item.kind, default_query), language
+        )
+        subs.append(SubQuestion(f"q_{item.kind}", item.kind, item.question.strip(), planned_query))
         if item.english_query and str(language).startswith("de") and len(subs) < MAX_SUB_QUESTIONS and item.kind in {"core", "mechanism"}:
             subs.append(SubQuestion(f"q_{item.kind}_en", item.kind, item.question.strip(), topic_query(item.english_query)[:120]))
     if "core" not in seen:
