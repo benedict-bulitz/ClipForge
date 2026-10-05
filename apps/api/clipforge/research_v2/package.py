@@ -15,7 +15,7 @@ from typing import Any
 from .corroboration import ClaimGroup
 from .evidence import KIND_PATTERNS, EvidenceUnit, numbers_in, related, words
 from .quality import TIER_RANK
-from .answer_relation import QuestionFrame, core_issues, mechanism_issues, topical_issues
+from .answer_relation import QuestionFrame, core_issues, entity_coverage, mechanism_issues, relation_hits, resolves_pronoun, topical_issues
 from .routing import RoutePlan
 
 PACKAGE_VERSION = 1
@@ -74,6 +74,8 @@ class PackageClaim:
             "independent_sources": self.support,
             "verification": self.verification(),
             "origin": self.origin,
+            "basis": self.basis,
+            "authority_tier": self.best_tier,
         }
 
 
@@ -116,10 +118,18 @@ def _claim_from_group(group: ClaimGroup, role: str, sources: dict[str, dict[str,
     )
 
 
-def _authority_rank(group: ClaimGroup, sources: dict[str, dict[str, Any]], route: RoutePlan) -> tuple:
-    """Among claims that answer the question: full text over snippet, authority, routing, support, then relevance."""
+def _authority_rank(group: ClaimGroup, sources: dict[str, dict[str, Any]], route: RoutePlan, relation: int = 0) -> tuple:
+    """Among claims that answer the question: full text over snippet, authority, the asked
+    relation stated ("gebaut" for "Warum wurde ... gebaut?"), routing, support, then relevance."""
     band, snippet_only, tier, preference, support, relevance = _group_rank(group, sources, route)
-    return (snippet_only, tier, preference, support, band, relevance)
+    return (snippet_only, tier, -relation, preference, support, band, relevance)
+
+
+def _antecedent(unit: EvidenceUnit, sources: dict[str, dict[str, Any]]) -> str:
+    """What a pronoun in ``unit`` may refer to: the previous sentence, or the page title when it opens a paragraph."""
+    if unit.antecedent:
+        return unit.antecedent
+    return str(sources.get(unit.source_id, {}).get("title") or "") if unit.paragraph_initial else ""
 
 
 def _answering_unit(group: ClaimGroup, frame: QuestionFrame, sources: dict[str, dict[str, Any]], route: RoutePlan) -> EvidenceUnit | None:
@@ -129,7 +139,14 @@ def _answering_unit(group: ClaimGroup, frame: QuestionFrame, sources: dict[str, 
         TIER_RANK.get(str(sources.get(unit.source_id, {}).get("authority")), 3),
         route.preference(str(sources.get(unit.source_id, {}).get("source_type"))),
     ))
-    return next((unit for unit in ordered if not core_issues(frame, unit.text)), None)
+    return next((unit for unit in ordered if not core_issues(frame, unit.text, _antecedent(unit, sources))), None)
+
+
+def _answer_text(unit: EvidenceUnit, frame: QuestionFrame) -> str:
+    """The answer as handed downstream: a pronoun answer keeps the sentence that names its referent."""
+    if unit.antecedent and resolves_pronoun(frame, unit.text, unit.antecedent):
+        return f"{unit.antecedent} {unit.text}"
+    return unit.text
 
 
 def select_claims(
@@ -183,16 +200,21 @@ def select_claims(
         unit = _answering_unit(group, frame, sources, route)
         if unit is not None:
             answering.append((group, unit))
-        elif rejected is not None and len(rejected) < 40 and _group_rank(group, sources, route)[0] <= 1:
+        elif rejected is not None and len(rejected) < 40 and (
+            _group_rank(group, sources, route)[0] <= 1
+            or entity_coverage(frame, lead(group).text)[0] >= frame.required_entities
+        ):
+            # Every lexically close or entity-naming candidate is recorded with why it does not answer.
             rejected.append({
                 "text": lead(group).text[:200], "reason": "not_a_core_answer",
-                "issues": core_issues(frame, lead(group).text), "evidence_ids": [unit.id for unit in group.units][:4],
+                "issues": core_issues(frame, lead(group).text, _antecedent(lead(group), sources)),
+                "evidence_ids": [unit.id for unit in group.units][:4],
             })
-    answering.sort(key=lambda item: _authority_rank(item[0], sources, route))
+    answering.sort(key=lambda item: _authority_rank(item[0], sources, route, relation_hits(frame, item[1].text)))
     if answering:
         group, unit = answering[0]
         claim = _claim_from_group(group, "core_answer", sources, route)
-        claim.text, claim.kinds = unit.text, list(unit.kinds)
+        claim.text, claim.kinds = _answer_text(unit, frame), list(unit.kinds)
         used.add(group.key)
         chosen.append(claim)
     if explanatory:
@@ -513,3 +535,17 @@ def research_brief(facts: list[dict[str, Any]]) -> dict[str, Any] | None:
             index for index, fact in enumerate(facts, 1) if int(fact.get("independent_sources") or 0) >= 2
         ],
     }
+
+
+def weak_core(package: dict[str, Any] | None) -> bool:
+    """A valid core answer that rests only on a search snippet from an unknown/low-authority source."""
+    core = (package or {}).get("core_answer") if isinstance(package, dict) else None
+    return bool(core) and core.get("basis") == "snippet" and int(core.get("authority_tier", 3)) >= TIER_RANK["unknown"]
+
+
+def core_strength(package: dict[str, Any] | None) -> tuple[int, int, int]:
+    """Comparable strength of a package's core answer: present, full text, authority (higher is stronger)."""
+    core = (package or {}).get("core_answer") if isinstance(package, dict) else None
+    if not core:
+        return (0, 0, 0)
+    return (1, int(core.get("basis") == "full_text"), -int(core.get("authority_tier", 3)))

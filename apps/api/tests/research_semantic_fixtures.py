@@ -83,12 +83,24 @@ BERLIN = Case(
             {},
         ),
         (
-            "https://www.zeitgeschichte-online.de/mauerbau",
-            "Mauerbau 1961",
+            "https://www.zeitgeschichte-online.de/berliner-mauer",
+            "Die Berliner Mauer",
             [
-                "Bis 1961 flohen Millionen Menschen aus der DDR über die offene Grenze nach West-Berlin. Am 13. August 1961 begann der Bau der Mauer. "
-                "Damit wollte die SED-Führung die Massenflucht ihrer Bürger in den Westen stoppen.",
+                # Real Mac shape: the direct answer refers to the wall only by pronoun.
+                "Die Berliner Mauer trennte fast drei Jahrzehnte lang Ost- und West-Berlin. "
+                "Gebaut wurde sie 1961, um den Flüchtlingsstrom vom Osten in den Westen zu stoppen.",
+                # A consequence of the wall, with the wall inside the cause clause.
+                "Im Gegenteil: Weil der Mauerbau Freunde und Verwandte trennte, versuchten in den folgenden Jahren viele Menschen, "
+                "unter Lebensgefahr über die Sperranlagen zu fliehen.",
+                # Two different metrics of the same history - not a contradiction.
+                "Über die Berliner Mauer und die innerdeutsche Grenze flohen bis 1961 rund 3,5 Millionen Menschen aus der DDR.",
             ],
+            {},
+        ),
+        (
+            "https://www.mauer-gedenkstaette-beispiel.de/todesopfer",
+            "Todesopfer an der Berliner Mauer",
+            ["An der Berliner Mauer und der innerdeutschen Grenze wurden mindestens 140 Menschen aus der DDR getötet."],
             {},
         ),
     ],
@@ -103,6 +115,9 @@ ARGUMENT = Case(
         [
             "Damit uns im nächsten Streit gute Antworten einfallen, hilft schon ein kurzer Gedanke, um einen Streit gar nicht erst entstehen zu lassen.",
             "Streiten ist wichtig, weil Paare dadurch Konflikte offen ansprechen und klären können.",
+            # Real Mac shape: the article's own purpose, phrased with "Grund", "warum" and "damit".
+            "Ein weiterer Grund, warum es mir so wichtig ist, dir mit diesem Artikel einen Schritt zur Lösung deiner Konflikte "
+            "und damit Antworten zu liefern. Damit du und dein Partner nicht mehr im Streitkreislauf gefangen bleibt.",
         ],
         {},
     )],

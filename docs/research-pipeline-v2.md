@@ -456,3 +456,35 @@ Validation (`07d197c`): semantic + V2 + integration tests 59 passed; existing re
 answer-gate, spine, retry, question-intent, writer/review, story, hook and islands suites
 483 passed (incl. the new ones); full backend **2073 passed**; ruff clean on changed files;
 `git diff --check` clean.
+
+---
+
+## Part 5 — Real-Mac grounding follow-up
+
+Real Mac after `fb28000`: Mars, AI pain, AI image and Kaugummi correct; three blockers left.
+All three are reproduced in `tests/research_semantic_fixtures.py` (Berlin, Argument) and fixed
+generically.
+
+| Blocker | Root cause (traced) | Fix |
+|---|---|---|
+| Berlin: "Gebaut wurde sie 1961, um den Flüchtlingsstrom … zu stoppen" rejected (`entity_mismatch`); "Im Gegenteil: Weil der Mauerbau … trennte, versuchten … zu fliehen" won | entity coverage was sentence-only, so a pronoun never resolved; any "weil" counted as a cause even when the asked thing sat *inside* the reason clause (a consequence of the wall) | **Safe antecedent**: a sentence with a pronoun may inherit an entity only from the immediately preceding sentence, or — when it opens a paragraph — the page title, and only if that antecedent's first noun *is* the missing entity ("Die Berliner Mauer trennte …" yes, "Die Sowjetunion beobachtete die Mauer …" no; no pronoun → no inheritance). The answer handed downstream keeps the antecedent sentence. **Cause direction**: for why/how, if the asked entities appear only inside a weil/because/denn clause, the sentence explains a consequence (`asked_thing_is_the_cause_not_the_effect`). Among eligible answers, a sentence stating the asked predicate ("gebaut") ranks above one that does not (after full text and authority). |
+| Post-argument: article-purpose text ("warum es mir so wichtig ist, dir mit diesem Artikel … Antworten zu liefern. Damit du …") accepted | "Grund", "warum", "damit" counted as cause; "Antworten" + "Streit…" covered the entities; the advice guard only knew "hilft/sollte/Tipps" | **Author/article purpose guard** (`author_or_article_purpose`): the page talking about itself or its reader — "mit/in diesem Artikel/Beitrag …", "ist mir wichtig", "damit du/ihr …", "wir zeigen dir", "hier erfährst du", English equivalents — is never a core answer, mechanism or supporting claim. Second-person explanations ("dein Gehirn …") stay allowed. |
+| Berlin: "≈ 3,5 Mio. flohen" vs "≥ 140 getötet" recorded as numeric contradiction | comparability = word overlap *including* topic words; values compared regardless of what they count. Also: grouping treated two different figures as one claim when both mentioned the same year | **Metric signature**: numbers are parsed with scale words ("3,5 Millionen" = 3.5e6; years excluded) and the counted thing ("Menschen", "Zentimeter", "%"). Values are comparable only if they count the same thing *and* the sentences say the same thing besides the number (≥ 70 % of the remaining, topic-excluded words). Grouping compares quantities, not raw numbers incl. years. |
+| Microwave: valid core answer from a snippet of an unknown source (partial, low) | the single retry only fires when readiness fails; a partial package is ready | **Weak-core retry**: if the first research pass's core answer is snippet-only *and* unknown/low authority, the run spends its **one** research retry immediately (before planner/writer cost) with focus `strengthen` ("wissenschaftliche Erklärung"); the retry replaces the package only if its core answer is stronger (present → full text → authority), else the partial package is kept truthfully. The later readiness retry is then marked spent — still exactly one retry per generation (`state.research.retry`, `research.attempts`). |
+
+Regression results (fixtures, deterministic, 0 LLM calls):
+
+| Case | Core answer | Status |
+|---|---|---|
+| Microwave | university penetration-depth mechanism | sufficient |
+| Mars | dust in the thin atmosphere scatters sunlight → sky orange-brown | partial (single secondary source) |
+| Berlin | "Die Berliner Mauer trennte … Gebaut wurde sie 1961, um den Flüchtlingsstrom … zu stoppen." | sufficient, no contradiction |
+| Post-argument | none (purpose and advice rejected) | insufficient |
+| AI pain / AI image | none | insufficient |
+| Kaugummi | none, observation kept | missing_mechanism |
+
+Tests: `tests/test_research_grounding_followup.py` (1–13).
+
+Validation: focused + Research V2 + integration 71 passed; research / answer-gate / spine /
+retry / question-intent / writer / review / story / hook suites 495 passed; full backend
+**2085 passed**; ruff clean on changed files; `git diff --check` clean.

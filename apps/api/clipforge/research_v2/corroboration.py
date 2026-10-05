@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from typing import Any
 
-from .evidence import EvidenceUnit, numbers_in, related, words
+from .evidence import EvidenceUnit, related, words
 from .quality import TIER_RANK
 
 _WIRE = re.compile(
@@ -133,9 +133,12 @@ def _same_claim(first: EvidenceUnit, second: EvidenceUnit, topic: frozenset[str]
     overlap = len(shared) / min(len(a), len(b))
     if overlap < 0.4 or len(shared) < 3:
         return False
-    numbers_a, numbers_b = set(first.numbers), set(second.numbers)
-    if numbers_a and numbers_b and not numbers_a & numbers_b:
-        return False  # same topic, different figures: a possible contradiction, not agreement
+    # Different figures (years aside - a shared date is no shared figure) are a
+    # possible contradiction, never agreement.
+    values_a = {value for value, _counted in quantities(first.text)}
+    values_b = {value for value, _counted in quantities(second.text)}
+    if values_a and values_b and not values_a & values_b:
+        return False
     return bool(_NEGATION.search(first.text)) == bool(_NEGATION.search(second.text))
 
 
@@ -154,23 +157,70 @@ def group_claims(
     return groups
 
 
-def _values(unit: EvidenceUnit) -> list[float]:
-    values: list[float] = []
-    for raw in numbers_in(unit.text):
+_SCALE = {
+    "tausend": 1e3, "thousand": 1e3, "million": 1e6, "millionen": 1e6, "mio": 1e6, "milliarde": 1e9, "milliarden": 1e9,
+    "mrd": 1e9, "billion": 1e9,
+}
+_QUANTITY = re.compile(
+    r"(?i)(\d+(?:[.,]\d{3})*(?:[.,]\d+)?)\s*(tausend|thousand|millionen|million|mio\.?|milliarden|milliarde|mrd\.?|billion)?"
+    r"\s*(%|°c|[A-Za-zÄÖÜäöüß]{2,})?"
+)
+
+
+def quantities(text: str) -> list[tuple[float, str]]:
+    """(value, what is counted) per number: "rund 3,5 Millionen Menschen" -> (3500000.0, "menschen")."""
+    found: list[tuple[float, str]] = []
+    for raw, scale, counted in _QUANTITY.findall(str(text or "")):
+        if re.fullmatch(r"\d{1,3}(?:[.,]\d{3})+", raw):
+            number = re.sub(r"[.,]", "", raw)  # 1.000 / 1,000
+        elif "," in raw:
+            number = raw.replace(".", "").replace(",", ".")  # German decimal comma
+        else:
+            number = raw
         try:
-            value = float(raw)
+            value = float(number)
         except ValueError:
             continue
-        if not (1000 <= value <= 2100 and float(value).is_integer()):  # years are dates, not quantities
-            values.append(value)
-    return values
+        if not scale and re.fullmatch(r"1\d{3}|20\d{2}", raw):
+            continue  # a year is a date, not a quantity
+        value *= _SCALE.get(scale.casefold().rstrip("."), 1.0) if scale else 1.0
+        found.append((value, (counted or "").casefold()))
+    return found
+
+
+def _statement(unit: EvidenceUnit, topic: frozenset[str]) -> set[str]:
+    """What a numeric sentence says besides its numbers, scales and the question's topic words."""
+    return {word for word in _proposition(unit, topic) if not any(char.isdigit() for char in word) and word not in _SCALE}
+
+
+def comparable_quantities(first: EvidenceUnit, second: EvidenceUnit, topic: frozenset[str]) -> tuple[float, float] | None:
+    """Two values that measure the same thing, or None.
+
+    Values are comparable only when they count the same thing ("Menschen",
+    "Zentimeter") *and* the sentences say the same thing about it besides the
+    number ("flohen" vs "getötet" are different metrics of the same history).
+    """
+    a_statement, b_statement = _statement(first, topic), _statement(second, topic)
+    for value_a, counted_a in quantities(first.text):
+        for value_b, counted_b in quantities(second.text):
+            if not counted_a or not counted_b or not related(counted_a, counted_b):
+                continue
+            a_rest = {word for word in a_statement if not related(word, counted_a)}
+            b_rest = {word for word in b_statement if not related(word, counted_b)}
+            if not a_rest or not b_rest:
+                return value_a, value_b
+            shared = {word for word in a_rest if any(related(word, other) for other in b_rest)}
+            if len(shared) / min(len(a_rest), len(b_rest)) >= 0.7:
+                return value_a, value_b
+    return None
 
 
 def find_contradictions(
-    groups: list[ClaimGroup], sources: dict[str, dict[str, Any]]
+    groups: list[ClaimGroup], sources: dict[str, dict[str, Any]], topic: frozenset[str] | set[str] = frozenset()
 ) -> list[dict[str, Any]]:
     """Mark disagreeing claim groups; return compact contradiction records."""
     records: list[dict[str, Any]] = []
+    topic = frozenset(topic)
 
     def tier(group: ClaimGroup) -> int:
         return min(TIER_RANK.get(str(sources.get(unit.source_id, {}).get("authority")), 3) for unit in group.units)
@@ -179,19 +229,21 @@ def find_contradictions(
         for second in groups[index + 1:]:
             if first.clusters & second.clusters:
                 continue
-            a, b = words(first.lead.text), words(second.lead.text)
-            shared = {word for word in a if any(related(word, other) for other in b)}
-            if not a or not b or len(shared) < 3:
-                continue
-            overlap = len(shared) / min(len(a), len(b))
             kind = None
-            values_a, values_b = _values(first.lead), _values(second.lead)
-            if overlap >= 0.5 and values_a and values_b:
-                low, high = min(values_a[0], values_b[0]), max(values_a[0], values_b[0])
+            pair = comparable_quantities(first.lead, second.lead, topic)
+            if pair is not None:
+                low, high = sorted(pair)
                 if high > 0 and (high - low) / high > 0.2:
                     kind = "numeric"
-            elif overlap >= 0.7 and bool(_NEGATION.search(first.lead.text)) != bool(_NEGATION.search(second.lead.text)):
-                kind = "polarity"
+            else:
+                # The same statement affirmed by one source and negated by another
+                # (measured beyond the topic words every sentence shares).
+                a, b = _proposition(first.lead, topic), _proposition(second.lead, topic)
+                shared = {word for word in a if any(related(word, other) for other in b)}
+                if a and b and len(shared) >= 3 and len(shared) / min(len(a), len(b)) >= 0.7 and (
+                    bool(_NEGATION.search(first.lead.text)) != bool(_NEGATION.search(second.lead.text))
+                ):
+                    kind = "polarity"
             if kind is None:
                 continue
             score_a, score_b = (first.support, -tier(first)), (second.support, -tier(second))

@@ -41,7 +41,7 @@ from .question_intent import research_query as intent_research_query
 from .reactions import plan_viewer_reactions, reaction_arc
 from .readiness import content_readiness, not_ready_message
 from .research import research_topic
-from .research_v2.package import link_package_facts, research_brief
+from .research_v2.package import core_strength, link_package_facts, research_brief, weak_core
 from .schemas import AdvancedOptions
 from .script_review import (
     OpenAIScriptReviewProvider,
@@ -1220,7 +1220,12 @@ def build_initial_state(
     kwargs = {"progress": progress, "script_writer_provider": script_writer_provider, "script_review_provider": script_review_provider}
     state = _build_initial_state(prompt, options, settings, **kwargs)
     attempts = [{"query": prompt, "readiness": state["script"]["readiness"]["status"], "facts": len(state.get("facts") or [])}]
-    for _retry in range(MAX_RESEARCH_RETRIES):
+    if state["research"].get("retry"):
+        # The one retry was already spent strengthening a weak core source.
+        attempts.append({"query": prompt, "focus": "strengthen", "replaced": state["research"]["retry"]["replaced"]})
+        if not state["script"]["readiness"]["ready"]:
+            state["script"]["readiness"]["retry_exhausted"] = True
+    for _retry in range(MAX_RESEARCH_RETRIES - (1 if state["research"].get("retry") else 0)):
         readiness = state["script"]["readiness"]
         if readiness["ready"] or not readiness["research_required"] or not state["intent"].get("research_required"):
             break
@@ -1260,6 +1265,7 @@ def _build_initial_state(
     research_error = None
     research_package: dict[str, Any] | None = None
     research_diagnostics: dict[str, Any] | None = None
+    research_retry: dict[str, Any] | None = None
     if intent["research_required"]:
         report_progress(progress, "research", "Researching the topic", phase="start")
         result = research_topic(
@@ -1278,6 +1284,21 @@ def _build_initial_state(
         facts = result.facts
         research_package = getattr(result, "package", None)
         research_diagnostics = getattr(result, "diagnostics", None)
+        if research_query is None and weak_core(research_package):
+            # The answer is valid but rests on a weak snippet only: spend the
+            # run's one research retry now (before any script cost) on a
+            # stronger source; keep the original when nothing better is found.
+            stronger = research_topic(
+                prompt, intent["language"], settings,
+                context={"question": prompt, "content_type": intent["content_type"], "focus": "strengthen"},
+            )
+            replaced = core_strength(getattr(stronger, "package", None)) > core_strength(research_package)
+            if replaced:
+                result = stronger
+                research_status, research_provider, research_error = result.status, result.provider, result.error
+                sources, facts = result.sources, result.facts
+                research_package, research_diagnostics = result.package, result.diagnostics
+            research_retry = {"reason": "weak_core_source", "focus": "strengthen", "replaced": replaced}
         report_progress(progress, "research", "Researching the topic", phase="complete")
     else:
         report_progress(progress, "research", "Researching the topic", phase="skipped")
@@ -1557,6 +1578,7 @@ def _build_initial_state(
             "sources": sources,
             **({"package": research_package} if research_package else {}),
             **({"diagnostics": research_diagnostics} if research_diagnostics else {}),
+            **({"retry": research_retry} if research_retry else {}),
         },
         "facts": facts,
         "information_plan": {

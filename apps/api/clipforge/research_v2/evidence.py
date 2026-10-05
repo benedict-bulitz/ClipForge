@@ -164,6 +164,11 @@ class EvidenceUnit:
     basis: str = "full_text"  # full_text | snippet
     numbers: list[str] = field(default_factory=list)
     time_sensitive: bool = False
+    # The sentence just before this one in its paragraph (empty when the unit
+    # already includes it, or opens the paragraph): the only antecedent a
+    # pronoun in this sentence may refer to.
+    antecedent: str = ""
+    paragraph_initial: bool = False
 
     @property
     def kind(self) -> str:
@@ -225,9 +230,11 @@ def units_from_paragraphs(
         paragraph_words = words(paragraph)
         for index, sentence in enumerate(parts):
             text = sentence
+            antecedent = parts[index - 1] if index > 0 else ""
             refers_back = _ANAPHOR.match(sentence) or _BACK_REFERENCE.search(sentence)
             if refers_back and index > 0 and len((parts[index - 1] + " " + sentence).split()) <= MAX_WORDS:
                 text = f"{parts[index - 1]} {sentence}"  # the claim keeps the context it refers to
+                antecedent = ""
             count = len(text.split())
             if count < MIN_WORDS or count > MAX_WORDS or "?" in text[-2:] or _CHROME.search(text):
                 continue
@@ -265,6 +272,8 @@ def units_from_paragraphs(
                 basis=basis,
                 numbers=sorted(numbers_in(text)),
                 time_sensitive=is_time_sensitive(text),
+                antecedent=antecedent,
+                paragraph_initial=index == 0,
             )
             # Prefer explanatory and specific sentences within a source.
             weight = score + (0.2 if "mechanism" in kinds else 0) + (0.1 if {"number", "misconception"} & set(kinds) else 0)

@@ -53,6 +53,16 @@ _ADVICE = re.compile(
     r"(?i)\b(?:hilft|helfen|hilfreich|tipps?|solltest|sollten sie|sollte man|vermeide\w*|versuch(?:e|t)? |"
     r"helps?|helpful|tips?|you should|try to|avoid\w*)\b"
 )
+# The page talking about itself or its reader: its purpose is not the phenomenon's cause.
+_AUTHOR_PURPOSE = re.compile(
+    r"(?i)\b(?:(?:in|mit|mithilfe|nach) (?:diese[mnrs]?|unsere[mnrs]?|meine[mnrs]?) (?:artikel|beitrag|ratgeber|blog\w*|post|video|"
+    r"guide|text|kurs|buch|podcast)|(?:in|with|through) (?:this|our|my) (?:article|post|guide|video|blog|course|book)|"
+    r"(?:ist|war) (?:es )?(?:mir|uns) (?:so |besonders |sehr |ganz )?wichtig|it(?:'s| is) (?:so )?important to (?:me|us)|"
+    r"damit (?:du|ihr|dein\w*|euer\w*)\b|so (?:that )?you (?:can|will|don't)|"
+    r"(?:ich|wir) (?:zeige|zeigen|erkläre|erklären|verrate|verraten|möchte|möchten) (?:dir|euch|ihnen)|"
+    r"(?:i|we)(?:'ll| will)? (?:show|tell|explain to) you|(?:hier|unten|im folgenden|jetzt) erfährst du|"
+    r"here you(?:'ll| will) (?:learn|find)|dir (?:\w+ ){0,6}zu liefern|für dich (?:zusammengefasst|erklärt))"
+)
 _NAMING = re.compile(
     r"(?i)\b(?:(?:wird|werden|wurde|wurden)\b[^.]{0,60}\b(?:bezeichnet|genannt)|nennt man|bezeichnet man|heißt|"
     r"spitzname|beiname|is (?:often |also )?(?:called|known as|nicknamed)|are (?:often |also )?(?:called|known as)|nickname)\b"
@@ -237,15 +247,64 @@ def _shared_shape_issues(frame: QuestionFrame, text: str) -> list[str]:
     issues: list[str] = []
     if frame.explanation_asked and _ADVICE.search(text):
         issues.append("advice_not_explanation")
+    if _AUTHOR_PURPOSE.search(text):
+        issues.append("author_or_article_purpose")  # why the page was written, not why the phenomenon happens
     if _OBSERVER.search(text) and not frame.asks_observation:
         issues.append("observer_relation")  # X detects / analyses Y - not X doing Y
     return issues
 
 
-def core_issues(frame: QuestionFrame, text: str) -> list[str]:
-    """Why ``text`` cannot be the core answer to ``frame`` (empty: it can)."""
+# A pronoun that can stand for an earlier-named thing ("Gebaut wurde sie 1961, ...").
+_PRONOUN = re.compile(r"(?i)\b(?:sie|er|es|ihn|ihm|ihre[nmrs]?|seine[nmrs]?|diese[rsmn]?|it|its|they|them|their)\b")
+_DETERMINER = {
+    "der", "die", "das", "den", "dem", "des", "ein", "eine", "einen", "einem", "einer", "im", "am", "beim", "zum", "zur", "the",
+    "a", "an", "this", "these", "diese", "dieser", "dieses",
+}
+# The asked thing appearing only inside a reason clause: the sentence explains a consequence of it.
+_CAUSE_CLAUSE = re.compile(r"(?i)\b(?:weil|because|denn)\b[^,.;:]*")
+
+
+def _subject_token(sentence: str) -> str:
+    """The first noun of a sentence or title - the thing it is about (German subject-first word order)."""
+    for token in _TOKEN.findall(str(sentence or "")):
+        if token.casefold() in _DETERMINER:
+            continue
+        if token[:1].isupper() or not re.search(r"[A-Za-zÄÖÜäöüß]", token[:1]):
+            return token
+        return ""
+    return ""
+
+
+def resolves_pronoun(frame: QuestionFrame, text: str, antecedent: str) -> bool:
+    """May a pronoun in ``text`` stand for the asked entity named in ``antecedent``?
+
+    Only when ``text`` actually contains a pronoun and the antecedent (the
+    immediately preceding sentence, or the page title for a paragraph-initial
+    sentence) is *about* a missing entity: its first noun is that entity.
+    "Die Berliner Mauer trennte ... Gebaut wurde sie 1961, ..." resolves;
+    "Die Sowjetunion beobachtete die Mauer genau. Sie wollte ..." does not.
+    """
+    if not antecedent or not _PRONOUN.search(text):
+        return False
+    subject = _subject_token(antecedent)
+    if not subject:
+        return False
+    _count, covered = entity_coverage(frame, text)
+    others = {entity.head for entity in frame.entities} | set(frame.predicate)
+    return any(
+        entity.name not in covered and entity.matched([subject], others, _acronyms([subject]))
+        for entity in frame.entities
+    )
+
+
+def core_issues(frame: QuestionFrame, text: str, antecedent: str = "") -> list[str]:
+    """Why ``text`` cannot be the core answer to ``frame`` (empty: it can).
+
+    ``antecedent`` is what a pronoun in ``text`` may refer to (see ``resolves_pronoun``).
+    """
     issues = _shared_shape_issues(frame, text)
-    covered, _names = entity_coverage(frame, text)
+    resolved = antecedent if resolves_pronoun(frame, text, antecedent) else ""
+    covered, _names = entity_coverage(frame, f"{text} {resolved}")
     if frame.entities and covered < frame.required_entities:
         issues.append("entity_mismatch")
     if frame.qtype in {"why", "how"}:
@@ -255,6 +314,11 @@ def core_issues(frame: QuestionFrame, text: str) -> list[str]:
             issues.append("naming_not_cause")
         if _new_content(frame, text) < 3:
             issues.append("restates_phenomenon")
+        effect = _CAUSE_CLAUSE.sub(" ", text)
+        if effect != text and "entity_mismatch" not in issues and frame.entities:
+            effect_covered, _ = entity_coverage(frame, f"{effect} {resolved if _PRONOUN.search(effect) else ''}")
+            if effect_covered < frame.required_entities:
+                issues.append("asked_thing_is_the_cause_not_the_effect")
     elif frame.qtype == "can" or (frame.qtype == "other" and frame.predicate):
         if frame.predicate and not any(
             inflects(term, token) or inflects(token, term) for term in frame.predicate for token in _TOKEN.findall(text)
@@ -263,6 +327,12 @@ def core_issues(frame: QuestionFrame, text: str) -> list[str]:
     elif frame.qtype == "when" and not _DATE.search(text):
         issues.append("no_time")
     return issues
+
+
+def relation_hits(frame: QuestionFrame, text: str) -> int:
+    """How many of the asked predicate words the sentence states (a tie-breaker among answers)."""
+    tokens = _TOKEN.findall(text)
+    return sum(1 for term in frame.predicate if any(inflects(term, token) or inflects(token, term) for token in tokens))
 
 
 def topical_issues(frame: QuestionFrame, text: str, context: str = "") -> list[str]:

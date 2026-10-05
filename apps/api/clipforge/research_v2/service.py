@@ -261,7 +261,7 @@ def run_research(
         sources[source_id]["cluster"] = cluster["cluster"]
         sources[source_id]["independence_note"] = cluster["reason"]
     groups = group_claims(fresh_units, clusters, frame.terms)
-    contradictions = find_contradictions(groups, sources)
+    contradictions = find_contradictions(groups, sources, frame.terms)
 
     # 6. Claim selection: validated synthesis when available, verbatim evidence otherwise.
     evidence_by_id = {unit.id: unit for unit in fresh_units}
