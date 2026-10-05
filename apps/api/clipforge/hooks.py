@@ -197,12 +197,70 @@ def standalone_issue(text: str) -> str | None:
     return None
 
 
+# Epistemic hedges (grammar only, German and English): what follows is a
+# hypothesis, a suspicion or an open question, not an established fact.
+# Modal hedges qualify the predicate after them ("X may cause Y": the cause
+# is uncertain, X is not); frame hedges qualify their whole clause
+# ("One hypothesis is that ...", "Vermutlich ...", "Researchers are unsure ...").
+_MODAL_HEDGE = re.compile(
+    r"(?<![Ii]n )\bmay\b(?!\s+\d)|(?i:\b(?:might|could(?!\s+not\b)|könnte\w*|dürfte\w*)\b)"
+)
+_FRAME_HEDGE = re.compile(
+    r"(?i)\b(?:possibl[ey]|perhaps|maybe|probabl[ey]|(?:un)?likely|hypothes\w*|theor(?:y|ies)\s+(?:is|are|says?|holds?|that)|"
+    r"theori[sz]\w*|suspect\w*|speculat\w*|presumabl[ey]|suggest(?:s|ed|ing)?|believed?|believes|thought\s+to|"
+    r"assumed?|unclear|unknown|unsure|uncertain\w*|not\s+(?:yet\s+)?(?:known|clear|proven|understood)|debated|"
+    r"disputed|contested|appears?\s+to|seems?\s+to|reportedly|allegedly|apparently|"
+    r"vermut\w*|möglich(?!st)\w*|wahrscheinlich\w*|vielleicht|hypothese\w*|theorie,?\s+(?:dass|besagt|lautet|ist)|"
+    r"annahme\w*|angenommen|nehmen\s+an|glaub(?:t|en|te|ten)|unklar\w*|unbekannt\w*|umstritten\w*|ungewiss\w*|"
+    r"ungeklärt\w*|nicht\s+(?:sicher|geklärt|bewiesen|belegt)|scheint|scheinen|angeblich|mutmaßlich\w*|"
+    r"offenbar|deute[nt]\s+darauf)\b"
+)
+# A hedge's scope ends at a sentence or an adversative turn
+# ("Researchers are unsure why X happens, but X was first seen in 1950").
+_SCOPE_BREAK = re.compile(
+    r"(?<=[.!?;])\s+|\s+(?=(?:but|however|although|though|whereas|aber|jedoch|sondern|obwohl|allerdings)\b)",
+    re.IGNORECASE,
+)
+
+
+def hedged(text: object) -> bool:
+    """The text marks something as uncertain (a hypothesis, suspicion, possibility)."""
+    value = str(text or "")
+    return bool(_MODAL_HEDGE.search(value) or _FRAME_HEDGE.search(value))
+
+
+def uncertainty_scopes(text: object) -> list[tuple[str, str]]:
+    """Each clause of a claim with the part of it that is only uncertain ("" = certain).
+
+    Claim-relative: a clause's hedge never spreads past an adversative turn
+    or a sentence end, and a modal qualifies only what follows it.
+    """
+    scopes: list[tuple[str, str]] = []
+    for segment in _SCOPE_BREAK.split(clean_narration_text(str(text or ""))):
+        segment = segment.strip()
+        if not segment:
+            continue
+        if _FRAME_HEDGE.search(segment):
+            scopes.append((segment, segment))
+            continue
+        modal = _MODAL_HEDGE.search(segment)
+        # A verb-final modal ("..., weil X Y verursachen könnte") qualifies its clause.
+        after = segment[modal.end():] if modal else ""
+        scopes.append((segment, (after if re.search(r"\w{3,}", after) else segment) if modal else ""))
+    return scopes
+
+
 def _grounded_insight(claim: str, intent: dict[str, Any]) -> str:
     value = clean_narration_text(claim).strip()
     if len(value.split()) <= 24:
         return value.rstrip(".!?") + "."
+    # A part cut out of a hedged clause would state as fact what the research
+    # only suspects: such a part keeps its hedge or is not used.
+    uncertain = [segment for segment, scope in uncertainty_scopes(value) if scope]
     parts = [part.strip() for part in re.split(r"(?<=[,;—])\s+|\s+(?=(?:but|because|although|while|sondern|weil|obwohl|während)\s)", value, flags=re.IGNORECASE)]
     for part in parts:
+        if not hedged(part) and any(part.rstrip(",;—.") in segment for segment in uncertain):
+            continue
         if standalone_issue(part.rstrip(",;—") + ".") is None and 5 <= len(part.split()) <= 18 and re.search(r"\b(?:is|are|was|were|scatters|causes|can|does|wird|werden|ist|sind|kann|führt|verursacht|gestreut)\b", part, re.IGNORECASE) and not re.search(r"(?:\b(?:is|are|was|were|will|wird|werden|can|kann|and|but|because|although|sondern|weil|obwohl|dass|und|in|als|than)\s*)$", part, re.IGNORECASE):
             return part.rstrip(".!?,;:") + "."
     return value.rstrip(".!?") + "."
