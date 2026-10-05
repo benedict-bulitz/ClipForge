@@ -1,4 +1,5 @@
 import re
+import sys
 from contextlib import asynccontextmanager
 from typing import Annotated
 
@@ -46,6 +47,8 @@ from .models import GenerationJob, Project, YouTubeUpload
 from .music import available_music_tracks, resolve_track_path
 from .pipeline import UnsupportedEdit
 from .renderer import RenderUnavailable, VoiceGenerationError, readiness
+from .runtime_identity import label as runtime_label
+from .runtime_identity import runtime_identity
 from .schemas import (
     AudioSettingsUpdate,
     ChatCreate,
@@ -112,6 +115,16 @@ from .youtube.uploads import mark_interrupted_uploads
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    # Detected once per process; the launcher's backend.log keeps this line.
+    identity = runtime_identity()
+    print(
+        f"ClipForge runtime: {runtime_label(identity)} source={identity['source']} "
+        f"repo={identity['repo_path']} commit={identity['commit']} dirty={identity['dirty']} "
+        f"worktree={identity['is_worktree']} package={identity['package_path']}"
+        + (f" error={identity['error']}" if identity.get("error") else ""),
+        file=sys.stderr,
+        flush=True,
+    )
     prepare_schema()
     with SessionLocal() as db:
         mark_interrupted_generation_jobs(db)
@@ -151,7 +164,12 @@ app.include_router(topic_intelligence_router)
 
 @app.get("/api/health", response_model=HealthRead)
 def health(config: SettingsDep) -> HealthRead:
-    return HealthRead(status="ok", service="clipforge-api", ai_mode=config.clipforge_ai_mode)
+    return HealthRead(
+        status="ok",
+        service="clipforge-api",
+        ai_mode=config.clipforge_ai_mode,
+        runtime=runtime_identity(),
+    )
 
 
 @app.get("/api/readiness")

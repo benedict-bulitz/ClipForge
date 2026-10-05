@@ -120,6 +120,8 @@ class GenerationJob(Base):
     )
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    # Audit only: the backend code identity that ran this job (None for older jobs).
+    runtime_identity: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
 
 
 class GenerationTimingStat(Base):

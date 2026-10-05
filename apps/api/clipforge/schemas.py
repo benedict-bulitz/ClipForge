@@ -126,6 +126,7 @@ class GenerationJobRead(BaseModel):
     failure_category: str | None
     failure_message: str | None
     queue_position: int | None = None
+    runtime_identity: dict[str, Any] | None = None
 
 class EditCreate(BaseModel):
     instruction: str = Field(min_length=2, max_length=2_000)
@@ -347,6 +348,8 @@ class HealthRead(BaseModel):
     status: str
     service: str
     ai_mode: str
+    # Which checkout/commit this backend process runs (detected once at startup).
+    runtime: dict[str, Any] | None = None
 
 
 IntegrationProvider = Literal["openai", "brave", "pexels", "europeana"]

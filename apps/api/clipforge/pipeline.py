@@ -1811,6 +1811,8 @@ def apply_edit(
         translated["version"] = state["version"]
         translated["created_at"] = state["created_at"]
         translated["edit_history"] = copy.deepcopy(state.get("edit_history", []))
+        if "runtime_provenance" in state:  # audit history survives the rebuild
+            translated["runtime_provenance"] = copy.deepcopy(state["runtime_provenance"])
         state = translated
         applied.append("language")
 

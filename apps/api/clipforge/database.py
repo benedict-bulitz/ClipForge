@@ -91,6 +91,8 @@ def ensure_runtime_schema(bind: Engine | None = None) -> None:
             connection.exec_driver_sql(
                 "ALTER TABLE generation_jobs ADD COLUMN request_payload JSON NOT NULL DEFAULT '{}'"
             )
+        if generation_job_columns and "runtime_identity" not in generation_job_columns:
+            connection.exec_driver_sql("ALTER TABLE generation_jobs ADD COLUMN runtime_identity JSON")
         if inspector.has_table("youtube_uploads"):
             # YouTube publishing V2 columns for databases created by V1.
             upload_columns = {column["name"] for column in inspector.get_columns("youtube_uploads")}

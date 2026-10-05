@@ -42,6 +42,7 @@ from .reactions import plan_viewer_reactions
 from .readiness import ScriptNotReady, content_readiness, not_ready_message
 from .renderer import RenderResult, RenderUnavailable, VoiceGenerationError, render_video
 from .review import pre_render_quality_gate, run_ai_review
+from .runtime_identity import stamp_generation, stamp_render
 from .schemas import (
     AudioSettingsUpdate,
     MusicSelectionUpdate,
@@ -438,6 +439,8 @@ def create_project(
     state = build_initial_state(
         payload.prompt, payload.options, settings, progress=progress
     )
+    # Audit metadata (not a hashed content component): which code generated it.
+    stamp_generation(state)
     # Manual and Topic Intelligence questions share this one pipeline; only the
     # provenance differs (persisted for later analytics learning).
     state["topic_provenance"] = payload.topic_provenance or {"topic_source": payload.topic_source}
@@ -705,6 +708,9 @@ def render_project(
             "selected_variant_id": None,
             "variants": [],
         }
+    # Which code rendered it; appended beside the generation identity, never
+    # replacing it (audit metadata outside every content hash).
+    stamp_render(state, next_number)
     # A cancelled run never saves its render as a finished revision.
     cancellation.checkpoint()
     return _append_revision(

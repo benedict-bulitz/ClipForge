@@ -9,6 +9,25 @@ The app bundles intentionally reference this checkout at
 Runtime logs and PID records are stored in `.clipforge-runtime/`, which is
 ignored by Git.
 
+The launcher runs whatever is checked out in that directory, including
+uncommitted changes. Every start writes the checkout's path, branch, commit and
+dirty state to `.clipforge-runtime/backend.log` (`Launcher checkout: ...`),
+followed by what the backend itself reports from `/api/health`
+(`Backend started|already running: ...`). If an already-running backend
+reports a different checkout or commit, a `WARNING` line and a notification
+appear. `scripts/mac/clipforge-local.sh --status` prints both.
+
+To make the launcher refuse to start any other checkout, write the expected
+branch and/or commit (prefix allowed) into the runtime directory, or set
+`CLIPFORGE_EXPECTED_BRANCH` / `CLIPFORGE_EXPECTED_COMMIT`:
+
+```zsh
+echo test > .clipforge-runtime/expected-branch
+echo 200e3f2 > .clipforge-runtime/expected-commit
+```
+
+Remove those files to go back to starting whatever is checked out.
+
 The bundles use tiny native arm64 launch stubs; all startup/stop behavior remains
 in `scripts/mac/clipforge-local.sh`. `ClipForge.app` is an `LSUIElement` agent
 because its visible UI is the browser; this lets the transient launcher finish

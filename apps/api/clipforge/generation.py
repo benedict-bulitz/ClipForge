@@ -21,6 +21,7 @@ from .database import SessionLocal
 from .models import GenerationJob, GenerationTimingStat, ProjectRevision
 from .progress import ProgressEvent
 from .renderer import RenderUnavailable, VoiceGenerationError
+from .runtime_identity import identity_snapshot
 from .schemas import ProjectCreate
 
 # Lifecycle: queued -> running -> completed | failed
@@ -232,6 +233,7 @@ def serialize_generation_job(
         "failure_category": job.failure_category,
         "failure_message": job.failure_message,
         "queue_position": queue_position,
+        "runtime_identity": job.runtime_identity,
     }
 
 
@@ -606,6 +608,9 @@ def run_generation_job(
                 if job is not None and job.status == "cancelling":
                     finalize_cancelled_job(db, job_id)
                 return
+            # The code that runs the job (it may differ from the one that queued it).
+            job.runtime_identity = identity_snapshot()
+            db.commit()
             try:
                 payload = ProjectCreate.model_validate(job.request_payload)
             except ValidationError:
