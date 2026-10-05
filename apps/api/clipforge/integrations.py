@@ -120,7 +120,10 @@ class ProviderValidator:
         else:
             headers["Authorization"] = api_key
             params = {"per_page": 1}
-        return client.get(config.url, headers=headers, params=params)
+        # Credential checks never follow redirects: this avoids forwarding an
+        # authentication header to a different origin. Provider URLs must be
+        # kept on their canonical API endpoints instead.
+        return client.get(config.url, headers=headers, params=params, follow_redirects=False)
 
 
 def get_secret_store() -> SecretStore:
@@ -270,6 +273,15 @@ def save_pexels(
     return save_integration("pexels", payload, store, validator)
 
 
+@router.post("/europeana", response_model=IntegrationRead)
+def save_europeana(
+    payload: IntegrationKeyCreate,
+    store: SecretStoreDep,
+    validator: ValidatorDep,
+) -> IntegrationRead:
+    return save_integration("europeana", payload, store, validator)
+
+
 def test_integration(
     provider: IntegrationProvider,
     settings: Settings,
@@ -317,6 +329,15 @@ def test_pexels(
     return test_integration("pexels", settings, store, validator)
 
 
+@router.post("/europeana/test", response_model=IntegrationRead)
+def test_europeana(
+    settings: SettingsDep,
+    store: SecretStoreDep,
+    validator: ValidatorDep,
+) -> IntegrationRead:
+    return test_integration("europeana", settings, store, validator)
+
+
 def delete_integration(provider: IntegrationProvider, store: SecretStore) -> IntegrationRead:
     try:
         store.delete_secret(PROVIDERS[provider].secret_name)
@@ -339,6 +360,11 @@ def delete_brave(store: SecretStoreDep) -> IntegrationRead:
 @router.delete("/pexels", response_model=IntegrationRead)
 def delete_pexels(store: SecretStoreDep) -> IntegrationRead:
     return delete_integration("pexels", store)
+
+
+@router.delete("/europeana", response_model=IntegrationRead)
+def delete_europeana(store: SecretStoreDep) -> IntegrationRead:
+    return delete_integration("europeana", store)
 
 
 @router.post("/import-env", response_model=EnvImportRead)
