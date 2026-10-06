@@ -47,12 +47,20 @@ STATUS_URL = f"{API}/post/publish/status/fetch/"
 REQUESTED_SCOPES = ("user.info.basic", "video.publish")
 PUBLISH_SCOPE = "video.publish"
 
-# FILE_UPLOAD chunk rules: chunks of 5-64 MB (the last may be up to 128 MB);
-# a file under 5 MB is sent as one chunk; total_chunk_count =
-# floor(video_size / chunk_size), the remainder joins the last chunk.
-MIN_CHUNK = 5 * 1024 * 1024
-MAX_CHUNK = 64 * 1024 * 1024
-DEFAULT_CHUNK = 10 * 1024 * 1024
+# FILE_UPLOAD chunk rules (TikTok Media Transfer Guide):
+#   * every chunk is 5-64 MB, except the final one, which also carries the
+#     trailing bytes and may reach 128 MB;
+#   * total_chunk_count = floor(video_size / chunk_size), 1..1000 chunks;
+#   * a video under 5 MB is uploaded whole (chunk_size = video_size); a video
+#     over 64 MB must be uploaded in more than one chunk.
+# "MB" is not defined in the guide (its init example uses decimal sizes:
+# video_size 50000123, chunk_size 10000000, 5 chunks), so every limit below is
+# chosen to be valid under BOTH the decimal and the binary reading:
+MIN_CHUNK = 5 * 1024 * 1024          # >= 5 MB and >= 5 MiB
+MAX_CHUNK = 64 * 1000 * 1000         # <= 64 MB and <= 64 MiB
+MAX_FINAL_CHUNK = 128 * 1000 * 1000  # <= 128 MB and <= 128 MiB
+DEFAULT_CHUNK = 10 * 1000 * 1000     # TikTok's own example chunk size
+MAX_CHUNKS = 1000
 STATUS_TERMINAL = ("PUBLISH_COMPLETE", "FAILED")
 PRIVATE_LEVEL = "SELF_ONLY"
 PUBLIC_LEVEL = "PUBLIC_TO_EVERYONE"
@@ -112,14 +120,29 @@ class CreatorInfo:
         }
 
 
-def chunk_plan(size: int, preferred: int = DEFAULT_CHUNK) -> tuple[int, int]:
-    """``(chunk_size, total_chunk_count)`` following TikTok's FILE_UPLOAD rules."""
+def chunk_plan(size: int, preferred: int | None = None) -> tuple[int, int]:
+    """``(chunk_size, total_chunk_count)`` for ``source_info`` (FILE_UPLOAD).
+
+    * Up to 64 MB the video is one chunk: ``chunk_size = video_size`` and
+      ``total_chunk_count = 1`` (required under 5 MB, allowed up to 64 MB).
+      ``chunk_size`` therefore never exceeds ``video_size``.
+    * Above 64 MB: ``preferred`` (default 10 MB) chunks, kept within
+      5-64 MB, ``floor(size / chunk)`` of them; the remainder joins the
+      final chunk (< 2 x chunk <= 128 MB).
+      Very large files grow the chunk so the count stays <= 1000.
+    """
     if size <= 0:
-        raise PublishingApiError("invalid_media", "The video file is empty.")
-    if size < MIN_CHUNK:
+        raise PublishingApiError("invalid_media", "The video file is empty.", retryable=False)
+    if size <= MAX_CHUNK:
         return size, 1
-    chunk = max(MIN_CHUNK, min(MAX_CHUNK, preferred))
-    return chunk, max(1, size // chunk)
+    chunk = max(MIN_CHUNK, min(MAX_CHUNK, preferred or DEFAULT_CHUNK))
+    if size // chunk > MAX_CHUNKS:
+        chunk = -(-size // MAX_CHUNKS)  # ceil: at most 1000 chunks
+    total = size // chunk
+    final = size - (total - 1) * chunk
+    if chunk > MAX_CHUNK or total > MAX_CHUNKS or final > MAX_FINAL_CHUNK:
+        raise PublishingApiError("invalid_media", "The video file is too large for TikTok's chunked upload.", retryable=False)
+    return chunk, total
 
 
 def chunk_ranges(size: int, chunk_size: int, total_chunks: int) -> list[tuple[int, int]]:

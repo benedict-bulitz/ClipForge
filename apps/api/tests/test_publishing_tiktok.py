@@ -115,10 +115,10 @@ def test_file_upload_follows_the_chunk_contract_and_status_polling_publishes(db,
 
 
 def test_large_files_use_tiktok_chunk_rules():
-    size = 23 * 1024 * 1024
+    size = 70 * 1000 * 1000  # above 64 MB: several chunks, remainder in the last one
     chunk, total = tiktok.chunk_plan(size)
-    assert (chunk, total) == (10 * 1024 * 1024, 2)
-    assert tiktok.chunk_ranges(size, chunk, total) == [(0, chunk - 1), (chunk, size - 1)]  # remainder joins the last chunk
+    assert (chunk, total) == (10 * 1000 * 1000, 7)
+    assert tiktok.chunk_ranges(size, chunk, total)[-1] == (6 * chunk, size - 1)
     assert tiktok.chunk_plan(4 * 1024 * 1024) == (4 * 1024 * 1024, 1)
 
 
