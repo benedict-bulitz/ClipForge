@@ -113,9 +113,11 @@ def test_next_project_gets_the_preset_but_its_own_content(db, settings, store, f
 def test_preset_is_scoped_by_channel(db, settings, store, fake):
     first_upload(db, settings, store, fake)
     fake.channel = ChannelIdentity("UC_channel_B", "Other channel")
-    connect(db, settings, store, fake)
+    channel_b = connect(db, settings, store, fake)
     second_project(db, settings)
-    draft = api_client(db, settings, store, fake).get(f"/api/youtube/projects/{OTHER}/draft").json()
+    # Channel A stays connected (multi-account); the sheet targets the selected channel B.
+    draft = api_client(db, settings, store, fake).get(f"/api/youtube/projects/{OTHER}/draft", params={"account_id": channel_b.id}).json()
+    assert draft["account"]["channel_id"] == "UC_channel_B"
     assert draft["preset_source"] == "settings"
     assert draft["options"]["made_for_kids"] is None
     # No preset or saved visibility on this channel: Smart Schedule's default workflow.

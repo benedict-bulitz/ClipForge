@@ -136,7 +136,8 @@ def test_oauth_callback_persists_channel_identity_and_keeps_refresh_token_in_key
         state = parse_qs(urlparse(url).query)["state"][0]
         response = client.get("/api/youtube/oauth/callback", params={"code": "one-time-code", "state": state}, follow_redirects=False)
         assert response.status_code == 303
-        assert response.headers["location"] == "http://localhost:3000/settings/integrations?youtube=connected"
+        account = connection.get_connection(db)
+        assert response.headers["location"] == f"http://localhost:3000/settings/integrations?youtube=connected&account={account.id}"
         body = client.get("/api/youtube/connection").json()
         assert body["status"] == "connected"
         assert body["channel_id"] == "UC_fake_channel_01"
@@ -148,7 +149,9 @@ def test_oauth_callback_persists_channel_identity_and_keeps_refresh_token_in_key
         assert "reason=invalid_state" in replay.headers["location"]
     finally:
         app.dependency_overrides.clear()
-    assert test_keyring.secrets[("ClipForge", "YOUTUBE_REFRESH_TOKEN")] == REFRESH_TOKEN
+    # The refresh token lives only in this channel's own keyring entry.
+    assert test_keyring.secrets[("ClipForge", f"YOUTUBE_REFRESH_TOKEN:{account.id}")] == REFRESH_TOKEN
+    assert ("ClipForge", "YOUTUBE_REFRESH_TOKEN") not in test_keyring.secrets
     dump = all_database_text(db)
     assert REFRESH_TOKEN not in dump and ACCESS_TOKEN not in dump
 
@@ -173,11 +176,20 @@ def test_reconnect_and_disconnect(db, settings, store, fake, test_keyring):
     fake.channel = ChannelIdentity("UC_other_channel", "Other")
     second = connect(db, settings, store, fake)
     assert second.channel_id == "UC_other_channel"
-    assert db.scalars(select(YouTubeConnection)).all() == [second]  # one connection authority
-    connection.disconnect(db, store, fake)
+    # Multi-account: both channels stay connected, each with its own keyring entry.
+    assert {item.channel_id for item in connection.list_channels(db)} == {"UC_fake_channel_01", "UC_other_channel"}
+    assert connection.active_connection(db).id == first.id  # the first channel is the default
+    # Reconnecting the same channel keeps its stable account id.
+    fake.channel = ChannelIdentity("UC_fake_channel_01", "Knowledge Lab")
+    assert connect(db, settings, store, fake).id == first.id
+    connection.disconnect(db, store, fake, second.id)
     assert fake.revoked == [REFRESH_TOKEN]
-    assert ("ClipForge", "YOUTUBE_REFRESH_TOKEN") not in test_keyring.secrets
+    assert ("ClipForge", f"YOUTUBE_REFRESH_TOKEN:{second.id}") not in test_keyring.secrets
+    assert ("ClipForge", f"YOUTUBE_REFRESH_TOKEN:{first.id}") in test_keyring.secrets
+    assert connection.active_connection(db).id == first.id
+    connection.disconnect(db, store, fake, first.id)
     assert connection.active_connection(db) is None
+    assert db.scalars(select(YouTubeConnection)).all() == []  # the legacy table is never written for new channels
     with pytest.raises(YouTubeApiError) as error:
         connection.access_token(db, settings, store, fake, capability="upload")
     assert error.value.code == "not_connected"
@@ -383,15 +395,17 @@ def test_upload_failure_is_visible_and_project_state_untouched(db, settings, sto
     assert [(item.number, json.dumps(item.state, sort_keys=True)) for item in project.revisions] == before
 
 
-def test_wrong_channel_is_refused(db, settings, store, fake):
-    connect(db, settings, store, fake)
+def test_upload_never_uses_another_channels_connection(db, settings, store, fake):
+    first = connect(db, settings, store, fake)
     project = exported_project(db, settings)
     upload, target, _run = uploads.request_upload(db, project, settings, options=publish_options(), channel_id="UC_fake_channel_01")
     fake.channel = ChannelIdentity("UC_intruder", "Someone else")
     connect(db, settings, store, fake)
+    connection.disconnect(db, store, fake, first.id)
     uploads.run_upload(db, upload.id, target.path, settings, store, fake)
     db.refresh(upload)
-    assert upload.last_error_code == "wrong_channel" and fake.sessions == {}
+    # The upload's own channel is gone; the other connected channel is never used.
+    assert upload.last_error_code == "not_connected" and fake.sessions == {}
 
 
 def test_changed_export_file_is_not_uploaded_under_the_old_identity(db, settings, store, fake):

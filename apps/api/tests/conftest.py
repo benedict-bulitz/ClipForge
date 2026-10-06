@@ -141,3 +141,13 @@ def forbid_real_semantic_curation(monkeypatch):
         raise AssertionError("Real OpenAI topic curation is forbidden in the test suite.")
 
     monkeypatch.setattr(semantic, "SEMANTIC_CLIENT_FACTORY", forbidden)
+
+
+@pytest.fixture(autouse=True)
+def no_publishing_scheduler(monkeypatch):
+    """App startup must not start the background publication scheduler in tests."""
+    from clipforge import main
+
+    started: list[object] = []
+    monkeypatch.setattr(main, "start_publishing_scheduler", lambda thread: started.append(thread) or thread)
+    return started

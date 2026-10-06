@@ -8,11 +8,14 @@ import { ApiError, listVideos, mediaUrl, refreshRecentVideos } from "@/lib/api";
 import {
   ANALYTICS_OPTIONS,
   PAGE_SIZE,
+  PLATFORM_OPTIONS,
   PROJECT_OPTIONS,
   SORT_OPTIONS,
   STATUS_OPTIONS,
+  accountFilterOptions,
   analyticsStateLabel,
   analyticsValue,
+  isSocialVideo,
   dateLine,
   formatClock,
   formatCount,
@@ -27,10 +30,13 @@ import {
   sameFilters,
   stateTone,
   summaryLine,
+  type AnyLibraryVideo,
   type LibraryFilters,
   type LibraryVideo,
+  type SocialLibraryVideo,
   type VideoLibraryPage,
 } from "@/lib/videos";
+import { PLATFORM_LABELS, PRIVACY_LABELS } from "@/lib/publishing";
 import { browserLocale, detectTimeZone, scheduleLine } from "@/lib/youtube";
 import { cn } from "@/lib/utils";
 import { Brand } from "./brand";
@@ -45,7 +51,7 @@ function shortDate(iso: string): string {
   return Number.isNaN(date.getTime()) ? "—" : date.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
 }
 
-export function StateChip({ video }: { video: Pick<LibraryVideo, "state" | "state_label" | "processing"> }) {
+export function StateChip({ video }: { video: Pick<LibraryVideo, "state" | "state_label" | "processing"> | Pick<SocialLibraryVideo, "state" | "state_label"> }) {
   const tone = stateTone(video.state);
   return (
     <span className={cn(
@@ -56,7 +62,7 @@ export function StateChip({ video }: { video: Pick<LibraryVideo, "state" | "stat
       tone === "warn" && "bg-amber-50 text-amber-800 dark:bg-amber-500/15 dark:text-amber-300",
       tone === "error" && "bg-red-50 text-red-800 dark:bg-red-500/15 dark:text-red-300",
     )}>
-      {video.state_label}{video.processing && video.state !== "processing" ? " · Processing" : ""}
+      {video.state_label}{"processing" in video && video.processing && video.state !== "processing" ? " · Processing" : ""}
     </span>
   );
 }
@@ -154,6 +160,42 @@ function VideoRow({ video }: { video: LibraryVideo }) {
   );
 }
 
+/** An Instagram/TikTok publication: its own state, account and link (no YouTube analytics). */
+function SocialVideoRow({ video }: { video: SocialLibraryVideo }) {
+  const project = projectHref(video);
+  const scheduled = (video.state === "scheduled" || video.state === "missed") && video.scheduled_for;
+  return (
+    <li className="workspace-card flex gap-3 p-3 sm:gap-4" data-publication-id={video.id} data-platform={video.platform}>
+      <VideoThumbnail video={video} className="w-14 sm:w-16" />
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-1">
+          <div className="min-w-0">
+            <p className="line-clamp-2 break-words font-semibold">{video.title}</p>
+            <p className={cn("mt-0.5 flex items-center gap-1 text-xs", scheduled ? "font-semibold text-sky-800 dark:text-sky-300" : "font-medium")}>
+              {scheduled && <CalendarClock className="size-3.5 shrink-0" />}
+              {scheduled && video.scheduled_for ? `Scheduled for ${scheduledTime(video.scheduled_for, video.schedule_timezone)}` : video.published_at ? `Published ${shortDate(video.published_at)}` : `Created ${shortDate(video.uploaded_at ?? video.sort_date)}`}
+            </p>
+            <p className="mt-0.5 truncate text-[11px] text-[var(--muted-foreground)]">
+              {PLATFORM_LABELS[video.platform]} · {video.account.handle ? `@${video.account.handle}` : video.account.label}
+              {video.privacy_level ? ` · ${PRIVACY_LABELS[video.privacy_level] ?? video.privacy_level}` : ""}
+            </p>
+          </div>
+          <StateChip video={video} />
+        </div>
+        {video.error?.message && video.state !== "published" && <p className="mt-2 text-[11px] text-[var(--muted-foreground)]">{video.error.message}</p>}
+        <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px]">
+          <span className={cn("font-semibold", video.project.available ? "text-emerald-700 dark:text-emerald-300" : "text-[var(--muted-foreground)]")}>{projectLabel(video)}</span>
+          <span className="text-[var(--muted-foreground)]">Analytics: not collected for {PLATFORM_LABELS[video.platform]}</span>
+          <span className="ml-auto flex items-center gap-1">
+            {project && <Link href={project} className="interactive-text">Open project</Link>}
+            {video.remote_url && <a href={video.remote_url} target="_blank" rel="noreferrer" className="interactive-text"><ExternalLink className="size-3" /> {PLATFORM_LABELS[video.platform]}</a>}
+          </span>
+        </div>
+      </div>
+    </li>
+  );
+}
+
 function Select<T extends string>({ label, value, options, onChange }: { label: string; value: T; options: Array<[T, string]>; onChange: (value: T) => void }) {
   return (
     <label className="text-[11px] font-semibold">
@@ -175,7 +217,7 @@ export function VideoLibrary({ initialFilters }: { initialFilters: LibraryFilter
   const [filters, setFilters] = useState<LibraryFilters>(initialFilters);
   const [search, setSearch] = useState(initialFilters.q);
   const [page, setPage] = useState<VideoLibraryPage | null>(null);
-  const [items, setItems] = useState<LibraryVideo[]>([]);
+  const [items, setItems] = useState<AnyLibraryVideo[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -261,7 +303,8 @@ export function VideoLibrary({ initialFilters }: { initialFilters: LibraryFilter
   }
 
   const summary = page?.summary;
-  const filtered = !sameFilters(filters, { ...filters, status: "all", project: "all", analytics: "all", q: "" });
+  const filtered = !sameFilters(filters, { ...filters, status: "all", project: "all", analytics: "all", q: "", platform: "all", account: "" });
+  const youtubeVisible = filters.platform === "all" || filters.platform === "youtube";
 
   return (
     <main className="theme-app min-h-screen bg-[var(--background)]">
@@ -285,7 +328,7 @@ export function VideoLibrary({ initialFilters }: { initialFilters: LibraryFilter
                 {summaryLine(summary).join(" · ")}
                 {summary.median_average_view_percentage !== null && ` · median avg view ${formatPercent(summary.median_average_view_percentage)} (latest per video, n=${summary.median_average_view_percentage_n})`}
               </p>
-            ) : <p className="mt-1 text-sm text-[var(--muted-foreground)]">Everything uploaded to YouTube through ClipForge.</p>}
+            ) : <p className="mt-1 text-sm text-[var(--muted-foreground)]">Everything published through ClipForge on YouTube, Instagram and TikTok.</p>}
           </div>
           <Button variant="outline" size="sm" onClick={() => void refreshRecent()} disabled={refreshing || page?.connection.status !== "connected"} title={page?.connection.status !== "connected" ? "Connect YouTube in Settings to refresh" : "Ask YouTube about the newest videos only"}>
             {refreshing ? <LoaderCircle className="size-3.5 animate-spin" /> : <RefreshCw className="size-3.5" />} Refresh recent videos
@@ -293,7 +336,7 @@ export function VideoLibrary({ initialFilters }: { initialFilters: LibraryFilter
         </div>
         {notice && <p role="status" className="mt-3 text-xs text-[var(--muted-foreground)]">{notice}</p>}
 
-        <ChannelPerformance refreshKey={performanceKey} />
+        {youtubeVisible && <ChannelPerformance refreshKey={performanceKey} />}
 
         <div className="mt-5 flex flex-wrap items-center gap-2" role="search">
           <label className="relative min-w-[220px] flex-1">
@@ -301,6 +344,8 @@ export function VideoLibrary({ initialFilters }: { initialFilters: LibraryFilter
             <Search className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-[var(--muted-foreground)]" />
             <input type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search title, prompt or video ID" className="cf-input h-9 pl-8 text-xs" maxLength={200} />
           </label>
+          <Select label="Platform" value={filters.platform} options={PLATFORM_OPTIONS} onChange={(platform) => update({ platform, account: "" })} />
+          <Select label="Account" value={filters.account} options={accountFilterOptions(page?.accounts, filters.platform)} onChange={(account) => update({ account })} />
           <Select label="Status" value={filters.status} options={STATUS_OPTIONS} onChange={(status) => update({ status })} />
           <Select label="Project" value={filters.project} options={PROJECT_OPTIONS} onChange={(project) => update({ project })} />
           <Select label="Analytics" value={filters.analytics} options={ANALYTICS_OPTIONS} onChange={(analytics) => update({ analytics })} />
@@ -311,7 +356,7 @@ export function VideoLibrary({ initialFilters }: { initialFilters: LibraryFilter
         {loading && !page && <p className="mt-6 flex items-center gap-2 text-sm text-[var(--muted-foreground)]"><LoaderCircle className="size-4 animate-spin" /> Loading…</p>}
         {page && !loading && items.length === 0 && (
           <p className="mt-6 text-sm text-[var(--muted-foreground)]">
-            {filtered ? "No videos match these filters." : "No uploaded videos yet. Upload a rendered project to YouTube and it appears here."}
+            {filtered ? "No videos match these filters." : "No published videos yet. Upload a rendered project and it appears here."}
           </p>
         )}
         {page && (
@@ -321,7 +366,7 @@ export function VideoLibrary({ initialFilters }: { initialFilters: LibraryFilter
           </p>
         )}
         <ul className={cn("mt-2 space-y-2", loading && page && "opacity-60")}>
-          {items.map((video) => <VideoRow key={video.id} video={video} />)}
+          {items.map((video) => (isSocialVideo(video) ? <SocialVideoRow key={video.id} video={video} /> : <VideoRow key={video.id} video={video} />))}
         </ul>
         {page?.next_offset !== null && page?.next_offset !== undefined && (
           <div className="mt-4 flex justify-center text-xs">

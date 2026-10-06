@@ -403,7 +403,7 @@ def run_upload(
     upload.attempt_count += 1
     db.commit()
     try:
-        connection, token = access_token(db, settings, store, provider, capability="upload")
+        connection, token = access_token(db, settings, store, provider, capability="upload", channel_id=upload.channel_id)
         if connection.channel_id != upload.channel_id:
             _fail(db, upload, "wrong_channel", "YouTube is now connected to a different channel than this upload was prepared for.")
             return upload
@@ -536,7 +536,7 @@ def sync_status(
         raise UploadRefused("not_uploaded", "This upload has no YouTube video yet.", upload)
     now = now or _now()
     try:
-        connection, token = access_token(db, settings, store, provider, capability="read")
+        connection, token = access_token(db, settings, store, provider, capability="read", channel_id=upload.channel_id)
         if connection.channel_id != upload.channel_id:
             raise YouTubeApiError("wrong_channel", "YouTube is connected to a different channel than this video belongs to.")
         items = provider.list_videos(token, [upload.youtube_video_id], STATUS_PARTS)
@@ -587,7 +587,7 @@ def _status_update(
     require_private: bool = False,
 ) -> dict[str, Any]:
     """videos.update(part=status) that preserves every other status field."""
-    connection, token = access_token(db, settings, store, provider, capability="schedule")
+    connection, token = access_token(db, settings, store, provider, capability="schedule", channel_id=upload.channel_id)
     if connection.channel_id != upload.channel_id:
         raise YouTubeApiError("wrong_channel", "YouTube is connected to a different channel than this video belongs to.")
     items = provider.list_videos(token, [upload.youtube_video_id], "status")
@@ -724,7 +724,7 @@ def apply_thumbnail(
             upload.thumbnail_upload_status = "not_requested"
             db.commit()
             return upload
-        connection, token = access_token(db, settings, store, provider, capability="upload")
+        connection, token = access_token(db, settings, store, provider, capability="upload", channel_id=upload.channel_id)
         if connection.channel_id != upload.channel_id:
             raise YouTubeApiError("wrong_channel", "YouTube is connected to a different channel than this video belongs to.")
         provider.set_thumbnail(token, upload.youtube_video_id, prepared.data, prepared.content_type)

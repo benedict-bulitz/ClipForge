@@ -280,4 +280,7 @@ def test_overview_route_is_not_shadowed_by_the_job_route(db, settings, store, fa
     api = client(db, settings, store, fake)
     response = api.get("/api/generation-jobs/overview")
     assert response.status_code == 200
-    assert response.json() == {"run_started_at": None, "youtube": {"status": "not_connected", "channel_title": None}, "items": []}
+    assert response.json() == {
+        "run_started_at": None, "youtube": {"status": "not_connected", "channel_title": None},
+        "publishing": {"connected_accounts": 0}, "items": [],
+    }

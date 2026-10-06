@@ -54,11 +54,11 @@ from sqlalchemy.orm import Session, selectinload
 from ..models import (
     ProductionFingerprint,
     YouTubeAnalyticsSnapshot,
-    YouTubeConnection,
     YouTubeMetricValue,
     YouTubeUpload,
 )
 from .analytics import SOURCE_API, SOURCE_MANUAL
+from .connection import get_connection
 from .library import _analytics_summaries, library_condition
 from .status import LIVE_STATS_SOURCE, live_stats
 from .uploads import aware
@@ -451,10 +451,13 @@ def _age_matched(db: Session, current: list[VideoRow], previous: list[VideoRow])
     return at_age(current), at_age(previous), age
 
 
-def performance_overview(db: Session, *, scope: str = DEFAULT_SCOPE, min_sample: int = 5, now: datetime | None = None) -> dict[str, Any]:
+def performance_overview(
+    db: Session, *, scope: str = DEFAULT_SCOPE, min_sample: int = 5, now: datetime | None = None, account_id: str | None = None
+) -> dict[str, Any]:
     now = now or _now()
     scope = scope if scope in SCOPES else DEFAULT_SCOPE
-    connection = db.get(YouTubeConnection, "primary")
+    # One channel's cohort: the chosen YouTube account, else the default channel.
+    connection = get_connection(db, account_id)
     channel_id = connection.channel_id if connection else None
     uploads = _eligible_uploads(db, channel_id)
     summaries = _analytics_summaries(db, None, PERFORMANCE_METRICS)
@@ -491,7 +494,7 @@ def performance_overview(db: Session, *, scope: str = DEFAULT_SCOPE, min_sample:
     return {
         "scope": scope,
         "scopes": list(SCOPES),
-        "channel": {"id": channel_id, "title": connection.channel_title if connection else None},
+        "channel": {"id": channel_id, "title": connection.channel_title if connection else None, "account_id": connection.id if connection else None},
         "video_count": len(cohort),
         "eligible_total": len(rows),
         "previous_count": len(previous),

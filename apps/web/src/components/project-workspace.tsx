@@ -409,7 +409,7 @@ export function ProjectWorkspace({
           {state.render.status === "complete" && !state.render.stale ? (
             <Button variant="accent" size="sm" onClick={() => { setPublishOpen(true); document.getElementById("youtube-publishing")?.scrollIntoView({ behavior: "smooth", block: "start" }); }} disabled={!!busy || audioDirty} title={audioDirty ? "Save the audio changes first" : undefined}>
               <Upload className="size-3.5" />
-              <span className="hidden sm:inline">Upload to YouTube</span>
+              <span className="hidden sm:inline">Upload</span>
             </Button>
           ) : null}
           {state.render.status !== "complete" && (

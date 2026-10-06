@@ -69,6 +69,24 @@ class Settings(BaseSettings):
     youtube_oauth_client_secret: str | None = None
     youtube_oauth_redirect_uri: str = "http://localhost:8000/api/youtube/oauth/callback"
     youtube_baseline_min_sample: int = 5
+    # Multi-platform publishing.  Developer-app credentials come from the
+    # keyring (Settings -> Integrations) or the environment; per-account
+    # tokens live only in the keyring.  Redirect URIs must be registered
+    # exactly like this in the TikTok / Meta developer apps.
+    tiktok_client_key: str | None = None
+    tiktok_client_secret: str | None = None
+    tiktok_oauth_redirect_uri: str = "http://localhost:8000/api/publishing/tiktok/oauth/callback"
+    meta_app_id: str | None = None
+    meta_app_secret: str | None = None
+    instagram_oauth_redirect_uri: str = "http://localhost:8000/api/publishing/instagram/oauth/callback"
+    meta_graph_version: str = "v25.0"
+    # ClipForge-owned schedules (Instagram/TikTok) run only while this backend
+    # runs: how often due work is checked, how late a missed slot may still
+    # be published after a restart, and the bounded retry budget.
+    publishing_scheduler_enabled: bool = True
+    publishing_scheduler_interval_seconds: float = 20.0
+    publishing_missed_grace_minutes: int = 15
+    publishing_max_attempts: int = 5
     # Topic Intelligence ("Generate Next Video"): how long a scored candidate
     # pool is reused, the hard YouTube quota budget of one discovery refresh
     # (search.list costs 100 units, everything else 1), how many search.list
@@ -105,6 +123,10 @@ SECRET_SETTING_FIELDS: dict[SecretName, str] = {
     "EUROPEANA_API_KEY": "europeana_api_key",
     "YOUTUBE_OAUTH_CLIENT_ID": "youtube_oauth_client_id",
     "YOUTUBE_OAUTH_CLIENT_SECRET": "youtube_oauth_client_secret",
+    "TIKTOK_CLIENT_KEY": "tiktok_client_key",
+    "TIKTOK_CLIENT_SECRET": "tiktok_client_secret",
+    "META_APP_ID": "meta_app_id",
+    "META_APP_SECRET": "meta_app_secret",
 }
 
 

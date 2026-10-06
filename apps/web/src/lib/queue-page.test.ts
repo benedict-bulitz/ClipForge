@@ -10,8 +10,9 @@ import {
   playableSource,
   queueProgressPercent,
   queueQualityBadge,
+  queuePublicationLines,
   queueRowStatus,
-  queueYouTubeAction,
+  queueUploadAction,
   uploadInFlight,
   type QueueItem,
   type QueueOverview,
@@ -180,25 +181,46 @@ test("quality badge reflects the stored reviews only", () => {
 // YouTube
 // ---------------------------------------------------------------------------
 
-test("Upload to YouTube appears only when the Results page would offer it", () => {
-  assert.deepEqual(queueYouTubeAction("connected", rendered), { kind: "upload", label: "Upload to YouTube" });
-  assert.deepEqual(queueYouTubeAction("not_connected", rendered), { kind: "connect", label: "Connect YouTube" });
-  assert.deepEqual(queueYouTubeAction("auth_expired", rendered), { kind: "connect", label: "Reconnect YouTube" });
+const youtubeOnly = (status: QueueOverview["youtube"]["status"]) => ({ youtube: { status, channel_title: "Lab" }, publishing: { connected_accounts: status === "not_connected" ? 0 : 1 } });
+
+test("Upload appears exactly when the Results page would offer it (YouTube only)", () => {
+  assert.deepEqual(queueUploadAction(youtubeOnly("connected"), rendered), { kind: "upload", label: "Upload" });
+  assert.deepEqual(queueUploadAction(youtubeOnly("not_connected"), rendered), { kind: "connect", label: "Connect an account" });
+  assert.deepEqual(queueUploadAction(youtubeOnly("auth_expired"), rendered), { kind: "connect", label: "Reconnect YouTube" });
   const uploaded: QueueItem = { job: rendered.job, project: project("A", { youtube: { current_render: { uploadable: false, code: "already_uploaded", message: "Already uploaded as yt123", render_revision: 2, existing_upload_id: "up-1" }, upload: upload("scheduled") } }) };
-  assert.deepEqual(queueYouTubeAction("connected", uploaded), { kind: "none", reason: null });
+  assert.deepEqual(queueUploadAction(youtubeOnly("connected"), uploaded), { kind: "none", reason: null });
   const blocked: QueueItem = { job: rendered.job, project: project("A", { youtube: { current_render: { uploadable: false, code: "not_rendered", message: "Render this revision before uploading it to YouTube." }, upload: null } }) };
-  assert.deepEqual(queueYouTubeAction("connected", blocked), { kind: "none", reason: "Render this revision before uploading it to YouTube." });
+  assert.deepEqual(queueUploadAction(youtubeOnly("connected"), blocked), { kind: "none", reason: "Render this revision before uploading it to YouTube." });
   const newRevision: QueueItem = { job: rendered.job, project: project("A", { youtube: { current_render: { uploadable: true, code: null, message: null, render_revision: 3 }, upload: upload("published", { render_revision: 2 }) } }) };
-  assert.deepEqual(queueYouTubeAction("connected", newRevision), { kind: "upload", label: "Upload this revision" });
-  assert.deepEqual(queueYouTubeAction("connected", { job: job("B", "running"), project: null }), { kind: "none", reason: null });
-  assert.deepEqual(queueYouTubeAction("connected", { job: rendered.job, project: project("A", { render: { state: "missing", status: "complete", revision: 2, final_video_url: null } }) }), { kind: "none", reason: null });
+  assert.deepEqual(queueUploadAction(youtubeOnly("connected"), newRevision), { kind: "upload", label: "Upload" });
+  assert.deepEqual(queueUploadAction(youtubeOnly("connected"), { job: job("B", "running"), project: null }), { kind: "none", reason: null });
+  assert.deepEqual(queueUploadAction(youtubeOnly("connected"), { job: rendered.job, project: project("A", { render: { state: "missing", status: "complete", revision: 2, final_video_url: null } }) }), { kind: "none", reason: null });
 });
 
-test("Upload to YouTube opens the canonical publishing sheet and never uploads by itself", () => {
-  assert.match(component, /import \{ PublishSheet \} from "\.\/youtube-publish-sheet"/);
-  assert.match(component, /<PublishSheet project=\{publishing\} onClose=\{closePublishing\} onUploaded=\{closePublishing\} \/>/);
+test("Instagram/TikTok or a second channel keep Upload available", () => {
+  const uploaded: QueueItem = { job: rendered.job, project: project("A", { youtube: { current_render: { uploadable: false, code: "already_uploaded", message: null, render_revision: 2, existing_upload_id: "up-1" }, upload: upload("published") } }) };
+  // Already on YouTube, but an Instagram/TikTok account (or another channel) is connected.
+  assert.deepEqual(queueUploadAction({ youtube: { status: "connected", channel_title: "Lab" }, publishing: { connected_accounts: 2 } }, uploaded), { kind: "upload", label: "Upload" });
+  // No YouTube at all, only TikTok.
+  assert.deepEqual(queueUploadAction({ youtube: { status: "not_connected", channel_title: null }, publishing: { connected_accounts: 1 } }, rendered), { kind: "upload", label: "Upload" });
+});
+
+test("queue rows show Instagram/TikTok publication state compactly", () => {
+  const item = project("A", { publications: [
+    { id: "p1", platform: "tiktok", account_id: "a", account_label: "@alpha", state: "scheduled", state_label: "Scheduled", scheduled_at: "2026-10-08T18:00:00Z", published_at: null, remote_url: null, render_revision: 2, created_at: null, active: true },
+    { id: "p2", platform: "youtube", account_id: "b", account_label: "Lab", state: "published", state_label: "Published", scheduled_at: null, published_at: null, remote_url: null, render_revision: 2, created_at: null, active: true },
+    { id: "p3", platform: "instagram", account_id: "c", account_label: "@brand", state: "cancelled", state_label: "Cancelled", scheduled_at: null, published_at: null, remote_url: null, render_revision: 2, created_at: null, active: false },
+  ] });
+  assert.deepEqual(queuePublicationLines(item).map((entry) => entry.id), ["p1"]);
+  assert.match(component, /PLATFORM_LABELS\[item\.platform\]\} · \{item\.account_label\}/);
+});
+
+test("Upload opens the one unified Upload sheet and never uploads by itself", () => {
+  assert.match(component, /import \{ UploadSheet \} from "\.\/upload-sheet"/);
+  assert.match(component, /<UploadSheet project=\{publishing\} onClose=\{closePublishing\} onUploaded=\{closePublishing\} \/>/);
   assert.match(component, /setPublishing\(await getProject\(projectId\)\)/);
-  assert.doesNotMatch(component, /uploadProjectToYouTube|preflightYouTubeUpload|scheduleYouTubeUpload|getPublishingDraft/);
+  assert.doesNotMatch(component, /uploadProjectToYouTube|preflightYouTubeUpload|scheduleYouTubeUpload|getPublishingDraft|createSocialPublication/);
+  assert.doesNotMatch(component, /Upload to YouTube/);
   // The Results page and the queue share the one upload decision.
   assert.match(panel, /youtubeUploadAction\(connection\.status, current, focus\)/);
   assert.match(component, /YouTube: <strong[^>]*>\{lifecycleLabel\(upload\)\}/);

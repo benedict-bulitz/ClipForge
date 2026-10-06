@@ -1,3 +1,4 @@
+import re
 from typing import Literal, Protocol, TypedDict, cast
 
 import keyring
@@ -11,6 +12,10 @@ SecretName = Literal[
     "YOUTUBE_OAUTH_CLIENT_ID",
     "YOUTUBE_OAUTH_CLIENT_SECRET",
     "YOUTUBE_REFRESH_TOKEN",
+    "TIKTOK_CLIENT_KEY",
+    "TIKTOK_CLIENT_SECRET",
+    "META_APP_ID",
+    "META_APP_SECRET",
 ]
 SUPPORTED_SECRET_NAMES: tuple[SecretName, ...] = (
     "OPENAI_API_KEY",
@@ -21,8 +26,39 @@ SUPPORTED_SECRET_NAMES: tuple[SecretName, ...] = (
     # in the OS keyring; the refresh token is never copied into Settings.
     "YOUTUBE_OAUTH_CLIENT_ID",
     "YOUTUBE_OAUTH_CLIENT_SECRET",
+    # Legacy single-channel refresh token (before multi-account publishing).
+    # Read only to migrate the account it belonged to; never written again.
     "YOUTUBE_REFRESH_TOKEN",
+    # Publishing developer apps (TikTok Content Posting, Meta / Instagram).
+    "TIKTOK_CLIENT_KEY",
+    "TIKTOK_CLIENT_SECRET",
+    "META_APP_ID",
+    "META_APP_SECRET",
 )
+
+# Per-account credentials are namespaced "<BASE>:<account id>" so every
+# connected publishing account has its own keyring entry; there is no global
+# token per platform.
+AccountSecretBase = Literal[
+    "YOUTUBE_REFRESH_TOKEN",
+    "TIKTOK_REFRESH_TOKEN",
+    "INSTAGRAM_TOKEN",
+]
+ACCOUNT_SECRET_BASES: tuple[AccountSecretBase, ...] = (
+    "YOUTUBE_REFRESH_TOKEN",
+    "TIKTOK_REFRESH_TOKEN",
+    "INSTAGRAM_TOKEN",
+)
+_ACCOUNT_ID = re.compile(r"[A-Za-z0-9-]{8,64}")
+
+
+def account_secret_name(base: AccountSecretBase, account_id: str) -> str:
+    """The keyring entry of one account's credential, e.g. ``TIKTOK_REFRESH_TOKEN:<id>``."""
+    if base not in ACCOUNT_SECRET_BASES:
+        raise ValueError(f"Unsupported account secret: {base}")
+    if not _ACCOUNT_ID.fullmatch(account_id or ""):
+        raise ValueError("Invalid account id for a secret name")
+    return f"{base}:{account_id}"
 
 
 class KeyringBackend(Protocol):
@@ -47,6 +83,15 @@ class SecretStore:
         self._backend = (
             backend if backend is not None else cast(KeyringBackend, keyring.get_keyring())
         )
+
+    def set_account_secret(self, base: AccountSecretBase, account_id: str, value: str) -> None:
+        self.set_secret(account_secret_name(base, account_id), value)  # type: ignore[arg-type]
+
+    def get_account_secret(self, base: AccountSecretBase, account_id: str) -> str | None:
+        return self.get_secret(account_secret_name(base, account_id))  # type: ignore[arg-type]
+
+    def delete_account_secret(self, base: AccountSecretBase, account_id: str) -> None:
+        self.delete_secret(account_secret_name(base, account_id))  # type: ignore[arg-type]
 
     def set_secret(self, name: SecretName, value: str) -> None:
         """Store a non-empty secret after removing accidental surrounding whitespace."""
@@ -85,5 +130,9 @@ class SecretStore:
 
     @staticmethod
     def _validate_name(name: str) -> None:
-        if name not in SUPPORTED_SECRET_NAMES:
-            raise ValueError(f"Unsupported secret name: {name}")
+        if name in SUPPORTED_SECRET_NAMES:
+            return
+        base, separator, account_id = name.partition(":")
+        if separator and base in ACCOUNT_SECRET_BASES and _ACCOUNT_ID.fullmatch(account_id):
+            return
+        raise ValueError(f"Unsupported secret name: {name}")

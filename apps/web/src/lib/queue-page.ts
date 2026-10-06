@@ -9,6 +9,7 @@
  * changes status or the job set changes.
  */
 import type { FinalQualityReview, GenerationJob, ProjectState } from "./types";
+import type { ProjectPublication } from "./publishing";
 import type { ProjectYouTube, YouTubeConnection, YouTubeUpload } from "./youtube";
 import { qualityReviewSummary } from "./quality-review.ts";
 import { youtubeUploadAction } from "./youtube.ts";
@@ -31,6 +32,8 @@ export type QueueProjectSummary = {
     final_review: { status: FinalQualityReview["status"]; revision: number | null; summary: { label: string } | null } | null;
   };
   youtube: { current_render: ProjectYouTube["current_render"]; upload: YouTubeUpload | null };
+  /** Every platform/account publication of the project (YouTube + Instagram + TikTok). */
+  publications?: ProjectPublication[];
 };
 
 export type QueueItem = { job: GenerationJob; project: QueueProjectSummary | null };
@@ -38,6 +41,8 @@ export type QueueItem = { job: GenerationJob; project: QueueProjectSummary | nul
 export type QueueOverview = {
   run_started_at: string | null;
   youtube: { status: YouTubeConnection["status"]; channel_title: string | null };
+  /** Connected publishing accounts across all platforms (any one enables Upload). */
+  publishing?: { connected_accounts: number };
   items: QueueItem[];
 };
 
@@ -129,28 +134,43 @@ export function queueQualityBadge(project: QueueProjectSummary | null): QueueQua
   return { label: "Review unavailable", tone: "muted", title: aiTitle };
 }
 
-export type QueueYouTubeAction =
-  | { kind: "upload"; label: "Upload to YouTube" | "Upload this revision" }
-  | { kind: "connect"; label: "Connect YouTube" | "Reconnect YouTube" }
+export type QueueUploadAction =
+  | { kind: "upload"; label: "Upload" }
+  | { kind: "connect"; label: "Connect an account" | "Reconnect YouTube" }
   | { kind: "none"; reason: string | null };
 
 /**
- * The Results page's rule (youtubeUploadAction) for a queue row.  The button
- * only opens the existing publishing sheet; nothing is uploaded from here.
+ * The Results page's rule for a queue row: "Upload" opens the one unified
+ * sheet (its account selector picks YouTube, Instagram or TikTok); nothing is
+ * uploaded from here.  YouTube alone keeps the youtubeUploadAction rule; any
+ * further connected account (another channel, Instagram, TikTok) makes Upload
+ * available for a playable final video.
  */
-export function queueYouTubeAction(connection: QueueOverview["youtube"]["status"], item: QueueItem): QueueYouTubeAction {
+export function queueUploadAction(overview: Pick<QueueOverview, "youtube" | "publishing">, item: QueueItem): QueueUploadAction {
   const project = item.project;
   if (!project || !playableSource(item)) return { kind: "none", reason: null };
-  if (connection === "not_connected") return { kind: "connect", label: "Connect YouTube" };
+  const connection = overview.youtube.status;
+  const accounts = overview.publishing?.connected_accounts ?? (connection === "not_connected" ? 0 : 1);
+  const youtube = youtubeUploadAction(connection, project.youtube.current_render, project.youtube.upload);
+  if (youtube.canUpload) return { kind: "upload", label: "Upload" };
+  // The default channel's own status is handled above; any further account means Upload.
+  const youtubeAccounts = connection === "not_connected" ? 0 : 1;
+  if (accounts > youtubeAccounts) return { kind: "upload", label: "Upload" };
   if (connection === "auth_expired") return { kind: "connect", label: "Reconnect YouTube" };
-  const action = youtubeUploadAction(connection, project.youtube.current_render, project.youtube.upload);
-  if (action.canUpload) return { kind: "upload", label: action.newRevision ? "Upload this revision" : "Upload to YouTube" };
-  return { kind: "none", reason: action.blockedReason };
+  if (accounts === 0) return { kind: "connect", label: "Connect an account" };
+  return { kind: "none", reason: youtube.blockedReason };
+}
+
+/** Compact non-YouTube publication lines for a queue row (YouTube has its own line). */
+export function queuePublicationLines(project: QueueProjectSummary | null): ProjectPublication[] {
+  return (project?.publications ?? []).filter((item) => item.platform !== "youtube" && item.state !== "cancelled").slice(0, 3);
 }
 
 /** An upload the sheet handed to the background: the row re-reads until YouTube has answered. */
 export function uploadInFlight(overview: QueueOverview | null): boolean {
-  return !!overview?.items.some((item) => item.project?.youtube.upload?.current?.state === "uploading");
+  return !!overview?.items.some((item) =>
+    item.project?.youtube.upload?.current?.state === "uploading"
+    || (item.project?.publications ?? []).some((publication) => publication.platform !== "youtube" && ["pending", "uploading", "processing"].includes(publication.state)));
 }
 
 export type PlaybackElement = { pause: () => void };

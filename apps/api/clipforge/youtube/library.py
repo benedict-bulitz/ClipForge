@@ -35,16 +35,19 @@ from ..config import Settings
 from ..models import (
     ProductionFingerprint,
     Project,
+    PublishingAccount,
     YouTubeAnalyticsSnapshot,
-    YouTubeConnection,
     YouTubeLearningArchive,
     YouTubeMetricValue,
     YouTubeRetentionPoint,
     YouTubeUpload,
 )
+from ..publishing import accounts as accounts_authority
+from ..publishing import read_model
 from . import content_type as content_types
 from . import status as status_authority
 from .analytics import SOURCE_API
+from .connection import list_channels
 from .uploads import ACTIVE_STATES, aware, serialize_upload, youtube_links
 
 logger = logging.getLogger(__name__)
@@ -60,7 +63,8 @@ RECENT_REFRESH_LIMIT = 10
 # Index summary metrics from the latest analytics snapshot (YouTube Analytics API).
 SUMMARY_METRICS = ("views", "engagedViews", "averageViewDuration", "averageViewPercentage", "likes", "comments")
 SORTS = ("newest", "oldest", "views", "average_view_percentage", "average_view_duration")
-STATUS_FILTERS = ("all", "published", "unlisted", "scheduled", "private", "processing", "deleted", "rejected")
+STATUS_FILTERS = ("all", "published", "unlisted", "scheduled", "private", "processing", "deleted", "rejected", "uploading", "failed")
+PLATFORM_FILTERS = ("all", "youtube", "instagram", "tiktok")
 PROJECT_FILTERS = ("all", "available", "archived")
 ANALYTICS_FILTERS = ("all", "available", "processing")
 STATE_LABELS = {
@@ -496,8 +500,19 @@ def _fingerprint_facts(db: Session, fingerprint_ids: list[str]) -> dict[str, dic
     return {row.id: {"duration_seconds": row.duration, "format": row.format, "scene_count": row.scene_count} for row in rows}
 
 
-def _channel_title(connection: YouTubeConnection | None, channel_id: str) -> str | None:
-    return connection.channel_title if connection is not None and connection.channel_id == channel_id else None
+def channel_accounts(db: Session) -> dict[str, PublishingAccount]:
+    """Every known YouTube account by channel id (disconnected ones keep their name)."""
+    return {account.external_account_id: account for account in list_channels(db, include_disconnected=True)}
+
+
+def _channel(channels: dict[str, PublishingAccount], channel_id: str) -> dict[str, Any]:
+    account = channels.get(channel_id)
+    return {
+        "id": channel_id,
+        "title": account.display_name if account is not None else None,
+        "account_id": account.id if account is not None else None,
+        "connected": account is not None and account.status != "disconnected",
+    }
 
 
 def serialize_video(
@@ -507,7 +522,7 @@ def serialize_video(
     project: tuple[str, str] | None,
     archive: YouTubeLearningArchive | None,
     facts: dict[str, Any] | None,
-    connection: YouTubeConnection | None,
+    channels: dict[str, PublishingAccount],
     settings: Settings,
     now: datetime,
 ) -> dict[str, Any]:
@@ -526,7 +541,9 @@ def serialize_video(
         "title": upload.title or (archive.title if archive else "") or project_title or upload.youtube_video_id,
         "prompt": project_prompt if project else (archive.prompt if archive else None),
         "topic": archive.topic if archive else None,
-        "channel": {"id": upload.channel_id, "title": _channel_title(connection, upload.channel_id)},
+        "kind": "youtube",
+        "platform": "youtube",
+        "channel": _channel(channels, upload.channel_id),
         "state": state,
         "state_label": _state_label(upload, state, now),
         "processing": current["processing"],
@@ -582,12 +599,39 @@ def list_videos(
     limit: int = DEFAULT_PAGE_SIZE,
     offset: int = 0,
     now: datetime | None = None,
+    platform: str = "all",
+    account: str | None = None,
 ) -> dict[str, Any]:
+    """Every publication across platforms/accounts.  YouTube entries keep the
+    full library semantics (status authority, analytics); Instagram/TikTok
+    entries come from ``publishing.read_model`` and carry no analytics."""
     now = now or _now()
     limit = max(1, min(MAX_PAGE_SIZE, limit))
     offset = max(0, offset)
+    platform = platform if platform in PLATFORM_FILTERS else "all"
+    # One read of every known account (YouTube channels + social accounts).
+    known = accounts_authority.list_accounts(db, include_disconnected=True)
+    by_id = {item.id: item for item in known}
+    selected_account = by_id.get(account) if account else None
+    if account and selected_account is None:
+        platform_scope: tuple[str, ...] = ()
+    elif selected_account is not None:
+        platform_scope = (selected_account.platform,) if platform in ("all", selected_account.platform) else ()
+    else:
+        platform_scope = ("youtube", "instagram", "tiktok") if platform == "all" else (platform,)
     # Pass 1: a column projection of every library video (state inputs only).
-    base = list(db.scalars(select(YouTubeUpload).options(load_only(*_STATE_COLUMNS)).where(library_condition())).all())
+    youtube_query = select(YouTubeUpload).options(load_only(*_STATE_COLUMNS)).where(library_condition())
+    if selected_account is not None and selected_account.platform == "youtube":
+        youtube_query = youtube_query.where(YouTubeUpload.channel_id == selected_account.external_account_id)
+    base = list(db.scalars(youtube_query).all()) if "youtube" in platform_scope else []
+    social_scope = [name for name in platform_scope if name != "youtube"]
+    has_social_accounts = any(item.platform != "youtube" for item in known)
+    social = read_model.social_library(
+        db,
+        platform=social_scope[0] if len(social_scope) == 1 else "all",
+        account_id=selected_account.id if selected_account is not None and selected_account.platform != "youtube" else None,
+        known=by_id,
+    ) if social_scope and has_social_accounts else []
     summaries = _analytics_summaries(db)
     counts: dict[str, int] = dict.fromkeys(STATUS_FILTERS[1:], 0)
     analytics_counts = {"available": 0, "processing": 0}
@@ -604,8 +648,19 @@ def list_videos(
         value = _metric(summaries.get(upload.id), "averageViewPercentage")
         if value is not None:
             view_percentages.append(value)
+    for _row, item in social:
+        if item["status_bucket"] in counts:
+            counts[item["status_bucket"]] += 1
+    platform_counts = {"youtube": len(base), **{name: sum(1 for row, _item in social if row.platform == name) for name in ("instagram", "tiktok")}}
 
     selected = base
+    selected_social = social
+    if query.strip():
+        text = query.strip()[:200].casefold()
+        selected_social = [
+            (row, item) for row, item in selected_social
+            if text in (item["title"] or "").casefold() or text in (item.get("caption") or "").casefold() or text in (item.get("prompt") or "").casefold()
+        ]
     if query.strip():
         matching = set(db.scalars(
             select(YouTubeUpload.id)
@@ -616,12 +671,17 @@ def list_videos(
         selected = [upload for upload in selected if upload.id in matching]
     if project in {"available", "archived"}:
         selected = [upload for upload in selected if (upload.project_id in project_ids) == (project == "available")]
+        selected_social = [(row, item) for row, item in selected_social if item["project"]["available"] == (project == "available")]
     if status in STATUS_FILTERS[1:]:
         selected = [upload for upload in selected if _status_bucket(library_state(upload, now)) == status]
+        selected_social = [(row, item) for row, item in selected_social if item["status_bucket"] == status]
     if analytics in {"available", "processing"}:
         selected = [upload for upload in selected if _analytics_bucket(_analytics_state(upload, summaries.get(upload.id), now)) == analytics]
+        selected_social = []  # Instagram/TikTok analytics are not collected
     ordered = _order([(upload, summaries.get(upload.id)) for upload in selected], sort if sort in SORTS else "newest", now)
-    page_ids = [upload.id for upload, _summary in ordered[offset:offset + limit]]
+    merged = _merge(ordered, selected_social, sort if sort in SORTS else "newest")
+    window = merged[offset:offset + limit]
+    page_ids = [entry[1].id for entry in window if entry[0] == "youtube"]
 
     # The page only: full rows (current status needs the schedule history), preview
     # backfill for still-existing projects, fingerprint facts via JSON paths.
@@ -647,34 +707,43 @@ def list_videos(
     if backfill:
         db.commit()
     facts = _fingerprint_facts(db, [item.fingerprint_id for item in page if item.fingerprint_id])
-    connection = db.get(YouTubeConnection, "primary")
-    items = [
-        serialize_video(
+    channels = {item.external_account_id: item for item in known if item.platform == "youtube"}
+    active_channels = [item for item in channels.values() if item.status != "disconnected"]
+    connection = next((item for item in active_channels if item.is_default), None) or (
+        min(active_channels, key=lambda item: (aware(item.connected_at) or now, item.id)) if active_channels else None
+    )
+    youtube_items = {
+        upload.id: serialize_video(
             upload,
             summary=summaries.get(upload.id),
             project=projects.get(upload.project_id),
             archive=archives.get(upload.project_id),
             facts=facts.get(upload.fingerprint_id or ""),
-            connection=connection,
+            channels=channels,
             settings=settings,
             now=now,
         )
         for upload in page
-    ]
+    }
+    items = [youtube_items[entry[1].id] if entry[0] == "youtube" else entry[2] for entry in window if entry[0] != "youtube" or entry[1].id in youtube_items]
     return {
         "items": items,
-        "total": len(ordered),
+        "total": len(merged),
         "limit": limit,
         "offset": offset,
-        "next_offset": offset + limit if offset + limit < len(ordered) else None,
-        "filters": {"status": status, "project": project, "analytics": analytics, "query": query, "sort": sort if sort in SORTS else "newest"},
+        "next_offset": offset + limit if offset + limit < len(merged) else None,
+        "filters": {
+            "status": status, "project": project, "analytics": analytics, "query": query, "sort": sort if sort in SORTS else "newest",
+            "platform": platform, "account": selected_account.id if selected_account is not None else None,
+        },
         "summary": {
-            "total": len(base),
+            "total": len(base) + len(social),
+            "platforms": platform_counts,
             **counts,
             "analytics_available": analytics_counts["available"],
             "analytics_processing": analytics_counts["processing"],
-            "projects_available": sum(1 for upload in base if upload.project_id in project_ids),
-            "projects_archived": sum(1 for upload in base if upload.project_id not in project_ids),
+            "projects_available": sum(1 for upload in base if upload.project_id in project_ids) + sum(1 for _row, item in social if item["project"]["available"]),
+            "projects_archived": sum(1 for upload in base if upload.project_id not in project_ids) + sum(1 for _row, item in social if not item["project"]["available"]),
             # The median of each video's latest averageViewPercentage (n stated).
             "median_average_view_percentage": round(statistics.median(view_percentages), 2) if view_percentages else None,
             "median_average_view_percentage_n": len(view_percentages),
@@ -684,7 +753,28 @@ def list_videos(
             "channel_title": connection.channel_title if connection else None,
             "status": connection.status if connection else "not_connected",
         },
+        # Every known publishing account, for the platform/account filters.
+        "accounts": [accounts_authority.serialize_account(item) for item in known],
     }
+
+
+def _merge(
+    ordered: list[tuple[YouTubeUpload, _Summary | None]], social: list[tuple[Any, dict[str, Any]]], sort: str,
+) -> list[tuple[str, Any, Any]]:
+    """YouTube entries (already ordered) merged with Instagram/TikTok entries.
+
+    Date sorts interleave by each entry's effective date; metric sorts (views,
+    retention) keep the ranked YouTube order and list the other platforms after
+    it, newest first (they have no such metric)."""
+    youtube = [("youtube", upload, summary, _sort_date(upload)) for upload, summary in ordered]
+    others = sorted((("social", row, item, item["sort_date"]) for row, item in social), key=lambda entry: (entry[3], entry[1].id), reverse=True)
+    if sort == "newest":
+        merged = sorted(youtube + others, key=lambda entry: (entry[3], entry[1].id), reverse=True)
+    elif sort == "oldest":
+        merged = sorted(youtube + others, key=lambda entry: (entry[3], entry[1].id))
+    else:
+        merged = youtube + others
+    return [(kind, obj, extra) for kind, obj, extra, _date in merged]
 
 
 # ---------------------------------------------------------------------------
@@ -795,7 +885,7 @@ def video_detail(db: Session, upload: YouTubeUpload, settings: Settings, *, now:
     project = (project_row.title, project_row.original_prompt) if project_row is not None else None
     video = serialize_video(
         upload, summary=summaries.get(upload.id), project=project, archive=archive, facts=facts,
-        connection=db.get(YouTubeConnection, "primary"), settings=settings, now=now,
+        channels=channel_accounts(db), settings=settings, now=now,
     )
     report = performance_report(db, upload, min_sample=settings.youtube_baseline_min_sample)
     duration = float(content.get("duration_seconds") or 0) or None

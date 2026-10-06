@@ -196,9 +196,10 @@ test("publishing sheet asks every required question explicitly and fakes nothing
   assert.match(defaults, /Ask me for every video/);
 });
 
-test("Upload to YouTube is the primary action and export is secondary", () => {
+test("Upload is the primary action and export is secondary", () => {
   assert.match(workspace, /variant="accent"[^\n]*setPublishOpen\(true\)/);
-  assert.match(workspace, /Upload to YouTube/);
+  assert.match(workspace, />Upload<\/span>/);
+  assert.doesNotMatch(workspace, /Upload to YouTube/);
   assert.match(workspace, /Save local MP4/);
   assert.doesNotMatch(workspace, /"Export MP4"/);
 });

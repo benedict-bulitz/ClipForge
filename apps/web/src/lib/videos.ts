@@ -4,17 +4,20 @@
  * Videos are the uploaded output + its performance history; they are
  * independent of editable projects (a deleted project keeps its video here).
  */
+import type { Platform, PublicationActions, PublishingAccount } from "./publishing";
 import type { AnalyticsState, CurrentStatus, MetricValue, PerformanceReport, SceneRetention, YouTubeUpload } from "./youtube";
 
 export type LibraryState = "published" | "unlisted" | "scheduled" | "private" | "processing" | "deleted" | "rejected" | "processing_failed";
 
 export type LibraryVideo = {
   id: string;
+  kind?: "youtube";
+  platform?: "youtube";
   youtube_video_id: string;
   title: string;
   prompt: string | null;
   topic: string | null;
-  channel: { id: string; title: string | null };
+  channel: { id: string; title: string | null; account_id?: string | null; connected?: boolean };
   state: LibraryState;
   state_label: string;
   processing: boolean;
@@ -55,18 +58,52 @@ export type LibraryVideo = {
   studio_url: string | null;
 };
 
+/** An Instagram/TikTok publication in the Videos list (no analytics in V1). */
+export type SocialLibraryVideo = {
+  id: string;
+  kind: "social";
+  platform: "instagram" | "tiktok";
+  title: string;
+  caption: string;
+  prompt: string | null;
+  account: { id: string; label: string; handle: string | null; connected: boolean };
+  state: "pending" | "scheduled" | "uploading" | "processing" | "published" | "failed" | "cancelled" | "missed";
+  status_bucket: string;
+  state_label: string;
+  scheduled_for: string | null;
+  schedule_timezone: string | null;
+  published_at: string | null;
+  uploaded_at: string | null;
+  sort_date: string;
+  project: { id: string; available: boolean; title: string | null; archived_at: string | null };
+  thumbnail_url: string | null;
+  remote_url: string | null;
+  remote_post_id: string | null;
+  error: { code: string; message: string | null } | null;
+  actions: PublicationActions;
+  privacy_level: string | null;
+};
+
+export type AnyLibraryVideo = LibraryVideo | SocialLibraryVideo;
+
+export function isSocialVideo(video: AnyLibraryVideo): video is SocialLibraryVideo {
+  return video.kind === "social";
+}
+
 /**
  * not_published: never public - YouTube's counters are placeholders, not audience numbers;
  * not_reported: public, but no statistics stored yet; available: YouTube's values (0 is a real 0).
  */
 export type LiveStatsState = "not_published" | "not_reported" | "available";
 
-export type StatusFilter = "all" | "published" | "unlisted" | "scheduled" | "private" | "processing" | "deleted" | "rejected";
+export type StatusFilter = "all" | "published" | "unlisted" | "scheduled" | "private" | "processing" | "deleted" | "rejected" | "uploading" | "failed";
+export type PlatformFilter = "all" | Platform;
 export type ProjectFilter = "all" | "available" | "archived";
 export type AnalyticsFilter = "all" | "available" | "processing";
 export type LibrarySort = "newest" | "oldest" | "views" | "average_view_percentage" | "average_view_duration";
 
-export type LibraryFilters = { status: StatusFilter; project: ProjectFilter; analytics: AnalyticsFilter; q: string; sort: LibrarySort };
+/** ``account`` is a publishing account id ("" = all accounts). */
+export type LibraryFilters = { status: StatusFilter; project: ProjectFilter; analytics: AnalyticsFilter; q: string; sort: LibrarySort; platform: PlatformFilter; account: string };
 
 export type LibrarySummary = {
   total: number;
@@ -83,10 +120,13 @@ export type LibrarySummary = {
   projects_archived: number;
   median_average_view_percentage: number | null;
   median_average_view_percentage_n: number;
+  uploading?: number;
+  failed?: number;
+  platforms?: Record<Platform, number>;
 };
 
 export type VideoLibraryPage = {
-  items: LibraryVideo[];
+  items: AnyLibraryVideo[];
   total: number;
   limit: number;
   offset: number;
@@ -94,6 +134,8 @@ export type VideoLibraryPage = {
   filters: LibraryFilters & { query: string };
   summary: LibrarySummary;
   connection: { channel_id: string | null; channel_title: string | null; status: string };
+  /** Every known publishing account (for the account filter). */
+  accounts?: PublishingAccount[];
 };
 
 export type RetentionPoint = { elapsed_video_ratio: number; second: number | null; audience_watch_ratio: number; relative_retention_performance: number | null };
@@ -142,7 +184,7 @@ export type VideoDetail = {
   publishing: PublishingContext;
 };
 
-export const DEFAULT_FILTERS: LibraryFilters = { status: "all", project: "all", analytics: "all", q: "", sort: "newest" };
+export const DEFAULT_FILTERS: LibraryFilters = { status: "all", project: "all", analytics: "all", q: "", sort: "newest", platform: "all", account: "" };
 export const PAGE_SIZE = 24;
 
 export const STATUS_OPTIONS: Array<[StatusFilter, string]> = [
@@ -153,8 +195,18 @@ export const STATUS_OPTIONS: Array<[StatusFilter, string]> = [
   ["deleted", "Deleted"],
   ["unlisted", "Unlisted"],
   ["processing", "Processing"],
+  ["uploading", "Uploading"],
+  ["failed", "Failed"],
   ["rejected", "Rejected"],
 ];
+export const PLATFORM_OPTIONS: Array<[PlatformFilter, string]> = [["all", "All platforms"], ["youtube", "YouTube"], ["instagram", "Instagram"], ["tiktok", "TikTok"]];
+
+/** "All accounts" plus every account of the chosen platform (all platforms: every account). */
+export function accountFilterOptions(accounts: PublishingAccount[] | undefined, platform: PlatformFilter): Array<[string, string]> {
+  const names: Record<Platform, string> = { youtube: "YouTube", instagram: "Instagram", tiktok: "TikTok" };
+  const relevant = (accounts ?? []).filter((item) => platform === "all" || item.platform === platform);
+  return [["", "All accounts"], ...relevant.map((item): [string, string] => [item.id, `${names[item.platform]} · ${item.platform !== "youtube" && item.handle ? `@${item.handle.replace(/^@/, "")}` : item.display_name}${item.status === "disconnected" ? " (disconnected)" : ""}`])];
+}
 export const PROJECT_OPTIONS: Array<[ProjectFilter, string]> = [["all", "All projects"], ["available", "Project available"], ["archived", "Archived"]];
 export const ANALYTICS_OPTIONS: Array<[AnalyticsFilter, string]> = [["all", "All analytics"], ["available", "Available"], ["processing", "Processing"]];
 export const SORT_OPTIONS: Array<[LibrarySort, string]> = [
@@ -179,7 +231,14 @@ export function parseLibraryFilters(params: Record<string, string | string[] | u
     analytics: pick(params.analytics, ANALYTICS_OPTIONS, "all"),
     q: (Array.isArray(q) ? q[0] : q ?? "").slice(0, 200),
     sort: pick(params.sort, SORT_OPTIONS, "newest"),
+    platform: pick(params.platform, PLATFORM_OPTIONS, "all"),
+    account: accountParam(params.account),
   };
+}
+
+function accountParam(value: string | string[] | undefined): string {
+  const text = (Array.isArray(value) ? value[0] : value) ?? "";
+  return /^[A-Za-z0-9-]{8,36}$/.test(text) ? text : "";
 }
 
 /** Only non-default values, so the plain /videos URL stays plain. */
@@ -195,7 +254,7 @@ export function libraryQuery(filters: LibraryFilters, extra: Record<string, numb
 }
 
 export function sameFilters(a: LibraryFilters, b: LibraryFilters): boolean {
-  return a.status === b.status && a.project === b.project && a.analytics === b.analytics && a.q.trim() === b.q.trim() && a.sort === b.sort;
+  return a.status === b.status && a.project === b.project && a.analytics === b.analytics && a.q.trim() === b.q.trim() && a.sort === b.sort && a.platform === b.platform && a.account === b.account;
 }
 
 /** "—" for a value YouTube has not reported; never a fabricated zero. */
@@ -235,12 +294,12 @@ export function analyticsStateLabel(state: AnalyticsState): string {
   }[state];
 }
 
-export function stateTone(state: LibraryState): "ok" | "info" | "muted" | "warn" | "error" {
+export function stateTone(state: LibraryState | SocialLibraryVideo["state"]): "ok" | "info" | "muted" | "warn" | "error" {
   switch (state) {
     case "published": return "ok";
     case "scheduled": return "info";
-    case "unlisted": case "private": return "muted";
-    case "processing": return "warn";
+    case "unlisted": case "private": case "cancelled": return "muted";
+    case "processing": case "uploading": case "pending": case "missed": return "warn";
     default: return "error";
   }
 }
@@ -278,6 +337,8 @@ export function projectLabel(video: Pick<LibraryVideo, "project">): string {
 export function summaryLine(summary: LibrarySummary): string[] {
   const parts = [`${summary.published} published`, `${summary.scheduled} scheduled`];
   if (summary.private) parts.push(`${summary.private} private`);
+  if (summary.uploading) parts.push(`${summary.uploading} uploading`);
+  if (summary.failed) parts.push(`${summary.failed} failed`);
   if (summary.analytics_processing) parts.push(`${summary.analytics_processing} analytics processing`);
   return parts;
 }

@@ -6,6 +6,7 @@ import { AlertTriangle, CalendarClock, ExternalLink, LoaderCircle, RefreshCw, Up
 import {
   ApiError,
   getProjectYouTube,
+  getPublishTargets,
   refreshYouTubeAnalytics,
   retryYouTubeThumbnail,
   retryYouTubeUpload,
@@ -13,6 +14,7 @@ import {
   setYouTubeAudience,
   syncYouTubeUpload,
 } from "@/lib/api";
+import type { PublishTargets } from "@/lib/publishing";
 import type { Project } from "@/lib/types";
 import {
   PERFORMANCE_METRICS,
@@ -42,7 +44,8 @@ import {
 } from "@/lib/youtube";
 import { cn } from "@/lib/utils";
 import { Button } from "./ui/button";
-import { PublishSheet } from "./youtube-publish-sheet";
+import { SocialPublications } from "./social-publications";
+import { UploadSheet } from "./upload-sheet";
 import { ScheduleFields } from "./youtube-schedule-fields";
 
 type Notice = { tone: "error" | "info" | "success"; text: string };
@@ -68,6 +71,15 @@ export function YouTubePanel({ project, disabled, publishOpen, onPublishOpenChan
   const [scheduling, setScheduling] = useState(false);
   const [schedule, setSchedule] = useState<ScheduleChoice>(() => ({ date: "", time: "", timezone: detectTimeZone() }));
   const [resolution, setResolution] = useState<ScheduleResolution | null>(null);
+  // Instagram/TikTok accounts make Upload available even without YouTube.
+  const [targets, setTargets] = useState<PublishTargets | null>(null);
+  const [publicationsVersion, setPublicationsVersion] = useState(0);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    getPublishTargets(project.id, controller.signal).then(setTargets).catch(() => undefined);
+    return () => controller.abort();
+  }, [project.id, project.current_revision, publicationsVersion]);
 
   const load = useCallback(async () => {
     try {
@@ -139,27 +151,32 @@ export function YouTubePanel({ project, disabled, publishOpen, onPublishOpenChan
   const locked = disabled || busy !== null;
   const connected = connection.status === "connected";
   const others = data.uploads.filter((item) => item.id !== focus?.id && item.youtube_video_id);
-  const { canUpload, newRevision, blockedReason: uploadBlockedReason } = youtubeUploadAction(connection.status, current, focus);
+  const { canUpload: canUploadYouTube, newRevision, blockedReason: uploadBlockedReason } = youtubeUploadAction(connection.status, current, focus);
+  const connectedTargets = (targets?.targets ?? []).filter((item) => item.status === "connected");
+  const otherTargets = connectedTargets.filter((item) => item.platform !== "youtube" || item.external_account_id !== connection.channel_id);
+  const renderReady = current.uploadable || current.code === "already_uploaded";
+  // "Upload" opens the one sheet; its account selector decides the platform/account.
+  const canUpload = canUploadYouTube || (renderReady && otherTargets.length > 0);
 
   return (
     <section className="workspace-card mt-8 p-5" aria-label="YouTube" id="youtube-publishing">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
-          <h2 className="font-semibold">YouTube</h2>
-          <p className="mt-1 text-xs text-[var(--muted-foreground)]">
+          <h2 className="font-semibold">Publishing</h2>
+          <p className="mt-1 text-xs text-[var(--muted-foreground)]">YouTube{" · "}
             {connection.status === "not_connected" && "Not connected"}
             {connection.status === "auth_expired" && "YouTube sign-in expired — reconnect to continue."}
             {connected && <>Connected: <strong className="text-[var(--foreground)]">{connection.channel_title}</strong></>}
           </p>
         </div>
-        {!connected && (
+        {!connected && !canUpload && (
           <Button asChild size="sm" variant="accent">
-            <Link href="/settings/integrations#youtube">{connection.status === "auth_expired" ? "Reconnect YouTube" : "Connect YouTube"}</Link>
+            <Link href="/settings/integrations#youtube">{connection.status === "auth_expired" ? "Reconnect YouTube" : "Connect an account"}</Link>
           </Button>
         )}
         {canUpload && (
           <Button size="sm" variant="accent" disabled={locked} onClick={() => onPublishOpenChange(true)}>
-            <Upload className="size-3.5" /> {newRevision ? "Upload this revision" : "Upload to YouTube"}
+            <Upload className="size-3.5" /> Upload
           </Button>
         )}
       </div>
@@ -204,13 +221,15 @@ export function YouTubePanel({ project, disabled, publishOpen, onPublishOpenChan
         </p>
       )}
 
+      <SocialPublications projectId={project.id} version={publicationsVersion} onChanged={() => setPublicationsVersion((value) => value + 1)} />
+
       <PerformanceSection report={data.performance} />
 
       {publishOpen && (
-        <PublishSheet
+        <UploadSheet
           project={project}
-          onClose={() => { onPublishOpenChange(false); void load(); }}
-          onUploaded={() => { onPublishOpenChange(false); void load(); }}
+          onClose={() => { onPublishOpenChange(false); void load(); setPublicationsVersion((value) => value + 1); }}
+          onUploaded={() => { onPublishOpenChange(false); void load(); setPublicationsVersion((value) => value + 1); }}
         />
       )}
     </section>

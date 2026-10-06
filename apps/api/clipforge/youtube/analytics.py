@@ -27,7 +27,7 @@ from ..models import (
 )
 from ..security.secrets import SecretStore
 from . import content_type as content_types
-from .connection import access_token, active_connection
+from .connection import access_token, list_channels
 from .provider import YouTubeApiError, YouTubeProvider
 from .status import current_state, needs_reconcile
 from .uploads import UploadRefused, sync_status
@@ -410,7 +410,7 @@ def refresh_analytics(
     if due_only and bucket is None:
         return {"status": "not_due", "published_age_hours": round(age_hours, 2)}
     try:
-        _connection, token = access_token(db, settings, store, provider, capability="analytics")
+        _connection, token = access_token(db, settings, store, provider, capability="analytics", channel_id=upload.channel_id)
         start, end = report_window(upload.published_at, now, bucket)  # type: ignore[arg-type]
         metrics, raw = fetch_video_metrics(provider, token, upload.youtube_video_id, start, end)
         content_type, raw_type = fetch_content_type(provider, token, upload.youtube_video_id, start, end)
@@ -484,27 +484,29 @@ def sync_due(
 ) -> dict[str, Any]:
     """Take the snapshots that are due; safe to call from a manual button or cron."""
     now = now or _now()
-    connection = active_connection(db)
-    if connection is None:
+    channels = list_channels(db)
+    if not channels:
         return {"status": "not_connected", "results": []}
-    uploads = db.scalars(
-        select(YouTubeUpload).where(
-            YouTubeUpload.channel_id == connection.channel_id,
-            YouTubeUpload.youtube_video_id.is_not(None),
-            YouTubeUpload.deleted_on_youtube.is_(False),
-        )
-    ).all()
     results = []
-    for upload in uploads:
-        if upload.published_at is None and not needs_reconcile(upload, now=now):
-            continue  # not published yet and YouTube was asked recently
-        try:
-            outcome = refresh_analytics(db, upload, settings, store, provider, now=now, due_only=True)
-        except UploadRefused as exc:
-            outcome = {"status": "skipped", "reason": exc.code}
-        results.append({"upload_id": upload.id, "video_id": upload.youtube_video_id, **outcome})
-        if outcome.get("status") == "error" and (outcome.get("error") or {}).get("code") in {"auth_expired", "quota_exceeded", "not_connected"}:
-            break  # further calls would fail the same way
+    # Every connected channel, each with its own token (never another channel's).
+    for connection in channels:
+        uploads = db.scalars(
+            select(YouTubeUpload).where(
+                YouTubeUpload.channel_id == connection.channel_id,
+                YouTubeUpload.youtube_video_id.is_not(None),
+                YouTubeUpload.deleted_on_youtube.is_(False),
+            )
+        ).all()
+        for upload in uploads:
+            if upload.published_at is None and not needs_reconcile(upload, now=now):
+                continue  # not published yet and YouTube was asked recently
+            try:
+                outcome = refresh_analytics(db, upload, settings, store, provider, now=now, due_only=True)
+            except UploadRefused as exc:
+                outcome = {"status": "skipped", "reason": exc.code}
+            results.append({"upload_id": upload.id, "video_id": upload.youtube_video_id, **outcome})
+            if outcome.get("status") == "error" and (outcome.get("error") or {}).get("code") in {"auth_expired", "quota_exceeded", "not_connected"}:
+                break  # further calls for this channel would fail the same way
     return {"status": "ok", "results": results}
 
 

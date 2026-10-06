@@ -32,6 +32,8 @@ from .config import Settings
 from .exporter import final_master_available
 from .generation import ACTIVE_JOB_STATUSES, serialize_generation_job
 from .models import GenerationJob, Project, YouTubeUpload
+from .publishing.accounts import list_accounts
+from .publishing.read_model import project_publications
 from .services import effective_revision_state
 from .youtube import connection
 from .youtube.routes import focus_upload, render_upload_status
@@ -134,6 +136,7 @@ def _project_summary(
     uploads: list[YouTubeUpload],
     settings: Settings,
     channel_id: str | None,
+    publications: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     state = effective_revision_state(project)
     render = _render_summary(project, state, settings)
@@ -153,6 +156,8 @@ def _project_summary(
         "quality": _quality_summary(state),
         # The same render-level answer the Results page's YouTube card uses.
         "youtube": {"current_render": current, "upload": serialize_upload(focus) if focus else None},
+        # Every platform/account publication of this project (compact).
+        "publications": publications or [],
     }
 
 
@@ -183,7 +188,9 @@ def queue_overview(db: Session, settings: Settings) -> dict[str, Any]:
         project = projects.get(job.project_id)
         items.append({
             "job": serialize_generation_job(job, now=now, queue_position=positions.get(job.id)),
-            "project": _project_summary(db, project, uploads.get(project.id, []), settings, channel_id) if project else None,
+            "project": _project_summary(
+                db, project, uploads.get(project.id, []), settings, channel_id, project_publications(db, project.id),
+            ) if project else None,
         })
     return {
         "run_started_at": _utc(run[0].created_at) if run else None,
@@ -191,5 +198,7 @@ def queue_overview(db: Session, settings: Settings) -> dict[str, Any]:
             "status": record.status if record else "not_connected",
             "channel_title": record.channel_title if record else None,
         },
+        # Any connected publishing account enables the unified Upload action.
+        "publishing": {"connected_accounts": len(list_accounts(db))},
         "items": items,
     }

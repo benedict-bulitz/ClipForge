@@ -1,8 +1,17 @@
-"""The single YouTube connection authority.
+"""YouTube connections: any number of channels, each its own account.
 
-Owns the OAuth flow (browser + PKCE + local callback), the connected channel
-identity and access tokens.  The refresh token is written only to the OS
-keyring (``SecretStore``); access tokens live only in process memory.
+Owns the OAuth flow (browser + PKCE + local callback), the channel identities
+(``publishing_accounts`` rows with ``platform="youtube"``) and access tokens.
+Every channel's refresh token is written only to its own OS keyring entry
+(``YOUTUBE_REFRESH_TOKEN:<account id>``); access tokens live only in process
+memory, keyed by account.  A video, schedule or analytics call always names
+the channel it belongs to (``channel_id``), so one channel's token is never
+used for another channel's video.
+
+The pre-multi-account installation had one ``youtube_connections`` row
+("primary") and one global ``YOUTUBE_REFRESH_TOKEN``; ``accounts`` adopts that
+row and ``_refresh_token`` copies the global token to the adopted account's
+own entry the first time it is needed (non-destructive, see the report).
 """
 from __future__ import annotations
 
@@ -21,7 +30,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..config import Settings
-from ..models import YouTubeConnection
+from ..models import PublishingAccount, YouTubeConnection
+from ..publishing import accounts
 from ..security.secrets import SecretStore
 from .provider import (
     AUTH_URL,
@@ -32,8 +42,10 @@ from .provider import (
     has_capability,
 )
 
-PRIMARY = "primary"
-REFRESH_TOKEN_SECRET = "YOUTUBE_REFRESH_TOKEN"
+PLATFORM = "youtube"
+PRIMARY = "primary"  # the legacy single-connection slot (migration only)
+LEGACY_REFRESH_TOKEN_SECRET = "YOUTUBE_REFRESH_TOKEN"
+REFRESH_TOKEN_BASE = "YOUTUBE_REFRESH_TOKEN"
 PENDING_TTL_SECONDS = 600
 ACCESS_TOKEN_MARGIN_SECONDS = 60
 
@@ -42,10 +54,12 @@ ACCESS_TOKEN_MARGIN_SECONDS = 60
 class _PendingAuthorization:
     verifier: str
     created: float
+    # The account the user asked to reconnect (None = "Add account").
+    account_id: str | None = None
 
 
 _PENDING: dict[str, _PendingAuthorization] = {}
-_ACCESS: dict[str, tuple[str, str, float]] = {}  # slot -> (channel_id, token, expires_monotonic)
+_ACCESS: dict[str, tuple[str, str, float]] = {}  # account id -> (channel_id, token, expires_monotonic)
 _LOCK = Lock()
 
 
@@ -63,13 +77,45 @@ def oauth_client(settings: Settings) -> OAuthClient | None:
     return OAuthClient(client_id=client_id, client_secret=secret, redirect_uri=settings.youtube_oauth_redirect_uri)
 
 
-def get_connection(db: Session) -> YouTubeConnection | None:
-    return db.scalar(select(YouTubeConnection).where(YouTubeConnection.slot == PRIMARY))
+# ---------------------------------------------------------------------------
+# Account lookups
+# ---------------------------------------------------------------------------
 
 
-def active_connection(db: Session) -> YouTubeConnection | None:
-    connection = get_connection(db)
-    return connection if connection is not None and connection.status != "disconnected" else None
+def list_channels(db: Session, *, include_disconnected: bool = False) -> list[PublishingAccount]:
+    return accounts.list_accounts(db, PLATFORM, include_disconnected=include_disconnected)
+
+
+def get_connection(db: Session, account_id: str | None = None) -> PublishingAccount | None:
+    """One YouTube account (``account_id``) or the default one; disconnected
+    identities are returned too (they keep their history)."""
+    if account_id:
+        account = accounts.get_account(db, account_id)
+        return account if account is not None and account.platform == PLATFORM else None
+    current = accounts.default_account(db, PLATFORM)
+    if current is not None:
+        return current
+    rows = accounts.list_accounts(db, PLATFORM, include_disconnected=True)
+    return max(rows, key=lambda item: accounts.aware(item.updated_at) or datetime.min.replace(tzinfo=UTC)) if rows else None
+
+
+def active_connection(db: Session, account_id: str | None = None) -> PublishingAccount | None:
+    """A connected YouTube account: the named one, else the default channel."""
+    connection = get_connection(db, account_id)
+    return connection if accounts.is_active(connection) else None
+
+
+def account_for_channel(db: Session, channel_id: str | None) -> PublishingAccount | None:
+    """The active account of exactly this channel (never another channel's)."""
+    if not channel_id:
+        return None
+    account = accounts.find_account(db, PLATFORM, channel_id)
+    return account if accounts.is_active(account) else None
+
+
+# ---------------------------------------------------------------------------
+# OAuth
+# ---------------------------------------------------------------------------
 
 
 def _pkce_pair() -> tuple[str, str]:
@@ -78,8 +124,12 @@ def _pkce_pair() -> tuple[str, str]:
     return verifier, challenge
 
 
-def begin_authorization(settings: Settings) -> str:
-    """Browser URL for Google's consent screen (offline access, PKCE, CSRF state)."""
+def begin_authorization(settings: Settings, *, account_id: str | None = None) -> str:
+    """Browser URL for Google's consent screen (offline access, PKCE, CSRF state).
+
+    Google's account chooser is always shown, so "Add account" can pick
+    another Google account or brand channel.
+    """
     client = oauth_client(settings)
     if client is None:
         raise YouTubeApiError("client_not_configured", "Add a Google OAuth client ID for YouTube first.")
@@ -89,7 +139,7 @@ def begin_authorization(settings: Settings) -> str:
     with _LOCK:
         for key in [key for key, item in _PENDING.items() if now - item.created > PENDING_TTL_SECONDS]:
             _PENDING.pop(key, None)
-        _PENDING[state] = _PendingAuthorization(verifier=verifier, created=now)
+        _PENDING[state] = _PendingAuthorization(verifier=verifier, created=now, account_id=account_id)
     query = {
         "client_id": client.client_id,
         "redirect_uri": client.redirect_uri,
@@ -106,17 +156,71 @@ def begin_authorization(settings: Settings) -> str:
     return f"{AUTH_URL}?{urlencode(query)}"
 
 
-def _cache_access(slot: str, channel_id: str, token: str, expires_in: float) -> None:
+def _cache_access(account_id: str, channel_id: str, token: str, expires_in: float) -> None:
     with _LOCK:
-        _ACCESS[slot] = (channel_id, token, time.monotonic() + max(0.0, expires_in - ACCESS_TOKEN_MARGIN_SECONDS))
+        _ACCESS[account_id] = (channel_id, token, time.monotonic() + max(0.0, expires_in - ACCESS_TOKEN_MARGIN_SECONDS))
 
 
-def _set_error(db: Session, connection: YouTubeConnection, error: YouTubeApiError | None, *, status: str | None = None) -> None:
-    connection.last_error_code = error.code if error else None
-    connection.last_error_message = error.message if error else None
-    if status:
-        connection.status = status
-    connection.updated_at = datetime.now(UTC)
+def _drop_access(account_id: str) -> None:
+    with _LOCK:
+        _ACCESS.pop(account_id, None)
+
+
+def _legacy_row(db: Session, account: PublishingAccount) -> YouTubeConnection | None:
+    slot = (account.details or {}).get("legacy_slot")
+    return db.get(YouTubeConnection, slot) if slot else None
+
+
+def _refresh_token(store: SecretStore, account: PublishingAccount) -> str | None:
+    """This account's refresh token; the migrated legacy account adopts the old global one."""
+    token = store.get_account_secret(REFRESH_TOKEN_BASE, account.id)
+    if token or not (account.details or {}).get("legacy_secret"):
+        return token
+    legacy = store.get_secret(LEGACY_REFRESH_TOKEN_SECRET)
+    if not legacy:
+        return None
+    store.set_account_secret(REFRESH_TOKEN_BASE, account.id, legacy)
+    if store.get_account_secret(REFRESH_TOKEN_BASE, account.id) != legacy:
+        raise KeyringError("The migrated YouTube credential could not be verified.")
+    return legacy
+
+
+def peek_channel(db: Session, channel_id: str) -> PublishingAccount | YouTubeConnection | None:
+    """Read-only lookup for diagnostics: the channel's account, or its legacy
+    row when it has not been migrated yet (nothing is written)."""
+    account = accounts.find_account(db, PLATFORM, channel_id, migrate=False)
+    if account is not None:
+        return account
+    return next((row for row in db.scalars(select(YouTubeConnection)).all() if row.channel_id == channel_id), None)
+
+
+def stored_refresh_token(store: SecretStore, record: PublishingAccount | YouTubeConnection | None) -> str | None:
+    """Read-only (diagnostics): the refresh token ``access_token`` would use; never copies it."""
+    if isinstance(record, PublishingAccount):
+        token = store.get_account_secret(REFRESH_TOKEN_BASE, record.id)
+        if token or not (record.details or {}).get("legacy_secret"):
+            return token
+        return store.get_secret(LEGACY_REFRESH_TOKEN_SECRET)
+    if isinstance(record, YouTubeConnection) and record.slot == PRIMARY:
+        return store.get_secret(LEGACY_REFRESH_TOKEN_SECRET)
+    return None
+
+
+def _forget_legacy_secret(db: Session, store: SecretStore, account: PublishingAccount) -> None:
+    """The adopted global token is retired once the account has its own (or is disconnected)."""
+    details = dict(account.details or {})
+    if not details.get("legacy_secret"):
+        return
+    try:
+        store.delete_secret(LEGACY_REFRESH_TOKEN_SECRET)
+    except KeyringError:
+        return
+    details["legacy_secret"] = False
+    account.details = details
+    legacy = _legacy_row(db, account)
+    if legacy is not None and legacy.channel_id == account.external_account_id:
+        # Keep the old single-connection row truthful for an older ClipForge.
+        legacy.status = account.status
     db.commit()
 
 
@@ -128,7 +232,7 @@ def complete_authorization(
     *,
     code: str,
     state: str,
-) -> YouTubeConnection:
+) -> PublishingAccount:
     client = oauth_client(settings)
     if client is None:
         raise YouTubeApiError("client_not_configured", "Add a Google OAuth client ID for YouTube first.")
@@ -138,38 +242,31 @@ def complete_authorization(
         raise YouTubeApiError("invalid_state", "This YouTube sign-in link expired or was already used. Start again.")
     grant = provider.exchange_code(client, code, pending.verifier)
     identity = provider.get_my_channel(grant.access_token)
-    existing = get_connection(db)
+    existing = accounts.find_account(db, PLATFORM, identity.channel_id)
     refresh_token = grant.refresh_token
-    if not refresh_token:
+    if not refresh_token and existing is not None:
         try:
-            stored = store.get_secret(REFRESH_TOKEN_SECRET)
+            refresh_token = _refresh_token(store, existing)
         except KeyringError:
-            stored = None
-        if stored and existing is not None and existing.channel_id == identity.channel_id:
-            refresh_token = stored
+            refresh_token = None
     if not refresh_token:
         raise YouTubeApiError("no_refresh_token", "Google did not grant offline access. Remove ClipForge from your Google account permissions and connect again.")
-    try:
-        store.set_secret(REFRESH_TOKEN_SECRET, refresh_token)
-    except KeyringError as exc:
-        raise YouTubeApiError("storage_error", "Secure credential storage is unavailable, so YouTube was not connected.") from exc
     scopes = list(grant.scopes) or list(REQUESTED_SCOPES)
-    now = datetime.now(UTC)
-    if existing is None:
-        existing = YouTubeConnection(slot=PRIMARY, channel_id=identity.channel_id, connected_at=now)
-        db.add(existing)
-    existing.channel_id = identity.channel_id
-    existing.channel_title = identity.title[:200]
-    existing.granted_scopes = scopes
-    existing.status = "connected"
-    existing.last_error_code = None
-    existing.last_error_message = None
-    existing.connected_at = now
-    existing.updated_at = now
-    db.commit()
-    db.refresh(existing)
-    _cache_access(PRIMARY, identity.channel_id, grant.access_token, grant.expires_in)
-    return existing
+    account, _created = accounts.upsert_identity(db, accounts.AccountIdentity(
+        platform=PLATFORM,
+        external_account_id=identity.channel_id,
+        display_name=identity.title[:200],
+        granted_scopes=tuple(scopes),
+        details={"profile_url": f"https://www.youtube.com/channel/{identity.channel_id}"},
+    ))
+    try:
+        store.set_account_secret(REFRESH_TOKEN_BASE, account.id, refresh_token)
+    except (KeyringError, ValueError) as exc:
+        accounts.set_error(db, account, "storage_error", "Secure credential storage is unavailable.", status="auth_expired")
+        raise YouTubeApiError("storage_error", "Secure credential storage is unavailable, so YouTube was not connected.") from exc
+    _forget_legacy_secret(db, store, account)
+    _cache_access(account.id, identity.channel_id, grant.access_token, grant.expires_in)
+    return account
 
 
 def access_token(
@@ -179,53 +276,69 @@ def access_token(
     provider: YouTubeProvider,
     *,
     capability: str,
-) -> tuple[YouTubeConnection, str]:
-    """A valid access token for the connected channel, refreshed when needed."""
-    connection = active_connection(db)
+    channel_id: str | None = None,
+    account_id: str | None = None,
+) -> tuple[PublishingAccount, str]:
+    """A valid access token for one channel, refreshed when needed.
+
+    ``channel_id`` (a video's / schedule's own channel) is authoritative:
+    the token returned always belongs to exactly that channel.  Without it,
+    ``account_id`` or else the default YouTube account is used.
+    """
+    if channel_id:
+        connection = account_for_channel(db, channel_id)
+        if connection is None:
+            raise YouTubeApiError("not_connected", "The YouTube channel this belongs to is not connected. Reconnect it in Settings → Integrations.")
+    else:
+        connection = active_connection(db, account_id)
     if connection is None:
         raise YouTubeApiError("not_connected", "Connect a YouTube channel first.")
     if not has_capability(connection.granted_scopes or [], capability):
         raise YouTubeApiError("insufficient_scope", f"The YouTube connection lacks the permission needed for {capability}. Reconnect and grant all requested permissions.")
     with _LOCK:
-        cached = _ACCESS.get(PRIMARY)
-    if cached and cached[0] == connection.channel_id and cached[2] > time.monotonic():
+        cached = _ACCESS.get(connection.id)
+    if cached and cached[0] == connection.external_account_id and cached[2] > time.monotonic():
         return connection, cached[1]
     client = oauth_client(settings)
     if client is None:
         raise YouTubeApiError("client_not_configured", "The Google OAuth client for YouTube is not configured.")
     try:
-        refresh_token = store.get_secret(REFRESH_TOKEN_SECRET)
-    except KeyringError as exc:
+        refresh_token = _refresh_token(store, connection)
+    except (KeyringError, ValueError) as exc:
         raise YouTubeApiError("storage_error", "Secure credential storage is unavailable.") from exc
     if not refresh_token:
         error = YouTubeApiError("auth_expired", "The YouTube sign-in is missing. Reconnect YouTube.")
-        _set_error(db, connection, error, status="auth_expired")
+        accounts.set_error(db, connection, error.code, error.message, status="auth_expired")
         raise error
     try:
         grant = provider.refresh_access_token(client, refresh_token)
     except YouTubeApiError as exc:
         if exc.code == "auth_expired":
-            with _LOCK:
-                _ACCESS.pop(PRIMARY, None)
-            _set_error(db, connection, exc, status="auth_expired")
+            _drop_access(connection.id)
+            accounts.set_error(db, connection, exc.code, exc.message, status="auth_expired")
         raise
     if grant.scopes:
         connection.granted_scopes = list(grant.scopes)
     if connection.status != "connected" or connection.last_error_code:
         connection.status = "connected"
-        _set_error(db, connection, None)
+        accounts.set_error(db, connection, None, None)
     elif grant.scopes:
         db.commit()
-    _cache_access(PRIMARY, connection.channel_id, grant.access_token, grant.expires_in)
+    _cache_access(connection.id, connection.external_account_id, grant.access_token, grant.expires_in)
     return connection, grant.access_token
 
 
-def disconnect(db: Session, store: SecretStore, provider: YouTubeProvider) -> YouTubeConnection | None:
-    """Revoke (best effort), forget the refresh token, keep the historic identity."""
-    connection = get_connection(db)
+def disconnect(db: Session, store: SecretStore, provider: YouTubeProvider, account_id: str | None = None) -> PublishingAccount | None:
+    """Revoke (best effort), forget this channel's refresh token, keep its identity.
+
+    Other channels' credentials are never touched.
+    """
+    connection = get_connection(db, account_id)
+    if connection is None:
+        return None
     try:
-        refresh_token = store.get_secret(REFRESH_TOKEN_SECRET)
-    except KeyringError:
+        refresh_token = _refresh_token(store, connection)
+    except (KeyringError, ValueError):
         refresh_token = None
     if refresh_token:
         try:
@@ -233,16 +346,15 @@ def disconnect(db: Session, store: SecretStore, provider: YouTubeProvider) -> Yo
         except YouTubeApiError:
             pass  # local disconnect must still succeed offline
     try:
-        store.delete_secret(REFRESH_TOKEN_SECRET)
-    except KeyringError as exc:
+        store.delete_account_secret(REFRESH_TOKEN_BASE, connection.id)
+    except (KeyringError, ValueError) as exc:
         raise YouTubeApiError("storage_error", "Secure credential storage is unavailable.") from exc
-    with _LOCK:
-        _ACCESS.pop(PRIMARY, None)
-    if connection is not None:
-        connection.status = "disconnected"
-        connection.last_error_code = None
-        connection.last_error_message = None
-        connection.updated_at = datetime.now(UTC)
+    _drop_access(connection.id)
+    accounts.mark_disconnected(db, connection)
+    _forget_legacy_secret(db, store, connection)
+    legacy = _legacy_row(db, connection)
+    if legacy is not None and legacy.channel_id == connection.external_account_id and legacy.status != "disconnected":
+        legacy.status = "disconnected"
         db.commit()
     return connection
 
@@ -263,26 +375,32 @@ def client_status(settings: Settings, store: SecretStore) -> dict[str, Any]:
     }
 
 
-def serialize_connection(connection: YouTubeConnection | None, settings: Settings, store: SecretStore) -> dict[str, Any]:
+def capabilities(connection: PublishingAccount) -> dict[str, bool]:
+    scopes = connection.granted_scopes or []
+    return {name: has_capability(scopes, name) for name in ("upload", "read", "schedule", "analytics")}
+
+
+def serialize_connection(connection: PublishingAccount | None, settings: Settings, store: SecretStore) -> dict[str, Any]:
     client = client_status(settings, store)
     if connection is None or connection.status == "disconnected":
         return {
             "status": "not_connected",
+            "account_id": None,
             "channel_id": None,
             "channel_title": None,
-            "previous_channel_id": connection.channel_id if connection else None,
+            "previous_channel_id": connection.external_account_id if connection else None,
             "capabilities": {},
             "client": client,
             "error": None,
         }
-    scopes = connection.granted_scopes or []
     return {
         "status": connection.status,
-        "channel_id": connection.channel_id,
-        "channel_title": connection.channel_title,
-        "channel_url": f"https://www.youtube.com/channel/{connection.channel_id}",
-        "connected_at": connection.connected_at.replace(tzinfo=UTC) if connection.connected_at and connection.connected_at.tzinfo is None else connection.connected_at,
-        "capabilities": {name: has_capability(scopes, name) for name in ("upload", "read", "schedule", "analytics")},
+        "account_id": connection.id,
+        "channel_id": connection.external_account_id,
+        "channel_title": connection.display_name,
+        "channel_url": f"https://www.youtube.com/channel/{connection.external_account_id}",
+        "connected_at": accounts.aware(connection.connected_at),
+        "capabilities": capabilities(connection),
         "client": client,
         "error": {"code": connection.last_error_code, "message": connection.last_error_message} if connection.last_error_code else None,
     }

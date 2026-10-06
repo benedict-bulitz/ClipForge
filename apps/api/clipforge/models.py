@@ -15,6 +15,7 @@ from sqlalchemy import (
     UniqueConstraint,
     event,
     inspect,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -527,6 +528,138 @@ class YouTubeSlotReservation(Base):
     video_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     release_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
+
+
+# ---------------------------------------------------------------------------
+# Multi-platform publishing
+#
+# ``publishing_accounts`` is the one connection authority for every platform
+# (YouTube channels, Instagram professional accounts, TikTok creators): any
+# number of accounts per platform, unique by (platform, external account id).
+# Credentials are never stored here - each account has its own keyring entry
+# ("<BASE>:<account id>").  YouTube publications stay in ``youtube_uploads``
+# (bound to an account through ``channel_id``); Instagram/TikTok publications
+# and their ClipForge-owned schedules live in ``social_publications``.
+# ---------------------------------------------------------------------------
+
+
+class PublishingAccount(Base):
+    __tablename__ = "publishing_accounts"
+    __table_args__ = (
+        UniqueConstraint("platform", "external_account_id", name="uq_publishing_account_external"),
+        # At most one default account per platform (only an initial selection).
+        Index(
+            "uq_publishing_account_default", "platform", unique=True,
+            sqlite_where=text("is_default = 1"), postgresql_where=text("is_default"),
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    # youtube | instagram | tiktok
+    platform: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    # YouTube channel id | Instagram user id | TikTok open_id
+    external_account_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    handle: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    avatar_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # connected | auth_expired | error | disconnected
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="connected")
+    granted_scopes: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    # Provider-reported limits that are not errors (unaudited app, account type, ...).
+    restrictions: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list, nullable=False)
+    # Non-secret provider details (token expiry, Page id, legacy markers).
+    details: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    last_error_code: Mapped[str | None] = mapped_column(String(48), nullable=True)
+    last_error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    connected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    disconnected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
+
+    # YouTube call sites read the channel identity under its own name.
+    @property
+    def channel_id(self) -> str:
+        return self.external_account_id
+
+    @property
+    def channel_title(self) -> str:
+        return self.display_name
+
+
+class PublishingPlatformConfig(Base):
+    """Non-secret per-platform settings (e.g. "the TikTok app passed its audit")."""
+
+    __tablename__ = "publishing_platform_configs"
+
+    platform: Mapped[str] = mapped_column(String(16), primary_key=True)
+    values: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
+
+
+class SocialPublication(Base):
+    """One publishing attempt of one exact render to one Instagram/TikTok account.
+
+    Rows are never reused for a different render or account; a new attempt
+    is a new row.  ``idempotency_key`` is unique while the row is the active
+    publication of that render on that account, so a scheduled post cannot be
+    queued (or executed) twice.  ``lease_until`` makes execution exclusive.
+    """
+
+    __tablename__ = "social_publications"
+    __table_args__ = (
+        Index("ix_social_publications_due", "state", "scheduled_at"),
+        Index("ix_social_publications_project", "project_id", "platform"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    platform: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    # Deliberately no FK: history outlives a removed account or a deleted project.
+    account_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    external_account_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    account_label: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    project_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    project_title: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    project_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    render_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    render_sha256: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    render_file_size: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_kind: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    idempotency_key: Mapped[str | None] = mapped_column(String(300), nullable=True, unique=True)
+    # pending | scheduled | uploading | processing | published | failed | cancelled | missed
+    state: Mapped[str] = mapped_column(String(16), nullable=False, default="pending", index=True)
+    # now | schedule
+    mode: Mapped[str] = mapped_column(String(16), nullable=False, default="now")
+    scheduled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    schedule_timezone: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    schedule_local_time: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # The exact platform metadata sent (caption, privacy, toggles...).
+    metadata_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    # Instagram media container id | TikTok publish_id
+    remote_container_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # Instagram media id | TikTok post id
+    remote_post_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    remote_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    remote_status: Mapped[str | None] = mapped_column(String(48), nullable=True)
+    bytes_uploaded: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    upload_complete: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    publish_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    last_error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Lifecycle log: [{"at", "state", "note"}] (append-only, small).
+    events: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list, nullable=False)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, onupdate=utc_now

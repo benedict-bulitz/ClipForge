@@ -13,22 +13,24 @@ import {
   overviewRefreshNeeded,
   playableSource,
   queueProgressPercent,
+  queuePublicationLines,
   queueQualityBadge,
   queueRowStatus,
-  queueYouTubeAction,
+  queueUploadAction,
   uploadInFlight,
   type ExclusivePlayback,
   type QueueItem,
   type QueueOverview,
   type QueueRowTone,
 } from "@/lib/queue-page";
+import { PLATFORM_LABELS, type ProjectPublication } from "@/lib/publishing";
 import type { GenerationJob, Project } from "@/lib/types";
 import { browserLocale, lifecycleLabel, scheduleLine, type YouTubeUpload } from "@/lib/youtube";
 import { cn } from "@/lib/utils";
 import { Brand } from "./brand";
 import { ThemeToggle } from "./theme-toggle";
 import { Button } from "./ui/button";
-import { PublishSheet } from "./youtube-publish-sheet";
+import { UploadSheet } from "./upload-sheet";
 
 /** While an upload continues in the background, its row is re-read on this cadence (bounded). */
 const UPLOAD_FOLLOW_UP_MS = 5000;
@@ -92,7 +94,7 @@ export function QueueOverviewPage() {
     return () => window.clearTimeout(timer);
   }, [uploading, overview]);
 
-  /** "Upload to YouTube": load the current project, then open the existing publishing sheet. */
+  /** "Upload": load the current project, then open the one unified Upload sheet. */
   async function openPublishing(projectId: string) {
     if (opening) return;
     setOpening(projectId);
@@ -176,7 +178,7 @@ export function QueueOverviewPage() {
               <QueueRow
                 key={item.job.id}
                 item={item}
-                connection={overview.youtube.status}
+                overview={overview}
                 playback={playback}
                 opening={opening === item.job.project_id}
                 locked={opening !== null || publishing !== null}
@@ -189,7 +191,7 @@ export function QueueOverviewPage() {
         )}
       </section>
 
-      {publishing && <PublishSheet project={publishing} onClose={closePublishing} onUploaded={closePublishing} />}
+      {publishing && <UploadSheet project={publishing} onClose={closePublishing} onUploaded={closePublishing} />}
     </main>
   );
 }
@@ -202,9 +204,9 @@ const TONE_CLASS: Record<QueueRowTone, string> = {
   error: "bg-red-50 text-red-800 dark:bg-red-500/15 dark:text-red-300",
 };
 
-function QueueRow({ item, connection, playback, opening, locked, error, onUpload, onPlayerError }: {
+function QueueRow({ item, overview, playback, opening, locked, error, onUpload, onPlayerError }: {
   item: QueueItem;
-  connection: QueueOverview["youtube"]["status"];
+  overview: QueueOverview;
   playback: ExclusivePlayback;
   opening: boolean;
   locked: boolean;
@@ -217,7 +219,7 @@ function QueueRow({ item, connection, playback, opening, locked, error, onUpload
   const progress = queueProgressPercent(job);
   const timing = job.status === "running" ? generationTimeLabel(job) : null;
   const badge = queueQualityBadge(project);
-  const action = queueYouTubeAction(connection, item);
+  const action = queueUploadAction(overview, item);
   const source = playableSource(item);
   const upload = project?.youtube.upload ?? null;
   const title = project?.title || job.prompt;
@@ -242,10 +244,10 @@ function QueueRow({ item, connection, playback, opening, locked, error, onUpload
           {project ? `v${project.current_revision}` : "No project yet"}{project?.duration_seconds ? ` · ${formatDuration(project.duration_seconds)}` : ""}
         </p>
         {/* On narrow screens the status column folds in here. */}
-        <div className="mt-2 lg:hidden"><StatusBlock status={status} progress={progress} timing={timing} badge={badge} upload={upload} /></div>
+        <div className="mt-2 lg:hidden"><StatusBlock status={status} progress={progress} timing={timing} badge={badge} upload={upload} publications={queuePublicationLines(project)} /></div>
       </div>
 
-      <div className="hidden lg:block"><StatusBlock status={status} progress={progress} timing={timing} badge={badge} upload={upload} /></div>
+      <div className="hidden lg:block"><StatusBlock status={status} progress={progress} timing={timing} badge={badge} upload={upload} publications={queuePublicationLines(project)} /></div>
 
       {/* text-xs here: a global `button { font: inherit }` rule overrides the Button's own size. */}
       <div className="col-span-2 flex flex-wrap items-center justify-end gap-2 text-xs lg:col-span-1 lg:flex-col lg:items-stretch">
@@ -255,7 +257,7 @@ function QueueRow({ item, connection, playback, opening, locked, error, onUpload
           </Button>
         )}
         {action.kind === "connect" && (
-          <Button asChild size="sm" variant="outline"><Link href="/settings/integrations#youtube">{action.label}</Link></Button>
+          <Button asChild size="sm" variant="outline"><Link href="/settings/integrations">{action.label}</Link></Button>
         )}
         {status.state !== "unavailable" && (
           <Button asChild size="sm" variant="outline"><Link href={`/projects/${job.project_id}`}>View Details <ArrowRight className="size-3.5" /></Link></Button>
@@ -267,12 +269,13 @@ function QueueRow({ item, connection, playback, opening, locked, error, onUpload
   );
 }
 
-function StatusBlock({ status, progress, timing, badge, upload }: {
+function StatusBlock({ status, progress, timing, badge, upload, publications }: {
   status: ReturnType<typeof queueRowStatus>;
   progress: number | null;
   timing: string | null;
   badge: ReturnType<typeof queueQualityBadge>;
   upload: YouTubeUpload | null;
+  publications: ProjectPublication[];
 }) {
   const locale = browserLocale();
   const current = upload?.current ?? null;
@@ -302,6 +305,12 @@ function StatusBlock({ status, progress, timing, badge, upload }: {
           <span>YouTube: <strong className="font-semibold text-[var(--foreground)]">{lifecycleLabel(upload)}</strong>{current.state === "scheduled" && current.scheduled_for ? ` · ${scheduleLine(current.scheduled_for, zone, locale)}` : ""}</span>
         </p>
       )}
+      {publications.map((item) => (
+        <p key={item.id} className="flex items-center gap-1 text-[var(--muted-foreground)]">
+          <CalendarClock className="size-3 shrink-0" aria-hidden />
+          <span className="truncate">{PLATFORM_LABELS[item.platform]} · {item.account_label}: <strong className="font-semibold text-[var(--foreground)]">{item.state_label}</strong>{item.state === "scheduled" && item.scheduled_at ? ` · ${new Date(item.scheduled_at).toLocaleString(locale)}` : ""}</span>
+        </p>
+      ))}
     </div>
   );
 }

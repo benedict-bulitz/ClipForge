@@ -43,7 +43,7 @@ from ..services import (
     project_local_storage_bytes,
 )
 from . import library
-from .connection import access_token, active_connection
+from .connection import access_token, account_for_channel
 from .provider import YouTubeApiError, YouTubeProvider
 from .uploads import ACTIVE_STATES, UploadRefused, _record_video, serialize_upload, sync_status
 
@@ -110,7 +110,7 @@ def _verify(db: Session, uploads: list[YouTubeUpload], settings: Settings, store
             if upload.youtube_video_id:
                 sync_status(db, upload, settings, store, provider)
             elif upload.upload_session_uri:
-                _connection, token = access_token(db, settings, store, provider, capability="upload")
+                _connection, token = access_token(db, settings, store, provider, capability="upload", channel_id=upload.channel_id)
                 progress = provider.query_upload(token, upload.upload_session_uri, upload.render_file_size)
                 if progress.complete and progress.video:
                     _record_video(db, upload, progress.video)
@@ -297,7 +297,7 @@ def serialize_archive_entry(db: Session, upload: YouTubeUpload, archive: YouTube
     from .learning import api_snapshots, latest_with_data, metric_value
 
     latest = latest_with_data(api_snapshots(db, upload.id))
-    connection = active_connection(db)
+    connection = account_for_channel(db, upload.channel_id)
     return {
         "upload_id": upload.id,
         "project_id": upload.project_id,
@@ -312,6 +312,6 @@ def serialize_archive_entry(db: Session, upload: YouTubeUpload, archive: YouTube
             "averageViewPercentage": metric_value(latest, "averageViewPercentage"),
             "fetched_at": latest.fetched_at if latest else None,
         },
-        "on_connected_channel": bool(connection and connection.channel_id == upload.channel_id),
+        "on_connected_channel": connection is not None,
         "min_sample": min_sample,
     }

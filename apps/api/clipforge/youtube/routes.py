@@ -160,8 +160,12 @@ class OAuthClientUpdate(BaseModel):
 
 
 @router.get("/connection")
-def get_connection_route(db: DbSession, settings: SettingsDep, store: StoreDep) -> dict:
-    return connection.serialize_connection(connection.get_connection(db), settings, store)
+def get_connection_route(db: DbSession, settings: SettingsDep, store: StoreDep, account_id: str | None = None) -> dict:
+    """One channel (``account_id``) or the default channel, plus every connected channel."""
+    return {
+        **connection.serialize_connection(connection.get_connection(db, account_id), settings, store),
+        "channels": [connection.serialize_connection(item, settings, store) | {"is_default": bool(item.is_default)} for item in connection.list_channels(db)],
+    }
 
 
 @router.put("/client")
@@ -178,9 +182,10 @@ def save_client_route(payload: OAuthClientUpdate, db: DbSession, store: StoreDep
 
 
 @router.post("/connection/authorize")
-def authorize_route(settings: SettingsDep) -> dict:
+def authorize_route(settings: SettingsDep, account_id: str | None = None) -> dict:
+    """"Add account" (no ``account_id``) or "Reconnect" one channel."""
     try:
-        return {"authorization_url": connection.begin_authorization(settings)}
+        return {"authorization_url": connection.begin_authorization(settings, account_id=account_id)}
     except YouTubeApiError as exc:
         raise _api_error(exc) from exc
 
@@ -201,17 +206,18 @@ def oauth_callback_route(
         reason = "access_denied" if error == "access_denied" else "authorization_failed"
         return RedirectResponse(f"{target}?{urlencode({'youtube': 'error', 'reason': reason})}", status_code=303)
     try:
-        connection.complete_authorization(db, settings, store, provider, code=code, state=state)
+        account = connection.complete_authorization(db, settings, store, provider, code=code, state=state)
     except YouTubeApiError as exc:
         logger.warning("YouTube connection failed code=%s", exc.code)
         return RedirectResponse(f"{target}?{urlencode({'youtube': 'error', 'reason': exc.code})}", status_code=303)
-    return RedirectResponse(f"{target}?{urlencode({'youtube': 'connected'})}", status_code=303)
+    return RedirectResponse(f"{target}?{urlencode({'youtube': 'connected', 'account': account.id})}", status_code=303)
 
 
 @router.delete("/connection")
-def disconnect_route(db: DbSession, settings: SettingsDep, store: StoreDep, provider: ProviderDep) -> dict:
+def disconnect_route(db: DbSession, settings: SettingsDep, store: StoreDep, provider: ProviderDep, account_id: str | None = None) -> dict:
+    """Disconnect one channel (``account_id``, else the default); others stay connected."""
     try:
-        record = connection.disconnect(db, store, provider)
+        record = connection.disconnect(db, store, provider, account_id)
     except YouTubeApiError as exc:
         raise _api_error(exc) from exc
     return connection.serialize_connection(record, settings, store)
@@ -224,6 +230,8 @@ def disconnect_route(db: DbSession, settings: SettingsDep, store: StoreDep, prov
 
 class UploadCreate(BaseModel):
     base_revision: int
+    # The YouTube account (channel) to upload to; None = the default channel.
+    account_id: str | None = None
     options: publishing.PublishOptions
     region: str = Field(default="US", min_length=2, max_length=2)
     language: str = Field(default="en", max_length=20)
@@ -235,6 +243,7 @@ class UploadCreate(BaseModel):
 
 
 class PreflightCreate(BaseModel):
+    account_id: str | None = None
     options: publishing.PublishOptions
     region: str = Field(default="US", min_length=2, max_length=2)
     language: str = Field(default="en", max_length=20)
@@ -254,9 +263,9 @@ class ManualMetricCreate(BaseModel):
     note: str | None = Field(default=None, max_length=500)
 
 
-def _categories(db: Session, settings: Settings, store: SecretStore, provider: YouTubeProvider, region: str, language: str) -> tuple[list[dict[str, Any]] | None, dict[str, str] | None]:
+def _categories(db: Session, settings: Settings, store: SecretStore, provider: YouTubeProvider, region: str, language: str, account_id: str | None = None) -> tuple[list[dict[str, Any]] | None, dict[str, str] | None]:
     try:
-        _connection, token = connection.access_token(db, settings, store, provider, capability="read")
+        _connection, token = connection.access_token(db, settings, store, provider, capability="read", account_id=account_id)
         return publishing.list_categories(provider, token, region, language), None
     except YouTubeApiError as exc:
         return None, {"code": exc.code, "message": exc.message}
@@ -307,20 +316,23 @@ def _project_or_404(db: Session, project_id: str):
 
 
 @router.get("/projects/{project_id}")
-def project_youtube_route(project_id: str, db: DbSession, settings: SettingsDep, store: StoreDep, provider: ProviderDep) -> dict:
+def project_youtube_route(project_id: str, db: DbSession, settings: SettingsDep, store: StoreDep, provider: ProviderDep, account_id: str | None = None) -> dict:
     """Results-page state. YouTube is asked (freshness-gated) so a page open or a
-    poll never re-shows a stale local schedule as the current truth."""
+    poll never re-shows a stale local schedule as the current truth.
+
+    ``current_render`` is about one channel (``account_id``, else the default);
+    ``uploads`` lists every channel's uploads of this project."""
     project = _project_or_404(db, project_id)
-    record = connection.active_connection(db)
+    record = connection.active_connection(db, account_id)
     rows = db.scalars(
         select(YouTubeUpload).where(YouTubeUpload.project_id == project_id).order_by(YouTubeUpload.created_at.desc())
     ).all()
     current = render_upload_status(db, project, settings, record.channel_id if record else None)
     focus = focus_upload(rows, current)
-    if focus is not None and record is not None and focus.channel_id == record.channel_id:
+    if focus is not None and connection.account_for_channel(db, focus.channel_id) is not None:
         uploads.reconcile_if_due(db, focus, settings, store, provider)
     return {
-        "connection": connection.serialize_connection(connection.get_connection(db), settings, store),
+        "connection": connection.serialize_connection(record or connection.get_connection(db), settings, store),
         "current_render": current,
         "uploads": [uploads.serialize_upload(item) for item in rows],
         "focus_upload_id": focus.id if focus else None,
@@ -331,7 +343,7 @@ def project_youtube_route(project_id: str, db: DbSession, settings: SettingsDep,
 @router.get("/projects/{project_id}/draft")
 def publishing_draft_route(
     project_id: str, db: DbSession, settings: SettingsDep, store: StoreDep, provider: ProviderDep,
-    region: str = "US", language: str = "en", timezone: str | None = None,
+    region: str = "US", language: str = "en", timezone: str | None = None, account_id: str | None = None,
 ) -> dict:
     """Everything the publishing sheet needs, with only user-saved defaults applied.
 
@@ -342,7 +354,9 @@ def publishing_draft_route(
     project = _project_or_404(db, project_id)
     state = effective_revision_state(project)
     defaults = publishing.load_defaults(db)
-    record = connection.active_connection(db)
+    record = connection.active_connection(db, account_id)
+    if account_id and record is None:
+        raise _error("not_connected", "This YouTube channel is not connected. Reconnect it in Settings → Integrations.")
     preset = publishing.last_used_preset(db, record.channel_id if record else None)
     applied = preset if publishing.preset_applies(db, preset) else None
     smart = None
@@ -364,7 +378,7 @@ def publishing_draft_route(
     choices = publishing.thumbnail_choices(state, project.id, settings)
     selected = publishing.default_thumbnail(choices)
     draft["thumbnail"] = {"source": selected["source"], "asset": selected["asset"]} if selected else None
-    categories, category_error = _categories(db, settings, store, provider, region, language)
+    categories, category_error = _categories(db, settings, store, provider, region, language, record.id if record else None)
     suggestion = publishing.suggest_category(categories or [], state)
     render = state.get("render") if isinstance(state.get("render"), dict) else {}
     render_revision = int(render.get("revision") or project.current_revision)
@@ -386,24 +400,25 @@ def publishing_draft_route(
         "allowed_visibilities": publishing.allowed_visibilities(defaults),
         "limits": {"title": publishing.TITLE_LIMIT, "description_bytes": publishing.DESCRIPTION_LIMIT_BYTES, "tags": publishing.TAGS_LIMIT_CHARS},
         "catalog": publishing.settings_catalog(),
-        "render_status": render_upload_status(db, project, settings, record.channel_id if (record := connection.active_connection(db)) else None),
+        "render_status": render_upload_status(db, project, settings, record.channel_id if record else None),
+        "account": {"id": record.id, "channel_id": record.channel_id, "channel_title": record.channel_title} if record else None,
     }
 
 
 @router.post("/projects/{project_id}/preflight")
 def preflight_route(project_id: str, payload: PreflightCreate, db: DbSession, settings: SettingsDep, store: StoreDep, provider: ProviderDep) -> dict:
     project = _project_or_404(db, project_id)
-    categories, _error = _categories(db, settings, store, provider, payload.region, payload.language)
+    categories, _error = _categories(db, settings, store, provider, payload.region, payload.language, payload.account_id)
     issues, resolution, _source = uploads.preflight(db, project, settings, payload.options, categories=categories)
     return {
         "issues": issues,
         "schedule": resolution.as_dict() if resolution else None,
-        "schedule_conflict": _manual_conflict(db, payload.options, resolution),
+        "schedule_conflict": _manual_conflict(db, payload.options, resolution, account_id=payload.account_id),
         "ready": not issues,
     }
 
 
-def _manual_conflict(db: Session, options: publishing.PublishOptions, resolution, *, fresh: tuple[Settings, SecretStore, YouTubeProvider] | None = None) -> dict | None:
+def _manual_conflict(db: Session, options: publishing.PublishOptions, resolution, *, fresh: tuple[Settings, SecretStore, YouTubeProvider] | None = None, account_id: str | None = None) -> dict | None:
     """Conflict warning for a user-chosen time (automatic slots are checked when claimed).
 
     The preflight runs while typing, so it reads the cached schedule only;
@@ -411,7 +426,7 @@ def _manual_conflict(db: Session, options: publishing.PublishOptions, resolution
     """
     if options.visibility != "schedule" or options.schedule_source == "auto" or resolution is None or resolution.status != "ok":
         return None
-    record = connection.active_connection(db)
+    record = connection.active_connection(db, account_id)
     if record is None:
         return None
     try:
@@ -443,8 +458,8 @@ def resolve_schedule_route(payload: publishing.ScheduleChoice) -> dict:
 
 
 @router.get("/categories")
-def categories_route(db: DbSession, settings: SettingsDep, store: StoreDep, provider: ProviderDep, region: str = "US", language: str = "en") -> dict:
-    categories, error = _categories(db, settings, store, provider, region[:2], language[:20])
+def categories_route(db: DbSession, settings: SettingsDep, store: StoreDep, provider: ProviderDep, region: str = "US", language: str = "en", account_id: str | None = None) -> dict:
+    categories, error = _categories(db, settings, store, provider, region[:2], language[:20], account_id)
     return {"categories": categories or [], "error": error}
 
 
@@ -476,10 +491,10 @@ def create_upload_route(
     project = _project_or_404(db, project_id)
     if payload.base_revision != project.current_revision:
         raise _error("revision_conflict", "Project changed; reload before uploading.")
-    record = connection.active_connection(db)
+    record = connection.active_connection(db, payload.account_id)
     if record is None:
-        raise _error("not_connected", "Connect a YouTube channel first.")
-    categories, _error_detail = _categories(db, settings, store, provider, payload.region, payload.language)
+        raise _error("not_connected", "Connect a YouTube channel first." if not payload.account_id else "This YouTube channel is not connected. Reconnect it in Settings → Integrations.")
+    categories, _error_detail = _categories(db, settings, store, provider, payload.region, payload.language, record.id)
     options = payload.options
     reservation = None
     if options.visibility == "schedule" and options.schedule is not None:
@@ -496,7 +511,7 @@ def create_upload_route(
             elif resolution is not None and resolution.publish_at is not None:
                 # The user's own time is kept as is - but never scheduled into a
                 # collision without the user's explicit "Keep anyway".
-                conflict = _manual_conflict(db, options, resolution, fresh=(settings, store, provider))
+                conflict = _manual_conflict(db, options, resolution, fresh=(settings, store, provider), account_id=record.id)
                 if conflict is not None and not payload.accept_schedule_conflict:
                     raise _error("schedule_conflict", conflict["message"], conflict=jsonable_encoder(conflict))
                 reservation = schedule_authority.reserve(
@@ -637,8 +652,8 @@ def sync_due_route(db: DbSession, settings: SettingsDep, store: StoreDep, provid
 
 
 @router.get("/learning")
-def learning_route(db: DbSession, settings: SettingsDep) -> dict:
-    record = connection.active_connection(db)
+def learning_route(db: DbSession, settings: SettingsDep, account_id: str | None = None) -> dict:
+    record = connection.active_connection(db, account_id)
     if record is None:
         raise _error("not_connected", "Connect a YouTube channel first.")
     return {
@@ -652,8 +667,9 @@ def learning_route(db: DbSession, settings: SettingsDep) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def _schedule_channel(db: Session) -> str:
-    record = connection.active_connection(db)
+def _schedule_channel(db: Session, account_id: str | None = None) -> str:
+    """The channel whose publishing schedule is meant (``account_id``, else the default)."""
+    record = connection.active_connection(db, account_id)
     if record is None:
         raise _error("not_connected", "Connect a YouTube channel first.")
     return record.channel_id
@@ -666,8 +682,8 @@ def _schedule_unavailable(db: Session) -> HTTPException:
     return _error("schedule_unavailable", "Could not load publishing schedule.")
 
 
-def _schedule_payload(db: Session, settings: Settings, store: SecretStore, provider: YouTubeProvider, *, timezone: str | None = None, refresh: bool = True, force: bool = False) -> dict:
-    channel_id = _schedule_channel(db)
+def _schedule_payload(db: Session, settings: Settings, store: SecretStore, provider: YouTubeProvider, *, timezone: str | None = None, refresh: bool = True, force: bool = False, account_id: str | None = None) -> dict:
+    channel_id = _schedule_channel(db, account_id)
     try:
         state = schedule_authority.smart_state(db, settings, store, provider, channel_id, timezone_hint=timezone, refresh=refresh, force=force, days=7)
         record = schedule_authority.ensure_schedule(db, channel_id)
@@ -677,31 +693,31 @@ def _schedule_payload(db: Session, settings: Settings, store: SecretStore, provi
 
 
 @router.get("/schedule")
-def get_schedule_route(db: DbSession, settings: SettingsDep, store: StoreDep, provider: ProviderDep, timezone: str | None = None) -> dict:
+def get_schedule_route(db: DbSession, settings: SettingsDep, store: StoreDep, provider: ProviderDep, timezone: str | None = None, account_id: str | None = None) -> dict:
     """Cadence, upcoming overview (YouTube re-checked when stale) and learning status."""
-    return _schedule_payload(db, settings, store, provider, timezone=timezone)
+    return _schedule_payload(db, settings, store, provider, timezone=timezone, account_id=account_id)
 
 
 @router.put("/schedule")
-def save_schedule_route(payload: schedule_authority.ScheduleUpdate, db: DbSession, settings: SettingsDep, store: StoreDep, provider: ProviderDep) -> dict:
-    channel_id = _schedule_channel(db)
+def save_schedule_route(payload: schedule_authority.ScheduleUpdate, db: DbSession, settings: SettingsDep, store: StoreDep, provider: ProviderDep, account_id: str | None = None) -> dict:
+    channel_id = _schedule_channel(db, account_id)
     try:
         schedule_authority.save_schedule(db, channel_id, payload)
     except schedule_authority.ScheduleInvalid as exc:
         raise _error("invalid_schedule", str(exc), errors=exc.errors) from exc
-    return _schedule_payload(db, settings, store, provider, refresh=False)
+    return _schedule_payload(db, settings, store, provider, refresh=False, account_id=account_id)
 
 
 @router.post("/schedule/refresh")
-def refresh_schedule_route(db: DbSession, settings: SettingsDep, store: StoreDep, provider: ProviderDep) -> dict:
+def refresh_schedule_route(db: DbSession, settings: SettingsDep, store: StoreDep, provider: ProviderDep, account_id: str | None = None) -> dict:
     """Explicit "Refresh schedule": always asks YouTube (errors are reported, not hidden)."""
-    return _schedule_payload(db, settings, store, provider, force=True)
+    return _schedule_payload(db, settings, store, provider, force=True, account_id=account_id)
 
 
 @router.get("/schedule/next")
-def next_slot_route(db: DbSession, settings: SettingsDep, store: StoreDep, provider: ProviderDep, refresh: bool = True) -> dict:
+def next_slot_route(db: DbSession, settings: SettingsDep, store: StoreDep, provider: ProviderDep, refresh: bool = True, account_id: str | None = None) -> dict:
     """The sheet's recalculation after "That slot was just taken" / Retry."""
-    channel_id = _schedule_channel(db)
+    channel_id = _schedule_channel(db, account_id)
     try:
         return schedule_authority.smart_state(db, settings, store, provider, channel_id, refresh=refresh)
     except SQLAlchemyError as exc:
@@ -709,9 +725,9 @@ def next_slot_route(db: DbSession, settings: SettingsDep, store: StoreDep, provi
 
 
 @router.post("/schedule/learned/apply")
-def apply_learned_schedule_route(db: DbSession, settings: SettingsDep, store: StoreDep, provider: ProviderDep) -> dict:
+def apply_learned_schedule_route(db: DbSession, settings: SettingsDep, store: StoreDep, provider: ProviderDep, account_id: str | None = None) -> dict:
     """The user's explicit approval of a learned proposal (never automatic)."""
-    channel_id = _schedule_channel(db)
+    channel_id = _schedule_channel(db, account_id)
     record = schedule_authority.ensure_schedule(db, channel_id)
     analysis = schedule_learning.analyze(db, record)
     if not analysis["available"] or not analysis["suggested"]:
@@ -720,7 +736,7 @@ def apply_learned_schedule_route(db: DbSession, settings: SettingsDep, store: St
         schedule_authority.apply_learned_slots(db, record, analysis["suggested"], int(analysis["based_on"]))
     except schedule_authority.ScheduleInvalid as exc:
         raise _error("invalid_schedule", str(exc), errors=exc.errors) from exc
-    return _schedule_payload(db, settings, store, provider, refresh=False)
+    return _schedule_payload(db, settings, store, provider, refresh=False, account_id=account_id)
 
 
 @router.get("/archive")
@@ -770,27 +786,35 @@ def list_videos_route(
     sort: str = "newest",
     limit: Annotated[int, Query(ge=1, le=library.MAX_PAGE_SIZE)] = library.DEFAULT_PAGE_SIZE,
     offset: Annotated[int, Query(ge=0)] = 0,
+    platform: str = "all",
+    account: Annotated[str | None, Query(max_length=36)] = None,
 ) -> dict:
-    """Every successfully uploaded video. Never asks YouTube: it reads the
-    persisted status/statistics and a summary of the latest analytics."""
+    """Every publication (YouTube uploads + Instagram/TikTok posts), filterable
+    by platform and account. Never asks a provider: it reads the persisted
+    status/statistics and a summary of the latest analytics."""
     return jsonable_encoder(library.list_videos(
         db, settings, status=status_filter, project=project, analytics=analytics_filter,
-        query=q, sort=sort, limit=limit, offset=offset,
+        query=q, sort=sort, limit=limit, offset=offset, platform=platform, account=account,
     ))
 
 
 @videos_router.post("/refresh-recent")
-def refresh_recent_videos_route(db: DbSession, settings: SettingsDep, store: StoreDep, provider: ProviderDep) -> dict:
+def refresh_recent_videos_route(db: DbSession, settings: SettingsDep, store: StoreDep, provider: ProviderDep, account_id: str | None = None) -> dict:
     """Explicit "Refresh recent videos": the existing status + due-analytics sync
-    (``refresh_analytics(due_only=True)``) for
+    (``refresh_analytics(due_only=True)``) for every connected channel (or the
+    one ``account_id`` names), each with its own token:
 
-    * the newest videos on the connected channel (bounded status refresh), and
+    * the newest videos on that channel (bounded status refresh), and
     * the channel's published videos whose Analytics capture is due
       (``analytics.due_uploads``, bounded), chosen by due-ness so scheduled or
       newer rows never crowd out an older video YouTube has now processed.
     """
-    record = connection.active_connection(db)
-    if record is None:
+    if account_id:
+        record = connection.active_connection(db, account_id)
+        channels = [record] if record is not None else []
+    else:
+        channels = connection.list_channels(db)
+    if not channels:
         raise _error("not_connected", "Connect a YouTube channel first.")
     results: list[dict] = []
 
@@ -799,16 +823,17 @@ def refresh_recent_videos_route(db: DbSession, settings: SettingsDep, store: Sto
             outcome = analytics.refresh_analytics(db, upload, settings, store, provider, due_only=True)
         except uploads.UploadRefused as exc:
             outcome = {"status": "skipped", "reason": exc.code}
-        results.append({"upload_id": upload.id, "video_id": upload.youtube_video_id, "selected_for": reason, **outcome})
-        # further calls would fail the same way
+        results.append({"upload_id": upload.id, "video_id": upload.youtube_video_id, "channel_id": upload.channel_id, "selected_for": reason, **outcome})
+        # further calls for this channel would fail the same way
         return not (outcome.get("status") == "error" and (outcome.get("error") or {}).get("code") in {"auth_expired", "quota_exceeded", "not_connected", "insufficient_scope"})
 
-    recent = library.recent_videos(db, record.channel_id)
-    proceed = all(refresh(upload, "recent") for upload in recent)
-    due = analytics.due_uploads(db, record.channel_id, exclude={upload.id for upload in recent}) if proceed else []
-    for upload in due:
-        if not refresh(upload, "analytics_due"):
-            break
+    for record in channels:
+        recent = library.recent_videos(db, record.channel_id)
+        proceed = all(refresh(upload, "recent") for upload in recent)
+        due = analytics.due_uploads(db, record.channel_id, exclude={upload.id for upload in recent}) if proceed else []
+        for upload in due:
+            if not refresh(upload, "analytics_due"):
+                break
     errors = [item for item in results if item.get("status") == "error"]
     return {
         "checked": len(results),
@@ -820,10 +845,10 @@ def refresh_recent_videos_route(db: DbSession, settings: SettingsDep, store: Sto
 
 
 @videos_router.get("/performance")
-def performance_overview_route(db: DbSession, settings: SettingsDep, scope: str = performance.DEFAULT_SCOPE) -> dict:
+def performance_overview_route(db: DbSession, settings: SettingsDep, scope: str = performance.DEFAULT_SCOPE, account_id: str | None = None) -> dict:
     """Channel performance over a cohort of videos: one aggregate over the stored
     analytics snapshots. Never calls YouTube (declared before ``/{identifier}``)."""
-    return jsonable_encoder(performance.performance_overview(db, scope=scope, min_sample=settings.youtube_baseline_min_sample))
+    return jsonable_encoder(performance.performance_overview(db, scope=scope, min_sample=settings.youtube_baseline_min_sample, account_id=account_id))
 
 
 @videos_router.get("/{identifier}")
@@ -832,7 +857,6 @@ def video_detail_route(identifier: str, db: DbSession, settings: SettingsDep, st
     upload = library.find_video(db, identifier)
     if upload is None:
         raise HTTPException(status_code=404, detail="Video not found")
-    record = connection.active_connection(db)
-    if record is not None and record.channel_id == upload.channel_id:
+    if connection.account_for_channel(db, upload.channel_id) is not None:
         uploads.reconcile_if_due(db, upload, settings, store, provider)  # freshness-gated, never raises
     return jsonable_encoder(library.video_detail(db, upload, settings))

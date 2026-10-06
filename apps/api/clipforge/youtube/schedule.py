@@ -341,7 +341,7 @@ def sync_remote(
     schedule = ensure_schedule(db, channel_id)
     started = _now()
     try:
-        record, token = access_token(db, settings, store, provider, capability="read")
+        record, token = access_token(db, settings, store, provider, capability="read", channel_id=channel_id)
         if record.channel_id != channel_id:
             raise YouTubeApiError("wrong_channel", "YouTube is connected to a different channel than this schedule belongs to.")
         playlist = schedule.uploads_playlist_id or provider.get_uploads_playlist_id(token)

@@ -34,7 +34,7 @@ import type {
 } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { Button } from "./ui/button";
-import { YouTubeConnectionCard } from "./youtube-connection-card";
+import { PublishingIntegrations } from "./publishing-integrations";
 
 type ProviderDetails = {
   name: string;
@@ -312,7 +312,7 @@ export function IntegrationsSettings() {
             })}
       </div>
 
-      <YouTubeConnectionCard />
+      <PublishingIntegrations />
 
       <section className="cf-surface mt-6 rounded-[22px] border p-5 shadow-sm backdrop-blur sm:p-6">
         <div className="flex flex-col justify-between gap-5 sm:flex-row sm:items-center">

@@ -31,7 +31,7 @@ import {
 
 const sheet = readFileSync(new URL("../components/youtube-publish-sheet.tsx", import.meta.url), "utf8");
 const settingsView = readFileSync(new URL("../components/youtube-publishing-schedule.tsx", import.meta.url), "utf8");
-const card = readFileSync(new URL("../components/youtube-connection-card.tsx", import.meta.url), "utf8");
+const card = readFileSync(new URL("../components/publishing-integrations.tsx", import.meta.url), "utf8");
 const helpers = readFileSync(new URL("./youtube-schedule.ts", import.meta.url), "utf8");
 const fields = readFileSync(new URL("../components/youtube-schedule-fields.tsx", import.meta.url), "utf8");
 
@@ -92,7 +92,7 @@ test("custom slot edits are validated and saved through the API", () => {
   assert.equal(close.errors.length, 0); // not over-policed: only a hint
   assert.equal(close.warnings.length, 1);
   assert.match(settingsView, /saveYouTubeSchedule\(draft\)/);
-  assert.match(card, /\{connected && <YouTubePublishingSchedule \/>\}/);
+  assert.match(card, /platform === "youtube" && connected > 0 && \([^]*<YouTubePublishingSchedule \/>/);
 });
 
 test("the recommendation prefills date and time as the default choice", () => {
@@ -100,7 +100,7 @@ test("the recommendation prefills date and time as the default choice", () => {
   assert.equal(recommendationLabel(recommendation({ local_date: "2026-09-29", local_time: "17:00" }), NOW, "de-DE"), "Tomorrow · 17:00");
   assert.equal(dayContextLine(recommendation(), NOW, "de-DE"), "Today: 12:30 occupied · 17:00 occupied · 21:30 selected");
   assert.deepEqual(applyRecommendedSlot(blank(), recommendation()), { schedule: { date: "2026-09-28", time: "21:30", timezone: BERLIN }, schedule_source: "auto", title: "t" });
-  assert.match(sheet, /getPublishingDraft\(project\.id, region, language, detectTimeZone\(\)\)/);
+  assert.match(sheet, /getPublishingDraft\(project\.id, region, language, detectTimeZone\(\), accountId\)/);
   assert.match(sheet, /schedule: next\.options\.schedule \?\?/);
   assert.match(sheet, /Reason: \{shown\.reason\}/);
   assert.match(sheet, /"Recommended slot"/);
@@ -140,7 +140,8 @@ test("re-renders and schedule refreshes never restore the recommendation over a 
   assert.deepEqual(followRecommendation(auto, newer).schedule, newer.choice);
   // The sheet only ever applies a refresh through followRecommendation, and the draft is loaded once.
   assert.match(sheet, /setOptions\(\(current\) => \(current \? followRecommendation\(current, next\.recommendation\) : current\)\)/);
-  assert.match(sheet, /\}, \[project\.id, region, language\]\);/);
+  // ...once per selected YouTube channel (the unified sheet re-keys it per account).
+  assert.match(sheet, /\}, \[project\.id, region, language, accountId\]\);/);
 });
 
 test('"Use recommended slot" restores the recommendation explicitly', () => {

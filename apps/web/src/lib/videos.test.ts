@@ -39,7 +39,7 @@ const settingsShell = read("../components/settings-shell.tsx");
 const videosPage = read("../app/videos/page.tsx");
 const videoPage = read("../app/videos/[id]/page.tsx");
 const learningPage = read("../app/learning/page.tsx");
-const connectionCard = read("../components/youtube-connection-card.tsx");
+const connectionCard = read("../components/publishing-integrations.tsx");
 
 const video = (overrides: Partial<LibraryVideo> = {}): LibraryVideo => ({
   id: "u1", youtube_video_id: "vid00000001", title: "Why are airplane windows round?", prompt: "Why are airplane windows round?", topic: null,

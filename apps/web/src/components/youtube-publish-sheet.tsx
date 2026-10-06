@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, CalendarClock, Check, CheckCircle2, ChevronDown, ImagePlus, LoaderCircle, Lock, RefreshCw, RotateCcw, Sparkles, Upload, X } from "lucide-react";
+import { AlertTriangle, CalendarClock, Check, CheckCircle2, ChevronDown, ImagePlus, LoaderCircle, Lock, RefreshCw, RotateCcw, Sparkles, Upload } from "lucide-react";
 import { ApiError, getNextYouTubeSlot, getProjectYouTube, getPublishingDraft, mediaUrl, preflightYouTubeUpload, retryYouTubeUpload, scheduleYouTubeUpload, uploadCustomThumbnail, uploadProjectToYouTube } from "@/lib/api";
 import type { Project } from "@/lib/types";
 import {
@@ -50,6 +50,7 @@ import {
   type SmartScheduleState,
 } from "@/lib/youtube-schedule";
 import { cn } from "@/lib/utils";
+import { PublishShell } from "./publish-shell";
 import { Button } from "./ui/button";
 import { ScheduleFields } from "./youtube-schedule-fields";
 
@@ -97,7 +98,12 @@ type Run = { id: string; wantsSchedule: boolean; upload: YouTubeUpload; videoSee
 
 const MAX_POLL_ERRORS = 5;
 
-export function PublishSheet({ project, onClose, onUploaded }: { project: Project; onClose: () => void; onUploaded: () => void }) {
+/**
+ * The YouTube part of the unified Upload sheet.  ``accountId`` is the selected
+ * YouTube channel (account); every request names it, so the draft, the
+ * schedule, the preflight and the upload all target exactly that channel.
+ */
+export function PublishSheet({ project, onClose, onUploaded, accountId = null, selector }: { project: Project; onClose: () => void; onUploaded: () => void; accountId?: string | null; selector?: React.ReactNode }) {
   const locale = browserLocale();
   const region = regionFromLocale(locale);
   const language = locale.split("-")[0] || "en";
@@ -126,7 +132,7 @@ export function PublishSheet({ project, onClose, onUploaded }: { project: Projec
 
   useEffect(() => {
     let active = true;
-    getPublishingDraft(project.id, region, language, detectTimeZone())
+    getPublishingDraft(project.id, region, language, detectTimeZone(), accountId)
       .then((next) => {
         if (!active) return;
         const timezone = next.smart_schedule?.schedule?.timezone || next.defaults.timezone || detectTimeZone();
@@ -139,7 +145,7 @@ export function PublishSheet({ project, onClose, onUploaded }: { project: Projec
       })
       .catch((reason) => { if (active) setError(reason instanceof Error ? reason.message : "Publishing settings could not be loaded."); });
     return () => { active = false; };
-  }, [project.id, region, language]);
+  }, [project.id, region, language, accountId]);
 
   // The backend is the one settings authority: it re-checks everything.
   useEffect(() => {
@@ -148,12 +154,12 @@ export function PublishSheet({ project, onClose, onUploaded }: { project: Projec
     const payload = { ...options, schedule: options.visibility === "schedule" ? options.schedule : null };
     const timer = window.setTimeout(() => {
       setChecking(true);
-      preflightYouTubeUpload(project.id, payload, region, language, controller.signal)
+      preflightYouTubeUpload(project.id, payload, region, language, controller.signal, accountId)
         .then((result) => { setIssues(result.issues); setConflict(result.schedule_conflict ?? null); setChecking(false); })
         .catch(() => { if (!controller.signal.aborted) setChecking(false); });
     }, 300);
     return () => { controller.abort(); window.clearTimeout(timer); };
-  }, [options, project.id, region, language]);
+  }, [options, project.id, region, language, accountId]);
 
   const phase: PublishPhase | null = useMemo(() => {
     if (!run) return null;
@@ -169,7 +175,7 @@ export function PublishSheet({ project, onClose, onUploaded }: { project: Projec
     if (!run || phase?.tone !== "busy") return;
     const controller = new AbortController();
     const timer = window.setTimeout(() => {
-      getProjectYouTube(project.id, controller.signal)
+      getProjectYouTube(project.id, controller.signal, accountId)
         .then((data) => {
           const found = data.uploads.find((item) => item.id === run.id);
           const now = Date.now();
@@ -183,7 +189,7 @@ export function PublishSheet({ project, onClose, onUploaded }: { project: Projec
         });
     }, STATUS_POLL_MS);
     return () => { controller.abort(); window.clearTimeout(timer); };
-  }, [run, phase?.tone, project.id]);
+  }, [run, phase?.tone, project.id, accountId]);
 
   // Success stays visible briefly (and is announced), then the sheet closes itself.
   const closeAfter = phase?.close ? (phase.tone === "success" ? SUCCESS_VISIBLE_MS : PARTIAL_VISIBLE_MS) : null;
@@ -206,7 +212,7 @@ export function PublishSheet({ project, onClose, onUploaded }: { project: Projec
 
   if (!draft || !options) {
     return (
-      <Shell onClose={onClose}>
+      <Shell onClose={onClose} selector={selector}>
         <div className="grid min-h-60 place-items-center p-6 text-sm text-[var(--muted-foreground)]">
           {error ? <p role="alert" className="text-red-700">{error}</p> : <span className="flex items-center gap-2"><LoaderCircle className="size-4 animate-spin" /> Preparing your upload…</span>}
         </div>
@@ -257,7 +263,7 @@ export function PublishSheet({ project, onClose, onUploaded }: { project: Projec
       const result = await uploadProjectToYouTube(
         project.id, project.current_revision,
         { ...options, schedule: wantsSchedule ? options.schedule : null, schedule_source: wantsSchedule ? options.schedule_source ?? "manual" : null },
-        region, language, false, auto && useCachedSchedule, keepConflict,
+        region, language, false, auto && useCachedSchedule, keepConflict, accountId,
       );
       follow(result.upload, wantsSchedule);
     } catch (reason) {
@@ -316,7 +322,7 @@ export function PublishSheet({ project, onClose, onUploaded }: { project: Projec
   ];
 
   return (
-    <Shell onClose={onClose}>
+    <Shell onClose={onClose} selector={selector}>
       <div className="min-h-0 flex-1 overflow-y-auto">
         {draft.preset_source === "last_upload" && (
           <p className="mx-5 mt-4 flex gap-1.5 rounded-lg bg-black/[.03] px-3 py-2 text-[11px] text-[var(--muted-foreground)] sm:mx-6">
@@ -413,7 +419,7 @@ export function PublishSheet({ project, onClose, onUploaded }: { project: Projec
                   onRetry={() => {
                     setCheckingSlots(true);
                     setSlotNotice(null);
-                    getNextYouTubeSlot(true)
+                    getNextYouTubeSlot(true, accountId)
                       .then((next) => {
                         setSmart(next);
                         // Only an automatic selection follows the planner; a manual time stays.
@@ -644,19 +650,10 @@ function PublishFeedback({ phase, submitError }: { phase: PublishPhase | null; s
   );
 }
 
-function Shell({ children, onClose }: { children: React.ReactNode; onClose: () => void }) {
+function Shell({ children, onClose, selector }: { children: React.ReactNode; onClose: () => void; selector?: React.ReactNode }) {
   return (
-    <div className="fixed inset-0 z-[80] flex justify-end bg-black/40" role="dialog" aria-modal="true" aria-labelledby="publish-sheet-title">
-      <div className="flex h-full w-full max-w-[760px] flex-col border-l border-[var(--border)] bg-[var(--background)] shadow-[0_0_80px_rgba(0,0,0,.25)]">
-        <header className="flex items-center justify-between border-b border-[var(--border)] px-5 py-4 sm:px-6">
-          <div>
-            <h2 id="publish-sheet-title" className="text-lg font-semibold tracking-[-.02em]">Upload to YouTube</h2>
-            <p className="text-xs text-[var(--muted-foreground)]">Straight from ClipForge — no export needed. <Link href="/settings/integrations#youtube" className="underline">Upload defaults</Link></p>
-          </div>
-          <button type="button" className="interactive-icon" onClick={onClose} aria-label="Close"><X className="size-4" /></button>
-        </header>
-        {children}
-      </div>
-    </div>
+    <PublishShell onClose={onClose} selector={selector} subtitle={<>YouTube · straight from ClipForge — no export needed. <Link href="/settings/integrations#youtube" className="underline">Upload defaults</Link></>}>
+      {children}
+    </PublishShell>
   );
 }

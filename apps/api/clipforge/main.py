@@ -46,6 +46,10 @@ from .media_candidates import (
 from .models import GenerationJob, Project, YouTubeUpload
 from .music import available_music_tracks, resolve_track_path
 from .pipeline import UnsupportedEdit
+from .publishing.routes import get_publishing_apis
+from .publishing.routes import router as publishing_router
+from .publishing.scheduler import SchedulerThread
+from .publishing.scheduler import start_scheduler as start_publishing_scheduler
 from .queue_overview import queue_overview
 from .renderer import RenderUnavailable, VoiceGenerationError, readiness
 from .runtime_identity import label as runtime_label
@@ -131,12 +135,21 @@ async def lifespan(_app: FastAPI):
         mark_interrupted_generation_jobs(db)
         mark_interrupted_uploads(db)
     schedule_next_generation(settings)
+    # Instagram/TikTok schedules are owned by ClipForge: recover and run them
+    # while this backend is up (startup recovery happens inside the thread).
+    publishing_scheduler = None
+    if settings.publishing_scheduler_enabled:
+        publishing_scheduler = start_publishing_scheduler(SchedulerThread(
+            SessionLocal, get_settings, get_secret_store, get_publishing_apis,
+        ))
     # Home suggestions are researched beside the app; generation never waits for it.
     topic_intelligence.warm_pool_in_background(
         SessionLocal, settings,
         lambda db: topic_intelligence.default_deps(db, settings, get_secret_store(), get_youtube_provider()),
     )
     yield
+    if publishing_scheduler is not None:
+        publishing_scheduler.stop()
 
 
 settings = get_settings()
@@ -159,6 +172,7 @@ app.add_middleware(
 )
 app.include_router(integrations_router)
 app.include_router(youtube_router)
+app.include_router(publishing_router)
 app.include_router(videos_router)
 app.include_router(topic_intelligence_router)
 

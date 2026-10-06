@@ -373,20 +373,25 @@ export function disconnectYouTube() {
   return request<import("./youtube").YouTubeConnection>("/youtube/connection", { method: "DELETE" });
 }
 
-export function getProjectYouTube(projectId: string, signal?: AbortSignal) {
-  return request<import("./youtube").ProjectYouTube>(`/youtube/projects/${projectId}`, { cache: "no-store", signal });
+/** ``accountId`` names the YouTube channel (account); without it the default channel. */
+function accountQuery(accountId?: string | null, joiner: "?" | "&" = "?") {
+  return accountId ? `${joiner}account_id=${encodeURIComponent(accountId)}` : "";
 }
 
-export function uploadProjectToYouTube(projectId: string, baseRevision: number, options: import("./youtube").PublishOptions, region: string, language: string, forceNew = false, allowCachedSchedule = false, acceptScheduleConflict = false) {
+export function getProjectYouTube(projectId: string, signal?: AbortSignal, accountId?: string | null) {
+  return request<import("./youtube").ProjectYouTube>(`/youtube/projects/${projectId}${accountQuery(accountId)}`, { cache: "no-store", signal });
+}
+
+export function uploadProjectToYouTube(projectId: string, baseRevision: number, options: import("./youtube").PublishOptions, region: string, language: string, forceNew = false, allowCachedSchedule = false, acceptScheduleConflict = false, accountId?: string | null) {
   return request<{ upload: import("./youtube").YouTubeUpload; started: boolean; warnings: string[] }>(`/youtube/projects/${projectId}/uploads`, {
     method: "POST",
-    body: JSON.stringify({ base_revision: baseRevision, options, region, language, force_new: forceNew, allow_cached_schedule: allowCachedSchedule, accept_schedule_conflict: acceptScheduleConflict }),
+    body: JSON.stringify({ base_revision: baseRevision, account_id: accountId ?? null, options, region, language, force_new: forceNew, allow_cached_schedule: allowCachedSchedule, accept_schedule_conflict: acceptScheduleConflict }),
   });
 }
 
-export function getPublishingDraft(projectId: string, region: string, language: string, timezone?: string) {
+export function getPublishingDraft(projectId: string, region: string, language: string, timezone?: string, accountId?: string | null) {
   const zone = timezone ? `&timezone=${encodeURIComponent(timezone)}` : "";
-  return request<import("./youtube").PublishingDraft>(`/youtube/projects/${projectId}/draft?region=${encodeURIComponent(region)}&language=${encodeURIComponent(language)}${zone}`, { cache: "no-store" });
+  return request<import("./youtube").PublishingDraft>(`/youtube/projects/${projectId}/draft?region=${encodeURIComponent(region)}&language=${encodeURIComponent(language)}${zone}${accountQuery(accountId, "&")}`, { cache: "no-store" });
 }
 
 // Smart Slot Planner ----------------------------------------------------------
@@ -403,18 +408,18 @@ export function refreshYouTubeSchedule() {
   return request<import("./youtube-schedule").ScheduleOverview>("/youtube/schedule/refresh", { method: "POST" });
 }
 
-export function getNextYouTubeSlot(refresh = true) {
-  return request<import("./youtube-schedule").SmartScheduleState>(`/youtube/schedule/next?refresh=${refresh ? "true" : "false"}`, { cache: "no-store" });
+export function getNextYouTubeSlot(refresh = true, accountId?: string | null) {
+  return request<import("./youtube-schedule").SmartScheduleState>(`/youtube/schedule/next?refresh=${refresh ? "true" : "false"}${accountQuery(accountId, "&")}`, { cache: "no-store" });
 }
 
 export function applyLearnedYouTubeSchedule() {
   return request<import("./youtube-schedule").ScheduleOverview>("/youtube/schedule/learned/apply", { method: "POST" });
 }
 
-export function preflightYouTubeUpload(projectId: string, options: import("./youtube").PublishOptions, region: string, language: string, signal?: AbortSignal) {
+export function preflightYouTubeUpload(projectId: string, options: import("./youtube").PublishOptions, region: string, language: string, signal?: AbortSignal, accountId?: string | null) {
   return request<import("./youtube").Preflight>(`/youtube/projects/${projectId}/preflight`, {
     method: "POST",
-    body: JSON.stringify({ options, region, language }),
+    body: JSON.stringify({ account_id: accountId ?? null, options, region, language }),
     signal,
   });
 }
@@ -474,6 +479,94 @@ export function getProjectDeletePlan(projectId: string) {
 /** Explicit destructive delete after the upload status could not be verified. */
 export function deleteProjectConfirmingUnverified(projectId: string) {
   return request<{ mode: string; freed_bytes: number; retained_bytes: number }>(`/projects/${projectId}?confirm_unverified=true`, { method: "DELETE" });
+}
+
+// Multi-platform publishing ----------------------------------------------------
+
+type Overview = import("./publishing").AccountsOverview;
+
+export function getPublishingAccounts() {
+  return request<Overview>("/publishing/accounts", { cache: "no-store" });
+}
+
+/** "+ Add account" (no ``accountId``) or "Reconnect" one account. */
+export function startPlatformAuthorization(platform: import("./publishing").Platform, accountId?: string | null) {
+  return request<{ authorization_url: string }>(`/publishing/${platform}/authorize${accountQuery(accountId)}`, { method: "POST" });
+}
+
+export function disconnectPublishingAccount(accountId: string) {
+  return request<Overview>(`/publishing/accounts/${encodeURIComponent(accountId)}`, { method: "DELETE" });
+}
+
+export function setDefaultPublishingAccount(accountId: string) {
+  return request<Overview>(`/publishing/accounts/${encodeURIComponent(accountId)}/default`, { method: "PUT" });
+}
+
+export function checkPublishingAccount(accountId: string) {
+  return request<{ ok: boolean; error?: { code: string; message: string }; account: import("./publishing").PublishingAccount }>(`/publishing/accounts/${encodeURIComponent(accountId)}/check`, { method: "POST" });
+}
+
+/** Developer-app credentials go to the system keychain; responses only say "configured". */
+export function savePlatformClient(platform: import("./publishing").Platform, clientId: string, clientSecret: string | null) {
+  return request<Overview>(`/publishing/${platform}/client`, { method: "PUT", body: JSON.stringify({ client_id: clientId, client_secret: clientSecret || null }) });
+}
+
+export function savePlatformConfig(platform: "tiktok" | "instagram", values: { app_audited?: boolean; login_config_id?: string | null }) {
+  return request<Overview>(`/publishing/${platform}/config`, { method: "PUT", body: JSON.stringify(values) });
+}
+
+export function getPublishTargets(projectId: string, signal?: AbortSignal) {
+  return request<import("./publishing").PublishTargets>(`/publishing/projects/${projectId}/targets`, { cache: "no-store", signal });
+}
+
+export function getSocialDraft(projectId: string, accountId: string, signal?: AbortSignal) {
+  return request<import("./publishing").SocialDraft>(`/publishing/projects/${projectId}/draft?account_id=${encodeURIComponent(accountId)}`, { cache: "no-store", signal });
+}
+
+export type SocialPublicationBody = {
+  account_id: string;
+  base_revision: number;
+  mode: "now" | "schedule";
+  schedule: import("./youtube").ScheduleChoice | null;
+  instagram?: import("./publishing").InstagramOptions;
+  tiktok?: import("./publishing").TikTokOptions;
+  force_new?: boolean;
+};
+
+export function preflightSocialPublication(projectId: string, body: SocialPublicationBody, signal?: AbortSignal) {
+  return request<import("./publishing").SocialPreflight>(`/publishing/projects/${projectId}/preflight`, { method: "POST", body: JSON.stringify(body), signal });
+}
+
+export function createSocialPublication(projectId: string, body: SocialPublicationBody) {
+  return request<{ publication: import("./publishing").SocialPublication; started: boolean; scheduler: import("./publishing").SchedulerStatus }>(`/publishing/projects/${projectId}/publications`, { method: "POST", body: JSON.stringify(body) });
+}
+
+export function listSocialPublications(query: { projectId?: string; platform?: string; accountId?: string }, signal?: AbortSignal) {
+  const params = new URLSearchParams();
+  if (query.projectId) params.set("project_id", query.projectId);
+  if (query.platform) params.set("platform", query.platform);
+  if (query.accountId) params.set("account_id", query.accountId);
+  return request<{ publications: import("./publishing").SocialPublication[]; scheduler: import("./publishing").SchedulerStatus }>(`/publishing/publications?${params.toString()}`, { cache: "no-store", signal });
+}
+
+export function getSocialPublication(publicationId: string, signal?: AbortSignal) {
+  return request<{ publication: import("./publishing").SocialPublication }>(`/publishing/publications/${encodeURIComponent(publicationId)}`, { cache: "no-store", signal });
+}
+
+export function cancelSocialPublication(publicationId: string) {
+  return request<{ publication: import("./publishing").SocialPublication }>(`/publishing/publications/${encodeURIComponent(publicationId)}/cancel`, { method: "POST" });
+}
+
+export function publishMissedNow(publicationId: string) {
+  return request<{ publication: import("./publishing").SocialPublication }>(`/publishing/publications/${encodeURIComponent(publicationId)}/publish-now`, { method: "POST" });
+}
+
+export function rescheduleSocialPublication(publicationId: string, schedule: import("./youtube").ScheduleChoice) {
+  return request<{ publication: import("./publishing").SocialPublication }>(`/publishing/publications/${encodeURIComponent(publicationId)}/reschedule`, { method: "POST", body: JSON.stringify(schedule) });
+}
+
+export function retrySocialPublication(publicationId: string) {
+  return request<{ publication: import("./publishing").SocialPublication }>(`/publishing/publications/${encodeURIComponent(publicationId)}/retry`, { method: "POST" });
 }
 
 // Video Library ---------------------------------------------------------------

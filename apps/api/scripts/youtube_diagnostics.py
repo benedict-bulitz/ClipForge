@@ -150,7 +150,7 @@ def _live(db, upload: YouTubeUpload, settings) -> None:
     provider, store = GoogleYouTubeProvider(), SecretStore()
     print("\nLive (read-only, not saved):")
     try:
-        _connection, token = connection.access_token(db, settings, store, provider, capability="read")
+        _connection, token = connection.access_token(db, settings, store, provider, capability="read", channel_id=upload.channel_id)
         items = provider.list_videos(token, [upload.youtube_video_id], STATUS_PARTS)
         if not items:
             print("  video not found on YouTube (deleted?)")
@@ -159,7 +159,7 @@ def _live(db, upload: YouTubeUpload, settings) -> None:
         stats = items[0].get("statistics") or {}
         print(f"  privacy={status.get('privacyStatus')} uploadStatus={status.get('uploadStatus')} publishAt={status.get('publishAt')} publishedAt={(items[0].get('snippet') or {}).get('publishedAt')}")
         print(f"  views={stats.get('viewCount')} likes={stats.get('likeCount')} comments={stats.get('commentCount')}")
-        _connection, token = connection.access_token(db, settings, store, provider, capability="analytics")
+        _connection, token = connection.access_token(db, settings, store, provider, capability="analytics", channel_id=upload.channel_id)
         start, end = analytics.report_window(upload.published_at or upload.created_at or datetime.now(UTC), datetime.now(UTC))
         metrics, _raw = analytics.fetch_video_metrics(provider, token, upload.youtube_video_id, start, end)
         for name, item in metrics.items():
@@ -313,7 +313,7 @@ def _analytics_live(db, settings, video_id: str) -> None:
     if upload is None:
         print("  no ClipForge upload maps to this video ID")
         return
-    record = connection.get_connection(db)
+    record = connection.peek_channel(db, upload.channel_id)
     now = datetime.now(UTC)
     published = upload.published_at
     print(f"  upload={upload.id} channel={upload.channel_id} (connected: {record.channel_id if record else '-'}, match={bool(record and record.channel_id == upload.channel_id)})")
@@ -346,7 +346,7 @@ def _analytics_live(db, settings, video_id: str) -> None:
         print("  OAuth client not configured")
         return
     try:
-        refresh_token = store.get_secret(connection.REFRESH_TOKEN_SECRET)
+        refresh_token = connection.stored_refresh_token(store, record)
         if not refresh_token:
             print("  no refresh token stored - reconnect YouTube")
             return

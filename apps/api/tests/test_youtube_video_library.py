@@ -108,7 +108,8 @@ def test_successful_upload_appears_with_identity_state_and_links(db, settings, s
     item = page["items"][0]
     assert item["id"] == row.id and item["youtube_video_id"] == row.youtube_video_id
     assert item["title"] == row.title and item["prompt"] == "Why are airplane windows round?"
-    assert item["channel"] == {"id": "UC_fake_channel_01", "title": "Knowledge Lab"}
+    assert {key: item["channel"][key] for key in ("id", "title", "connected")} == {"id": "UC_fake_channel_01", "title": "Knowledge Lab", "connected": True}
+    assert item["platform"] == "youtube" and item["channel"]["account_id"]
     assert item["state"] in {"private", "processing"} and item["state_label"]
     assert item["project"]["available"] is True and item["project"]["id"] == PID
     assert item["duration_seconds"] == 10.0 and item["scene_count"] == 4 and item["format"] == "explanation"
@@ -295,7 +296,9 @@ def test_index_query_does_not_load_raw_retention_or_raw_responses(db, settings, 
     # the fingerprint document (with its per-scene rows) is only read through JSON paths
     whole = [re.sub(r"json_extract\(production_fingerprints\.fingerprint", "", item) for item in statements]
     assert not [item for item in whole if "production_fingerprints.fingerprint" in item]
-    assert len(statements) <= 12  # bounded, independent of the number of videos
+    # bounded, independent of the number of videos (+2: the one read of all
+    # publishing accounts, including the legacy-connection adoption check)
+    assert len(statements) <= 14
 
 
 # ---------------------------------------------------------------------------
@@ -386,7 +389,7 @@ def test_index_scales_without_per_video_queries(db, settings, store, fake):
         event.remove(engine, "before_cursor_execute", listener)
     assert page["total"] == 120 and len(page["items"]) == 24 and page["items"][0]["title"] == "Bulk video 0"
     assert page["items"][0]["thumbnail_url"] is None and page["items"][0]["project"]["available"] is False
-    assert len(statements) <= 12
+    assert len(statements) <= 14
 
 
 # ---------------------------------------------------------------------------
