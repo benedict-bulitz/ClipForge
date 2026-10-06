@@ -25,6 +25,7 @@ import {
   liveStatValue,
   liveStatsNote,
   projectHref,
+  removalNotice,
   retentionPolyline,
   sceneChange,
   type VideoDetail,
@@ -33,6 +34,7 @@ import { cn } from "@/lib/utils";
 import { Brand } from "./brand";
 import { Alert } from "./ui/alert";
 import { Button } from "./ui/button";
+import { DeleteVideoButton, DeleteVideoDialog } from "./delete-video-dialog";
 import { ThemeToggle } from "./theme-toggle";
 import { StateChip, VideoThumbnail, scheduledTime } from "./video-library";
 
@@ -110,6 +112,8 @@ export function VideoDetailPage({ videoId }: { videoId: string }) {
   const [busy, setBusy] = useState<"status" | "analytics" | null>(null);
   const [notice, setNotice] = useState<{ tone: "error" | "info"; text: string } | null>(null);
   const [now, setNow] = useState(() => new Date());
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleted, setDeleted] = useState<{ tone: "success" | "warning"; text: string } | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -164,6 +168,18 @@ export function VideoDetailPage({ videoId }: { videoId: string }) {
     </header>
   );
 
+  if (deleted) {
+    return (
+      <main className="theme-app min-h-screen bg-[var(--background)]">
+        {header}
+        <div className="mx-auto max-w-[1100px] px-4 pt-10 sm:px-6">
+          <Alert tone={deleted.tone} size="lg" title="Deleted from ClipForge">{deleted.text}</Alert>
+          <Button asChild variant="outline" size="sm" className="mt-4"><Link href="/videos"><ArrowLeft className="size-3.5" /> Back to Videos</Link></Button>
+        </div>
+      </main>
+    );
+  }
+
   if (!detail) {
     return (
       <main className="theme-app min-h-screen bg-[var(--background)]">
@@ -172,7 +188,7 @@ export function VideoDetailPage({ videoId }: { videoId: string }) {
           {error ? (
             <div role="alert" className="workspace-card p-5">
               <p className="font-semibold">{error.missing ? "Video not found" : "Could not load this video"}</p>
-              <p className="mt-1 text-sm text-[var(--muted-foreground)]">{error.missing ? "It is not in the Video Library (only successful YouTube uploads appear there)." : error.text}</p>
+              <p className="mt-1 text-sm text-[var(--muted-foreground)]">{error.missing ? "It is not in the Video Library: only successful uploads appear there, and a video deleted from ClipForge is no longer listed." : error.text}</p>
               <Button asChild variant="outline" size="sm" className="mt-4"><Link href="/videos"><ArrowLeft className="size-3.5" /> Back to Videos</Link></Button>
             </div>
           ) : <p className="flex items-center gap-2 text-sm text-[var(--muted-foreground)]"><LoaderCircle className="size-4 animate-spin" /> Loading…</p>}
@@ -235,6 +251,7 @@ export function VideoDetailPage({ videoId }: { videoId: string }) {
               <Button variant="ghost" size="sm" onClick={() => void run("analytics")} disabled={busy !== null || !connected || current.state === "deleted"} title={connected ? undefined : "Connect this video's channel in Settings to refresh"}>
                 {busy === "analytics" ? <LoaderCircle className="size-3.5 animate-spin" /> : <RefreshCw className="size-3.5" />} Refresh analytics
               </Button>
+              <DeleteVideoButton video={video} size="page" onClick={() => setConfirmDelete(true)} />
             </div>
             {!video.youtube_actions.available && <p id="youtube-actions-reason" className="mt-2 text-xs text-[var(--muted-foreground)]">{video.youtube_actions.reason}</p>}
             {notice && <Alert tone={notice.tone} size="sm" className="mt-2">{notice.text}</Alert>}
@@ -374,6 +391,13 @@ export function VideoDetailPage({ videoId }: { videoId: string }) {
           </Section>
         </div>
       </div>
+      {confirmDelete && (
+        <DeleteVideoDialog
+          video={video}
+          onCancel={() => setConfirmDelete(false)}
+          onDeleted={(result) => { setConfirmDelete(false); setDeleted(removalNotice(result, video.title)); }}
+        />
+      )}
     </main>
   );
 }

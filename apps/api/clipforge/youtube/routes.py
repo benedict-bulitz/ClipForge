@@ -28,6 +28,7 @@ from . import (
     connection,
     learning,
     library,
+    library_removal,
     lifecycle,
     performance,
     publishing,
@@ -97,6 +98,7 @@ ERROR_STATUS = {
     "provider_error": status.HTTP_502_BAD_GATEWAY,
     "storage_error": status.HTTP_503_SERVICE_UNAVAILABLE,
     "not_found": status.HTTP_404_NOT_FOUND,
+    "publication_in_progress": status.HTTP_409_CONFLICT,
     "deleted_on_youtube": status.HTTP_410_GONE,
     "already_uploaded": status.HTTP_409_CONFLICT,
     "unknown_outcome": status.HTTP_409_CONFLICT,
@@ -860,3 +862,19 @@ def video_detail_route(identifier: str, db: DbSession, settings: SettingsDep, st
     if connection.account_for_channel(db, upload.channel_id) is not None:
         uploads.reconcile_if_due(db, upload, settings, store, provider)  # freshness-gated, never raises
     return jsonable_encoder(library.video_detail(db, upload, settings))
+
+
+@videos_router.delete("/{identifier}")
+def remove_video_route(identifier: str, db: DbSession, settings: SettingsDep) -> dict:
+    """Remove one video from the Video Library (single video only).
+
+    Deletes the entry's own local preview and hides the entry; keeps the
+    publication record, its analytics and the project.  Never calls YouTube,
+    Instagram or TikTok and never deletes a remote post.  Idempotent: a
+    repeated request answers ``already_removed``."""
+    try:
+        return jsonable_encoder(library_removal.remove_from_library(db, identifier, settings))
+    except LookupError:
+        raise _error("not_found", "This video is not in the Video Library.") from None
+    except library_removal.LibraryRemovalRefused as exc:
+        raise _error(exc.code, exc.message) from exc

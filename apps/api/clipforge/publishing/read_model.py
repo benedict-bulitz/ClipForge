@@ -106,6 +106,8 @@ def social_library(
         statement = statement.where(SocialPublication.account_id == account_id)
     if not include_cancelled:
         statement = statement.where(SocialPublication.state != "cancelled")
+    # Entries the user removed from the Videos tab (the record itself is kept).
+    statement = statement.where(SocialPublication.library_removed_at.is_(None))
     text = query.strip()[:200]
     if text:
         like = f"%{text}%"

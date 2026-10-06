@@ -268,6 +268,9 @@ class YouTubeUpload(Base):
     # Video Library: file name of the small retained preview (render_root /
     # "video-library"); it outlives the project's own media.
     library_thumbnail: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    # Removed from the Video Library by the user (the publication record, its
+    # analytics and the remote video are kept; only the library entry is gone).
+    library_removed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     uploaded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_status_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_analytics_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -660,6 +663,8 @@ class SocialPublication(Base):
     events: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list, nullable=False)
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Removed from the Video Library by the user; the record itself is kept.
+    library_removed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, onupdate=utc_now

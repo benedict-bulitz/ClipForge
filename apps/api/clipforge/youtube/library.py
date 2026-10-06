@@ -14,7 +14,9 @@ A read model only.  Everything shown here comes from the existing authorities:
 
 The only thing this module stores is a small preview image per video (a few
 KB, ``render_root / "video-library"``), kept so a video stays recognisable
-after its project's heavy media was deleted.
+after its project's heavy media was deleted.  A video the user removed from
+the library (``library_removed_at``, see ``library_removal``) is left out of
+the index and the detail page but stays in analytics and learning.
 """
 from __future__ import annotations
 
@@ -114,6 +116,14 @@ def library_condition():
             _has_snapshot(),
         ),
     )
+
+
+def listed_condition():
+    """Library videos the user has not removed from the Videos tab.
+
+    ``library_condition`` stays the analytics/learning cohort: removing a video
+    from the library never changes channel performance or learning."""
+    return and_(library_condition(), YouTubeUpload.library_removed_at.is_(None))
 
 
 def library_state(upload: YouTubeUpload, now: datetime) -> str:
@@ -368,7 +378,7 @@ def ensure_library_thumbnail(
     is gone nothing new can be made: the video keeps what it has (or the UI's
     placeholder).  ``""`` records "no usable image" so pages do not re-scan.
     """
-    if not upload.youtube_video_id:
+    if not upload.youtube_video_id or upload.library_removed_at is not None:
         return None
     if thumbnail_path(upload, settings) is not None:
         return upload.library_thumbnail
@@ -620,7 +630,7 @@ def list_videos(
     else:
         platform_scope = ("youtube", "instagram", "tiktok") if platform == "all" else (platform,)
     # Pass 1: a column projection of every library video (state inputs only).
-    youtube_query = select(YouTubeUpload).options(load_only(*_STATE_COLUMNS)).where(library_condition())
+    youtube_query = select(YouTubeUpload).options(load_only(*_STATE_COLUMNS)).where(listed_condition())
     if selected_account is not None and selected_account.platform == "youtube":
         youtube_query = youtube_query.where(YouTubeUpload.channel_id == selected_account.external_account_id)
     base = list(db.scalars(youtube_query).all()) if "youtube" in platform_scope else []
@@ -637,7 +647,7 @@ def list_videos(
     analytics_counts = {"available": 0, "processing": 0}
     view_percentages: list[float] = []
     project_ids = set(db.scalars(
-        select(Project.id).where(Project.id.in_(select(YouTubeUpload.project_id).where(library_condition()).scalar_subquery()))
+        select(Project.id).where(Project.id.in_(select(YouTubeUpload.project_id).where(listed_condition()).scalar_subquery()))
     ).all())
     # Library-wide counts, independent of the current filters.
     for upload in base:
@@ -666,7 +676,7 @@ def list_videos(
             select(YouTubeUpload.id)
             .outerjoin(Project, Project.id == YouTubeUpload.project_id)
             .outerjoin(YouTubeLearningArchive, YouTubeLearningArchive.project_id == YouTubeUpload.project_id)
-            .where(library_condition(), _search_condition(query[:200]))
+            .where(listed_condition(), _search_condition(query[:200]))
         ).all())
         selected = [upload for upload in selected if upload.id in matching]
     if project in {"available", "archived"}:
@@ -782,14 +792,16 @@ def _merge(
 # ---------------------------------------------------------------------------
 
 
-def find_video(db: Session, identifier: str) -> YouTubeUpload | None:
-    """By upload id (stable internal id), or by YouTube video id."""
+def find_video(db: Session, identifier: str, *, include_removed: bool = False) -> YouTubeUpload | None:
+    """By upload id (stable internal id), or by YouTube video id; ``None`` once
+    the video was removed from the library (unless ``include_removed``)."""
     upload = db.get(YouTubeUpload, identifier)
     if upload is None:
         upload = db.scalar(select(YouTubeUpload).where(YouTubeUpload.youtube_video_id == identifier))
     if upload is None:
         return None
-    return upload if db.scalar(select(YouTubeUpload.id).where(YouTubeUpload.id == upload.id, library_condition())) else None
+    condition = library_condition() if include_removed else listed_condition()
+    return upload if db.scalar(select(YouTubeUpload.id).where(YouTubeUpload.id == upload.id, condition)) else None
 
 
 def retention_curve(db: Session, snapshot_id: str | None, duration: float | None) -> list[dict[str, Any]]:

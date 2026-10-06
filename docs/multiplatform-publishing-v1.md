@@ -126,3 +126,28 @@ publication's event log and in the API (`GET /api/publishing/publications/<id>`
 The same fields are logged once per failure by
 `clipforge.publishing.publications` (never the raw response body). The UI shows
 the provider message and a copyable "Provider code … · HTTP … · log_id …" line.
+
+## Deleting a video from ClipForge (Videos tab)
+
+`DELETE /api/videos/<id>` (the trash action on a Videos row or the detail
+page, always behind a confirmation) removes **one** library entry
+(`youtube/library_removal.py`). A library entry is a publication record, so:
+
+* **Deleted:** the entry's own Video Library preview
+  (`render_root/video-library/<upload id>.webp|jpg`). Only a file with exactly
+  that ClipForge-made name directly in that folder is removed; any other
+  stored value, path or symlink target is never touched.
+* **Hidden:** the record gets `library_removed_at`, so the index and detail
+  page no longer show it.
+* **Cancelled:** an Instagram/TikTok post that has not started uploading
+  (scheduled, queued or missed) is cancelled atomically with respect to the
+  scheduler, so a deleted entry never publishes later. A post being uploaded
+  right now is refused (409 `publication_in_progress`).
+* **Kept:** the publication record (remote id/URL, event log, idempotency
+  key), YouTube analytics snapshots and the production fingerprint (Channel
+  Performance and learning are unchanged), the project with its canonical
+  final render (delete the project separately), and every remote post -
+  ClipForge never calls YouTube, Instagram or TikTok here.
+
+Repeating the request answers `already_removed` and retries a preview
+cleanup that failed before (`cleanup_complete: false`).

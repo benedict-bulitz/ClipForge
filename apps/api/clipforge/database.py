@@ -58,6 +58,7 @@ YOUTUBE_UPLOAD_V2_COLUMNS = (
     ("schedule_slot_time", "VARCHAR(5)"),
     # Video Library
     ("library_thumbnail", "VARCHAR(120)"),
+    ("library_removed_at", "DATETIME"),
 )
 
 
@@ -99,6 +100,10 @@ def ensure_runtime_schema(bind: Engine | None = None) -> None:
             for name, ddl in YOUTUBE_UPLOAD_V2_COLUMNS:
                 if name not in upload_columns:
                     connection.exec_driver_sql(f"ALTER TABLE youtube_uploads ADD COLUMN {name} {ddl}")
+        if inspector.has_table("social_publications"):
+            social_columns = {column["name"] for column in inspector.get_columns("social_publications")}
+            if "library_removed_at" not in social_columns:
+                connection.exec_driver_sql("ALTER TABLE social_publications ADD COLUMN library_removed_at DATETIME")
         if "active_tip_revision" not in project_columns:
             connection.exec_driver_sql(
                 "ALTER TABLE projects ADD COLUMN active_tip_revision INTEGER NOT NULL DEFAULT 1"

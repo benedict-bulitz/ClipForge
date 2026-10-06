@@ -417,3 +417,90 @@ export function refreshNotice(result: { checked: number; analytics_due?: number;
   if (result.error) parts.push(result.error.message);
   return `${parts.join(" · ")}${result.error ? "" : "."}`;
 }
+
+// ---------------------------------------------------------------------------
+// Deleting one video from ClipForge (single video; never a remote post)
+// ---------------------------------------------------------------------------
+
+/** What DELETE /api/videos/{id} did (the record, analytics and project are kept). */
+export type VideoRemoval = {
+  id: string;
+  platform: Platform;
+  status: "removed" | "already_removed";
+  removed_media: Array<{ kind: "library_preview"; name: string; bytes: number }>;
+  freed_bytes: number;
+  cleanup_complete: boolean;
+  cancelled_schedule: boolean;
+  retained: { publication_record: boolean; remote_post: boolean; project: boolean };
+};
+
+const REMOVAL_PLATFORM_LABELS: Record<Platform, string> = { youtube: "YouTube", instagram: "Instagram", tiktok: "TikTok" };
+/** Instagram/TikTok states that ClipForge cancels before anything was uploaded. */
+const CANCELLED_ON_REMOVAL = new Set(["pending", "scheduled", "missed"]);
+
+function removalPlatform(video: AnyLibraryVideo): Platform {
+  return isSocialVideo(video) ? video.platform : "youtube";
+}
+
+/** Whether the video can be deleted now (only a post being uploaded right now cannot). */
+export function removalBlocked(video: AnyLibraryVideo): string | null {
+  return isSocialVideo(video) && (video.state === "uploading" || video.state === "processing")
+    ? `This video is being published to ${REMOVAL_PLATFORM_LABELS[video.platform]} right now. Delete it once publishing has finished or failed.`
+    : null;
+}
+
+/** The confirmation dialog: what is deleted locally, and that remote posts stay. */
+export function removalDialogCopy(video: AnyLibraryVideo): { title: string; body: string; details: string[]; confirm: string } {
+  const platform = REMOVAL_PLATFORM_LABELS[removalPlatform(video)];
+  const details: string[] = [];
+  if (isSocialVideo(video) && CANCELLED_ON_REMOVAL.has(video.state)) {
+    details.push(`Its ${platform} post has not been published yet: ClipForge cancels it, so it will not be published.`);
+  } else if (!isSocialVideo(video) && video.state === "scheduled") {
+    details.push("This video is already on YouTube and stays scheduled there: YouTube still publishes it at the scheduled time.");
+  } else {
+    details.push(`Anything already published on ${platform} stays online. Delete it in ${platform} itself if you want it gone.`);
+  }
+  if (!isSocialVideo(video)) details.push("Its analytics keep counting in Channel Performance and learning.");
+  details.push(video.project.available
+    ? "The project and its rendered video stay in your projects. Delete the project separately to remove those files."
+    : "The project was already deleted; its learning record is kept.");
+  return {
+    title: "Delete this video from ClipForge?",
+    body: "This removes the local ClipForge copy (the Videos entry and its preview image). It does NOT delete posts already published on YouTube, TikTok or Instagram.",
+    details,
+    confirm: "Delete from ClipForge",
+  };
+}
+
+/** The feedback after a successful delete (warning when the preview could not be deleted yet). */
+export function removalNotice(result: VideoRemoval, title: string): { tone: "success" | "warning"; text: string } {
+  const name = `“${title}”`;
+  if (!result.cleanup_complete) {
+    return { tone: "warning", text: `${name} was deleted from ClipForge, but its preview image could not be deleted yet. Deleting it again retries the cleanup.` };
+  }
+  const remote = result.retained.remote_post ? ` It is still online on ${REMOVAL_PLATFORM_LABELS[result.platform]}.` : "";
+  const cancelled = result.cancelled_schedule ? " Its scheduled post was cancelled." : "";
+  return { tone: "success", text: `${name} was deleted from ClipForge.${cancelled}${remote}` };
+}
+
+/** The library summary bucket a video is counted in (same rule as the API). */
+function summaryBucket(video: AnyLibraryVideo): string {
+  if (isSocialVideo(video)) return video.status_bucket;
+  return video.state === "processing_failed" ? "rejected" : video.state;
+}
+
+/** The list without the deleted video; totals and the header summary follow so the page never shows a stale count. */
+export function withoutVideo(page: VideoLibraryPage, items: AnyLibraryVideo[], id: string): { page: VideoLibraryPage; items: AnyLibraryVideo[] } {
+  const video = items.find((item) => item.id === id);
+  if (!video) return { page, items };
+  const summary: LibrarySummary = { ...page.summary, total: Math.max(0, page.summary.total - 1) };
+  const counts = summary as unknown as Record<string, unknown>;
+  const bucket = summaryBucket(video);
+  if (typeof counts[bucket] === "number") counts[bucket] = Math.max(0, (counts[bucket] as number) - 1);
+  const platform = removalPlatform(video);
+  if (summary.platforms) summary.platforms = { ...summary.platforms, [platform]: Math.max(0, (summary.platforms[platform] ?? 0) - 1) };
+  return {
+    items: items.filter((item) => item.id !== id),
+    page: { ...page, total: Math.max(0, page.total - 1), next_offset: page.next_offset === null ? null : Math.max(0, page.next_offset - 1), summary },
+  };
+}

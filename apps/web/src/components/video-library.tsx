@@ -25,16 +25,19 @@ import {
   liveStatValue,
   liveStatsNote,
   projectHref,
+  removalNotice,
   projectLabel,
   refreshNotice,
   sameFilters,
   stateTone,
   summaryLine,
+  withoutVideo,
   type AnyLibraryVideo,
   type LibraryFilters,
   type LibraryVideo,
   type SocialLibraryVideo,
   type VideoLibraryPage,
+  type VideoRemoval,
 } from "@/lib/videos";
 import { PLATFORM_LABELS, PRIVACY_LABELS, diagnosticsLine } from "@/lib/publishing";
 import { browserLocale, detectTimeZone, scheduleLine } from "@/lib/youtube";
@@ -42,6 +45,7 @@ import { cn } from "@/lib/utils";
 import { badgeClass, type BadgeTone } from "@/lib/alerts";
 import { Brand } from "./brand";
 import { ChannelPerformance } from "./channel-performance";
+import { DeleteVideoButton, DeleteVideoDialog } from "./delete-video-dialog";
 import { Alert } from "./ui/alert";
 import { Button } from "./ui/button";
 import { ThemeToggle } from "./theme-toggle";
@@ -108,7 +112,7 @@ function YouTubeLinks({ video }: { video: LibraryVideo }) {
   );
 }
 
-function VideoRow({ video }: { video: LibraryVideo }) {
+function VideoRow({ video, onDelete }: { video: LibraryVideo; onDelete: () => void }) {
   const href = `/videos/${video.id}`;
   const project = projectHref(video);
   const state = video.analytics.state;
@@ -150,6 +154,7 @@ function VideoRow({ video }: { video: LibraryVideo }) {
           <span className="ml-auto flex items-center gap-1">
             {project && <Link href={project} className="interactive-text">Open project</Link>}
             <YouTubeLinks video={video} />
+            <DeleteVideoButton video={video} onClick={onDelete} />
           </span>
         </div>
       </div>
@@ -158,7 +163,7 @@ function VideoRow({ video }: { video: LibraryVideo }) {
 }
 
 /** An Instagram/TikTok publication: its own state, account and link (no YouTube analytics). */
-function SocialVideoRow({ video }: { video: SocialLibraryVideo }) {
+function SocialVideoRow({ video, onDelete }: { video: SocialLibraryVideo; onDelete: () => void }) {
   const project = projectHref(video);
   const scheduled = (video.state === "scheduled" || video.state === "missed") && video.scheduled_for;
   return (
@@ -187,6 +192,7 @@ function SocialVideoRow({ video }: { video: SocialLibraryVideo }) {
           <span className="ml-auto flex items-center gap-1">
             {project && <Link href={project} className="interactive-text">Open project</Link>}
             {video.remote_url && <a href={video.remote_url} target="_blank" rel="noreferrer" className="interactive-text"><ExternalLink className="size-3" /> {PLATFORM_LABELS[video.platform]}</a>}
+            <DeleteVideoButton video={video} onClick={onDelete} />
           </span>
         </div>
       </div>
@@ -222,6 +228,8 @@ export function VideoLibrary({ initialFilters }: { initialFilters: LibraryFilter
   const [refreshing, setRefreshing] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [performanceKey, setPerformanceKey] = useState(0);
+  const [deleting, setDeleting] = useState<AnyLibraryVideo | null>(null);
+  const [deleteNotice, setDeleteNotice] = useState<{ tone: "success" | "warning"; text: string } | null>(null);
   const sequence = useRef(0);
 
   /** The first page for these filters; a newer request always wins. */
@@ -300,6 +308,23 @@ export function VideoLibrary({ initialFilters }: { initialFilters: LibraryFilter
     }
   }
 
+  /** Delete only opens the confirmation; nothing is deleted before "Delete from ClipForge". */
+  function askDelete(video: AnyLibraryVideo) {
+    setDeleteNotice(null);
+    setDeleting(video);
+  }
+
+  /** Confirmed and done: the entry leaves the list at once (no reload needed). */
+  function videoDeleted(video: AnyLibraryVideo, result: VideoRemoval) {
+    setDeleting(null);
+    setDeleteNotice(removalNotice(result, video.title));
+    if (page) {
+      const next = withoutVideo(page, items, video.id);
+      setPage(next.page);
+      setItems(next.items);
+    }
+  }
+
   const summary = page?.summary;
   const filtered = !sameFilters(filters, { ...filters, status: "all", project: "all", analytics: "all", q: "", platform: "all", account: "" });
   const youtubeVisible = filters.platform === "all" || filters.platform === "youtube";
@@ -351,6 +376,11 @@ export function VideoLibrary({ initialFilters }: { initialFilters: LibraryFilter
         </div>
 
         {error && <Alert tone="error" size="lg" className="mt-5">{error}</Alert>}
+        {deleteNotice && (
+          <Alert tone={deleteNotice.tone} className="mt-5" action={<Button variant="ghost" size="sm" onClick={() => setDeleteNotice(null)}>Dismiss</Button>}>
+            {deleteNotice.text}
+          </Alert>
+        )}
         {loading && !page && <p className="mt-6 flex items-center gap-2 text-sm text-[var(--muted-foreground)]"><LoaderCircle className="size-4 animate-spin" /> Loading…</p>}
         {page && !loading && items.length === 0 && (
           <p className="mt-6 text-sm text-[var(--muted-foreground)]">
@@ -364,7 +394,7 @@ export function VideoLibrary({ initialFilters }: { initialFilters: LibraryFilter
           </p>
         )}
         <ul className={cn("mt-2 space-y-2", loading && page && "opacity-60")}>
-          {items.map((video) => (isSocialVideo(video) ? <SocialVideoRow key={video.id} video={video} /> : <VideoRow key={video.id} video={video} />))}
+          {items.map((video) => (isSocialVideo(video) ? <SocialVideoRow key={video.id} video={video} onDelete={() => askDelete(video)} /> : <VideoRow key={video.id} video={video} onDelete={() => askDelete(video)} />))}
         </ul>
         {page?.next_offset !== null && page?.next_offset !== undefined && (
           <div className="mt-4 flex justify-center text-xs">
@@ -374,6 +404,7 @@ export function VideoLibrary({ initialFilters }: { initialFilters: LibraryFilter
           </div>
         )}
       </div>
+      {deleting && <DeleteVideoDialog video={deleting} onCancel={() => setDeleting(null)} onDeleted={(result) => videoDeleted(deleting, result)} />}
     </main>
   );
 }

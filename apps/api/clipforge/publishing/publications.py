@@ -562,6 +562,29 @@ def cancel(db: Session, row: SocialPublication, *, now: datetime | None = None) 
     return row
 
 
+def cancel_unstarted(db: Session, row: SocialPublication, *, now: datetime, note: str) -> bool:
+    """Cancel a publication that has not started uploading, atomically with
+    respect to ``claim`` (one conditional UPDATE), so the scheduler can never
+    take it afterwards.  ``False`` (nothing changed) when it already started.
+    The caller commits."""
+    result = db.execute(
+        update(SocialPublication)
+        .where(
+            SocialPublication.id == row.id,
+            SocialPublication.state.in_(("pending", "scheduled", "missed")),
+            SocialPublication.remote_container_id.is_(None),
+            or_(SocialPublication.lease_until.is_(None), SocialPublication.lease_until < now),
+        )
+        .values(state="cancelled", cancelled_at=now, idempotency_key=None, next_attempt_at=None, updated_at=now)
+        .execution_options(synchronize_session=False)
+    )
+    db.refresh(row)
+    if result.rowcount != 1:
+        return False
+    _event(row, "cancelled", note, now=now)
+    return True
+
+
 def publish_missed_now(db: Session, row: SocialPublication, *, now: datetime | None = None) -> SocialPublication:
     """The user's explicit decision to publish a missed post now."""
     if row.state != "missed":

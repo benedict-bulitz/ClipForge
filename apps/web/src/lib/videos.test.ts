@@ -192,9 +192,10 @@ test("detail has status, stale warning and the YouTube actions", () => {
   assert.match(detail, /current\.stale &&/);
   assert.match(detail, /syncYouTubeUpload\(detail\.video\.id\)/);
   assert.match(detail, /refreshYouTubeAnalytics\(detail\.video\.id\)/);
-  // no YouTube video deletion in this feature
-  assert.doesNotMatch(detail, /deleteVideo|deleteYouTube|method: "DELETE"/);
-  assert.doesNotMatch(api, /deleteYouTubeVideo|\/videos\/[^`"]*`, \{ method: "DELETE"/);
+  // never a YouTube video deletion: the only /videos DELETE removes the local ClipForge entry
+  assert.doesNotMatch(detail, /deleteVideo\(|deleteYouTube|method: "DELETE"/);
+  assert.doesNotMatch(api, /deleteYouTubeVideo|\/youtube\/uploads[^`"]*[`"], \{ method: "DELETE"/);
+  assert.deepEqual(api.match(/\/videos\/[^`"]*`, \{ method: "DELETE"/g), ["/videos/${encodeURIComponent(id)}`, { method: \"DELETE\""]);
 });
 
 test("detail shows production and publishing context", () => {

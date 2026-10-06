@@ -579,6 +579,11 @@ export function getVideo(id: string, signal?: AbortSignal) {
   return request<import("./videos").VideoDetail>(`/videos/${encodeURIComponent(id)}`, { cache: "no-store", signal });
 }
 
+/** Delete one video from ClipForge (its Videos entry + preview); never a remote post. */
+export function deleteVideo(id: string) {
+  return request<import("./videos").VideoRemoval>(`/videos/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
 /** Channel Performance over one cohort: one aggregate over stored analytics (no YouTube call). */
 export function getPerformanceOverview(scope: import("./performance").PerformanceScope, signal?: AbortSignal) {
   return request<import("./performance").PerformanceOverview>(`/videos/performance?scope=${encodeURIComponent(scope)}`, { cache: "no-store", signal });
