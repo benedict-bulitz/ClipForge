@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, CheckCircle2, ExternalLink, Info, LoaderCircle, Upload } from "lucide-react";
+import { ExternalLink, LoaderCircle, Upload } from "lucide-react";
 import { ApiError, createSocialPublication, getSocialDraft, getSocialPublication, preflightSocialPublication, type SocialPublicationBody } from "@/lib/api";
 import type { Project } from "@/lib/types";
 import {
@@ -25,7 +25,9 @@ import {
 } from "@/lib/publishing";
 import { browserLocale, detectTimeZone, formatScheduleConfirmation, type ScheduleChoice, type ScheduleResolution } from "@/lib/youtube";
 import { cn } from "@/lib/utils";
+import { restrictionTone } from "@/lib/alerts";
 import { PublishShell } from "./publish-shell";
+import { Alert } from "./ui/alert";
 import { Button } from "./ui/button";
 import { ScheduleFields } from "./youtube-schedule-fields";
 
@@ -129,7 +131,7 @@ export function SocialPublishSheet({ project, account, onClose, onPublished, sel
     return (
       <PublishShell onClose={onClose} selector={selector}>
         <div className="grid min-h-60 place-items-center p-6 text-sm text-[var(--muted-foreground)]">
-          {error ? <p role="alert" className="text-red-700">{error}</p> : <span className="flex items-center gap-2"><LoaderCircle className="size-4 animate-spin" /> Preparing your post…</span>}
+          {error ? <Alert tone="error">{error}</Alert> : <span className="flex items-center gap-2"><LoaderCircle className="size-4 animate-spin" /> Preparing your post…</span>}
         </div>
       </PublishShell>
     );
@@ -170,14 +172,14 @@ export function SocialPublishSheet({ project, account, onClose, onPublished, sel
         {(draft.account.restrictions.length > 0 || caps.notes.length > 0) && (
           <div className="mx-5 mt-4 space-y-1.5 sm:mx-6">
             {draft.account.restrictions.map((item) => (
-              <p key={item.code} className={cn("flex gap-1.5 rounded-lg px-3 py-2 text-[11px]", item.blocks_publishing ? "bg-red-50 text-red-800" : "bg-amber-50 text-amber-900")}><AlertTriangle className="mt-0.5 size-3 shrink-0" />{item.message}</p>
+              <Alert key={item.code} tone={restrictionTone(item)} size="sm">{item.message}</Alert>
             ))}
             {caps.notes.filter((note) => !draft.account.restrictions.some((item) => item.message === note)).map((note) => (
-              <p key={note} className="flex gap-1.5 rounded-lg bg-black/[.03] px-3 py-2 text-[11px] text-[var(--muted-foreground)]"><Info className="mt-0.5 size-3 shrink-0" />{note}</p>
+              <Alert key={note} tone="info" size="sm" role="none">{note}</Alert>
             ))}
           </div>
         )}
-        {draft.creator_info_error && <p role="alert" className="mx-5 mt-3 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-800 sm:mx-6">{draft.creator_info_error.message}</p>}
+        {draft.creator_info_error && <Alert tone="error" className="mx-5 mt-3 sm:mx-6">{draft.creator_info_error.message}</Alert>}
 
         <fieldset disabled={locked} className="m-0 min-w-0 border-0 p-0">
           {fields.includes("caption") && (
@@ -190,7 +192,7 @@ export function SocialPublishSheet({ project, account, onClose, onPublished, sel
               )}
               <div className="mt-2 flex flex-wrap justify-between gap-2 text-[10px] text-[var(--muted-foreground)]">
                 <span>From ClipForge&apos;s {PLATFORM_LABELS[platform]} metadata{draft.metadata_source !== "social_metadata" ? " (not generated yet: project title)" : ""}</span>
-                <span className={cn("mono", captionLength(finalCaption) > draft.caption_limit && "font-bold text-red-700")}>{captionLength(finalCaption)}/{draft.caption_limit}{draft.hashtag_limit ? ` · ${hashtagCount(finalCaption)}/${draft.hashtag_limit} hashtags` : ""}</span>
+                <span className={cn("mono", captionLength(finalCaption) > draft.caption_limit && "cf-text-error font-bold")}>{captionLength(finalCaption)}/{draft.caption_limit}{draft.hashtag_limit ? ` · ${hashtagCount(finalCaption)}/${draft.hashtag_limit} hashtags` : ""}</span>
               </div>
               <pre className="mt-2 max-h-32 overflow-y-auto whitespace-pre-wrap rounded-lg bg-black/[.03] p-2 text-[11px]" aria-label="Final caption">{finalCaption || "—"}</pre>
             </Section>
@@ -272,7 +274,7 @@ export function SocialPublishSheet({ project, account, onClose, onPublished, sel
               {mode === "schedule" && (
                 <div className="mt-3">
                   <ScheduleFields value={schedule} onChange={setSchedule} locale={locale} onResolved={setResolution} />
-                  <p className="mt-2 flex gap-1.5 rounded-lg bg-amber-50 px-3 py-2 text-[11px] text-amber-900"><AlertTriangle className="mt-0.5 size-3 shrink-0" />Runs only while the ClipForge backend is running with internet access. A post whose time passes while your Mac is off is marked Missed and waits for you.</p>
+                  <Alert tone="warning" size="sm" role="none" className="mt-2">Runs only while the ClipForge backend is running with internet access. A post whose time passes while your Mac is off is marked Missed and waits for you.</Alert>
                 </div>
               )}
             </Section>
@@ -299,22 +301,24 @@ export function SocialPublishSheet({ project, account, onClose, onPublished, sel
 
       <footer className="border-t border-[var(--border)] px-5 py-4 sm:px-6">
         {issues.length > 0 && !result && (
-          <ul id="social-blocked-reason" className="mb-3 space-y-1 text-[11px] text-amber-900">
-            {issues.map((item) => <li key={item} className="flex gap-1.5"><AlertTriangle className="mt-0.5 size-3 shrink-0" />{item}</li>)}
-          </ul>
+          <Alert id="social-blocked-reason" tone="warning" size="sm" role="none" className="mb-3" title="Before you can upload:">
+            <ul className="mt-0.5 list-disc space-y-0.5 pl-4">
+              {issues.map((item) => <li key={item}>{item}</li>)}
+            </ul>
+          </Alert>
         )}
         {result && (
-          <p role="status" className={cn("mb-3 flex gap-1.5 rounded-xl px-3 py-2 text-xs", tone === "success" && "bg-emerald-50 text-emerald-800", tone === "error" && "bg-red-50 text-red-800", tone === "warn" && "bg-amber-50 text-amber-900", (tone === "busy" || tone === "muted") && "bg-black/[.03]")}>
-            {tone === "busy" ? <LoaderCircle className="mt-0.5 size-3 shrink-0 animate-spin" /> : tone === "success" ? <CheckCircle2 className="mt-0.5 size-3 shrink-0" /> : <Info className="mt-0.5 size-3 shrink-0" />}
+          <Alert tone={tone === "success" ? "success" : tone === "error" ? "error" : tone === "warn" ? "warning" : "info"} role="status" icon={tone !== "busy"} className="mb-3">
+            {tone === "busy" && <LoaderCircle className="mr-1.5 inline size-3 animate-spin" aria-hidden />}
             <span>
               {result.state_label}
               {result.state === "scheduled" && result.scheduled_at && mode === "schedule" ? ` for ${formatScheduleConfirmation(result.scheduled_at, schedule.timezone, locale)}` : ""}
               {result.error?.message ? ` · ${result.error.message}` : ""}
               {result.remote_url && <> · <a href={result.remote_url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 underline">Open <ExternalLink className="size-3" /></a></>}
             </span>
-          </p>
+          </Alert>
         )}
-        {submitError && <p role="alert" className="mb-3 rounded-xl bg-red-50 px-3 py-2 text-xs text-red-800">{submitError}</p>}
+        {submitError && <Alert tone="error" className="mb-3">{submitError}</Alert>}
         <div className="flex justify-end gap-2">
           <Button variant="ghost" onClick={result ? onPublished : onClose}>{result ? "Done" : "Cancel"}</Button>
           {!result && (

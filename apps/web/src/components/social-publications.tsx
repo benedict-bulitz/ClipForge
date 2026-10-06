@@ -4,16 +4,19 @@ import { useEffect, useState } from "react";
 import { ExternalLink, LoaderCircle } from "lucide-react";
 import { ApiError, cancelSocialPublication, listSocialPublications, publishMissedNow, retrySocialPublication } from "@/lib/api";
 import { PLATFORM_LABELS, activePublications, publicationTone, type SchedulerStatus, type SocialPublication } from "@/lib/publishing";
+import { badgeClass, type BadgeTone } from "@/lib/alerts";
 import { browserLocale } from "@/lib/youtube";
 import { cn } from "@/lib/utils";
+import { Alert } from "./ui/alert";
 import { Button } from "./ui/button";
 
-const TONE: Record<ReturnType<typeof publicationTone>, string> = {
-  busy: "bg-sky-50 text-sky-800",
-  success: "bg-emerald-50 text-emerald-800",
-  warn: "bg-amber-50 text-amber-900",
-  error: "bg-red-50 text-red-800",
-  muted: "bg-black/[.04] text-[var(--muted-foreground)]",
+/** Publication state -> semantic badge tone (in flight = info, missed = warning). */
+const TONE: Record<ReturnType<typeof publicationTone>, BadgeTone> = {
+  busy: "info",
+  success: "success",
+  warn: "warning",
+  error: "error",
+  muted: "muted",
 };
 
 /** This project's Instagram/TikTok posts (each account separately), with their actions. */
@@ -64,7 +67,7 @@ export function SocialPublications({ projectId, version, onChanged }: { projectI
           <li key={item.id} className="flex flex-wrap items-center justify-between gap-2 text-xs">
             <span className="min-w-0">
               <span className="font-semibold">{PLATFORM_LABELS[item.platform]} · {item.account_label.split(" · ").pop()}</span>{" "}
-              <span className={cn("ml-1 rounded-full px-2 py-0.5 text-[10px] font-bold", TONE[publicationTone(item.state)])}>{item.state_label}</span>
+              <span className={cn("ml-1", badgeClass(TONE[publicationTone(item.state)]))}>{item.state_label}</span>
               {item.scheduled_at && item.state === "scheduled" && <span className="ml-1 text-[var(--muted-foreground)]">{new Date(item.scheduled_at).toLocaleString(locale, { timeZone: item.schedule_timezone ?? undefined })}{item.schedule_timezone ? ` (${item.schedule_timezone})` : ""}</span>}
               {item.error?.message && item.state !== "published" && <span className="block text-[11px] text-[var(--muted-foreground)]">{item.error.message}</span>}
             </span>
@@ -78,9 +81,9 @@ export function SocialPublications({ projectId, version, onChanged }: { projectI
         ))}
       </ul>
       {items.some((item) => item.requires_running_backend) && scheduler && (
-        <p className="mt-2 text-[11px] text-[var(--muted-foreground)]">{scheduler.notice}{!scheduler.running ? " The scheduler is not running right now." : ""}</p>
+        <Alert tone={scheduler.running ? "info" : "warning"} size="sm" role="none" className="mt-2">{scheduler.notice}{!scheduler.running ? " The scheduler is not running right now." : ""}</Alert>
       )}
-      {error && <p role="alert" className="mt-2 rounded-lg bg-red-50 px-2 py-1 text-[11px] text-red-800">{error}</p>}
+      {error && <Alert tone="error" size="sm" className="mt-2">{error}</Alert>}
     </div>
   );
 }

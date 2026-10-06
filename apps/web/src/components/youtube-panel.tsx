@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AlertTriangle, CalendarClock, ExternalLink, LoaderCircle, RefreshCw, Upload } from "lucide-react";
+import { CalendarClock, ExternalLink, LoaderCircle, RefreshCw, Upload } from "lucide-react";
 import {
   ApiError,
   getProjectYouTube,
@@ -45,6 +45,7 @@ import {
 import { cn } from "@/lib/utils";
 import { Button } from "./ui/button";
 import { SocialPublications } from "./social-publications";
+import { Alert } from "./ui/alert";
 import { UploadSheet } from "./upload-sheet";
 import { ScheduleFields } from "./youtube-schedule-fields";
 
@@ -212,7 +213,7 @@ export function YouTubePanel({ project, disabled, publishOpen, onPublishOpenChan
       )}
 
       {notice && (
-        <p role={notice.tone === "error" ? "alert" : "status"} className={cn("mt-3 rounded-xl px-3 py-2 text-xs", notice.tone === "error" ? "bg-red-50 text-red-800" : "bg-emerald-50 text-emerald-800")}>{notice.text}</p>
+        <Alert tone={notice.tone === "error" ? "error" : notice.tone === "info" ? "info" : "success"} className="mt-3">{notice.text}</Alert>
       )}
 
       {others.length > 0 && (
@@ -255,13 +256,13 @@ function UploadCard({ upload, locale, now, locked, busy, scheduling, schedule, r
     <div className="cf-subtle mt-4 rounded-[.85rem] border p-3 text-xs">
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="min-w-0" aria-live="polite">
-          <p className={cn("text-lg font-semibold tracking-[-.02em]", live && "text-emerald-700", current.state === "publish_pending" && "text-amber-800", ["rejected", "processing_failed", "deleted", "upload_failed"].includes(current.state) && "text-red-700")}>
+          <p className={cn("text-lg font-semibold tracking-[-.02em]", live && "cf-text-success", current.state === "publish_pending" && "cf-text-warning", ["rejected", "processing_failed", "deleted", "upload_failed"].includes(current.state) && "cf-text-error")}>
             {current.state === "uploading" ? lifecycleLabel(upload) : currentHeadline(current, nowDate, locale)}
           </p>
           {current.state === "scheduled" && current.scheduled_for && (
             <p className="mt-0.5 text-sm font-semibold">{scheduleLine(current.scheduled_for, zone, locale)} <span className="font-normal text-[var(--muted-foreground)]">· {zone}</span></p>
           )}
-          {freshness && <p className={cn("mt-0.5", current.stale ? "text-amber-800" : "text-[var(--muted-foreground)]")}>{freshness}</p>}
+          {freshness && <p className={cn("mt-0.5", current.stale ? "cf-text-warning" : "text-[var(--muted-foreground)]")}>{freshness}</p>}
           <p className="mono mt-0.5 truncate text-[10px] text-[var(--muted-foreground)]">
             {upload.youtube_video_id ? `Video ${upload.youtube_video_id}` : "No video yet"} · render v{upload.render_revision}{upload.content_type ? ` · ${upload.content_type}` : ""}
           </p>
@@ -278,9 +279,9 @@ function UploadCard({ upload, locale, now, locked, busy, scheduling, schedule, r
       </div>
 
       {current.state === "publish_pending" && (
-        <p role="status" className="mt-2 rounded-lg bg-amber-50 px-3 py-2 text-amber-950">YouTube still reports this video as private although the scheduled time has passed. ClipForge checks again for a while; you can also refresh or open YouTube Studio.</p>
+        <Alert tone="warning" className="mt-2">YouTube still reports this video as private although the scheduled time has passed. ClipForge checks again for a while; you can also refresh or open YouTube Studio.</Alert>
       )}
-      {current.refresh_error && current.stale && <p className="mt-2 text-amber-800">Could not refresh YouTube status: {current.refresh_error.message}</p>}
+      {current.refresh_error && current.stale && <p className="cf-text-warning mt-2">Could not refresh YouTube status: {current.refresh_error.message}</p>}
 
       {live && current.live_stats && (
         <div className="mt-3" aria-label="Live stats">
@@ -306,26 +307,25 @@ function UploadCard({ upload, locale, now, locked, busy, scheduling, schedule, r
         {statusRows(upload, locale).map((row) => (
           <div key={row.label} className="flex min-w-0 gap-2">
             <dt className="w-20 shrink-0 text-[var(--muted-foreground)]">{row.label}</dt>
-            <dd className={cn("min-w-0 font-semibold", row.tone === "error" && "text-red-700", row.tone === "warn" && "text-amber-800", row.tone === "ok" && "text-emerald-700")}>{row.value}</dd>
+            <dd className={cn("min-w-0 font-semibold", row.tone === "error" && "cf-text-error", row.tone === "warn" && "cf-text-warning", row.tone === "ok" && "cf-text-success")}>{row.value}</dd>
           </div>
         ))}
       </dl>
 
       {upload.thumbnail.status === "failed" && upload.thumbnail.failure_reason && (
-        <p role="alert" className="mt-2 flex gap-1.5 text-red-800"><AlertTriangle className="mt-px size-3.5 shrink-0" /> Video uploaded successfully. Thumbnail could not be applied: {upload.thumbnail.failure_reason}</p>
+        <Alert tone="error" className="mt-2">Video uploaded successfully. Thumbnail could not be applied: {upload.thumbnail.failure_reason}</Alert>
       )}
-      {upload.visibility_restricted && <p className="mt-2 text-amber-900">YouTube kept this video private because the Google API project has not passed YouTube&apos;s audit yet.</p>}
+      {upload.visibility_restricted && <Alert tone="warning" className="mt-2">YouTube kept this video private because the Google API project has not passed YouTube&apos;s audit yet.</Alert>}
       {upload.error && upload.lifecycle !== "published" && (
-        <p role="alert" className="mt-2 flex gap-1.5 text-red-800"><AlertTriangle className="mt-px size-3.5 shrink-0" /> {upload.error.message}</p>
+        <Alert tone="error" className="mt-2">{upload.error.message}</Alert>
       )}
       {exists && !answered && (
-        <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-amber-950">
-          <p className="font-semibold">YouTube still needs the audience answer for this video.</p>
+        <Alert tone="warning" role="none" className="mt-3" title="YouTube still needs the audience answer for this video.">
           <div className="mt-2 flex flex-wrap gap-2">
             <Button size="sm" variant="outline" disabled={locked} onClick={() => onAudience(false)}>{spin("audience")} No, it&apos;s not made for kids</Button>
             <Button size="sm" variant="outline" disabled={locked} onClick={() => onAudience(true)}>Yes, it&apos;s made for kids</Button>
           </div>
-        </div>
+        </Alert>
       )}
       {upload.can_reupload && upload.is_active_mapping && (
         <div className="mt-2 flex flex-wrap items-center gap-2">
@@ -379,7 +379,7 @@ export function PerformanceSection({ report }: { report: PerformanceReport }) {
           </div>
         ) : null;
       })()}
-      {report.analytics_error && <p role="alert" className="mt-2 text-xs text-red-800">Analytics: {report.analytics_error.message}</p>}
+      {report.analytics_error && <Alert tone="error" className="mt-2">Analytics: {report.analytics_error.message}</Alert>}
       {report.status === "ready" && (
         <>
           <p className="mt-1 text-[11px] text-[var(--muted-foreground)]">
@@ -412,7 +412,7 @@ export function PerformanceSection({ report }: { report: PerformanceReport }) {
               <p className="font-semibold">Retention by scene</p>
               <ol className="mt-2 grid gap-1.5 sm:grid-cols-2">
                 {scenes.map((scene) => (
-                  <li key={scene.scene_id} className={cn("rounded-xl border px-3 py-2", scene.notable_drop ? "border-amber-300 bg-amber-50/70 text-amber-950" : "cf-subtle")}>
+                  <li key={scene.scene_id} className={cn("rounded-xl border px-3 py-2", scene.notable_drop ? "cf-tone-warning" : "cf-subtle")}>
                     <div className="flex items-center justify-between gap-2"><span className="font-semibold">{sceneTitle(scene)}</span><span className="mono text-[10px]">{formatSeconds(scene.start)}–{formatSeconds(scene.end)}</span></div>
                     <p className="mt-0.5">Retention: {formatRatio(scene.retention_entering)} → {formatRatio(scene.retention_leaving)} <strong className="ml-1">{formatDelta(scene.retention_delta)}</strong>{scene.notable_drop ? " · notable drop" : ""}</p>
                   </li>

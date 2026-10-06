@@ -8,6 +8,7 @@ import type { Project } from "@/lib/types";
 import { accountStatusLabel, groupTargets, initialTarget, type PublishTargets } from "@/lib/publishing";
 import { PublishShell } from "./publish-shell";
 import { SocialPublishSheet } from "./social-publish-sheet";
+import { Alert } from "./ui/alert";
 import { PublishSheet } from "./youtube-publish-sheet";
 
 /**
@@ -57,7 +58,7 @@ export function UploadSheet({ project, onClose, onUploaded, preferredAccountId =
     return (
       <PublishShell onClose={onClose}>
         <div className="grid min-h-60 place-items-center p-6 text-sm text-[var(--muted-foreground)]">
-          {error ? <p role="alert" className="text-red-700">{error}</p> : <span className="flex items-center gap-2"><LoaderCircle className="size-4 animate-spin" /> Loading accounts…</span>}
+          {error ? <Alert tone="error">{error}</Alert> : <span className="flex items-center gap-2"><LoaderCircle className="size-4 animate-spin" /> Loading accounts…</span>}
         </div>
       </PublishShell>
     );

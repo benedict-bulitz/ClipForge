@@ -11,6 +11,7 @@ import {
   type ScheduleChoice,
   type ScheduleResolution,
 } from "@/lib/youtube";
+import { alertClass } from "@/lib/alerts";
 import { cn } from "@/lib/utils";
 
 const HOURS = Array.from({ length: 24 }, (_, index) => String(index).padStart(2, "0"));
@@ -86,7 +87,7 @@ export function ScheduleFields({ value, onChange, locale, onResolved }: {
         </label>
       </div>
       {value.date && value.time && (
-        <div role="status" className={cn("rounded-xl border px-3 py-2 text-xs", ok ? "border-emerald-200 bg-emerald-50 text-emerald-900" : "border-amber-200 bg-amber-50 text-amber-900")}>
+        <div role="status" className={cn(alertClass(ok ? "success" : "warning"), "block")}>
           {ok ? (
             <>
               <p className="flex items-center gap-1.5 font-semibold"><CalendarClock className="size-3.5" /> Scheduled for</p>

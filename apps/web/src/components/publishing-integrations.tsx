@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { AlertCircle, CheckCircle2, ChevronDown, KeyRound, LoaderCircle, LogOut, PlaySquare, Plus, RefreshCw, ShieldCheck, Star, Wifi } from "lucide-react";
+import { ChevronDown, KeyRound, LoaderCircle, LogOut, PlaySquare, Plus, RefreshCw, ShieldCheck, Star, Wifi } from "lucide-react";
 import {
   ApiError,
   checkPublishingAccount,
@@ -23,7 +23,9 @@ import {
   type PlatformSection,
   type PublishingAccount,
 } from "@/lib/publishing";
+import { badgeClass, noticeTone, restrictionTone, type BadgeTone } from "@/lib/alerts";
 import { cn } from "@/lib/utils";
+import { Alert } from "./ui/alert";
 import { Button } from "./ui/button";
 import { YouTubePublishingSchedule } from "./youtube-publishing-schedule";
 import { YouTubeUploadDefaults } from "./youtube-upload-defaults";
@@ -113,12 +115,13 @@ export function PublishingIntegrations() {
   );
 }
 
+function accountStatusTone(status: PublishingAccount["status"]): BadgeTone {
+  return status === "connected" ? "success" : status === "disconnected" ? "muted" : "error";
+}
+
 function NoticeLine({ notice }: { notice: Notice }) {
   return (
-    <div role={notice.tone === "error" ? "alert" : "status"} className={cn("flex gap-2 rounded-xl px-3 py-2 text-[11px] font-medium leading-4", notice.tone === "success" && "bg-emerald-50 text-emerald-800", notice.tone === "error" && "bg-red-50 text-red-800", notice.tone === "info" && "bg-amber-50 text-amber-800")}>
-      {notice.tone === "success" ? <CheckCircle2 className="mt-px size-3.5 shrink-0" /> : <AlertCircle className="mt-px size-3.5 shrink-0" />}
-      {notice.text}
-    </div>
+    <Alert tone={noticeTone(notice.tone)}>{notice.text}</Alert>
   );
 }
 
@@ -172,7 +175,7 @@ function PlatformCard({ section, open, onToggle, onOverview, schedulerNotice }: 
             <span className="mt-1 block max-w-xl text-xs leading-5 text-[var(--muted-foreground)]">{copy.description}</span>
             <span className="mt-1 block text-[11px] font-semibold text-[var(--muted-foreground)]">
               {section.accounts.length === 0 ? "No accounts" : `${section.accounts.length} account${section.accounts.length === 1 ? "" : "s"}${connected !== section.accounts.length ? ` · ${connected} connected` : ""}`}
-              {" · "}<span className={clientReady ? "text-emerald-700" : "text-amber-700"}>{clientReady ? "App configured" : "App not configured"}</span>
+              {" · "}<span className={clientReady ? "cf-text-success" : "cf-text-warning"}>{clientReady ? "App configured" : "App not configured"}</span>
             </span>
           </span>
         </span>
@@ -209,7 +212,7 @@ function PlatformCard({ section, open, onToggle, onOverview, schedulerNotice }: 
             </span>
           </div>
 
-          {schedulerNotice && <p className="mt-4 rounded-xl bg-black/[.03] px-3 py-2 text-[11px] leading-4 text-[var(--muted-foreground)]">{schedulerNotice}</p>}
+          {schedulerNotice && <Alert tone="info" size="sm" role="none" className="mt-4">{schedulerNotice}</Alert>}
           {notice && <div className="mt-4"><NoticeLine notice={notice} /></div>}
 
           {platform === "youtube" && connected > 0 && (
@@ -256,7 +259,7 @@ function AccountCard({ account, busy, clientReady, onReconnect, onDisconnect, on
             <p className="flex flex-wrap items-center gap-1.5 text-sm font-semibold">
               {account.display_name}
               {account.is_default && <span className="inline-flex items-center gap-0.5 rounded-full bg-[var(--accent-soft)] px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[.08em] text-[#d94c20]"><Star className="size-2.5" /> Default</span>}
-              <span className={cn("rounded-full px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[.08em]", needsReconnect ? "bg-amber-50 text-amber-800" : "bg-emerald-50 text-emerald-700")}>{accountStatusLabel(account)}</span>
+              <span className={badgeClass(accountStatusTone(account.status))}>{accountStatusLabel(account)}</span>
             </p>
             {account.handle && account.platform !== "youtube" && <p className="text-xs text-[var(--muted-foreground)]">@{account.handle.replace(/^@/, "")}</p>}
             {account.platform === "youtube" && <p className="mono text-[10px] text-[var(--muted-foreground)]">{account.external_account_id}</p>}
@@ -270,14 +273,14 @@ function AccountCard({ account, busy, clientReady, onReconnect, onDisconnect, on
           <Button size="sm" variant="ghost" disabled={!!busy} onClick={() => setConfirm(true)}><LogOut className="size-3.5" /> Disconnect</Button>
         </div>
       </div>
-      {account.error?.message && <p role="alert" className="mt-2 rounded-lg bg-amber-50 px-2 py-1.5 text-[11px] text-amber-900">{account.error.message}</p>}
+      {account.error?.message && <Alert tone="error" size="sm" className="mt-2">{account.error.message}</Alert>}
       {account.restrictions.map((item) => (
-        <p key={item.code} className={cn("mt-2 rounded-lg px-2 py-1.5 text-[11px]", item.blocks_publishing ? "bg-red-50 text-red-800" : "bg-amber-50 text-amber-900")}>{item.message}</p>
+        <Alert key={item.code} tone={restrictionTone(item)} size="sm" role="none" className="mt-2">{item.message}</Alert>
       ))}
       {confirm && (
-        <div className="mt-3 rounded-[12px] border border-red-200 bg-red-50 p-3">
-          <p className="text-xs font-bold text-red-800">Disconnect {account.display_name}?</p>
-          <p className="mt-1 text-[10px] leading-4 text-red-700">Only this account&apos;s stored sign-in is removed. Other accounts stay connected; its posts and history stay unchanged.</p>
+        <div className="cf-tone-error mt-3 rounded-[12px] border p-3">
+          <p className="text-xs font-bold">Disconnect {account.display_name}?</p>
+          <p className="mt-1 text-[11px] leading-4">Only this account&apos;s stored sign-in is removed. Other accounts stay connected; its posts and history stay unchanged.</p>
           <div className="mt-2 flex justify-end gap-2">
             <Button size="sm" variant="ghost" onClick={() => setConfirm(false)}>Cancel</Button>
             <Button size="sm" className="bg-red-700 hover:bg-red-800" disabled={!!busy} onClick={() => { setConfirm(false); onDisconnect(); }}>{busy === `disconnect:${account.id}` ? <LoaderCircle className="size-3.5 animate-spin" /> : <LogOut className="size-3.5" />} Disconnect</Button>
@@ -300,7 +303,7 @@ function ClientConfig({ section, busy, onRun }: { section: PlatformSection; busy
     <div className="cf-subtle rounded-[15px] border p-3 text-xs">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <span className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-[.1em] text-[var(--muted-foreground)]"><KeyRound className="size-3" /> {copy.clientLabel}</span>
-        <span className={cn("text-[10px] font-bold", ready ? "text-emerald-700" : "text-amber-700")}>{ready ? `Configured (${section.client.client_id_source === "keyring" ? "secure storage" : "environment"})` : "Not configured"}</span>
+        <span className={cn("text-[10px] font-bold", ready ? "cf-text-success" : "cf-text-warning")}>{ready ? `Configured (${section.client.client_id_source === "keyring" ? "secure storage" : "environment"})` : "Not configured"}</span>
       </div>
       <p className="mt-2 text-[11px] leading-5 text-[var(--muted-foreground)]">Register this redirect URI in the developer app: <span className="mono break-all text-[var(--foreground)]">{section.client.redirect_uri}</span></p>
       {section.client.scopes && <p className="text-[11px] leading-5 text-[var(--muted-foreground)]">Requested permissions: <span className="mono">{section.client.scopes.join(", ")}</span></p>}

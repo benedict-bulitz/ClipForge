@@ -62,6 +62,8 @@ import { Brand } from "./brand";
 import { Button } from "./ui/button";
 import { ThemeToggle } from "./theme-toggle";
 import { YouTubePanel } from "./youtube-panel";
+import { toneClass } from "@/lib/alerts";
+import { Alert } from "./ui/alert";
 import { deleteDialogCopy, formatBytes, lifecycleLabel, type DeletionPlan } from "@/lib/youtube";
 import { cn } from "@/lib/utils";
 
@@ -394,7 +396,7 @@ export function ProjectWorkspace({
             <p className="truncate text-sm font-semibold tracking-[-.02em]">{project.title}</p>
             <p className="mono hidden text-[9px] uppercase tracking-[.12em] text-[#929289] xs:block sm:block">Project {project.id.slice(0, 8)}</p>
           </div>
-          <div className="hidden items-center gap-2 rounded-full border border-emerald-700/10 bg-emerald-50 px-3 py-1.5 text-[11px] font-bold text-emerald-700 md:flex">
+          <div className="cf-tone-success hidden items-center gap-2 rounded-full border px-3 py-1.5 text-[11px] font-bold md:flex">
             <CircleDot className="size-3" /> {state.render.status === "complete" ? "Rendered" : state.render.stale ? "Previous preview" : "Ready"}
           </div>
           <div className="flex items-center gap-1 lg:hidden">
@@ -448,7 +450,7 @@ export function ProjectWorkspace({
                     {busy === "export" ? "Saving…" : state.export?.status === "exported" ? "Local MP4 saved" : "Save local MP4"}
                   </Button>
                 )}
-                <Button variant="outline" size="sm" className="w-full border-red-200 text-red-700 hover:bg-red-50" onClick={() => { setMoreOpen(false); openDeleteDialog(); }}>
+                <Button variant="outline" size="sm" className="cf-text-error w-full border-[var(--error-border)] hover:bg-[var(--error-bg)]" onClick={() => { setMoreOpen(false); openDeleteDialog(); }}>
                   <Trash2 className="size-3.5" /> Delete project
                 </Button>
               </div>
@@ -476,7 +478,7 @@ export function ProjectWorkspace({
                   </dl>
                 )}
                 {deletePlan.mode === "archive" && <p className="mt-3 text-[11px] text-[var(--muted-foreground)]">The video stays on YouTube. ClipForge never deletes YouTube videos.</p>}
-                {deletePlan.verification === "offline" && deletePlan.mode === "archive" && <p className="mt-2 text-[11px] text-amber-800">YouTube could not be reached; the last known upload status was used.</p>}
+                {deletePlan.verification === "offline" && deletePlan.mode === "archive" && <p className="cf-text-warning mt-2 text-[11px]">YouTube could not be reached; the last known upload status was used.</p>}
                 <div className="mt-6 flex flex-wrap justify-end gap-2">
                   <Button variant="ghost" onClick={() => setDeleteConfirmationOpen(false)} disabled={busy === "delete"}>Cancel</Button>
                   {deletePlan.mode === "unverified" && <Button variant="outline" onClick={() => openDeleteDialog()} disabled={busy === "delete"}><RefreshCw className="size-3.5" /> Retry check</Button>}
@@ -495,17 +497,16 @@ export function ProjectWorkspace({
       <div className="mx-auto grid max-w-[1600px] grid-cols-1 lg:grid-cols-[minmax(0,1fr)_360px]">
         <section className="results-canvas min-w-0 border-black/8 px-4 pb-32 pt-6 lg:border-r lg:px-8 lg:pb-10">
           <div className="mx-auto max-w-[1180px]">
-            {error && <div role="alert" className="mb-5 rounded-[16px] border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">{error}</div>}
+            {error && <Alert tone="error" size="lg" className="mb-5">{error}</Alert>}
             {state.export?.status === "exported" && (
-              <div role="status" className="mb-5 rounded-[16px] border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">
-                <p className="font-bold">Exported</p>
+              <Alert tone="success" size="lg" className="mb-5" title="Exported">
                 <p className="mt-0.5 break-all text-xs">{state.export.display_path}</p>
-                <p className="mt-1 text-xs text-emerald-800">
+                <p className="mt-1 text-xs">
                   {state.export.cleanup_status === "complete"
                     ? "Temporary project media was cleaned."
                     : state.export.cleanup_warnings.join(" ")}
                 </p>
-              </div>
+              </Alert>
             )}
             <div className="results-primary grid items-start gap-6 md:grid-cols-[minmax(300px,.82fr)_minmax(0,1.18fr)]">
               <div>
@@ -712,7 +713,7 @@ function Pipeline({ stages }: { stages: Project["revision"]["state"]["pipeline"]
           <div key={stage.id} className="relative min-w-0">
             <div className={cn(
               "mb-1.5 grid size-5 place-items-center rounded-full border text-[9px]",
-              stage.status === "complete" ? "border-[#ff6838] bg-[#ff6838] text-white" : stage.status === "blocked" ? "border-red-200 bg-red-50 text-red-700" : "border-black/10 bg-white text-[#aaa]",
+              stage.status === "complete" ? "border-[#ff6838] bg-[#ff6838] text-white" : stage.status === "blocked" ? toneClass("error") : "border-black/10 bg-white text-[#aaa]",
             )}>{stage.status === "complete" ? <Check className="size-3" /> : index + 1}</div>
             <p className="truncate text-[10px] font-semibold text-[#77776d]">{stage.label.replace(" your idea", "")}</p>
           </div>
@@ -837,7 +838,7 @@ function Overview({ project, readiness }: { project: Project; readiness: Readine
               <div key={name} className="cf-subtle rounded-xl border p-3 text-xs">
                 <div className="flex items-center justify-between gap-3">
                   <span className="font-semibold capitalize text-[var(--foreground)]">{name.replaceAll("_", " ")}</span>
-                  <span className={cn("rounded-full px-2 py-1 font-bold", explanation.level === "ready" ? "bg-emerald-50 text-emerald-700" : explanation.level === "degraded" ? "bg-amber-50 text-amber-800" : "bg-red-50 text-red-700")}>{explanation.badge}</span>
+                  <span className={cn("rounded-full px-2 py-1 font-bold", toneClass(explanation.level === "ready" ? "success" : explanation.level === "degraded" ? "warning" : "error"))}>{explanation.badge}</span>
                 </div>
                 <p className="mt-2 leading-5 text-[var(--muted-foreground)]">{explanation.message}</p>
                 <div className="mt-2 flex items-center justify-between gap-2 text-[10px] text-[#8b8b82]">
@@ -948,19 +949,19 @@ function AIReviewPanel({ review }: { review: Project["revision"]["state"]["ai_re
       <div className="flex flex-wrap items-center justify-between gap-3">
         <p className="text-sm text-[var(--muted-foreground)]">Language, prompt fidelity, research, timing, visuals, captions, and render inputs.</p>
         {expandable ? (
-          <button type="button" onClick={() => setExpanded((open) => !open)} aria-expanded={expanded} aria-controls={detailsId} className={cn("inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[10px] font-bold uppercase tracking-[.08em]", warning ? "bg-amber-50 text-amber-800" : "bg-emerald-50 text-emerald-800")}>
+          <button type="button" onClick={() => setExpanded((open) => !open)} aria-expanded={expanded} aria-controls={detailsId} className={cn("inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[10px] font-bold uppercase tracking-[.08em]", toneClass(warning ? "warning" : "success"))}>
             {label}<ChevronUp className={cn("size-3 transition-transform", !expanded && "rotate-180")} />
           </button>
         ) : (
-          <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-[10px] font-bold uppercase tracking-[.08em] text-emerald-800">{label}</span>
+          <span className={cn("rounded-full px-2.5 py-1 text-[10px] font-bold uppercase tracking-[.08em]", toneClass("success"))}>{label}</span>
         )}
       </div>
       {expandable && expanded && (
         <div id={detailsId} className="mt-3 space-y-3">
           {review?.automatic_corrections?.length ? <div className="rounded-xl border border-[var(--border)] bg-[var(--accent-soft)] p-3 text-xs"><strong>Automatically corrected</strong><ul className="mt-1 list-disc space-y-1 pl-4">{review.automatic_corrections.map((item) => <li key={item}>{item}</li>)}</ul></div> : null}
-          {findings.length ? <ul className="grid gap-2 sm:grid-cols-2">{findings.map((item, index) => <li key={`${item.check}-${index}`} className="cf-subtle rounded-xl border p-3 text-xs leading-5"><div className="flex items-center justify-between gap-2"><span className="font-bold capitalize">{item.check.replaceAll("_", " ")}</span><span className={cn("rounded-full px-2 py-0.5 text-[9px] font-bold uppercase", item.severity === "error" ? "bg-red-50 text-red-700" : item.severity === "warning" ? "bg-amber-50 text-amber-800" : "bg-blue-50 text-blue-700")}>{item.severity}</span></div><p className="mt-1 text-[var(--muted-foreground)]">{item.message}</p></li>)}</ul> : null}
-          {inconsistent && <p role="alert" className="rounded-xl border border-amber-300/50 bg-amber-50 p-3 text-xs font-medium text-amber-900">Review reported “{label}” but supplied no visible findings. Run review again before relying on this status.</p>}
-          {status === "unavailable" && <p className="text-xs font-medium text-[var(--warning)]">AI review was unavailable. Local checks remain visible, and factual verification is not claimed.</p>}
+          {findings.length ? <ul className="grid gap-2 sm:grid-cols-2">{findings.map((item, index) => <li key={`${item.check}-${index}`} className="cf-subtle rounded-xl border p-3 text-xs leading-5"><div className="flex items-center justify-between gap-2"><span className="font-bold capitalize">{item.check.replaceAll("_", " ")}</span><span className={cn("rounded-full px-2 py-0.5 text-[9px] font-bold uppercase", toneClass(item.severity === "error" ? "error" : item.severity === "warning" ? "warning" : "info"))}>{item.severity}</span></div><p className="mt-1 text-[var(--muted-foreground)]">{item.message}</p></li>)}</ul> : null}
+          {inconsistent && <Alert tone="warning" role="alert">Review reported “{label}” but supplied no visible findings. Run review again before relying on this status.</Alert>}
+          {status === "unavailable" && <p className="cf-text-warning text-xs font-medium">AI review was unavailable. Local checks remain visible, and factual verification is not claimed.</p>}
         </div>
       )}
       {!expandable && status === "pending" && <p className="mt-3 text-xs text-[var(--muted-foreground)]">Review will run before the next completed render.</p>}
@@ -1095,14 +1096,10 @@ function ScenesView({ scenes, qualityReview, duration, assets, mediaBusy, mediaE
   return (
     <div className="space-y-3">
       {mediaError && (
-        <div role="alert" className="rounded-[16px] border border-red-700/15 bg-red-50 px-4 py-3 text-xs leading-5 text-red-700">
-          {mediaError}
-        </div>
+        <Alert tone="error">{mediaError}</Alert>
       )}
       {assets.diagnostic && (
-        <div className="rounded-[16px] border border-amber-700/15 bg-amber-50 px-4 py-3 text-xs leading-5 text-amber-800">
-          {assets.diagnostic}
-        </div>
+        <Alert tone="warning" role="none">{assets.diagnostic}</Alert>
       )}
       <div className="cf-surface relative mb-6 flex h-16 overflow-hidden rounded-[16px] border p-1.5 shadow-sm">
         {scenes.map((scene, index) => (
@@ -1213,7 +1210,7 @@ function SourcesView({ project }: { project: Project }) {
         <ol className="space-y-3">
           {state.research.questions.map((question, index) => <li key={question} className="flex gap-3 text-sm leading-5 text-[#56564e]"><span className="mono text-[10px] text-[#ff6838]">0{index + 1}</span>{question}</li>)}
         </ol>
-        {state.research.error && <p className="mt-4 rounded-xl bg-red-50 p-3 text-xs text-red-700">{state.research.error}</p>}
+        {state.research.error && <Alert tone="error" role="none" className="mt-4">{state.research.error}</Alert>}
       </Panel>
       <Panel icon={<Check className="size-4" />} title={`Fact pack · ${state.facts.length}`}>
         {state.facts.length ? <div className="space-y-3">{state.facts.map((fact) => <div key={fact.id} className="rounded-xl bg-[#faf9f4] p-3"><p className="text-xs leading-5 text-[#56564e]">{fact.claim}</p><p className="mono mt-2 text-[8px] uppercase text-[#aaa]">{fact.verification.replaceAll("_", " ")} · {Math.round(fact.confidence * 100)}%</p></div>)}</div> : <p className="text-sm leading-6 text-[#77776d]">No attributable facts are available yet.</p>}
@@ -1284,10 +1281,9 @@ function ChatMessages({
 function ChatError({ error, retry }: { error: string | null; retry: (() => void) | null }) {
   if (!error) return null;
   return (
-    <div role="alert" className="mx-4 mb-2 flex items-center justify-between gap-3 rounded-xl bg-red-50 px-3 py-2 text-xs text-red-800">
-      <span>{error}</span>
-      {retry && <button onClick={retry} className="shrink-0 font-bold underline underline-offset-2">Retry</button>}
-    </div>
+    <Alert tone="error" className="mx-4 mb-2 items-center" action={retry ? <button onClick={retry} className="font-bold underline underline-offset-2">Retry</button> : undefined}>
+      {error}
+    </Alert>
   );
 }
 

@@ -2,8 +2,6 @@
 
 import { useEffect, useState } from "react";
 import {
-  AlertCircle,
-  CheckCircle2,
   ExternalLink,
   Eye,
   EyeOff,
@@ -33,6 +31,8 @@ import type {
   IntegrationStatus,
 } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import { toneClass } from "@/lib/alerts";
+import { Alert } from "./ui/alert";
 import { Button } from "./ui/button";
 import { PublishingIntegrations } from "./publishing-integrations";
 
@@ -45,7 +45,7 @@ type ProviderDetails = {
   iconClass: string;
 };
 
-type Notice = { tone: "success" | "error" | "info"; text: string };
+type Notice = { tone: "success" | "error" | "warning" | "info"; text: string };
 type BusyAction = "save" | "test" | "delete";
 
 const providerOrder: IntegrationProvider[] = ["openai", "brave", "pexels", "europeana"];
@@ -97,14 +97,14 @@ const statusLabels: Record<IntegrationStatus, string> = {
 };
 
 const statusClasses: Record<IntegrationStatus, string> = {
-  configured: "border-emerald-700/10 bg-emerald-50 text-emerald-700",
-  connected: "border-emerald-700/10 bg-emerald-50 text-emerald-700",
-  not_configured: "border-black/8 bg-black/[.035] text-[#77776d]",
-  invalid_credentials: "border-red-700/10 bg-red-50 text-red-700",
-  rate_limited: "border-amber-700/10 bg-amber-50 text-amber-700",
-  network_error: "border-amber-700/10 bg-amber-50 text-amber-700",
-  provider_error: "border-red-700/10 bg-red-50 text-red-700",
-  storage_error: "border-red-700/10 bg-red-50 text-red-700",
+  configured: toneClass("success"),
+  connected: toneClass("success"),
+  not_configured: toneClass("muted"),
+  invalid_credentials: toneClass("error"),
+  rate_limited: toneClass("warning"),
+  network_error: toneClass("warning"),
+  provider_error: toneClass("error"),
+  storage_error: toneClass("error"),
 };
 
 export function IntegrationsSettings() {
@@ -216,7 +216,7 @@ export function IntegrationsSettings() {
         provider,
         removed.source === "environment"
           ? {
-              tone: "info",
+              tone: "warning",
               text: "Secure key removed. ClipForge is still using the environment fallback.",
             }
           : { tone: "success", text: "Secure key removed." },
@@ -265,12 +265,11 @@ export function IntegrationsSettings() {
       </div>
 
       {pageError && (
-        <div role="alert" className="mt-6 flex items-center justify-between gap-4 rounded-[16px] border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
-          <span>{pageError}</span>
-          <button type="button" onClick={() => void refreshItems()} className="interactive-text shrink-0 text-red-800">
+        <Alert tone="error" size="lg" className="mt-6" action={(
+          <button type="button" onClick={() => void refreshItems()} className="interactive-text shrink-0">
             <RefreshCw className="size-3.5" /> Retry
           </button>
-        </div>
+        )}>{pageError}</Alert>
       )}
 
       {noneConfigured && (
@@ -333,7 +332,7 @@ export function IntegrationsSettings() {
           </Button>
         </div>
 
-        {importError && <p role="alert" className="mt-4 rounded-xl bg-red-50 px-3 py-2 text-xs font-medium text-red-700">{importError}</p>}
+        {importError && <Alert tone="error" className="mt-4">{importError}</Alert>}
         {importResults && <ImportResults results={importResults} />}
       </section>
     </div>
@@ -400,7 +399,7 @@ function IntegrationCard({
               <KeyRound className="size-3" /> API key
             </span>
             {integration.source && (
-              <span className={cn("text-[9px] font-bold", storedSecurely ? "text-emerald-700" : "text-amber-700")}>
+              <span className={cn("text-[9px] font-bold", storedSecurely ? "cf-text-success" : "cf-text-warning")}>
                 {storedSecurely ? "Secure storage" : "Environment fallback"}
               </span>
             )}
@@ -411,7 +410,7 @@ function IntegrationCard({
               : "No key configured"}
           </p>
           {integration.source === "environment" && (
-            <p className="mt-2 text-[10px] leading-4 text-amber-800">ClipForge is using the environment or .env fallback.</p>
+            <p className="cf-text-warning mt-2 text-[10px] leading-4">ClipForge is using the environment or .env fallback.</p>
           )}
         </div>
 
@@ -456,9 +455,9 @@ function IntegrationCard({
         )}
 
         {confirmingDelete && (
-          <div className="mt-4 rounded-[15px] border border-red-200 bg-red-50 p-3">
-            <p className="text-xs font-bold text-red-800">Remove the securely stored key?</p>
-            <p className="mt-1 text-[10px] leading-4 text-red-700">An environment fallback may become active afterward.</p>
+          <div className="cf-tone-error mt-4 rounded-[15px] border p-3">
+            <p className="text-xs font-bold">Remove the securely stored key?</p>
+            <p className="mt-1 text-[11px] leading-4">An environment fallback may become active afterward.</p>
             <div className="mt-3 flex justify-end gap-2">
               <Button type="button" variant="ghost" size="sm" onClick={onCancelDelete} disabled={busy === "delete"}>Cancel</Button>
               <Button type="button" size="sm" onClick={onDelete} disabled={busy === "delete"} className="bg-red-700 hover:bg-red-800">
@@ -470,18 +469,7 @@ function IntegrationCard({
         )}
 
         {notice && (
-          <div
-            role={notice.tone === "error" ? "alert" : "status"}
-            className={cn(
-              "mt-4 flex gap-2 rounded-xl px-3 py-2 text-[11px] font-medium leading-4",
-              notice.tone === "success" && "bg-emerald-50 text-emerald-800",
-              notice.tone === "error" && "bg-red-50 text-red-800",
-              notice.tone === "info" && "bg-amber-50 text-amber-800",
-            )}
-          >
-            {notice.tone === "success" ? <CheckCircle2 className="mt-px size-3.5 shrink-0" /> : <AlertCircle className="mt-px size-3.5 shrink-0" />}
-            {notice.text}
-          </div>
+          <Alert tone={notice.tone} className="mt-4">{notice.text}</Alert>
         )}
       </div>
 
@@ -517,7 +505,7 @@ function ImportResults({ results }: { results: EnvImportResult[] }) {
         {results.map((result) => (
           <div key={result.provider} className="cf-subtle flex items-center justify-between gap-3 rounded-xl border px-3 py-2.5 text-xs">
             <span className="font-semibold">{providers[result.provider].name}</span>
-            <span className={cn("font-bold", result.result === "imported" ? "text-emerald-700" : "text-[#77776d]")}>
+            <span className={cn("font-bold", result.result === "imported" ? "cf-text-success" : "text-[#77776d]")}>
               {importResultLabel(result)}
             </span>
           </div>
@@ -565,9 +553,9 @@ function noticeForTest(status: IntegrationStatus): Notice {
     case "invalid_credentials":
       return { tone: "error", text: "The provider rejected the current key." };
     case "rate_limited":
-      return { tone: "info", text: "The key is configured, but the provider is rate limited." };
+      return { tone: "warning", text: "The key is configured, but the provider is rate limited." };
     case "network_error":
-      return { tone: "info", text: "The provider could not be reached." };
+      return { tone: "warning", text: "The provider could not be reached." };
     case "provider_error":
       return { tone: "error", text: "The provider could not validate the current key." };
     case "storage_error":

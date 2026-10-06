@@ -294,8 +294,9 @@ test("scheduled videos show the exact date/time in their zone; the video ID is s
   assert.match(detail, /dateLine\(video, \(iso\) => formatDateTime\(iso\), \(iso\) => scheduledTime\(iso, video\.schedule_timezone\)\)/);
   assert.match(detail, /\["Scheduled time", current\.scheduled_for \? scheduledTime\(current\.scheduled_for, video\.schedule_timezone\)/);
   // the date line is prominent (text-xs / text-sm, semibold when scheduled) ...
-  assert.match(library, /scheduled \? "font-semibold text-sky-800 dark:text-sky-300" : "font-medium"\)\} aria-label="Date"/);
-  assert.match(detail, /"mt-1 flex items-center gap-1\.5 text-sm", scheduled \? "font-semibold/);
+  // Scheduled dates use the shared info tone (light and dark via theme tokens).
+  assert.match(library, /scheduled \? "cf-text-info font-semibold" : "font-medium"\)\} aria-label="Date"/);
+  assert.match(detail, /"mt-1 flex items-center gap-1\.5 text-sm", scheduled \? "cf-text-info font-semibold/);
   // ... while the ID stays visible as small, muted metadata below it
   assert.match(library, /<span className="mono text-\[10px\] text-\[var\(--muted-foreground\)\]" title="YouTube video ID">ID \{video\.youtube_video_id\}<\/span>/);
   assert.match(detail, /<p className="mono mt-0\.5 text-\[10px\] text-\[var\(--muted-foreground\)\]" title="YouTube video ID">YouTube ID \{video\.youtube_video_id\}<\/p>/);

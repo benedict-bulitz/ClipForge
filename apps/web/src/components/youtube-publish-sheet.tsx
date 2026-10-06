@@ -50,7 +50,9 @@ import {
   type SmartScheduleState,
 } from "@/lib/youtube-schedule";
 import { cn } from "@/lib/utils";
+import { alertClass } from "@/lib/alerts";
 import { PublishShell } from "./publish-shell";
+import { Alert } from "./ui/alert";
 import { Button } from "./ui/button";
 import { ScheduleFields } from "./youtube-schedule-fields";
 
@@ -72,7 +74,7 @@ function Section({ title, children, hint }: { title: string; hint?: string; chil
 }
 
 function Counter({ value, limit, unit = "" }: { value: number; limit: number; unit?: string }) {
-  return <span className={cn("mono text-[10px]", value > limit ? "font-bold text-red-700" : "text-[var(--muted-foreground)]")}>{value}/{limit}{unit}</span>;
+  return <span className={cn("mono text-[10px]", value > limit ? "cf-text-error font-bold" : "text-[var(--muted-foreground)]")}>{value}/{limit}{unit}</span>;
 }
 
 function Choice({ name, checked, onChange, label, description }: { name: string; checked: boolean; onChange: () => void; label: string; description?: string }) {
@@ -214,7 +216,7 @@ export function PublishSheet({ project, onClose, onUploaded, accountId = null, s
     return (
       <Shell onClose={onClose} selector={selector}>
         <div className="grid min-h-60 place-items-center p-6 text-sm text-[var(--muted-foreground)]">
-          {error ? <p role="alert" className="text-red-700">{error}</p> : <span className="flex items-center gap-2"><LoaderCircle className="size-4 animate-spin" /> Preparing your upload…</span>}
+          {error ? <Alert tone="error">{error}</Alert> : <span className="flex items-center gap-2"><LoaderCircle className="size-4 animate-spin" /> Preparing your upload…</span>}
         </div>
       </Shell>
     );
@@ -466,7 +468,7 @@ export function PublishSheet({ project, onClose, onUploaded, accountId = null, s
                 {draft.suggested_category && options.category_id !== draft.suggested_category.id && (
                   <button type="button" className="mt-1 text-[11px] text-[#d94c20]" onClick={() => update({ category_id: draft.suggested_category!.id })}>Suggested: {draft.suggested_category.title}</button>
                 )}
-                {draft.category_error && <span className="mt-1 block text-[11px] font-normal text-amber-800">Categories unavailable: {draft.category_error.message}</span>}
+                {draft.category_error && <span className="cf-text-warning mt-1 block text-[11px] font-normal">Categories unavailable: {draft.category_error.message}</span>}
               </label>
               <label className="text-xs font-semibold">Video language
                 <input value={options.default_language ?? ""} onChange={(event) => update({ default_language: event.target.value.trim() || null, default_audio_language: event.target.value.trim() || null })} placeholder="e.g. en, de" className="cf-input mt-1 text-sm" />
@@ -500,12 +502,11 @@ export function PublishSheet({ project, onClose, onUploaded, accountId = null, s
           {summary.map(([label, value]) => <div key={label} className="min-w-0"><dt className="text-[var(--muted-foreground)]">{label}</dt><dd className="truncate font-semibold" title={value}>{value}</dd></div>)}
         </dl>
         {issues.length > 0 && !run && (
-          <div role="alert" className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
-            <p className="flex items-center gap-1.5 font-semibold"><AlertTriangle className="size-3.5" /> {attentionSummary(issues)}</p>
+          <Alert tone="warning" role="alert" className="mt-3" title={attentionSummary(issues)}>
             <ul className="mt-1 list-disc pl-5">{issues.map((item) => <li key={`${item.field}:${item.message}`}>{item.message}</li>)}</ul>
-          </div>
+          </Alert>
         )}
-        {error && <p role="alert" className="mt-3 rounded-xl bg-red-50 px-3 py-2 text-xs text-red-800">{error}</p>}
+        {error && <Alert tone="error" className="mt-3">{error}</Alert>}
         <PublishFeedback phase={phase} submitError={submitError} />
         <div className="mt-3 flex items-center justify-end gap-2">
           <Button variant="ghost" onClick={onClose} disabled={busy}>{run ? "Close" : "Cancel"}</Button>
@@ -567,20 +568,19 @@ function SmartSlot({ smart, schedule, source, cached, checking, notice, locale, 
         </div>
       )}
       {unverified && !cached && (
-        <div role="alert" className="mt-2 rounded-lg bg-amber-50 px-2.5 py-2 text-[11px] text-amber-900">
-          <p className="flex items-center gap-1.5 font-semibold"><AlertTriangle className="size-3" /> Could not verify YouTube schedule.</p>
+        <Alert tone="warning" size="sm" role="alert" className="mt-2" title="Could not verify YouTube schedule.">
           <p className="mt-0.5">{smart.freshness?.error?.message ?? "YouTube did not answer."} ClipForge will not assume a slot is free.</p>
           <div className="mt-1.5 flex flex-wrap gap-3">
             <button type="button" className="underline" onClick={onRetry} disabled={checking}>Retry</button>
             {fallback && <button type="button" className="underline" onClick={() => onApply(fallback, true)}>Use cached schedule ({freshnessLabel(smart.freshness, true).replace("Based on schedule checked ", "checked ")})</button>}
             <button type="button" className="underline" onClick={onManual}>Choose time manually</button>
           </div>
-        </div>
+        </Alert>
       )}
-      {cached && shown && !manual && <p className="mt-1 text-[11px] font-semibold text-amber-800">{freshnessLabel(smart.freshness, true)} — YouTube was not re-checked.</p>}
+      {cached && shown && !manual && <p className="cf-text-warning mt-1 text-[11px] font-semibold">{freshnessLabel(smart.freshness, true)} — YouTube was not re-checked.</p>}
       {!unverified && smart.freshness && <p className="mt-1 text-[10px] text-[var(--muted-foreground)]">{freshnessLabel(smart.freshness)}</p>}
-      {smart.horizon_full && <p className="mt-1 text-[11px] text-amber-800">Every slot in your schedule is taken for the next {smart.schedule?.horizon_days ?? 30} days — choose a time manually.</p>}
-      {notice && <p role="status" className="mt-2 rounded-lg bg-amber-50 px-2.5 py-1.5 text-[11px] font-semibold text-amber-900">{notice}</p>}
+      {smart.horizon_full && <p className="cf-text-warning mt-1 text-[11px]">Every slot in your schedule is taken for the next {smart.schedule?.horizon_days ?? 30} days — choose a time manually.</p>}
+      {notice && <Alert tone="warning" size="sm" className="mt-2">{notice}</Alert>}
     </div>
   );
 }
@@ -595,8 +595,8 @@ function ConflictWarning({ conflict, kept, locale, onKeep, onUseNext }: {
 }) {
   const next = conflict.recommendation;
   return (
-    <div role="alert" data-conflict={conflict.reason} className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-900">
-      <p className="flex items-center gap-1.5 font-semibold"><AlertTriangle className="size-3" /> {conflict.message}</p>
+    <div role="alert" data-conflict={conflict.reason} className={cn(alertClass("warning", "sm"), "block")}>
+      <p className="flex items-center gap-1.5 font-semibold"><AlertTriangle className="cf-alert-icon !mt-0" aria-hidden /> {conflict.message}</p>
       {kept ? (
         <p className="mt-0.5">Keeping your time anyway.</p>
       ) : (
@@ -612,7 +612,8 @@ function ConflictWarning({ conflict, kept, locale, onKeep, onUseNext }: {
 const PHASE_TONE: Record<PublishPhase["tone"], string> = {
   busy: "!opacity-90",
   success: "!bg-emerald-600 !text-white !opacity-100",
-  warn: "!bg-amber-500 !text-white !opacity-100",
+  // Dark text on amber: white on amber is below 4.5:1.
+  warn: "!bg-amber-400 !text-amber-950 !opacity-100",
   error: "",
 };
 
@@ -644,8 +645,8 @@ function PublishFeedback({ phase, submitError }: { phase: PublishPhase | null; s
   return (
     <>
       <p role="status" aria-live="polite" className="sr-only">{phase && !submitError ? [phase.label, phase.message].filter(Boolean).join(". ") : ""}</p>
-      {problem && <p role="alert" className="mt-3 rounded-xl bg-red-50 px-3 py-2 text-xs text-red-800">{problem}</p>}
-      {note && phase?.tone === "warn" && <p className="mt-3 rounded-xl bg-amber-50 px-3 py-2 text-xs text-amber-900">{note}</p>}
+      {problem && <Alert tone="error" className="mt-3">{problem}</Alert>}
+      {note && phase?.tone === "warn" && <Alert tone="warning" role="none" className="mt-3">{note}</Alert>}
     </>
   );
 }

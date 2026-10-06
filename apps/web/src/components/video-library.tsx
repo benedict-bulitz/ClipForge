@@ -39,8 +39,10 @@ import {
 import { PLATFORM_LABELS, PRIVACY_LABELS } from "@/lib/publishing";
 import { browserLocale, detectTimeZone, scheduleLine } from "@/lib/youtube";
 import { cn } from "@/lib/utils";
+import { badgeClass, type BadgeTone } from "@/lib/alerts";
 import { Brand } from "./brand";
 import { ChannelPerformance } from "./channel-performance";
+import { Alert } from "./ui/alert";
 import { Button } from "./ui/button";
 import { ThemeToggle } from "./theme-toggle";
 
@@ -51,17 +53,12 @@ function shortDate(iso: string): string {
   return Number.isNaN(date.getTime()) ? "—" : date.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
 }
 
+const LIBRARY_TONES: Record<ReturnType<typeof stateTone>, BadgeTone> = { ok: "success", info: "info", muted: "muted", warn: "warning", error: "error" };
+
 export function StateChip({ video }: { video: Pick<LibraryVideo, "state" | "state_label" | "processing"> | Pick<SocialLibraryVideo, "state" | "state_label"> }) {
   const tone = stateTone(video.state);
   return (
-    <span className={cn(
-      "inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-[.06em]",
-      tone === "ok" && "bg-emerald-50 text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-300",
-      tone === "info" && "bg-sky-50 text-sky-800 dark:bg-sky-500/15 dark:text-sky-300",
-      tone === "muted" && "bg-black/5 text-[var(--muted-foreground)] dark:bg-white/10",
-      tone === "warn" && "bg-amber-50 text-amber-800 dark:bg-amber-500/15 dark:text-amber-300",
-      tone === "error" && "bg-red-50 text-red-800 dark:bg-red-500/15 dark:text-red-300",
-    )}>
+    <span className={badgeClass(LIBRARY_TONES[tone])}>
       {video.state_label}{"processing" in video && video.processing && video.state !== "processing" ? " · Processing" : ""}
     </span>
   );
@@ -125,7 +122,7 @@ function VideoRow({ video }: { video: LibraryVideo }) {
         <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-1">
           <div className="min-w-0">
             <Link href={href} className="line-clamp-2 break-words font-semibold hover:underline">{video.title}</Link>
-            <p className={cn("mt-0.5 flex items-center gap-1 text-xs", scheduled ? "font-semibold text-sky-800 dark:text-sky-300" : "font-medium")} aria-label="Date">
+            <p className={cn("mt-0.5 flex items-center gap-1 text-xs", scheduled ? "cf-text-info font-semibold" : "font-medium")} aria-label="Date">
               {scheduled && <CalendarClock className="size-3.5 shrink-0" />}
               {dateLine(video, shortDate, (iso) => scheduledTime(iso, video.schedule_timezone))}
             </p>
@@ -146,9 +143,9 @@ function VideoRow({ video }: { video: LibraryVideo }) {
           <div title="YouTube Analytics API"><dt className="text-[var(--muted-foreground)]">Avg view %</dt><dd className="font-semibold">{analyticsValue(video.analytics.averageViewPercentage, state, formatPercent)}</dd></div>
         </dl>
         <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px]">
-          <span className={cn("font-semibold", video.project.available ? "text-emerald-700 dark:text-emerald-300" : "text-[var(--muted-foreground)]")}>{projectLabel(video)}</span>
+          <span className={cn("font-semibold", video.project.available ? "cf-text-success" : "text-[var(--muted-foreground)]")}>{projectLabel(video)}</span>
           <span className="text-[var(--muted-foreground)]">{statsNote}</span>
-          {video.stale && <span className="text-amber-700 dark:text-amber-300">Status may be outdated</span>}
+          {video.stale && <span className="cf-text-warning">Status may be outdated</span>}
           <span className="mono text-[10px] text-[var(--muted-foreground)]" title="YouTube video ID">ID {video.youtube_video_id}</span>
           <span className="ml-auto flex items-center gap-1">
             {project && <Link href={project} className="interactive-text">Open project</Link>}
@@ -171,7 +168,7 @@ function SocialVideoRow({ video }: { video: SocialLibraryVideo }) {
         <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-1">
           <div className="min-w-0">
             <p className="line-clamp-2 break-words font-semibold">{video.title}</p>
-            <p className={cn("mt-0.5 flex items-center gap-1 text-xs", scheduled ? "font-semibold text-sky-800 dark:text-sky-300" : "font-medium")}>
+            <p className={cn("mt-0.5 flex items-center gap-1 text-xs", scheduled ? "cf-text-info font-semibold" : "font-medium")}>
               {scheduled && <CalendarClock className="size-3.5 shrink-0" />}
               {scheduled && video.scheduled_for ? `Scheduled for ${scheduledTime(video.scheduled_for, video.schedule_timezone)}` : video.published_at ? `Published ${shortDate(video.published_at)}` : `Created ${shortDate(video.uploaded_at ?? video.sort_date)}`}
             </p>
@@ -184,7 +181,7 @@ function SocialVideoRow({ video }: { video: SocialLibraryVideo }) {
         </div>
         {video.error?.message && video.state !== "published" && <p className="mt-2 text-[11px] text-[var(--muted-foreground)]">{video.error.message}</p>}
         <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px]">
-          <span className={cn("font-semibold", video.project.available ? "text-emerald-700 dark:text-emerald-300" : "text-[var(--muted-foreground)]")}>{projectLabel(video)}</span>
+          <span className={cn("font-semibold", video.project.available ? "cf-text-success" : "text-[var(--muted-foreground)]")}>{projectLabel(video)}</span>
           <span className="text-[var(--muted-foreground)]">Analytics: not collected for {PLATFORM_LABELS[video.platform]}</span>
           <span className="ml-auto flex items-center gap-1">
             {project && <Link href={project} className="interactive-text">Open project</Link>}
@@ -352,7 +349,7 @@ export function VideoLibrary({ initialFilters }: { initialFilters: LibraryFilter
           <Select label="Sort" value={filters.sort} options={SORT_OPTIONS} onChange={(sort) => update({ sort })} />
         </div>
 
-        {error && <p role="alert" className="mt-5 rounded-xl bg-red-50 px-3 py-2 text-sm text-red-800">{error}</p>}
+        {error && <Alert tone="error" size="lg" className="mt-5">{error}</Alert>}
         {loading && !page && <p className="mt-6 flex items-center gap-2 text-sm text-[var(--muted-foreground)]"><LoaderCircle className="size-4 animate-spin" /> Loading…</p>}
         {page && !loading && items.length === 0 && (
           <p className="mt-6 text-sm text-[var(--muted-foreground)]">

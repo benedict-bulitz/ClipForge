@@ -24,6 +24,7 @@ import {
   type ScheduleUpdate,
 } from "@/lib/youtube-schedule";
 import { cn } from "@/lib/utils";
+import { Alert } from "./ui/alert";
 import { Button } from "./ui/button";
 import { timeZones } from "./youtube-schedule-fields";
 
@@ -86,10 +87,9 @@ export function YouTubePublishingSchedule() {
   if (!overview || !draft || !overview.schedule) {
     if (loadError) {
       return (
-        <div role="alert" className="mt-4 flex flex-wrap items-center justify-between gap-2 rounded-[15px] border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
-          <span className="flex items-center gap-1.5"><AlertTriangle className="size-3.5 shrink-0" />{loadError}</span>
-          <Button size="sm" variant="outline" onClick={() => { setLoadError(null); setAttempt((value) => value + 1); }}><RefreshCw className="size-3.5" /> Retry</Button>
-        </div>
+        <Alert tone="error" className="mt-4 items-center" action={<Button size="sm" variant="outline" onClick={() => { setLoadError(null); setAttempt((value) => value + 1); }}><RefreshCw className="size-3.5" /> Retry</Button>}>
+          {loadError}
+        </Alert>
       );
     }
     return <p className="mt-4 text-xs text-[var(--muted-foreground)]">Loading publishing schedule…</p>;
@@ -151,8 +151,8 @@ export function YouTubePublishingSchedule() {
             <button type="button" className="interactive-text text-[11px]" onClick={() => set({ slots: slotsForCount(draft.videos_per_day, presets) })}><RotateCcw className="size-3" /> Starter times</button>
           )}
         </div>
-        {errors.map((item) => <p key={item} role="alert" className="mt-1 text-[11px] text-red-700">{item}</p>)}
-        {warnings.map((item) => <p key={item} className="mt-1 text-[11px] text-amber-800">{item}</p>)}
+        {errors.map((item) => <p key={item} role="alert" className="cf-text-error mt-1 text-[11px]">{item}</p>)}
+        {warnings.map((item) => <p key={item} className="cf-text-warning mt-1 text-[11px]">{item}</p>)}
       </div>
 
       <div className="mt-3 grid gap-3 sm:grid-cols-2">
@@ -191,11 +191,11 @@ export function YouTubePublishingSchedule() {
             {busy === "refresh" ? <LoaderCircle className="size-3 animate-spin" /> : <RefreshCw className="size-3" />} Refresh schedule
           </button>
         </div>
-        <p className={cn("mt-0.5 text-[10px]", freshness?.error ? "text-amber-800" : "text-[var(--muted-foreground)]")}>
+        <p className={cn("mt-0.5 text-[10px]", freshness?.error ? "cf-text-warning" : "text-[var(--muted-foreground)]")}>
           {freshness?.error ? <><AlertTriangle className="mr-1 inline size-3" />Could not verify YouTube schedule ({freshness.error.message}). {freshnessLabel(freshness, true)}.</> : freshnessLabel(freshness)}
         </p>
         {overview.recommendation && <p className="mt-1 text-[11px]">Next free slot: <strong>{recommendationLabel(overview.recommendation, now, locale)}</strong></p>}
-        {overview.horizon_full && <p className="mt-1 text-[11px] text-amber-800">Every slot in the next {schedule.horizon_days} days is taken.</p>}
+        {overview.horizon_full && <p className="cf-text-warning mt-1 text-[11px]">Every slot in the next {schedule.horizon_days} days is taken.</p>}
         <div className="mt-2 grid gap-2 sm:grid-cols-2">
           {(overview.days ?? []).slice(0, 4).map((day) => (
             <div key={day.date} className="rounded-xl border border-[var(--border)] px-2.5 py-2">
@@ -204,7 +204,7 @@ export function YouTubePublishingSchedule() {
                 {day.slots.map((slot) => (
                   <li key={`${day.date}-${slot.position}`} className="flex justify-between gap-2 text-[11px]" data-status={slot.status}>
                     <span className="mono">{slot.local_time}</span>
-                    <span className={cn(isOccupied(slot.status) ? "font-semibold text-emerald-700" : slot.status === "free" ? "text-[var(--foreground)]" : "text-[var(--muted-foreground)]")}>{slotStatusLabel(slot.status)}</span>
+                    <span className={cn(isOccupied(slot.status) ? "cf-text-success font-semibold" : slot.status === "free" ? "text-[var(--foreground)]" : "text-[var(--muted-foreground)]")}>{slotStatusLabel(slot.status)}</span>
                   </li>
                 ))}
                 {day.other.map((item) => (
@@ -247,7 +247,7 @@ export function YouTubePublishingSchedule() {
         {learning.available && <p className="mt-1 text-[10px] text-[var(--muted-foreground)]">{learning.caveat}</p>}
       </div>
 
-      {notice && <p role={notice.tone === "error" ? "alert" : "status"} className={cn("mt-3 text-[11px]", notice.tone === "error" ? "text-red-700" : "text-emerald-700")}>{notice.text}</p>}
+      {notice && <Alert tone={notice.tone === "error" ? "error" : "success"} size="sm" className="mt-3">{notice.text}</Alert>}
     </div>
   );
 }

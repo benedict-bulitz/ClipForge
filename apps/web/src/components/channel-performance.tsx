@@ -83,7 +83,7 @@ export function ChannelPerformance({ refreshKey = 0 }: { refreshKey?: number }) 
       </div>
       {overview && !empty && <p className="mt-0.5 truncate text-[11px] text-[var(--muted-foreground)]" aria-label="Cohort">{cohortLine(overview, formatDateTime)}</p>}
 
-      {error && <p role="alert" className="mt-2 text-xs text-red-800 dark:text-red-300">{error}</p>}
+      {error && <p role="alert" className="cf-text-error mt-2 text-xs">{error}</p>}
       {empty && <p className="mt-2 text-xs text-[var(--muted-foreground)]">Noch keine Analytics-Daten für diesen Zeitraum.</p>}
 
       {overview && !empty && (
@@ -99,7 +99,7 @@ export function ChannelPerformance({ refreshKey = 0 }: { refreshKey?: number }) 
               return (
                 <span key={key} className="whitespace-nowrap" data-diagnosis={key} title={entry ? `${EVIDENCE_LABELS[entry.evidence] ?? entry.evidence} · verglichen mit ${entry.baseline_n} anderen Videos deines Kanals` : undefined}>
                   <span className="font-semibold">{DIAGNOSIS_LABELS[key]}</span>{" "}
-                  <span className={cn("text-[var(--muted-foreground)]", status === "weaker" && "text-amber-800 dark:text-amber-300")}>
+                  <span className={cn("text-[var(--muted-foreground)]", status === "weaker" && "cf-text-warning")}>
                     {baselineIsScope && status === "insufficient_data" ? "—" : diagnosisLabel(status)}
                   </span>
                 </span>

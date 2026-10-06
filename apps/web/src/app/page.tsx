@@ -394,7 +394,7 @@ export default function Home() {
           </label>
           {multipleQuestions && prompt.trim() && <p className="mt-1 px-2 text-left text-xs text-[var(--muted-foreground)]">{detectedQuestions.length} question{detectedQuestions.length === 1 ? "" : "s"} detected</p>}
           {autoNote && <p role="status" aria-live="polite" className="mt-2 px-2 text-left text-xs text-[var(--muted-foreground)]">{autoNote}</p>}
-          {error && <p role="alert" className="mt-3 text-sm font-medium text-[var(--destructive)]">{error}</p>}
+          {error && <p role="alert" className="cf-text-error mt-3 text-sm font-medium">{error}</p>}
           <div className="mt-3"><AdvancedOptions value={options} onChange={setOptions} prompt={prompt} onReset={() => setOptions(resetCreatePreferences())} queueToggle={<button type="button" aria-expanded={queueOpen} aria-controls="video-queue-panel" onClick={() => setQueueOpen((open) => !open)} className="flex items-center gap-2 rounded-full px-3 py-2 text-sm font-medium text-[var(--muted-foreground)] hover:bg-[var(--surface-hover)] hover:text-[var(--foreground)]"><ListVideo className="size-4" /> Video Queue <span className="rounded-full bg-[var(--accent-soft)] px-2 py-0.5 text-xs font-bold text-[var(--accent)]">{activeJobs.length}</span><ChevronDown className={`size-4 transition-transform ${queueOpen ? "rotate-180" : ""}`} /></button>} /></div>
         </div>
 
@@ -532,7 +532,7 @@ function GenerationQueue({ jobs, onRemove, onClear, onCancel, cancelPending, bus
               <p className={`flex items-center gap-2 text-xs font-bold ${stopped ? "text-[var(--muted-foreground)]" : "text-[#d94c20]"}`}><span>{view === "cancelling" ? `● ${CANCELLING_LABEL}` : stopped ? CANCELLED_LABEL : "● Wird erstellt"}</span>{!stopped && <span>{Math.round(item.progress * 100)}%</span>}</p>
               <p className="mt-2 break-words text-sm font-semibold">{item.prompt}</p>
             </Link>
-            {view === "cancel" && <button type="button" onClick={() => onCancel(item.id)} className="queue-cancel shrink-0 text-xs font-semibold text-red-700 hover:text-red-800">{CANCEL_LABEL}</button>}
+            {view === "cancel" && <button type="button" onClick={() => onCancel(item.id)} className="queue-cancel cf-text-error shrink-0 text-xs font-semibold hover:underline">{CANCEL_LABEL}</button>}
             {view === "cancelling" && <span className="queue-cancel inline-flex shrink-0 items-center gap-1.5 text-xs font-semibold text-[var(--muted-foreground)]" role="status"><LoaderCircle className="size-3 animate-spin" aria-hidden /> {CANCELLING_LABEL}</span>}
           </div>
           {!stopped && <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-[#ff6838]/15" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(item.progress * 100)}><div className="h-full bg-[#ff6838]" style={{ width: `${Math.round(item.progress * 100)}%` }} /></div>}
@@ -541,7 +541,7 @@ function GenerationQueue({ jobs, onRemove, onClear, onCancel, cancelPending, bus
         </div>;
       })}
       {waiting.length > 0 && <div className="mb-2 mt-4 flex items-center justify-between gap-3"><p className="text-[11px] font-bold uppercase tracking-[.12em] text-[#85857c]">Warteschlange</p><button type="button" disabled={busy} onClick={() => setClearConfirmationOpen(true)} className="text-xs font-semibold text-red-700 hover:text-red-800 disabled:opacity-50">Clear Queue</button></div>}
-      {clearConfirmationOpen && <div className="mb-3 flex items-center justify-between gap-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-900"><span>Clear {waiting.length} queued project{waiting.length === 1 ? "" : "s"}?</span><span className="flex gap-2"><button type="button" disabled={busy} onClick={() => setClearConfirmationOpen(false)}>Cancel</button><button type="button" disabled={busy} onClick={() => { setClearConfirmationOpen(false); onClear(); }} className="font-bold text-red-800">Clear Queue</button></span></div>}
+      {clearConfirmationOpen && <div className="cf-tone-error mb-3 flex items-center justify-between gap-3 rounded-xl border px-3 py-2 text-xs"><span>Clear {waiting.length} queued project{waiting.length === 1 ? "" : "s"}?</span><span className="flex gap-2"><button type="button" disabled={busy} onClick={() => setClearConfirmationOpen(false)}>Cancel</button><button type="button" disabled={busy} onClick={() => { setClearConfirmationOpen(false); onClear(); }} className="font-bold underline">Clear Queue</button></span></div>}
       <div className="grid gap-2">{waiting.map((item) => <div key={item.project_id} className="flex items-start gap-3 rounded-xl border p-3 hover:bg-[var(--surface-hover)]"><Link href={`/projects/${item.project_id}`} className="flex min-w-0 flex-1 items-start gap-3"><span className="mono shrink-0 text-xs font-bold text-[#d94c20]">#{item.queue_position}</span><span className="min-w-0"><span className="block break-words text-sm font-semibold">{item.prompt}</span><span className="mt-1 block text-xs text-[var(--muted-foreground)]">In Warteschlange</span></span></Link><button type="button" aria-label={`Remove ${item.prompt} from queue`} disabled={busy} onClick={() => onRemove(item.id)} className="shrink-0 text-xs font-semibold text-red-700 hover:text-red-800 disabled:opacity-50">Remove</button></div>)}</div>
     </section>
   );

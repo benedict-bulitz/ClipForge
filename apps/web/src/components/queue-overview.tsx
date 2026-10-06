@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
-import { AlertTriangle, ArrowLeft, ArrowRight, CalendarClock, Clapperboard, ListVideo, LoaderCircle, Play, RefreshCw, Settings, Upload } from "lucide-react";
+import { ArrowLeft, ArrowRight, CalendarClock, Clapperboard, ListVideo, LoaderCircle, Play, RefreshCw, Settings, Upload } from "lucide-react";
 import { ApiError, getProject, getQueueOverview, listGenerationJobs, mediaUrl } from "@/lib/api";
 import { formatDuration, generationTimeLabel, POLL_TIMEOUT_MS, withTimeout } from "@/lib/generation-poll";
 import { createHomePoller, type HomePoller } from "@/lib/home-poll";
@@ -27,8 +27,10 @@ import { PLATFORM_LABELS, type ProjectPublication } from "@/lib/publishing";
 import type { GenerationJob, Project } from "@/lib/types";
 import { browserLocale, lifecycleLabel, scheduleLine, type YouTubeUpload } from "@/lib/youtube";
 import { cn } from "@/lib/utils";
+import { toneClass } from "@/lib/alerts";
 import { Brand } from "./brand";
 import { ThemeToggle } from "./theme-toggle";
+import { Alert } from "./ui/alert";
 import { Button } from "./ui/button";
 import { UploadSheet } from "./upload-sheet";
 
@@ -154,10 +156,9 @@ export function QueueOverviewPage() {
         </div>
 
         {loadError && (
-          <p role="alert" className="mt-5 flex items-center gap-2 rounded-xl bg-red-50 px-3 py-2 text-sm text-red-800 dark:bg-red-500/10 dark:text-red-300">
-            <AlertTriangle className="size-4 shrink-0" /> {loadError}
-            <button type="button" className="ml-auto inline-flex items-center gap-1 font-semibold underline" onClick={() => void poller.current?.refreshAll()}><RefreshCw className="size-3.5" /> Retry</button>
-          </p>
+          <Alert tone="error" size="lg" className="mt-5 items-center" action={<button type="button" className="inline-flex items-center gap-1 font-semibold underline" onClick={() => void poller.current?.refreshAll()}><RefreshCw className="size-3.5" /> Retry</button>}>
+            {loadError}
+          </Alert>
         )}
 
         {!overview && !loadError && (
@@ -196,12 +197,13 @@ export function QueueOverviewPage() {
   );
 }
 
+/** Row status pills: semantic tones; "active" (generating) keeps the brand accent. */
 const TONE_CLASS: Record<QueueRowTone, string> = {
-  waiting: "bg-black/5 text-[var(--muted-foreground)] dark:bg-white/10",
+  waiting: toneClass("muted"),
   active: "bg-[#ff6838]/10 text-[#d94c20]",
-  ok: "bg-emerald-50 text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-300",
-  muted: "bg-black/5 text-[var(--muted-foreground)] dark:bg-white/10",
-  error: "bg-red-50 text-red-800 dark:bg-red-500/15 dark:text-red-300",
+  ok: toneClass("success"),
+  muted: toneClass("muted"),
+  error: toneClass("error"),
 };
 
 function QueueRow({ item, overview, playback, opening, locked, error, onUpload, onPlayerError }: {
@@ -263,7 +265,7 @@ function QueueRow({ item, overview, playback, opening, locked, error, onUpload, 
           <Button asChild size="sm" variant="outline"><Link href={`/projects/${job.project_id}`}>View Details <ArrowRight className="size-3.5" /></Link></Button>
         )}
         {action.kind === "none" && action.reason && <p className="text-[11px] text-[var(--muted-foreground)]">{action.reason}</p>}
-        {error && <p role="alert" className="text-[11px] font-medium text-[var(--destructive)]">{error}</p>}
+        {error && <p role="alert" className="cf-text-error text-[11px] font-medium">{error}</p>}
       </div>
     </li>
   );
@@ -287,7 +289,7 @@ function StatusBlock({ status, progress, timing, badge, upload, publications }: 
           {status.state === "running" && <LoaderCircle className="size-3 animate-spin" aria-hidden />}{status.label}{progress !== null ? ` · ${progress}%` : ""}
         </span>
         {badge && (
-          <span title={badge.title ?? undefined} className={cn("inline-flex rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-[.06em]", badge.tone === "ok" ? TONE_CLASS.ok : badge.tone === "attention" ? "bg-amber-50 text-amber-800 dark:bg-amber-500/15 dark:text-amber-300" : TONE_CLASS.muted)}>
+          <span title={badge.title ?? undefined} className={cn("inline-flex rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-[.06em]", badge.tone === "ok" ? TONE_CLASS.ok : badge.tone === "attention" ? toneClass("warning") : TONE_CLASS.muted)}>
             {badge.label}
           </span>
         )}
@@ -297,7 +299,7 @@ function StatusBlock({ status, progress, timing, badge, upload, publications }: 
           <div className="h-full bg-[#ff6838] transition-[width] duration-500" style={{ width: `${progress}%` }} />
         </div>
       )}
-      {status.detail && <p className={cn("break-words leading-4", status.tone === "error" ? "text-red-700 dark:text-red-300" : "text-[var(--muted-foreground)]")}>{status.detail}</p>}
+      {status.detail && <p className={cn("break-words leading-4", status.tone === "error" ? "cf-text-error" : "text-[var(--muted-foreground)]")}>{status.detail}</p>}
       {timing && <p className="mono text-[10px] text-[var(--muted-foreground)]">{timing}</p>}
       {upload && current && (
         <p className="flex items-center gap-1 text-[var(--muted-foreground)]">

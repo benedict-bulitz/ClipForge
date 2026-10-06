@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
-import { AlertTriangle, ArrowLeft, CalendarClock, Clapperboard, ExternalLink, FolderOpen, LoaderCircle, RefreshCw } from "lucide-react";
+import { ArrowLeft, CalendarClock, Clapperboard, ExternalLink, FolderOpen, LoaderCircle, RefreshCw } from "lucide-react";
 import { ApiError, getVideo, refreshYouTubeAnalytics, syncYouTubeUpload } from "@/lib/api";
 import {
   browserLocale,
@@ -31,6 +31,7 @@ import {
 } from "@/lib/videos";
 import { cn } from "@/lib/utils";
 import { Brand } from "./brand";
+import { Alert } from "./ui/alert";
 import { Button } from "./ui/button";
 import { ThemeToggle } from "./theme-toggle";
 import { StateChip, VideoThumbnail, scheduledTime } from "./video-library";
@@ -201,7 +202,7 @@ export function VideoDetailPage({ videoId }: { videoId: string }) {
           <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-center gap-2"><StateChip video={video} />{video.content_type && <span className="text-[11px] text-[var(--muted-foreground)]">{humanize(video.content_type.toLowerCase())}</span>}</div>
             <h1 className="mt-2 break-words text-2xl font-semibold tracking-[-.04em]">{video.title}</h1>
-            <p className={cn("mt-1 flex items-center gap-1.5 text-sm", scheduled ? "font-semibold text-sky-800 dark:text-sky-300" : "font-medium")} aria-label="Date">
+            <p className={cn("mt-1 flex items-center gap-1.5 text-sm", scheduled ? "cf-text-info font-semibold" : "font-medium")} aria-label="Date">
               {scheduled && <CalendarClock className="size-4 shrink-0" />}
               {dateLine(video, (iso) => formatDateTime(iso), (iso) => scheduledTime(iso, video.schedule_timezone))}
             </p>
@@ -211,7 +212,7 @@ export function VideoDetailPage({ videoId }: { videoId: string }) {
             </p>
             <p className="mono mt-0.5 text-[10px] text-[var(--muted-foreground)]" title="YouTube video ID">YouTube ID {video.youtube_video_id}</p>
             {video.project.available ? (
-              <p className="mt-1 text-xs font-semibold text-emerald-700 dark:text-emerald-300">Project available</p>
+              <p className="cf-text-success mt-1 text-xs font-semibold">Project available</p>
             ) : (
               <p className="mt-1 text-xs"><span className="font-semibold">Project deleted</span> <span className="text-[var(--muted-foreground)]">· Learning data retained{video.project.archived_at ? ` since ${formatDateTime(video.project.archived_at)}` : ""}</span></p>
             )}
@@ -236,16 +237,16 @@ export function VideoDetailPage({ videoId }: { videoId: string }) {
               </Button>
             </div>
             {!video.youtube_actions.available && <p id="youtube-actions-reason" className="mt-2 text-xs text-[var(--muted-foreground)]">{video.youtube_actions.reason}</p>}
-            {notice && <p role={notice.tone === "error" ? "alert" : "status"} className={cn("mt-2 text-xs", notice.tone === "error" ? "text-red-800 dark:text-red-300" : "text-[var(--muted-foreground)]")}>{notice.text}</p>}
+            {notice && <Alert tone={notice.tone} size="sm" className="mt-2">{notice.text}</Alert>}
           </div>
         </div>
 
         <div className="grid gap-4 lg:grid-cols-2">
           <Section title="Status" source="YouTube">
             {current.stale && (
-              <p className="mb-3 flex items-start gap-2 rounded-xl bg-amber-50 px-3 py-2 text-[11px] text-amber-900 dark:bg-amber-500/10 dark:text-amber-200">
-                <AlertTriangle className="mt-px size-3.5 shrink-0" /> {current.stale_reason === "refresh_failed" ? `Could not refresh the YouTube status${current.refresh_error ? `: ${current.refresh_error.message}` : ""}. Showing the last confirmed state.` : current.stale_reason === "never_checked" ? "Not checked with YouTube yet." : "The status may be outdated."}
-              </p>
+              <Alert tone="warning" size="sm" className="mb-3">
+                {current.stale_reason === "refresh_failed" ? `Could not refresh the YouTube status${current.refresh_error ? `: ${current.refresh_error.message}` : ""}. Showing the last confirmed state.` : current.stale_reason === "never_checked" ? "Not checked with YouTube yet." : "The status may be outdated."}
+              </Alert>
             )}
             <Facts rows={[
               ["Current YouTube state", current.label],
@@ -271,7 +272,7 @@ export function VideoDetailPage({ videoId }: { videoId: string }) {
           <p className="mb-3 text-xs"><span className="font-semibold">{analyticsStateLabel(performance.analytics_state ?? "not_published")}</span>
             {performance.latest_snapshot ? <span className="text-[var(--muted-foreground)]"> · {formatDateTime(performance.latest_snapshot.fetched_at)}{performance.latest_snapshot.published_age_hours != null ? ` · ${Math.round(performance.latest_snapshot.published_age_hours)} h after publishing` : ""}</span> : null}
           </p>
-          {performance.analytics_error && <p role="alert" className="mb-2 text-xs text-red-800 dark:text-red-300">{performance.analytics_error.message}</p>}
+          {performance.analytics_error && <Alert tone="error" className="mb-2">{performance.analytics_error.message}</Alert>}
           <Tiles rows={DETAILED_METRICS.map(([name, label]) => [label, detailedMetric(name, metrics[name], performance.analytics_state)])} />
         </Section>
 
@@ -289,7 +290,7 @@ export function VideoDetailPage({ videoId }: { videoId: string }) {
                 {scenes.map((scene) => {
                   const change = sceneChange(scene);
                   return (
-                    <li key={scene.scene_id} className={cn("rounded-xl border px-3 py-2", scene.notable_drop ? "border-amber-300 bg-amber-50/70 text-amber-950 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100" : "cf-subtle")}>
+                    <li key={scene.scene_id} className={cn("rounded-xl border px-3 py-2", scene.notable_drop ? "cf-tone-warning" : "cf-subtle")}>
                       <div className="flex items-center justify-between gap-2"><span className="font-semibold">{sceneTitle(scene)}</span><span className="mono text-[10px]">{formatClock(scene.start)}–{formatClock(scene.end)}</span></div>
                       <p className="mt-0.5">{change.range} <strong className="ml-1">{change.delta}</strong></p>
                     </li>
