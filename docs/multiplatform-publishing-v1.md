@@ -71,9 +71,19 @@ or disconnected. Only the adopted "primary" account may ever read it.
 
 ### Instagram (Instagram API with Facebook Login for Business)
 
-Meta's resumable Reels upload (which uploads the local MP4, no public URL) is
-available only with **Facebook Login for Business**; the "Instagram Login"
-variant needs a publicly hosted `video_url` and is not used.
+Why not "Instagram API with Instagram Login" (Business Login for Instagram)?
+It would be the simpler sign-in (instagram.com OAuth, `graph.instagram.com`,
+scopes `instagram_business_basic` + `instagram_business_content_publish`, no
+Facebook Page, long-lived tokens refreshable via
+`graph.instagram.com/refresh_access_token`). But Meta's content-publishing
+guide limits resumable upload (`upload_type=resumable` + bytes to
+`rupload.facebook.com`) to apps that implement **Facebook Login for
+Business**; with Instagram Login a Reel can only be created from a publicly
+reachable `video_url`. ClipForge uploads the local final master and does not
+host videos publicly, so Instagram Login cannot publish ClipForge videos
+without new hosting infrastructure. Re-checked 2026-10-06; Meta's own pages
+were blocked from the build environment, so this rests on Meta's quoted
+documentation text in independent sources.
 
 1. Create a Meta app (Business type) at developers.facebook.com; add
    **Facebook Login for Business** and the **Instagram** (Graph API) product.

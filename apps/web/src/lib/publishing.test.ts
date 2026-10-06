@@ -185,6 +185,14 @@ test("Settings shows expandable YouTube / Instagram / TikTok sections with any n
   assert.match(settings, /Public Direct Post requires TikTok app approval/);
 });
 
+test("Instagram settings explain why sign-in goes through Facebook and keep the config ID under Advanced", () => {
+  // Meta offers local-file (resumable) Reel upload only with Facebook Login for Business;
+  // its direct Instagram Login needs a public video URL, which ClipForge never creates.
+  assert.match(settings, /Meta only accepts a video file from your computer through Facebook Login/);
+  assert.match(settings, /<summary[^>]*>Advanced<\/summary>[^]*Login configuration ID \(optional\)/);
+  assert.doesNotMatch(settings, /Facebook Login for Business configuration ID/);
+});
+
 test("capability chips and OAuth callback notices", () => {
   assert.deepEqual(capabilityChips(YOUTUBE), ["Upload", "Schedule", "Title", "Thumbnail", "Privacy", "Analytics", "Status"]);
   assert.deepEqual(capabilityChips(INSTAGRAM), ["Upload", "Schedule", "Caption", "Cover frame", "Status"]);

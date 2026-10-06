@@ -40,8 +40,8 @@ const PLATFORM_COPY: Record<Platform, { description: string; clientLabel: string
     icon: "bg-red-600/10 text-red-700",
   },
   instagram: {
-    description: "Reels to Instagram professional accounts (Business/Creator, linked to a Facebook Page) via Meta's resumable upload.",
-    clientLabel: "Meta app (Facebook Login for Business)",
+    description: "Reels to Instagram professional accounts (Business or Creator). The final video is uploaded straight from your computer.",
+    clientLabel: "Meta app",
     idLabel: "App ID",
     secretLabel: "App secret",
     idPlaceholder: "Meta app ID",
@@ -204,7 +204,7 @@ function PlatformCard({ section, open, onToggle, onOverview, schedulerNotice }: 
             </Button>
             <span className="text-[11px] text-[var(--muted-foreground)]">
               {platform === "youtube" && "Pick another Google account or brand channel in Google's account chooser to add more channels."}
-              {platform === "instagram" && "One Facebook sign-in can add several Instagram professional accounts."}
+              {platform === "instagram" && "Sign in with the Facebook profile that manages the Instagram account's Page; pick the accounts to add. One sign-in can add several."}
               {platform === "tiktok" && "Sign in as another TikTok creator to add more accounts."}
             </span>
           </div>
@@ -311,12 +311,24 @@ function ClientConfig({ section, busy, onRun }: { section: PlatformSection; busy
         </label>
       )}
       {platform === "instagram" && (
-        <form className="mt-2 flex flex-wrap items-end gap-2" onSubmit={(event) => { event.preventDefault(); void onRun("config", () => savePlatformConfig("instagram", { login_config_id: configId.trim() || null }), "Login configuration saved."); }}>
-          <label className="text-[11px] font-semibold">Facebook Login for Business configuration ID (optional)
-            <input value={configId} onChange={(event) => setConfigId(event.target.value.replace(/\D/g, ""))} className="cf-input mt-1 w-56 text-xs" inputMode="numeric" placeholder="Uses the scope list when empty" />
-          </label>
-          <Button type="submit" size="sm" variant="outline" disabled={!!busy}>Save</Button>
-        </form>
+        <>
+          {/* Why the sign-in goes through Facebook: Meta's direct "Instagram Login" API accepts
+              Reels only from a public video URL; uploading the local final MP4 (resumable
+              upload) is offered only with Facebook Login for Business. */}
+          <p className="mt-2 text-[11px] leading-5 text-[var(--muted-foreground)]">
+            Sign-in uses Facebook because Meta only accepts a video file from your computer through Facebook Login.
+            Meta&apos;s direct Instagram Login requires every video to be hosted at a public URL, which ClipForge does not do.
+          </p>
+          <details className="mt-2">
+            <summary className="cursor-pointer text-[11px] font-semibold text-[var(--muted-foreground)]">Advanced</summary>
+            <form className="mt-2 flex flex-wrap items-end gap-2" onSubmit={(event) => { event.preventDefault(); void onRun("config", () => savePlatformConfig("instagram", { login_config_id: configId.trim() || null }), "Login configuration saved."); }}>
+              <label className="text-[11px] font-semibold">Login configuration ID (optional)
+                <input value={configId} onChange={(event) => setConfigId(event.target.value.replace(/\D/g, ""))} className="cf-input mt-1 w-56 text-xs" inputMode="numeric" placeholder="Uses the scope list when empty" />
+              </label>
+              <Button type="submit" size="sm" variant="outline" disabled={!!busy}>Save</Button>
+            </form>
+          </details>
+        </>
       )}
       {!editing && <button type="button" className="interactive-text mt-1" onClick={() => setEditing(true)} disabled={!!busy}><KeyRound className="size-3.5" /> {ready ? "Change app credentials" : "Add app credentials"}</button>}
       {editing && (
