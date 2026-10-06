@@ -109,3 +109,20 @@ Unchanged: Google OAuth client with the redirect
 `http://localhost:8000/api/youtube/oauth/callback`. Add more channels with
 "Add account" and pick another Google account or brand channel in Google's
 account chooser.
+
+## Troubleshooting a failed Instagram/TikTok post
+
+Every failed or retried attempt keeps secret-free provider diagnostics in the
+publication's event log and in the API (`GET /api/publishing/publications/<id>`
+→ `publication.error.diagnostics`):
+
+* `code` - ClipForge's classification (e.g. `invalid_request`)
+* `provider_code` - TikTok's/Meta's own code (e.g. `invalid_param`)
+* `provider_message` - the provider's human-readable reason (URLs, tokens and
+  credential values removed, max 300 characters)
+* `log_id` - TikTok's request id; quote it when contacting TikTok support
+* `http_status`, `context` (which step failed, e.g. `post initialization`)
+
+The same fields are logged once per failure by
+`clipforge.publishing.publications` (never the raw response body). The UI shows
+the provider message and a copyable "Provider code … · HTTP … · log_id …" line.

@@ -6,6 +6,7 @@ import {
   callbackNotice,
   capabilityChips,
   composeCaption,
+  diagnosticsLine,
   groupTargets,
   hashtagCount,
   initialTarget,
@@ -224,4 +225,13 @@ test("Videos filters: platform and account round-trip through the URL", () => {
   assert.match(library, /label="Account"/);
   assert.match(library, /isSocialVideo\(video\) \? <SocialVideoRow/);
   assert.match(api, /"\/publishing\/projects\/\$\{projectId\}\/targets"|`\/publishing\/projects\/\$\{projectId\}\/targets`/);
+});
+
+test("failed posts show the provider code and log_id for support, never secrets", () => {
+  assert.equal(diagnosticsLine({ provider_code: "invalid_param", http_status: 400, log_id: "2026100612345ABC", provider_message: "bad", context: "post initialization" }), "Provider code invalid_param · HTTP 400 · log_id 2026100612345ABC");
+  assert.equal(diagnosticsLine({ log_id: "X1" }), "Provider log_id X1");
+  assert.equal(diagnosticsLine({}), null);
+  assert.equal(diagnosticsLine(undefined), null);
+  assert.match(read("../components/social-publications.tsx"), /diagnosticsLine\(item\.error\.diagnostics\)/);
+  assert.match(read("../components/video-library.tsx"), /diagnosticsLine\(video\.error\.diagnostics\)/);
 });

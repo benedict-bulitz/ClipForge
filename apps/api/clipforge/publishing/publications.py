@@ -151,10 +151,30 @@ def aware(value: datetime | None) -> datetime | None:
     return accounts.aware(value)
 
 
-def _event(publication: SocialPublication, state: str, note: str | None = None, *, now: datetime | None = None) -> None:
+def _event(
+    publication: SocialPublication, state: str, note: str | None = None, *, now: datetime | None = None,
+    error: PublishingApiError | None = None,
+) -> None:
+    """Append one lifecycle entry; a provider failure also records its
+    secret-free diagnostics (provider code, sanitized message, log_id)."""
     events = list(publication.events or [])
-    events.append({"at": (now or _now()).isoformat(), "state": state, **({"note": note[:300]} if note else {})})
+    entry: dict[str, Any] = {"at": (now or _now()).isoformat(), "state": state, **({"note": note[:300]} if note else {})}
+    if error is not None:
+        entry["error"] = error.diagnostics()
+        logger.warning(
+            "Publication provider error publication_id=%s platform=%s code=%s provider_code=%s http_status=%s log_id=%s context=%s message=%s",
+            publication.id, publication.platform, error.code, error.provider_code, error.status_code, error.log_id, error.context, error.provider_message,
+        )
+    events.append(entry)
     publication.events = events[-40:]
+
+
+def latest_diagnostics(publication: SocialPublication) -> dict[str, Any] | None:
+    """The provider diagnostics of the most recent failed attempt (from the event log)."""
+    for event in reversed(publication.events or []):
+        if isinstance(event, dict) and isinstance(event.get("error"), dict):
+            return dict(event["error"])
+    return None
 
 
 def utf16_length(text: str) -> int:
@@ -646,7 +666,10 @@ def claim_poll(db: Session, publication_id: str, *, now: datetime) -> bool:
     return result.rowcount == 1
 
 
-def _fail(db: Session, row: SocialPublication, code: str, message: str, *, now: datetime, outcome_unknown: bool = False) -> None:
+def _fail(
+    db: Session, row: SocialPublication, code: str, message: str, *, now: datetime, outcome_unknown: bool = False,
+    error: PublishingApiError | None = None,
+) -> None:
     """A permanent failure.  The render's idempotency key is released (a new
     attempt is allowed) unless the provider may still have posted it."""
     row.state = "failed"
@@ -656,14 +679,14 @@ def _fail(db: Session, row: SocialPublication, code: str, message: str, *, now: 
     row.next_attempt_at = None
     if not outcome_unknown:
         row.idempotency_key = None
-    _event(row, "failed", f"{code}: {message}", now=now)
+    _event(row, "failed", f"{code}: {message}", now=now, error=error)
     db.commit()
 
 
 def _transient(db: Session, row: SocialPublication, error: PublishingApiError, settings: Settings, *, now: datetime) -> None:
     """Bounded retry; the next attempt starts over (no partial post exists)."""
     if row.attempt_count >= max(1, settings.publishing_max_attempts):
-        _fail(db, row, error.code, f"{error.message} (gave up after {row.attempt_count} attempts)", now=now)
+        _fail(db, row, error.code, f"{error.message} (gave up after {row.attempt_count} attempts)", now=now, error=error)
         return
     row.state = "pending" if row.mode == "now" else "scheduled"
     row.remote_container_id = None
@@ -673,7 +696,7 @@ def _transient(db: Session, row: SocialPublication, error: PublishingApiError, s
     row.next_attempt_at = now + _backoff(row.attempt_count)
     row.last_error_code = error.code
     row.last_error_message = error.message[:500]
-    _event(row, row.state, f"retry after {error.code}", now=now)
+    _event(row, row.state, f"retry after {error.code}", now=now, error=error)
     db.commit()
 
 
@@ -725,6 +748,7 @@ def run(
     db.refresh(row)
     _event(row, "uploading", f"attempt {row.attempt_count}", now=now)
     db.commit()
+    used_secrets: list[str] = []
     try:
         account = db.get(PublishingAccount, row.account_id)
         if account is None or account.external_account_id != row.external_account_id:
@@ -733,6 +757,7 @@ def run(
             raise PublicationRefused("not_connected", "The account this post was prepared for is disconnected. Reconnect it, then publish again.")
         source = _verify_binding(db, row, settings)
         token = connections.access_token(db, settings, store, account=account, tiktok_api=apis.tiktok)
+        used_secrets.append(token)
         if row.platform == "tiktok":
             _start_tiktok(db, row, account, token, source, settings, apis, clock=clock)
         else:
@@ -740,10 +765,11 @@ def run(
     except PublicationRefused as exc:
         _fail(db, row, exc.code, exc.message, now=clock())
     except PublishingApiError as exc:
+        exc.scrub(*used_secrets)
         if exc.retryable:
             _transient(db, row, exc, settings, now=clock())
         else:
-            _fail(db, row, exc.code, exc.message, now=clock())
+            _fail(db, row, exc.code, exc.message, now=clock(), error=exc)
     except OSError:
         _fail(db, row, "render_missing", "The final video could not be read.", now=clock())
     except Exception:  # a publishing failure must never corrupt project state
@@ -814,13 +840,14 @@ def _start_tiktok(db: Session, row: SocialPublication, account: PublishingAccoun
                 db.commit()
             try:
                 apis.tiktok.upload_chunk(upload_url, data, first, last, size)
-            except PublishingApiError:
+            except PublishingApiError as exc:
+                exc.scrub(upload_url)  # the upload URL is a credential (it carries an upload token)
                 if last == size - 1:
                     # The final chunk's outcome is unknown; the status poll decides.
                     row.state = "processing"
                     row.lease_until = None
                     row.next_attempt_at = clock() + POLL_FIRST
-                    _event(row, "processing", "final chunk outcome unknown; checking TikTok", now=clock())
+                    _event(row, "processing", "final chunk outcome unknown; checking TikTok", now=clock(), error=exc)
                     db.commit()
                     return
                 row.upload_complete = False
@@ -868,7 +895,8 @@ def _poll_later(db: Session, row: SocialPublication, now: datetime, *, note: str
     if error is not None:
         row.last_error_code = error.code
         row.last_error_message = error.message[:500]
-    if note:
+        _event(row, "processing", note or f"status check failed: {error.code}", now=now, error=error)
+    elif note:
         _event(row, "processing", note, now=now)
     db.commit()
 
@@ -910,10 +938,12 @@ def poll(
         )
         return row
     account = db.get(PublishingAccount, row.account_id)
+    used_secrets: list[str] = []
     try:
         if account is None or account.external_account_id != row.external_account_id:
             raise PublicationRefused("account_changed", "The account this post was prepared for no longer exists.")
         token = connections.access_token(db, settings, store, account=account, tiktok_api=apis.tiktok)
+        used_secrets.append(token)
         if row.platform == "tiktok":
             _poll_tiktok(db, row, account, token, apis, now=now)
         else:
@@ -921,12 +951,13 @@ def poll(
     except PublicationRefused as exc:
         _fail(db, row, exc.code, exc.message, now=now)
     except PublishingApiError as exc:
+        exc.scrub(*used_secrets)
         if exc.retryable or exc.code in AUTH_CODES or exc.code == "media_not_ready":
             # The video already reached the provider: keep asking (after a
             # reconnect for auth problems) instead of uploading it again.
             _poll_later(db, row, now, error=exc)
         else:
-            _fail(db, row, exc.code, exc.message, now=now)
+            _fail(db, row, exc.code, exc.message, now=now, error=exc)
     except Exception:
         logger.exception("Publication status check failed publication_id=%s", publication_id)
         db.rollback()
@@ -1046,6 +1077,16 @@ def actions(row: SocialPublication) -> dict[str, bool]:
     }
 
 
+def serialize_error(row: SocialPublication) -> dict[str, Any] | None:
+    if not row.last_error_code:
+        return None
+    error: dict[str, Any] = {"code": row.last_error_code, "message": row.last_error_message}
+    diagnostics = latest_diagnostics(row)
+    if diagnostics and diagnostics.get("code") == row.last_error_code:
+        error["diagnostics"] = {key: value for key, value in diagnostics.items() if key != "code"}
+    return error
+
+
 def serialize(row: SocialPublication) -> dict[str, Any]:
     snapshot = row.metadata_snapshot or {}
     return {
@@ -1072,7 +1113,7 @@ def serialize(row: SocialPublication) -> dict[str, Any]:
         "remote_status": row.remote_status,
         "attempt_count": row.attempt_count,
         "next_attempt_at": aware(row.next_attempt_at),
-        "error": {"code": row.last_error_code, "message": row.last_error_message} if row.last_error_code else None,
+        "error": serialize_error(row),
         "caption": snapshot.get("caption"),
         "privacy_level": snapshot.get("privacy_level"),
         "is_aigc": snapshot.get("is_aigc"),

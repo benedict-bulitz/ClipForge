@@ -34,7 +34,7 @@ from typing import Any, Protocol
 
 import httpx
 
-from .errors import PublishingApiError
+from .errors import PublishingApiError, safe_log_id, safe_provider_text
 
 AUTH_URL = "https://www.tiktok.com/v2/auth/authorize/"
 API = "https://open.tiktokapis.com/v2"
@@ -165,15 +165,28 @@ _ERRORS: dict[str, tuple[str, bool, str]] = {
     "privacy_level_option_mismatch": ("invalid_option", False, "TikTok no longer offers the chosen privacy option for this account. Open Upload again to choose from the current options."),
     "url_ownership_unverified": ("invalid_option", False, "TikTok refused the media source."),
     "invalid_file_upload": ("invalid_media", False, "TikTok rejected the video file."),
-    "invalid_params": ("invalid_request", False, "TikTok rejected the post settings."),
     "internal_error": ("provider_error", True, "TikTok had a temporary problem. ClipForge will retry."),
 }
 
 
+# TikTok's documented spelling is ``invalid_param`` ("check error message for
+# details"); ``invalid_params`` is accepted too because it was seen before.
+INVALID_PARAM_CODES = frozenset({"invalid_param", "invalid_params"})
+INVALID_PARAM_TEXT = "TikTok rejected the post settings."
+
+
 def _error(response: httpx.Response, *, context: str) -> PublishingApiError:
+    """Classify a TikTok error response without losing TikTok's own diagnosis.
+
+    TikTok answers ``{"error": {"code", "message", "log_id"}}`` (the OAuth
+    token endpoint: ``{"error", "error_description", "log_id"}``).  The
+    provider code, its human-readable message (sanitized) and ``log_id`` are
+    kept on the error; the raw body never is.
+    """
     status = response.status_code
     provider_code = ""
-    message = ""
+    raw_message: object = None
+    raw_log_id: object = None
     try:
         payload = response.json()
     except ValueError:
@@ -182,22 +195,37 @@ def _error(response: httpx.Response, *, context: str) -> PublishingApiError:
         error = payload.get("error")
         if isinstance(error, dict):
             provider_code = str(error.get("code") or "")
-            message = str(error.get("message") or "")
+            raw_message = error.get("message")
+            raw_log_id = error.get("log_id")
         elif isinstance(error, str):  # OAuth token endpoint shape
             provider_code = error
-            message = str(payload.get("error_description") or "")
+            raw_message = payload.get("error_description")
+        if raw_log_id in (None, ""):
+            raw_log_id = payload.get("log_id")
+    provider_message = safe_provider_text(raw_message)
+    details = {
+        "status_code": status,
+        "provider_code": provider_code or None,
+        "provider_message": provider_message,
+        "log_id": safe_log_id(raw_log_id),
+        "context": context,
+    }
+    if provider_code in INVALID_PARAM_CODES:
+        # The field-level reason is only in TikTok's message: keep it visible.
+        text = f"{INVALID_PARAM_TEXT[:-1]}: {provider_message}" if provider_message else INVALID_PARAM_TEXT
+        return PublishingApiError("invalid_request", text, retryable=False, **details)
     if provider_code in _ERRORS:
         code, retryable, text = _ERRORS[provider_code]
-        return PublishingApiError(code, text, retryable=retryable, status_code=status, provider_code=provider_code)
+        return PublishingApiError(code, text, retryable=retryable, **details)
     if status == 401:
         code, retryable, text = _ERRORS["access_token_invalid"]
-        return PublishingApiError(code, text, retryable=retryable, status_code=status, provider_code=provider_code or None)
+        return PublishingApiError(code, text, retryable=retryable, **details)
     if status == 429:
-        return PublishingApiError("rate_limited", "TikTok's API rate limit was reached.", status_code=status, provider_code=provider_code or None)
+        return PublishingApiError("rate_limited", "TikTok's API rate limit was reached.", **details)
     if status >= 500 or status == 408:
-        return PublishingApiError("provider_error", f"TikTok is temporarily unavailable ({context}).", status_code=status, provider_code=provider_code or None)
-    safe = message[:300] if message and "token" not in message.casefold() else ""
-    return PublishingApiError("provider_rejected", safe or f"TikTok refused the {context} request.", retryable=False, status_code=status, provider_code=provider_code or None)
+        return PublishingApiError("provider_error", f"TikTok is temporarily unavailable ({context}).", **details)
+    text = f"TikTok refused the {context} request: {provider_message}" if provider_message else f"TikTok refused the {context} request."
+    return PublishingApiError("provider_rejected", text, retryable=False, **details)
 
 
 def _ok(payload: Any) -> bool:

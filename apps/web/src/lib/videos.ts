@@ -79,7 +79,7 @@ export type SocialLibraryVideo = {
   thumbnail_url: string | null;
   remote_url: string | null;
   remote_post_id: string | null;
-  error: { code: string; message: string | null } | null;
+  error: { code: string; message: string | null; diagnostics?: import("./publishing").ProviderDiagnostics } | null;
   actions: PublicationActions;
   privacy_level: string | null;
 };

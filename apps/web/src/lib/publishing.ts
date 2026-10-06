@@ -180,12 +180,33 @@ export type SocialPublication = {
   remote_url: string | null;
   remote_post_id: string | null;
   attempt_count: number;
-  error: { code: string; message: string | null } | null;
+  error: { code: string; message: string | null; diagnostics?: ProviderDiagnostics } | null;
   caption: string | null;
   privacy_level: string | null;
   actions: PublicationActions;
   requires_running_backend: boolean;
 };
+
+/** Secret-free provider diagnostics of the latest failed attempt (TikTok: provider code + log_id). */
+export type ProviderDiagnostics = {
+  provider_code?: string;
+  provider_message?: string;
+  log_id?: string;
+  http_status?: number;
+  context?: string;
+  retryable?: boolean;
+};
+
+/** "TikTok code invalid_param · log_id 2026…" - what provider support asks for. */
+export function diagnosticsLine(diagnostics: ProviderDiagnostics | undefined | null): string | null {
+  if (!diagnostics) return null;
+  const parts = [
+    diagnostics.provider_code ? `code ${diagnostics.provider_code}` : null,
+    diagnostics.http_status ? `HTTP ${diagnostics.http_status}` : null,
+    diagnostics.log_id ? `log_id ${diagnostics.log_id}` : null,
+  ].filter(Boolean);
+  return parts.length ? `Provider ${parts.join(" · ")}` : null;
+}
 
 export type SocialPreflight = { issues: Array<{ field: string; message: string }>; ready: boolean; schedule: { status: string; message: string | null; publish_at: string | null } | null };
 

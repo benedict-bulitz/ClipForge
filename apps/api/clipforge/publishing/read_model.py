@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 
 from ..models import Project, PublishingAccount, SocialPublication, YouTubeUpload
 from . import accounts
-from .publications import STATE_LABELS, actions, aware
+from .publications import STATE_LABELS, actions, aware, serialize_error
 
 # Library status buckets of social publications.
 SOCIAL_BUCKETS = {
@@ -79,7 +79,7 @@ def serialize_library_item(row: SocialPublication, *, project: Project | None, a
         "thumbnail_url": snapshot.get("poster_url") if project is not None else None,
         "remote_url": row.remote_url,
         "remote_post_id": row.remote_post_id,
-        "error": {"code": row.last_error_code, "message": row.last_error_message} if row.last_error_code else None,
+        "error": serialize_error(row),
         "actions": actions(row),
         "privacy_level": snapshot.get("privacy_level"),
         "live_stats": None,
@@ -165,7 +165,7 @@ def project_publications(db: Session, project_id: str) -> list[dict[str, Any]]:
             "render_revision": row.render_revision,
             "created_at": aware(row.created_at),
             "active": row.idempotency_key is not None,
-            "error": {"code": row.last_error_code, "message": row.last_error_message} if row.last_error_code else None,
+            "error": serialize_error(row),
             "actions": actions(row),
         })
     items.sort(key=lambda item: item["created_at"] or datetime.min.replace(tzinfo=UTC), reverse=True)

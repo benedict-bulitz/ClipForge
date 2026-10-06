@@ -36,7 +36,7 @@ import {
   type SocialLibraryVideo,
   type VideoLibraryPage,
 } from "@/lib/videos";
-import { PLATFORM_LABELS, PRIVACY_LABELS } from "@/lib/publishing";
+import { PLATFORM_LABELS, PRIVACY_LABELS, diagnosticsLine } from "@/lib/publishing";
 import { browserLocale, detectTimeZone, scheduleLine } from "@/lib/youtube";
 import { cn } from "@/lib/utils";
 import { badgeClass, type BadgeTone } from "@/lib/alerts";
@@ -180,6 +180,7 @@ function SocialVideoRow({ video }: { video: SocialLibraryVideo }) {
           <StateChip video={video} />
         </div>
         {video.error?.message && video.state !== "published" && <p className="mt-2 text-[11px] text-[var(--muted-foreground)]">{video.error.message}</p>}
+        {video.error && video.state !== "published" && diagnosticsLine(video.error.diagnostics) && <p className="mono mt-0.5 select-all text-[10px] text-[var(--muted-foreground)]">{diagnosticsLine(video.error.diagnostics)}</p>}
         <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px]">
           <span className={cn("font-semibold", video.project.available ? "cf-text-success" : "text-[var(--muted-foreground)]")}>{projectLabel(video)}</span>
           <span className="text-[var(--muted-foreground)]">Analytics: not collected for {PLATFORM_LABELS[video.platform]}</span>

@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { ExternalLink, LoaderCircle } from "lucide-react";
 import { ApiError, cancelSocialPublication, listSocialPublications, publishMissedNow, retrySocialPublication } from "@/lib/api";
-import { PLATFORM_LABELS, activePublications, publicationTone, type SchedulerStatus, type SocialPublication } from "@/lib/publishing";
+import { PLATFORM_LABELS, activePublications, diagnosticsLine, publicationTone, type SchedulerStatus, type SocialPublication } from "@/lib/publishing";
 import { badgeClass, type BadgeTone } from "@/lib/alerts";
 import { browserLocale } from "@/lib/youtube";
 import { cn } from "@/lib/utils";
@@ -70,6 +70,7 @@ export function SocialPublications({ projectId, version, onChanged }: { projectI
               <span className={cn("ml-1", badgeClass(TONE[publicationTone(item.state)]))}>{item.state_label}</span>
               {item.scheduled_at && item.state === "scheduled" && <span className="ml-1 text-[var(--muted-foreground)]">{new Date(item.scheduled_at).toLocaleString(locale, { timeZone: item.schedule_timezone ?? undefined })}{item.schedule_timezone ? ` (${item.schedule_timezone})` : ""}</span>}
               {item.error?.message && item.state !== "published" && <span className="block text-[11px] text-[var(--muted-foreground)]">{item.error.message}</span>}
+              {item.error && item.state !== "published" && diagnosticsLine(item.error.diagnostics) && <span className="mono block select-all text-[10px] text-[var(--muted-foreground)]">{diagnosticsLine(item.error.diagnostics)}</span>}
             </span>
             <span className="flex gap-1.5">
               {item.remote_url && <a href={item.remote_url} target="_blank" rel="noreferrer" className="interactive-text text-xs">Open <ExternalLink className="size-3" /></a>}
