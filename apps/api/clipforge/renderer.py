@@ -23,12 +23,7 @@ from openai import (
 from PIL import Image, UnidentifiedImageError
 
 from . import cancellation, still_image
-from .alignment import (
-    align_narration,
-    alignment_readiness,
-    group_aligned_words,
-    phrase_fallback_items,
-)
+from .alignment import alignment_readiness, build_caption_track
 from .attention import replan_attention, visible_attention_events
 from .config import Settings
 from .media import (
@@ -230,22 +225,23 @@ def _render_video(
             report_progress(
                 progress, "alignment", "Timing captions to speech", phase="start"
             )
-            alignment = align_narration(
+            # Visible caption text comes only from the canonical script; the
+            # narration audio contributes timing (see ``alignment``).
+            track = build_caption_track(
                 audio,
                 state["script"]["text"],
                 target,
                 state["intent"]["language"],
                 settings,
+                words_per_group=int(captions.get("words_per_group", 4)),
+                audio_seconds=actual,
+                cache_dir=settings.render_root.resolve() / project_id / "alignment",
             )
-            captions["timing"] = alignment.status
-            captions["alignment_provider"] = alignment.provider
-            captions["diagnostic"] = alignment.diagnostic
-            group_size = int(captions.get("words_per_group", 4))
-            captions["items"] = (
-                group_aligned_words(alignment.words, group_size, state["script"]["text"])
-                if alignment.words
-                else phrase_fallback_items(state["script"]["text"], target, group_size)
-            )
+            captions["timing"] = track.timing
+            captions["alignment_provider"] = track.provider
+            captions["diagnostic"] = track.diagnostic
+            captions["alignment"] = track.report
+            captions["items"] = track.items
             replan_attention(state)
             report_progress(
                 progress, "alignment", "Timing captions to speech", phase="complete"

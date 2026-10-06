@@ -29,6 +29,8 @@ successful export, ClipForge keeps project metadata while removing that project'
 Bootstrap installs ClipForge's local Faster Whisper word aligner in `.venv`. Its lightweight `tiny`
 model downloads into the Hugging Face cache only when narration is aligned for the first time. To
 upgrade an existing checkout, run `./.venv/bin/pip install -e "apps/api[dev]"`.
+Caption text always comes from the final narration script; the aligner only supplies word timing.
+If its timing cannot be mapped onto the script reliably, captions fall back to phrase timing.
 
 The default `CLIPFORGE_AI_MODE=local` needs no keys. It creates a real persisted ProjectState with a deterministic development planner. To use the OpenAI director, copy `.env.example` to `.env`, set `CLIPFORGE_AI_MODE=openai`, and add `OPENAI_API_KEY`.
 

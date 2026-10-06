@@ -29,6 +29,7 @@ GENERATED_PROJECT_DIRECTORIES = (
     "tmp",
     "temp",
     "segment-cache",
+    "alignment",
     "critic",
 )
 
