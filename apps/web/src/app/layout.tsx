@@ -1,4 +1,6 @@
 import type { Metadata } from "next";
+import { Suspense } from "react";
+import { RouteTrail } from "@/components/route-trail";
 import "./globals.css";
 
 const themeScript = `(() => {
@@ -20,7 +22,11 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
   return (
     <html lang="en" suppressHydrationWarning>
       <head><script dangerouslySetInnerHTML={{ __html: themeScript }} /></head>
-      <body>{children}</body>
+      <body>
+        {children}
+        {/* Which page the current one was opened from, for in-app back controls (never touches history). */}
+        <Suspense fallback={null}><RouteTrail /></Suspense>
+      </body>
     </html>
   );
 }

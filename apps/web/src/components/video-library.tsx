@@ -21,6 +21,7 @@ import {
   formatCount,
   formatPercent,
   formatViewDuration,
+  filtersUrlUpdate,
   libraryQuery,
   liveStatValue,
   liveStatsNote,
@@ -49,12 +50,9 @@ import { DeleteVideoButton, DeleteVideoDialog } from "./delete-video-dialog";
 import { Alert } from "./ui/alert";
 import { Button } from "./ui/button";
 import { BackLink } from "./back-link";
-import { useHistoryScroll } from "./use-history-scroll";
 import { ThemeToggle } from "./theme-toggle";
 
 const SEARCH_DEBOUNCE_MS = 250;
-/** The API's page-size limit: how many videos a restored list reloads at most. */
-const MAX_RESTORE = 100;
 
 function shortDate(iso: string): string {
   const date = new Date(iso);
@@ -235,13 +233,11 @@ export function VideoLibrary({ initialFilters }: { initialFilters: LibraryFilter
   const [deleting, setDeleting] = useState<AnyLibraryVideo | null>(null);
   const [deleteNotice, setDeleteNotice] = useState<{ tone: "success" | "warning"; text: string } | null>(null);
   const sequence = useRef(0);
-  const firstLoad = useRef(true);
-  const restored = useHistoryScroll(!!page && !loading, items.length);
 
   /** The first page for these filters; a newer request always wins. */
-  const firstPage = useCallback((next: LibraryFilters, signal?: AbortSignal, limit = PAGE_SIZE) => {
+  const firstPage = useCallback((next: LibraryFilters, signal?: AbortSignal) => {
     const current = ++sequence.current;
-    return listVideos(libraryQuery(next, { limit }), signal)
+    return listVideos(libraryQuery(next, { limit: PAGE_SIZE }), signal)
       .then((result) => {
         if (current !== sequence.current) return;
         setPage(result);
@@ -259,16 +255,14 @@ export function VideoLibrary({ initialFilters }: { initialFilters: LibraryFilter
 
   useEffect(() => {
     const controller = new AbortController();
-    // Back/Forward to this entry: reload as many videos as were shown, then the scroll position is restored.
-    const restoring = firstLoad.current ? restored.current : null;
-    firstLoad.current = false;
-    void firstPage(filters, controller.signal, restoring ? Math.min(MAX_RESTORE, Math.max(PAGE_SIZE, restoring.count)) : PAGE_SIZE);
-    // Filters live in the URL without adding history entries (intentional replace);
-    // nothing to do when the URL already says it (e.g. this page restored by Back).
-    const target = `/videos${libraryQuery(filters)}`;
-    if (window.location.pathname + window.location.search !== target) router.replace(target, { scroll: false });
+    void firstPage(filters, controller.signal);
+    // Filters live in the URL without adding history entries (intentional replace).
+    // Never when the URL already says it: a page restored by Back/Forward must not
+    // be navigated again (that would rewrite the restored entry).
+    const target = filtersUrlUpdate(window.location.pathname + window.location.search, filters);
+    if (target) router.replace(target, { scroll: false });
     return () => controller.abort();
-  }, [filters, firstPage, router, restored]);
+  }, [filters, firstPage, router]);
 
   function update(patch: Partial<LibraryFilters>) {
     const next = { ...filters, ...patch };

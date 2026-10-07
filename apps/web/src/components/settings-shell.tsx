@@ -34,7 +34,7 @@ export function SettingsShell({ children }: { children: React.ReactNode }) {
               <Link href="/videos"><Clapperboard className="size-3.5" /> Videos</Link>
             </Button>
             <Button asChild variant="ghost" size="sm">
-              <BackLink href="/"><ArrowLeft className="size-3.5" /> Back to studio</BackLink>
+              <BackLink href="/" match="any"><ArrowLeft className="size-3.5" /> Back</BackLink>
             </Button>
           </div>
         </div>

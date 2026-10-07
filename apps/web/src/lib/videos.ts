@@ -253,6 +253,16 @@ export function libraryQuery(filters: LibraryFilters, extra: Record<string, numb
   return text ? `?${text}` : "";
 }
 
+/**
+ * The URL the Videos page should show for its filters, or null when the
+ * current URL already shows them - then nothing may navigate (in particular
+ * not a page the browser just restored with Back/Forward).
+ */
+export function filtersUrlUpdate(currentPathAndSearch: string, filters: LibraryFilters): string | null {
+  const target = `/videos${libraryQuery(filters)}`;
+  return currentPathAndSearch === target ? null : target;
+}
+
 export function sameFilters(a: LibraryFilters, b: LibraryFilters): boolean {
   return a.status === b.status && a.project === b.project && a.analytics === b.analytics && a.q.trim() === b.q.trim() && a.sort === b.sort && a.platform === b.platform && a.account === b.account;
 }

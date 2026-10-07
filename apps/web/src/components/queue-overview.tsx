@@ -34,7 +34,6 @@ import { Alert } from "./ui/alert";
 import { Button } from "./ui/button";
 import { BackLink } from "./back-link";
 import { UploadSheet } from "./upload-sheet";
-import { useHistoryScroll } from "./use-history-scroll";
 
 /** While an upload continues in the background, its row is re-read on this cadence (bounded). */
 const UPLOAD_FOLLOW_UP_MS = 5000;
@@ -53,8 +52,6 @@ export function QueueOverviewPage() {
   const [rowErrors, setRowErrors] = useState<Record<string, string>>({});
   const poller = useRef<HomePoller | null>(null);
   const [playback] = useState<ExclusivePlayback>(() => createExclusivePlayback());
-  // Back/Forward to the Queue returns to where it was once the overview has loaded.
-  useHistoryScroll(overview !== null || loadError !== null);
   const followUps = useRef(0);
 
   useEffect(() => {
