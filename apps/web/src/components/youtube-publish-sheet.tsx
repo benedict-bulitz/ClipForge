@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, CalendarClock, Check, CheckCircle2, ChevronDown, ImagePlus, LoaderCircle, Lock, RefreshCw, RotateCcw, Sparkles, Upload } from "lucide-react";
 import { ApiError, getNextYouTubeSlot, getProjectYouTube, getPublishingDraft, mediaUrl, preflightYouTubeUpload, retryYouTubeUpload, scheduleYouTubeUpload, uploadCustomThumbnail, uploadProjectToYouTube } from "@/lib/api";
@@ -55,6 +54,7 @@ import { PublishShell } from "./publish-shell";
 import { Alert } from "./ui/alert";
 import { Button } from "./ui/button";
 import { ScheduleFields } from "./youtube-schedule-fields";
+import { SectionLink } from "./section-link";
 
 const VISIBILITY_COPY: Record<Visibility, { label: string; hint: string }> = {
   private: { label: "Private", hint: "Only you can see it. Publish later." },
@@ -653,7 +653,7 @@ function PublishFeedback({ phase, submitError }: { phase: PublishPhase | null; s
 
 function Shell({ children, onClose, selector }: { children: React.ReactNode; onClose: () => void; selector?: React.ReactNode }) {
   return (
-    <PublishShell onClose={onClose} selector={selector} subtitle={<>YouTube · straight from ClipForge — no export needed. <Link href="/settings/integrations#youtube" className="underline">Upload defaults</Link></>}>
+    <PublishShell onClose={onClose} selector={selector} subtitle={<>YouTube · straight from ClipForge — no export needed. <SectionLink href="/settings/integrations#youtube" className="underline">Upload defaults</SectionLink></>}>
       {children}
     </PublishShell>
   );

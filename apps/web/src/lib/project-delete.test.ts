@@ -22,7 +22,7 @@ test("project deletion uses the DELETE API and an upload-aware explicit confirma
 test("confirmed deletion clears active UI state and returns to the project overview", () => {
   assert.match(workspace, /await deleteProject\(project\.id\)/);
   assert.match(workspace, /setMessages\(\[\]\)/);
-  assert.match(workspace, /router\.replace\("\/"\)/);
+  assert.match(workspace, /window\.location\.replace\("\/"\)/);
 });
 
 test("cancelling the dialog only closes it", () => {

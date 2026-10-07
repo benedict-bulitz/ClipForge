@@ -51,6 +51,7 @@ import { Alert } from "./ui/alert";
 import { Button } from "./ui/button";
 import { BackLink } from "./back-link";
 import { ThemeToggle } from "./theme-toggle";
+import { SectionLink } from "./section-link";
 
 const SEARCH_DEBOUNCE_MS = 250;
 
@@ -233,6 +234,7 @@ export function VideoLibrary({ initialFilters }: { initialFilters: LibraryFilter
   const [deleting, setDeleting] = useState<AnyLibraryVideo | null>(null);
   const [deleteNotice, setDeleteNotice] = useState<{ tone: "success" | "warning"; text: string } | null>(null);
   const sequence = useRef(0);
+  const mountedFilters = useRef(filters);
 
   /** The first page for these filters; a newer request always wins. */
   const firstPage = useCallback((next: LibraryFilters, signal?: AbortSignal) => {
@@ -256,11 +258,13 @@ export function VideoLibrary({ initialFilters }: { initialFilters: LibraryFilter
   useEffect(() => {
     const controller = new AbortController();
     void firstPage(filters, controller.signal);
-    // Filters live in the URL without adding history entries (intentional replace).
-    // Never when the URL already says it: a page restored by Back/Forward must not
-    // be navigated again (that would rewrite the restored entry).
-    const target = filtersUrlUpdate(window.location.pathname + window.location.search, filters);
-    if (target) router.replace(target, { scroll: false });
+    // Filters the user changed live in the URL without adding history entries
+    // (intentional replace).  Never on mount: the entry the page was opened or
+    // restored with is left exactly as the browser has it.
+    if (filters !== mountedFilters.current) {
+      const target = filtersUrlUpdate(window.location.pathname + window.location.search, filters);
+      if (target) router.replace(target, { scroll: false });
+    }
     return () => controller.abort();
   }, [filters, firstPage, router]);
 
@@ -339,11 +343,11 @@ export function VideoLibrary({ initialFilters }: { initialFilters: LibraryFilter
     <main className="theme-app min-h-screen bg-[var(--background)]">
       <header className="sticky top-0 z-40 border-b border-[var(--border)] bg-[var(--surface)] backdrop-blur-xl">
         <div className="mx-auto flex min-h-16 max-w-[1100px] items-center justify-between gap-4 px-4 sm:px-6">
-          <Link href="/" aria-label="ClipForge home"><Brand /></Link>
+          <SectionLink href="/" aria-label="ClipForge home"><Brand /></SectionLink>
           <nav aria-label="Main" className="flex items-center gap-1">
             <ThemeToggle />
-            <Button asChild variant="ghost" size="sm"><Link href="/videos" aria-current="page"><Clapperboard className="size-3.5" /> <span className="hidden sm:inline">Videos</span></Link></Button>
-            <Button asChild variant="ghost" size="sm"><Link href="/settings/integrations"><Settings className="size-3.5" /> <span className="hidden sm:inline">Settings</span></Link></Button>
+            <Button asChild variant="ghost" size="sm"><SectionLink href="/videos" aria-current="page"><Clapperboard className="size-3.5" /> <span className="hidden sm:inline">Videos</span></SectionLink></Button>
+            <Button asChild variant="ghost" size="sm"><SectionLink href="/settings/integrations"><Settings className="size-3.5" /> <span className="hidden sm:inline">Settings</span></SectionLink></Button>
             <Button asChild variant="ghost" size="sm"><BackLink href="/"><ArrowLeft className="size-3.5" /> <span className="hidden sm:inline">Studio</span></BackLink></Button>
           </nav>
         </div>

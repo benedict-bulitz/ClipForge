@@ -2,7 +2,7 @@
 
 import { useEffect } from "react";
 import { usePathname, useSearchParams } from "next/navigation";
-import { recordLinkClick, recordRoute } from "@/lib/navigation";
+import { recordLinkClick, recordRoute, sameAppReferrer } from "@/lib/navigation";
 
 /**
  * Records which page the current one was opened from (see lib/navigation).
@@ -14,7 +14,8 @@ export function RouteTrail() {
   const search = useSearchParams()?.toString() ?? "";
 
   useEffect(() => {
-    recordRoute(`${pathname}${search ? `?${search}` : ""}`, window.history.length);
+    const length = window.history.length;
+    recordRoute(`${pathname}${search ? `?${search}` : ""}`, length, Date.now(), sameAppReferrer(document.referrer, window.location.origin, length));
   }, [pathname, search]);
 
   useEffect(() => {

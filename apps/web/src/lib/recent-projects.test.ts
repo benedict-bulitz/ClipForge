@@ -70,7 +70,7 @@ test("bulk deletion keeps its typed confirmation and tells what stays in Videos"
   assert.match(home, /Alle Projekte wirklich löschen\?/);
   assert.match(home, /bulkDeletePhrase !== "LÖSCHEN"/);
   assert.match(home, /projects_keeping_learning_record/);
-  assert.match(home, /in <Link href="\/videos" className="underline">Videos<\/Link> erhalten/);
+  assert.match(home, /in <SectionLink href="\/videos" className="underline">Videos<\/SectionLink> erhalten/);
   assert.match(home, /await deleteAllProjects\(\);[\s\S]*?await refresh\(\);/);
 });
 
@@ -84,7 +84,7 @@ test("the wording never implies that YouTube videos or their learning data are d
   const dialog = home.slice(home.indexOf('id="bulk-delete-title"'), home.indexOf("Zum Bestätigen"));
   assert.match(dialog, /lokal gerenderte Videodateien/);
   assert.doesNotMatch(dialog, /projektlokalen Videos|YouTube-Videos werden gelöscht|Lerndaten werden gelöscht/);
-  assert.match(dialog, /bleib(t|en)"\} in <Link href="\/videos"/);
+  assert.match(dialog, /bleib(t|en)"\} in <SectionLink href="\/videos"/);
   assert.match(dialog, /YouTube-Videos werden nie gelöscht\./);
 });
 

@@ -1,7 +1,5 @@
 "use client";
 
-import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import {
   ArrowLeft,
@@ -67,6 +65,7 @@ import { BackLink } from "./back-link";
 import { Alert } from "./ui/alert";
 import { deleteDialogCopy, formatBytes, lifecycleLabel, type DeletionPlan } from "@/lib/youtube";
 import { cn } from "@/lib/utils";
+import { SectionLink } from "./section-link";
 
 type Tab = "overview" | "script" | "scenes" | "sources";
 
@@ -147,7 +146,6 @@ export function ProjectWorkspace({
   project: Project;
   onProjectChange: (project: Project) => void;
 }) {
-  const router = useRouter();
   const [tab, setTab] = useState<Tab>("overview");
   const [message, setMessage] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -375,7 +373,8 @@ export function ProjectWorkspace({
       if (unverified) await deleteProjectConfirmingUnverified(project.id);
       else await deleteProject(project.id);
       setMessages([]);
-      router.replace("/");
+      // The deleted project's entry becomes Home (a native replace: no entry for a dead page).
+      window.location.replace("/");
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "The project could not be deleted.");
       setDeleteConfirmationOpen(false);
@@ -422,10 +421,10 @@ export function ProjectWorkspace({
             </Button>
           )}
           <Button asChild variant="ghost" size="icon">
-            <Link href="/videos" aria-label="Videos" title="Videos"><Clapperboard className="size-4" /></Link>
+            <SectionLink href="/videos" aria-label="Videos" title="Videos"><Clapperboard className="size-4" /></SectionLink>
           </Button>
           <Button asChild variant="ghost" size="icon">
-            <Link href="/settings/integrations" aria-label="Settings"><Settings className="size-4" /></Link>
+            <SectionLink href="/settings/integrations" aria-label="Settings"><Settings className="size-4" /></SectionLink>
           </Button>
           <Button variant="ghost" size="icon" aria-label="Project history" aria-expanded={moreOpen} onClick={() => setMoreOpen((open) => !open)}>
             <MoreHorizontal className="size-5" />
@@ -852,7 +851,7 @@ function Overview({ project, readiness }: { project: Project; readiness: Readine
             );
           })}
           <p className="px-1 text-[10px] leading-4 text-[#898980]">
-            Manage provider keys in <Link href="/settings/integrations" className="font-bold text-[#d94c20] hover:text-[#a93210]">Settings → Integrations</Link>.
+            Manage provider keys in <SectionLink href="/settings/integrations" className="font-bold text-[#d94c20] hover:text-[#a93210]">Settings → Integrations</SectionLink>.
           </p>
         </div>
       </Panel>

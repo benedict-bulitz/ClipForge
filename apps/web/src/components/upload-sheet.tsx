@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useEffect, useState } from "react";
 import { LoaderCircle, Plus } from "lucide-react";
 import { getPublishTargets } from "@/lib/api";
@@ -10,6 +9,7 @@ import { PublishShell } from "./publish-shell";
 import { SocialPublishSheet } from "./social-publish-sheet";
 import { Alert } from "./ui/alert";
 import { PublishSheet } from "./youtube-publish-sheet";
+import { SectionLink } from "./section-link";
 
 /**
  * The one Upload sheet for every entry point (Results page, Queue Overview).
@@ -50,7 +50,7 @@ export function UploadSheet({ project, onClose, onUploaded, preferredAccountId =
           </optgroup>
         ))}
       </select>
-      <Link href="/settings/integrations" className="interactive-text text-xs"><Plus className="size-3.5" /> Add account</Link>
+      <SectionLink href="/settings/integrations" className="interactive-text text-xs"><Plus className="size-3.5" /> Add account</SectionLink>
     </div>
   ) : null;
 
@@ -71,7 +71,7 @@ export function UploadSheet({ project, onClose, onUploaded, preferredAccountId =
           <div>
             <p className="font-semibold">No publishing account is connected.</p>
             <p className="mt-1 text-xs text-[var(--muted-foreground)]">Connect YouTube channels, Instagram professional accounts or TikTok accounts first.</p>
-            <Link href="/settings/integrations" className="interactive-text mt-3 inline-flex text-sm"><Plus className="size-3.5" /> Add account</Link>
+            <SectionLink href="/settings/integrations" className="interactive-text mt-3 inline-flex text-sm"><Plus className="size-3.5" /> Add account</SectionLink>
           </div>
         </div>
       </PublishShell>

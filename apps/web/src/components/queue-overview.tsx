@@ -34,6 +34,7 @@ import { Alert } from "./ui/alert";
 import { Button } from "./ui/button";
 import { BackLink } from "./back-link";
 import { UploadSheet } from "./upload-sheet";
+import { SectionLink } from "./section-link";
 
 /** While an upload continues in the background, its row is re-read on this cadence (bounded). */
 const UPLOAD_FOLLOW_UP_MS = 5000;
@@ -131,11 +132,11 @@ export function QueueOverviewPage() {
     <main className="theme-app min-h-screen bg-[var(--background)]">
       <header className="sticky top-0 z-40 border-b border-[var(--border)] bg-[var(--surface)] backdrop-blur-xl">
         <div className="mx-auto flex min-h-16 max-w-[1100px] items-center justify-between gap-4 px-4 sm:px-6">
-          <Link href="/" aria-label="ClipForge home"><Brand /></Link>
+          <SectionLink href="/" aria-label="ClipForge home"><Brand /></SectionLink>
           <nav aria-label="Main" className="flex items-center gap-1">
             <ThemeToggle />
-            <Button asChild variant="ghost" size="sm"><Link href="/videos"><Clapperboard className="size-3.5" /> <span className="hidden sm:inline">Videos</span></Link></Button>
-            <Button asChild variant="ghost" size="sm"><Link href="/settings/integrations"><Settings className="size-3.5" /> <span className="hidden sm:inline">Settings</span></Link></Button>
+            <Button asChild variant="ghost" size="sm"><SectionLink href="/videos"><Clapperboard className="size-3.5" /> <span className="hidden sm:inline">Videos</span></SectionLink></Button>
+            <Button asChild variant="ghost" size="sm"><SectionLink href="/settings/integrations"><Settings className="size-3.5" /> <span className="hidden sm:inline">Settings</span></SectionLink></Button>
             <Button asChild variant="ghost" size="sm"><BackLink href="/"><ArrowLeft className="size-3.5" /> <span className="hidden sm:inline">Studio</span></BackLink></Button>
           </nav>
         </div>
@@ -170,7 +171,7 @@ export function QueueOverviewPage() {
           <div className="workspace-card mt-8 p-6 text-center">
             <p className="font-semibold">The queue is empty.</p>
             <p className="mt-1 text-sm text-[var(--muted-foreground)]">Videos you generate in the Studio appear here while they are made.</p>
-            <Button asChild variant="accent" size="sm" className="mt-4"><Link href="/">Open the Studio <ArrowRight className="size-3.5" /></Link></Button>
+            <Button asChild variant="accent" size="sm" className="mt-4"><SectionLink href="/">Open the Studio <ArrowRight className="size-3.5" /></SectionLink></Button>
           </div>
         )}
 
@@ -260,7 +261,7 @@ function QueueRow({ item, overview, playback, opening, locked, error, onUpload, 
           </Button>
         )}
         {action.kind === "connect" && (
-          <Button asChild size="sm" variant="outline"><Link href="/settings/integrations">{action.label}</Link></Button>
+          <Button asChild size="sm" variant="outline"><SectionLink href="/settings/integrations">{action.label}</SectionLink></Button>
         )}
         {status.state !== "unavailable" && (
           <Button asChild size="sm" variant="outline"><Link href={`/projects/${job.project_id}`}>View Details <ArrowRight className="size-3.5" /></Link></Button>

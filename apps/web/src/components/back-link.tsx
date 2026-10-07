@@ -1,33 +1,23 @@
 "use client";
 
-import type { ComponentProps } from "react";
-import Link from "next/link";
-import { useRouter } from "next/navigation";
+import type { AnchorHTMLAttributes, MouseEvent } from "react";
 import { backAction, currentTrail, forgetLinkClick, type BackMatch } from "@/lib/navigation";
 
 /**
- * An in-app back control: a real link to `href` (middle-click, new tab and a
- * deep link opened in a fresh tab keep working), but a plain click goes back
- * in the browser's history when this page was opened from the page it names
- * (or, with match="any", from any ClipForge page) - so it behaves like the
- * browser's Back and adds no detour entry.  It only ever starts a navigation
- * on click; it never touches the browser's own Back/Forward.
+ * An in-app back control.  A plain click goes back in the browser's history
+ * (history.back()) when the previous entry is known to be the page it names
+ * - or, with match="any", any ClipForge page; otherwise it is an ordinary
+ * link to `href` that the browser follows natively.  It never touches the
+ * browser's own Back/Forward.
  */
-export function BackLink({ href, match = "exact", onNavigate, ...props }: Omit<ComponentProps<typeof Link>, "href"> & { href: string; match?: BackMatch }) {
-  const router = useRouter();
-  return (
-    <Link
-      {...props}
-      href={href}
-      onNavigate={(event) => {
-        onNavigate?.(event);
-        // onNavigate runs only for plain same-tab client navigations (not Cmd/Ctrl-click).
-        if (backAction(currentTrail(), window.location.pathname, href, match) === "history") {
-          event.preventDefault();
-          forgetLinkClick();
-          router.back();
-        }
-      }}
-    />
-  );
+export function BackLink({ href, match = "exact", onClick, ...props }: Omit<AnchorHTMLAttributes<HTMLAnchorElement>, "href"> & { href: string; match?: BackMatch }) {
+  function handleClick(event: MouseEvent<HTMLAnchorElement>) {
+    onClick?.(event);
+    if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    if (backAction(currentTrail(), window.location.pathname, href, match) !== "history") return;
+    event.preventDefault();
+    forgetLinkClick();
+    window.history.back();
+  }
+  return <a {...props} href={href} onClick={handleClick} />;
 }

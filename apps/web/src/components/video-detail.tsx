@@ -38,6 +38,7 @@ import { DeleteVideoButton, DeleteVideoDialog } from "./delete-video-dialog";
 import { ThemeToggle } from "./theme-toggle";
 import { BackLink } from "./back-link";
 import { StateChip, VideoThumbnail, scheduledTime } from "./video-library";
+import { SectionLink } from "./section-link";
 
 const CURVE_WIDTH = 600;
 const CURVE_HEIGHT = 160;
@@ -160,7 +161,7 @@ export function VideoDetailPage({ videoId }: { videoId: string }) {
   const header = (
     <header className="sticky top-0 z-40 border-b border-[var(--border)] bg-[var(--surface)] backdrop-blur-xl">
       <div className="mx-auto flex min-h-16 max-w-[1100px] items-center justify-between gap-4 px-4 sm:px-6">
-        <Link href="/" aria-label="ClipForge home"><Brand /></Link>
+        <SectionLink href="/" aria-label="ClipForge home"><Brand /></SectionLink>
         <nav aria-label="Main" className="flex items-center gap-1">
           <ThemeToggle />
           <Button asChild variant="ghost" size="sm"><BackLink href="/videos"><ArrowLeft className="size-3.5" /> <Clapperboard className="size-3.5" /> Videos</BackLink></Button>

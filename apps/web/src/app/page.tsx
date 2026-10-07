@@ -23,6 +23,7 @@ import {
   saveCreatePreferences,
   type CreateOptions,
 } from "@/lib/creation-preferences";
+import { SectionLink } from "@/components/section-link";
 
 /** Discovery may run (once) behind a chip refill; it never blocks anything else. */
 const SUGGESTION_TIMEOUT_MS = 90_000;
@@ -312,7 +313,6 @@ export default function Home() {
       setQueue([]);
       setBulkDeleteOpen(false);
       setBulkDeletePlan(null);
-      router.replace("/");
       // What remains (e.g. early-failed requests without a project) comes from the API.
       await refresh();
     } catch (reason) {
@@ -337,10 +337,10 @@ export default function Home() {
           <span className="hidden text-sm text-[#77776d] sm:block">Your idea. Fully directed.</span>
           <ThemeToggle />
           <Button asChild variant="ghost" size="sm">
-            <Link href="/videos"><Clapperboard className="size-3.5" /> <span className="hidden sm:inline">Videos</span></Link>
+            <SectionLink href="/videos"><Clapperboard className="size-3.5" /> <span className="hidden sm:inline">Videos</span></SectionLink>
           </Button>
           <Button asChild variant="ghost" size="sm">
-            <Link href="/settings/integrations"><Settings className="size-3.5" /> <span className="hidden sm:inline">Settings</span></Link>
+            <SectionLink href="/settings/integrations"><Settings className="size-3.5" /> <span className="hidden sm:inline">Settings</span></SectionLink>
           </Button>
           <Button variant="outline" size="sm" onClick={newProject}><Plus className="size-3.5" /> New project</Button>
         </div>
@@ -435,7 +435,7 @@ export default function Home() {
             <h2 id="bulk-delete-title" className="text-lg font-semibold">Alle Projekte wirklich löschen?</h2>
             <p className="mt-2 text-sm leading-6 text-[var(--muted-foreground)]">Alle Projekte in ClipForge – lokal gerenderte Videodateien, Audio-Dateien, Medienableitungen und Projektdaten – sowie fehlgeschlagene Anfragen werden dauerhaft gelöscht. Wiederverwendbare Caches bleiben erhalten.</p>
             <p className="mt-4 rounded-xl bg-black/[.04] px-3 py-2 text-sm font-semibold">{bulkDeleteSummary(bulkDeletePlan)}</p>
-            {(bulkDeletePlan.projects_keeping_learning_record ?? 0) > 0 && <p className="mt-2 text-xs text-[var(--muted-foreground)]">{bulkDeletePlan.projects_keeping_learning_record} auf YouTube hochgeladene{bulkDeletePlan.projects_keeping_learning_record === 1 ? "s Video bleibt" : " Videos bleiben"} in <Link href="/videos" className="underline">Videos</Link> erhalten (kompakte Analyse- und Lerndaten). YouTube-Videos werden nie gelöscht.</p>}
+            {(bulkDeletePlan.projects_keeping_learning_record ?? 0) > 0 && <p className="mt-2 text-xs text-[var(--muted-foreground)]">{bulkDeletePlan.projects_keeping_learning_record} auf YouTube hochgeladene{bulkDeletePlan.projects_keeping_learning_record === 1 ? "s Video bleibt" : " Videos bleiben"} in <SectionLink href="/videos" className="underline">Videos</SectionLink> erhalten (kompakte Analyse- und Lerndaten). YouTube-Videos werden nie gelöscht.</p>}
             <label className="mt-5 block text-sm font-medium">Zum Bestätigen <span className="font-bold">LÖSCHEN</span> eingeben
               <input aria-label="Type LÖSCHEN to confirm deletion" value={bulkDeletePhrase} onChange={(event) => setBulkDeletePhrase(event.target.value)} className="mt-2 w-full rounded-xl border bg-transparent px-3 py-2 outline-none focus:border-[#ff6838]" autoComplete="off" />
             </label>
@@ -521,7 +521,7 @@ function GenerationQueue({ jobs, onRemove, onClear, onCancel, cancelPending, bus
     <section id="video-queue-panel" className="queue-card cf-surface mt-5 w-full max-w-[780px] border p-4 text-left" aria-label="Video Queue" aria-live="polite">
       <div className="mb-3 flex items-center justify-between gap-3">
         {jobs.length === 0 ? <p className="text-sm text-[var(--muted-foreground)]">Keine Videos in der Warteschlange.</p> : <span />}
-        <Button asChild variant="outline" size="sm" className="shrink-0"><Link href="/queue"><ListVideo className="size-3.5" /> Open Queue Overview <ArrowRight className="size-3.5" /></Link></Button>
+        <Button asChild variant="outline" size="sm" className="shrink-0"><SectionLink href="/queue"><ListVideo className="size-3.5" /> Open Queue Overview <ArrowRight className="size-3.5" /></SectionLink></Button>
       </div>
       {running.map((item) => {
         const view = cancelView(item, cancelPending);

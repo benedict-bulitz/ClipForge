@@ -3,8 +3,9 @@ import test from "node:test";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { EMPTY_TRAIL, backAction, currentTrail, forgetLinkClick, nextTrail, recordLinkClick, recordRoute, type RouteTrail } from "./navigation.ts";
+import { EMPTY_TRAIL, backAction, currentTrail, forgetLinkClick, nextTrail, recordLinkClick, recordRoute, sameAppReferrer, type RouteTrail } from "./navigation.ts";
 import { DEFAULT_FILTERS, filtersUrlUpdate } from "./videos.ts";
+import { callbackNotice } from "./publishing.ts";
 
 const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8");
 
@@ -31,6 +32,18 @@ test("Back/Forward never invent a previous page (history.length does not change)
     assert.equal(trail.previous, null, url);
     assert.equal(trail.current, url);
   }
+});
+
+test("a document opened from a ClipForge page knows that page (sections are document navigations)", () => {
+  // Home → (plain link) Videos: a new document whose referrer is Home
+  assert.deepEqual(nextTrail(EMPTY_TRAIL, "/videos", 3, null, sameAppReferrer("http://localhost:3000/", "http://localhost:3000", 3)), { current: "/videos", previous: "/", length: 3 });
+  assert.equal(sameAppReferrer("http://localhost:3000/videos?platform=youtube", "http://localhost:3000", 4), "/videos?platform=youtube");
+  // no referrer, another site, the OAuth provider, or a new tab without history: unknown
+  assert.equal(sameAppReferrer("", "http://localhost:3000", 4), null);
+  assert.equal(sameAppReferrer("https://accounts.google.com/", "http://localhost:3000", 4), null);
+  assert.equal(sameAppReferrer("http://localhost:8000/api/youtube/oauth/callback", "http://localhost:3000", 4), null);
+  assert.equal(sameAppReferrer("http://localhost:3000/videos", "http://localhost:3000", 1), null);
+  assert.equal(sameAppReferrer("not a url", "http://localhost:3000", 4), null);
 });
 
 test("uncertain cases leave the previous page unknown", () => {
@@ -125,7 +138,9 @@ test("the Videos filter sync does nothing when the URL already shows the filters
   assert.equal(filtersUrlUpdate("/videos?status=published&platform=youtube", { ...DEFAULT_FILTERS, status: "published", platform: "youtube" }), null);
   assert.equal(filtersUrlUpdate("/videos", { ...DEFAULT_FILTERS, platform: "youtube" }), "/videos?platform=youtube");
   const library = read("../components/video-library.tsx");
-  assert.match(library, /const target = filtersUrlUpdate\(window\.location\.pathname \+ window\.location\.search, filters\);\s+if \(target\) router\.replace\(target, \{ scroll: false \}\);/);
+  // never on mount: only after the user changed the filters (a new filters object)
+  assert.match(library, /const mountedFilters = useRef\(filters\);/);
+  assert.match(library, /if \(filters !== mountedFilters\.current\) \{\s+const target = filtersUrlUpdate\(window\.location\.pathname \+ window\.location\.search, filters\);\s+if \(target\) router\.replace\(target, \{ scroll: false \}\);\s+\}/);
   assert.equal((library.match(/router\.(replace|push)\(/g) ?? []).length, 1);
 });
 
@@ -158,7 +173,9 @@ test("no code depends on the Navigation API (Safari/WebKit's does not follow thi
 test("native Back/Forward/swipe are never intercepted, blocked or rewritten", () => {
   const all = appSources().map(([, source]) => code(source)).join("\n");
   assert.doesNotMatch(all, /addEventListener\(\s*["'](popstate|pageshow|pagehide|beforeunload|unload|hashchange)["']/);
-  assert.doesNotMatch(all, /onpopstate|onpageshow|onpagehide|history\.pushState|history\.go\(|history\.forward\(|scrollRestoration/);
+  assert.doesNotMatch(all, /onpopstate|onpageshow|onpagehide|history\.pushState|history\.go\(|history\.forward\(|scrollRestoration|router\.back\(/);
+  // the only programmatic traversal: an explicit in-app back button
+  assert.equal((all.match(/history\.back\(\)/g) ?? []).length, 1);
   // the only direct history write: the OAuth callback cleanup, inside its guard
   assert.equal((all.match(/history\.replaceState\(/g) ?? []).length, 1);
   assert.match(read("../components/publishing-integrations.tsx"), /if \(callback\) window\.history\.replaceState\(null, "", window\.location\.pathname \+ window\.location\.hash\);/);
@@ -169,16 +186,18 @@ test("native Back/Forward/swipe are never intercepted, blocked or rewritten", ()
 
 test("the route record only reads Next.js' route and history.length; back controls act on click only", () => {
   const trail = read("../components/route-trail.tsx");
-  assert.match(trail, /recordRoute\(`\$\{pathname\}\$\{search \? `\?\$\{search\}` : ""\}`, window\.history\.length\);/);
+  assert.match(trail, /recordRoute\(`\$\{pathname\}\$\{search \? `\?\$\{search\}` : ""\}`, length, Date\.now\(\), sameAppReferrer\(document\.referrer, window\.location\.origin, length\)\);/);
   // only a passive click observer (no history listeners, no history writes, no navigation)
   assert.deepEqual(code(trail).match(/addEventListener\("[a-z]+"/g), ['addEventListener("click"']);
   assert.match(trail, /document\.addEventListener\("click", onClick, \{ capture: true, passive: true \}\);/);
   assert.doesNotMatch(code(trail), /replaceState|pushState|router\.|preventDefault|stopPropagation/);
   assert.match(read("../app/layout.tsx"), /<Suspense fallback=\{null\}><RouteTrail \/><\/Suspense>/);
   const backLink = read("../components/back-link.tsx");
-  assert.match(backLink, /<Link\s+\{\.\.\.props\}\s+href=\{href\}\s+onNavigate=/);
-  assert.match(backLink, /backAction\(currentTrail\(\), window\.location\.pathname, href, match\) === "history"\) \{\s+event\.preventDefault\(\);\s+forgetLinkClick\(\);\s+router\.back\(\);/);
-  assert.doesNotMatch(code(backLink), /onClick|router\.push|router\.replace|useEffect/);
+  // a plain anchor: the browser follows it natively unless the previous entry is known
+  assert.match(backLink, /return <a \{\.\.\.props\} href=\{href\} onClick=\{handleClick\} \/>;/);
+  assert.match(backLink, /if \(event\.defaultPrevented \|\| event\.button !== 0 \|\| event\.metaKey \|\| event\.ctrlKey \|\| event\.shiftKey \|\| event\.altKey\) return;/);
+  assert.match(backLink, /if \(backAction\(currentTrail\(\), window\.location\.pathname, href, match\) !== "history"\) return;\s+event\.preventDefault\(\);\s+forgetLinkClick\(\);\s+window\.history\.back\(\);/);
+  assert.doesNotMatch(code(backLink), /next\/link|useRouter|router\.|useEffect/);
 });
 
 test("every in-app back control uses BackLink with a ClipForge fallback", () => {
@@ -203,11 +222,64 @@ test("every in-app back control uses BackLink with a ClipForge fallback", () => 
 test("no page redirects Home on its own", () => {
   const workspace = read("../components/project-workspace.tsx");
   const projectPage = read("../components/project-page.tsx");
-  assert.match(workspace, /else await deleteProject\(project\.id\);\s+setMessages\(\[\]\);\s+router\.replace\("\/"\);/);
-  assert.match(projectPage, /await deleteProject\(projectId\); router\.replace\("\/"\);/);
+  // Home only after the project itself was deleted: a native replace, no entry for a dead page
+  assert.match(workspace, /else await deleteProject\(project\.id\);\s+setMessages\(\[\]\);[\s\S]{0,120}window\.location\.replace\("\/"\);/);
+  assert.match(projectPage, /await deleteProject\(projectId\); window\.location\.replace\("\/"\);/);
   assert.match(read("../app/settings/page.tsx"), /redirect\("\/settings\/integrations"\)/);
   assert.match(read("../app/learning/page.tsx"), /redirect\("\/videos\?project=archived"\)/);
   for (const [path, source] of appSources()) {
     if (path.endsWith("page.tsx") && path.includes("app")) assert.doesNotMatch(code(source), /redirect\("\/"\)/, path);
   }
+});
+
+// ---------------------------------------------------------------------------
+// Primary sections are ordinary document navigations
+// ---------------------------------------------------------------------------
+
+const SECTIONS = ["/", "/videos", "/queue", "/settings/integrations"];
+
+test("every link to Home, Videos, Queue or Settings is a plain anchor (no client-side push)", () => {
+  const sectionLink = read("../components/section-link.tsx");
+  assert.match(sectionLink, /return <a href=\{href\} \{\.\.\.props\} \/>;/);
+  assert.doesNotMatch(code(sectionLink), /onClick=|preventDefault\(|useRouter|next\/link/);
+  let sectionLinks = 0;
+  for (const [path, source] of appSources()) {
+    const body = code(source);
+    for (const match of body.matchAll(/<Link\s[^>]*?href=\{?["'`]([^"'`]*)["'`]/g)) {
+      const section = match[1].split(/[?#]/, 1)[0] || "/";
+      assert.ok(!SECTIONS.includes(section), `${path}: <Link href="${match[1]}"> must be <SectionLink>`);
+    }
+    assert.doesNotMatch(body, /router\.(push|replace)\(\s*["'`](\/|\/videos|\/queue|\/settings\/integrations)["'`]/, path);
+    sectionLinks += (body.match(/<SectionLink[\s>]/g) ?? []).length;
+  }
+  assert.ok(sectionLinks >= 20, `found ${sectionLinks} section links`);
+});
+
+test("the top navigation of every section uses plain anchors", () => {
+  const library = read("../components/video-library.tsx");
+  const queue = read("../components/queue-overview.tsx");
+  const settingsShell = read("../components/settings-shell.tsx");
+  const home = read("../app/page.tsx");
+  const workspace = read("../components/project-workspace.tsx");
+  assert.match(home, /<SectionLink href="\/videos"/);
+  assert.match(home, /<SectionLink href="\/settings\/integrations"/);
+  assert.match(library, /<SectionLink href="\/settings\/integrations"/);
+  assert.match(library, /<SectionLink href="\/" aria-label="ClipForge home">/);
+  assert.match(queue, /<SectionLink href="\/videos"/);
+  assert.match(queue, /<SectionLink href="\/settings\/integrations"/);
+  assert.match(settingsShell, /<SectionLink href="\/videos"/);
+  assert.match(settingsShell, /<SectionLink href="\/" aria-label="ClipForge home"/);
+  assert.match(workspace, /<SectionLink href="\/videos" aria-label="Videos"/);
+});
+
+test("a normal Settings visit never replaces its entry; only real OAuth callback params do", () => {
+  const integrations = read("../components/publishing-integrations.tsx");
+  assert.equal((code(integrations).match(/replaceState\(/g) ?? []).length, 1);
+  assert.match(integrations, /if \(callback\) window\.history\.replaceState\(/);
+  assert.equal(callbackNotice(new URLSearchParams("")), null);
+  assert.equal(callbackNotice(new URLSearchParams("tab=integrations")), null);
+  assert.equal(callbackNotice(new URLSearchParams("platform=tiktok")), null);
+  assert.equal(callbackNotice(new URLSearchParams("platform=myspace&result=connected")), null);
+  assert.ok(callbackNotice(new URLSearchParams("youtube=connected")));
+  assert.ok(callbackNotice(new URLSearchParams("platform=tiktok&result=error&reason=access_denied")));
 });

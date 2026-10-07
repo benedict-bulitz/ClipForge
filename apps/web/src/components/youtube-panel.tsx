@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { CalendarClock, ExternalLink, LoaderCircle, RefreshCw, Upload } from "lucide-react";
 import {
@@ -48,6 +47,7 @@ import { SocialPublications } from "./social-publications";
 import { Alert } from "./ui/alert";
 import { UploadSheet } from "./upload-sheet";
 import { ScheduleFields } from "./youtube-schedule-fields";
+import { SectionLink } from "./section-link";
 
 type Notice = { tone: "error" | "info" | "success"; text: string };
 
@@ -172,7 +172,7 @@ export function YouTubePanel({ project, disabled, publishOpen, onPublishOpenChan
         </div>
         {!connected && !canUpload && (
           <Button asChild size="sm" variant="accent">
-            <Link href="/settings/integrations#youtube">{connection.status === "auth_expired" ? "Reconnect YouTube" : "Connect an account"}</Link>
+            <SectionLink href="/settings/integrations#youtube">{connection.status === "auth_expired" ? "Reconnect YouTube" : "Connect an account"}</SectionLink>
           </Button>
         )}
         {canUpload && (
