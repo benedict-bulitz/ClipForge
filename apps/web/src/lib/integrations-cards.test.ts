@@ -17,7 +17,7 @@ test("YouTube is not auto-expanded, by its initial state or after loading", () =
   // the lazy initializer is the only source of the initial state
   assert.match(component, /useState<Record<Platform, boolean>>\(initialCardState\)/);
   // nothing opens a card after the accounts load: not connected accounts, not the default account, not an OAuth result
-  const effect = component.slice(component.indexOf("useEffect("), component.indexOf("}, []);"));
+  const effect = component.slice(component.indexOf("useEffect("), component.indexOf("}, [callback]);"));
   assert.doesNotMatch(effect, /setOpen/);
   assert.doesNotMatch(component, /accounts\.length > 0\) result|result\[callback\.platform\]|is_default[^\n]*setOpen/);
   assert.equal((component.match(/setOpen\(/g) ?? []).length, 1); // only the manual toggle

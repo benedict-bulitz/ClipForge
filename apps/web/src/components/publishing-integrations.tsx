@@ -72,10 +72,14 @@ export function PublishingIntegrations() {
   // Every fresh mount starts with all cards collapsed (see initialCardState).
   const [open, setOpen] = useState<Record<Platform, boolean>>(initialCardState);
 
+  // The OAuth result is read once per mount (not inside the effect: React's
+  // development double-run would find the URL already cleaned and drop it).
+  const [callback] = useState(() => (typeof window === "undefined" ? null : callbackNotice(new URLSearchParams(window.location.search))));
+
   useEffect(() => {
     let active = true;
-    const params = new URLSearchParams(window.location.search);
-    const callback = callbackNotice(params);
+    // Intentional replace: the one-time callback result must not stay in the
+    // URL or become its own history entry (Back/reload would show it again).
     if (callback) window.history.replaceState(null, "", window.location.pathname + window.location.hash);
     getPublishingAccounts()
       .then((next) => {
@@ -85,7 +89,7 @@ export function PublishingIntegrations() {
       })
       .catch(() => { if (active) setNotice({ tone: "error", text: "Publishing accounts could not be loaded." }); });
     return () => { active = false; };
-  }, []);
+  }, [callback]);
 
   if (!overview) {
     return (

@@ -63,6 +63,7 @@ import { Button } from "./ui/button";
 import { ThemeToggle } from "./theme-toggle";
 import { YouTubePanel } from "./youtube-panel";
 import { toneClass } from "@/lib/alerts";
+import { BackLink } from "./back-link";
 import { Alert } from "./ui/alert";
 import { deleteDialogCopy, formatBytes, lifecycleLabel, type DeletionPlan } from "@/lib/youtube";
 import { cn } from "@/lib/utils";
@@ -387,9 +388,9 @@ export function ProjectWorkspace({
       <div className="noise" />
       <header className="page-header sticky top-0 z-40 border-b backdrop-blur-xl">
         <div className="relative mx-auto flex min-h-16 max-w-[1600px] items-center gap-2 px-3 py-2 sm:gap-4 sm:px-5 lg:px-7">
-          <Link href="/" aria-label="Back to start" className="interactive-icon">
+          <BackLink href="/" match="any" aria-label="Back" title="Back" className="interactive-icon">
             <ArrowLeft className="size-4" />
-          </Link>
+          </BackLink>
           <div className="hidden sm:block"><Brand /></div>
           <div className="mx-1 hidden h-5 w-px bg-black/10 md:block" />
           <div className="min-w-0 flex-1">

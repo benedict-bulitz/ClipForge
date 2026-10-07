@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { Brand } from "./brand";
 import { Button } from "./ui/button";
+import { BackLink } from "./back-link";
 import { ThemeToggle } from "./theme-toggle";
 
 const futureSections = [
@@ -33,7 +34,7 @@ export function SettingsShell({ children }: { children: React.ReactNode }) {
               <Link href="/videos"><Clapperboard className="size-3.5" /> Videos</Link>
             </Button>
             <Button asChild variant="ghost" size="sm">
-              <Link href="/"><ArrowLeft className="size-3.5" /> Back to studio</Link>
+              <BackLink href="/"><ArrowLeft className="size-3.5" /> Back to studio</BackLink>
             </Button>
           </div>
         </div>

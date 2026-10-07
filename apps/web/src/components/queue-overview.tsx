@@ -32,7 +32,9 @@ import { Brand } from "./brand";
 import { ThemeToggle } from "./theme-toggle";
 import { Alert } from "./ui/alert";
 import { Button } from "./ui/button";
+import { BackLink } from "./back-link";
 import { UploadSheet } from "./upload-sheet";
+import { useHistoryScroll } from "./use-history-scroll";
 
 /** While an upload continues in the background, its row is re-read on this cadence (bounded). */
 const UPLOAD_FOLLOW_UP_MS = 5000;
@@ -51,6 +53,8 @@ export function QueueOverviewPage() {
   const [rowErrors, setRowErrors] = useState<Record<string, string>>({});
   const poller = useRef<HomePoller | null>(null);
   const [playback] = useState<ExclusivePlayback>(() => createExclusivePlayback());
+  // Back/Forward to the Queue returns to where it was once the overview has loaded.
+  useHistoryScroll(overview !== null || loadError !== null);
   const followUps = useRef(0);
 
   useEffect(() => {
@@ -135,7 +139,7 @@ export function QueueOverviewPage() {
             <ThemeToggle />
             <Button asChild variant="ghost" size="sm"><Link href="/videos"><Clapperboard className="size-3.5" /> <span className="hidden sm:inline">Videos</span></Link></Button>
             <Button asChild variant="ghost" size="sm"><Link href="/settings/integrations"><Settings className="size-3.5" /> <span className="hidden sm:inline">Settings</span></Link></Button>
-            <Button asChild variant="ghost" size="sm"><Link href="/"><ArrowLeft className="size-3.5" /> <span className="hidden sm:inline">Studio</span></Link></Button>
+            <Button asChild variant="ghost" size="sm"><BackLink href="/"><ArrowLeft className="size-3.5" /> <span className="hidden sm:inline">Studio</span></BackLink></Button>
           </nav>
         </div>
       </header>

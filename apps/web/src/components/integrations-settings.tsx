@@ -35,6 +35,7 @@ import { toneClass } from "@/lib/alerts";
 import { Alert } from "./ui/alert";
 import { Button } from "./ui/button";
 import { PublishingIntegrations } from "./publishing-integrations";
+import { useHistoryScroll } from "./use-history-scroll";
 
 type ProviderDetails = {
   name: string;
@@ -110,6 +111,8 @@ const statusClasses: Record<IntegrationStatus, string> = {
 export function IntegrationsSettings() {
   const [items, setItems] = useState<Integration[]>([]);
   const [loading, setLoading] = useState(true);
+  // Back/Forward to Settings returns to where it was once the page has loaded.
+  useHistoryScroll(!loading);
   const [pageError, setPageError] = useState<string | null>(null);
   const [editing, setEditing] = useState<IntegrationProvider | null>(null);
   const [candidate, setCandidate] = useState("");

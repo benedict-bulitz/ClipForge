@@ -36,6 +36,7 @@ import { Alert } from "./ui/alert";
 import { Button } from "./ui/button";
 import { DeleteVideoButton, DeleteVideoDialog } from "./delete-video-dialog";
 import { ThemeToggle } from "./theme-toggle";
+import { BackLink } from "./back-link";
 import { StateChip, VideoThumbnail, scheduledTime } from "./video-library";
 
 const CURVE_WIDTH = 600;
@@ -162,7 +163,7 @@ export function VideoDetailPage({ videoId }: { videoId: string }) {
         <Link href="/" aria-label="ClipForge home"><Brand /></Link>
         <nav aria-label="Main" className="flex items-center gap-1">
           <ThemeToggle />
-          <Button asChild variant="ghost" size="sm"><Link href="/videos"><ArrowLeft className="size-3.5" /> <Clapperboard className="size-3.5" /> Videos</Link></Button>
+          <Button asChild variant="ghost" size="sm"><BackLink href="/videos"><ArrowLeft className="size-3.5" /> <Clapperboard className="size-3.5" /> Videos</BackLink></Button>
         </nav>
       </div>
     </header>
@@ -174,7 +175,7 @@ export function VideoDetailPage({ videoId }: { videoId: string }) {
         {header}
         <div className="mx-auto max-w-[1100px] px-4 pt-10 sm:px-6">
           <Alert tone={deleted.tone} size="lg" title="Deleted from ClipForge">{deleted.text}</Alert>
-          <Button asChild variant="outline" size="sm" className="mt-4"><Link href="/videos"><ArrowLeft className="size-3.5" /> Back to Videos</Link></Button>
+          <Button asChild variant="outline" size="sm" className="mt-4"><BackLink href="/videos"><ArrowLeft className="size-3.5" /> Back to Videos</BackLink></Button>
         </div>
       </main>
     );
@@ -189,7 +190,7 @@ export function VideoDetailPage({ videoId }: { videoId: string }) {
             <div role="alert" className="workspace-card p-5">
               <p className="font-semibold">{error.missing ? "Video not found" : "Could not load this video"}</p>
               <p className="mt-1 text-sm text-[var(--muted-foreground)]">{error.missing ? "It is not in the Video Library: only successful uploads appear there, and a video deleted from ClipForge is no longer listed." : error.text}</p>
-              <Button asChild variant="outline" size="sm" className="mt-4"><Link href="/videos"><ArrowLeft className="size-3.5" /> Back to Videos</Link></Button>
+              <Button asChild variant="outline" size="sm" className="mt-4"><BackLink href="/videos"><ArrowLeft className="size-3.5" /> Back to Videos</BackLink></Button>
             </div>
           ) : <p className="flex items-center gap-2 text-sm text-[var(--muted-foreground)]"><LoaderCircle className="size-4 animate-spin" /> Loading…</p>}
         </div>
