@@ -18,6 +18,8 @@ import {
   accountStatusLabel,
   callbackNotice,
   capabilityChips,
+  initialCardState,
+  toggleCard,
   type AccountsOverview,
   type Platform,
   type PlatformSection,
@@ -67,7 +69,8 @@ const PLATFORM_COPY: Record<Platform, { description: string; clientLabel: string
 export function PublishingIntegrations() {
   const [overview, setOverview] = useState<AccountsOverview | null>(null);
   const [notice, setNotice] = useState<(Notice & { platform?: Platform }) | null>(null);
-  const [open, setOpen] = useState<Record<Platform, boolean>>({ youtube: true, instagram: false, tiktok: false });
+  // Every fresh mount starts with all cards collapsed (see initialCardState).
+  const [open, setOpen] = useState<Record<Platform, boolean>>(initialCardState);
 
   useEffect(() => {
     let active = true;
@@ -78,12 +81,6 @@ export function PublishingIntegrations() {
       .then((next) => {
         if (!active) return;
         setOverview(next);
-        setOpen((current) => {
-          const result = { ...current };
-          for (const platform of PLATFORMS) if (next.platforms[platform].accounts.length > 0) result[platform] = true;
-          if (callback) result[callback.platform] = true;
-          return result;
-        });
         if (callback) setNotice(callback);
       })
       .catch(() => { if (active) setNotice({ tone: "error", text: "Publishing accounts could not be loaded." }); });
@@ -106,7 +103,7 @@ export function PublishingIntegrations() {
           key={platform}
           section={overview.platforms[platform]}
           open={open[platform]}
-          onToggle={() => setOpen((current) => ({ ...current, [platform]: !current[platform] }))}
+          onToggle={() => setOpen((current) => toggleCard(current, platform))}
           onOverview={setOverview}
           schedulerNotice={platform === "youtube" ? null : overview.scheduler.notice}
         />

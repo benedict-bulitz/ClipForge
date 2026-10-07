@@ -397,6 +397,20 @@ export function accountStatusLabel(account: Pick<PublishingAccount, "status">): 
 }
 
 /** OAuth callback query → notice (?platform=tiktok&result=connected|error&reason=…, or YouTube's ?youtube=…). */
+/**
+ * Settings → Integrations card state on every fresh mount: all collapsed.
+ * Never derived from configuration, accounts, the default account, an OAuth
+ * result or the URL - the user opens what they need.
+ */
+export function initialCardState(): Record<Platform, boolean> {
+  return Object.fromEntries(PLATFORMS.map((platform) => [platform, false])) as Record<Platform, boolean>;
+}
+
+/** Manual expand/collapse of one card; the other cards keep their state. */
+export function toggleCard(state: Record<Platform, boolean>, platform: Platform): Record<Platform, boolean> {
+  return { ...state, [platform]: !state[platform] };
+}
+
 export function callbackNotice(params: URLSearchParams): { platform: Platform; tone: "success" | "error"; text: string } | null {
   const youtube = params.get("youtube");
   const platform = (youtube ? "youtube" : params.get("platform")) as Platform | null;
