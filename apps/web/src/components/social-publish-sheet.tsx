@@ -29,7 +29,7 @@ import { PublishShell } from "./publish-shell";
 import { Alert } from "./ui/alert";
 import { Button } from "./ui/button";
 import { ScheduleFields } from "./youtube-schedule-fields";
-import { SectionLink } from "./section-link";
+import { PageLink } from "./page-link";
 
 const FOLLOW_MS = 4000;
 const MAX_FOLLOW = 90;
@@ -167,7 +167,7 @@ export function SocialPublishSheet({ project, account, onClose, onPublished, sel
   const tone = result ? publicationTone(result.state) : null;
 
   return (
-    <PublishShell onClose={onClose} selector={selector} subtitle={<>{PLATFORM_LABELS[platform]} · the same final video YouTube gets (narration, music, current audio). <SectionLink href="/settings/integrations" className="underline">Accounts</SectionLink></>}>
+    <PublishShell onClose={onClose} selector={selector} subtitle={<>{PLATFORM_LABELS[platform]} · the same final video YouTube gets (narration, music, current audio). <PageLink href="/settings/integrations" className="underline">Accounts</PageLink></>}>
       <div className="min-h-0 flex-1 overflow-y-auto">
         {(draft.account.restrictions.length > 0 || caps.notes.length > 0) && (
           <div className="mx-5 mt-4 space-y-1.5 sm:mx-6">

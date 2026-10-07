@@ -30,7 +30,7 @@ import { Alert } from "./ui/alert";
 import { Button } from "./ui/button";
 import { YouTubePublishingSchedule } from "./youtube-publishing-schedule";
 import { YouTubeUploadDefaults } from "./youtube-upload-defaults";
-import { SectionLink } from "./section-link";
+import { PageLink } from "./page-link";
 
 type Notice = { tone: "success" | "error" | "info"; text: string };
 
@@ -225,7 +225,7 @@ function PlatformCard({ section, open, onToggle, onOverview, schedulerNotice }: 
           {platform === "youtube" && <YouTubeUploadDefaults connected={connected > 0} />}
           {platform === "youtube" && (
             <p className="mt-4 text-[11px] text-[var(--muted-foreground)]">
-              Published videos stay in <SectionLink href="/videos" className="underline">Videos</SectionLink> — also after their project is deleted.
+              Published videos stay in <PageLink href="/videos" className="underline">Videos</PageLink> — also after their project is deleted.
             </p>
           )}
         </div>

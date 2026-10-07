@@ -65,7 +65,7 @@ import { BackLink } from "./back-link";
 import { Alert } from "./ui/alert";
 import { deleteDialogCopy, formatBytes, lifecycleLabel, type DeletionPlan } from "@/lib/youtube";
 import { cn } from "@/lib/utils";
-import { SectionLink } from "./section-link";
+import { PageLink } from "./page-link";
 
 type Tab = "overview" | "script" | "scenes" | "sources";
 
@@ -421,10 +421,10 @@ export function ProjectWorkspace({
             </Button>
           )}
           <Button asChild variant="ghost" size="icon">
-            <SectionLink href="/videos" aria-label="Videos" title="Videos"><Clapperboard className="size-4" /></SectionLink>
+            <PageLink href="/videos" aria-label="Videos" title="Videos"><Clapperboard className="size-4" /></PageLink>
           </Button>
           <Button asChild variant="ghost" size="icon">
-            <SectionLink href="/settings/integrations" aria-label="Settings"><Settings className="size-4" /></SectionLink>
+            <PageLink href="/settings/integrations" aria-label="Settings"><Settings className="size-4" /></PageLink>
           </Button>
           <Button variant="ghost" size="icon" aria-label="Project history" aria-expanded={moreOpen} onClick={() => setMoreOpen((open) => !open)}>
             <MoreHorizontal className="size-5" />
@@ -851,7 +851,7 @@ function Overview({ project, readiness }: { project: Project; readiness: Readine
             );
           })}
           <p className="px-1 text-[10px] leading-4 text-[#898980]">
-            Manage provider keys in <SectionLink href="/settings/integrations" className="font-bold text-[#d94c20] hover:text-[#a93210]">Settings → Integrations</SectionLink>.
+            Manage provider keys in <PageLink href="/settings/integrations" className="font-bold text-[#d94c20] hover:text-[#a93210]">Settings → Integrations</PageLink>.
           </p>
         </div>
       </Panel>

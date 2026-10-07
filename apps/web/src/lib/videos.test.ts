@@ -129,8 +129,8 @@ test("Open project exists only while the project exists", () => {
   const archived = video({ project: { id: "p1", available: false, title: "Why?", archived_at: "2026-09-12T00:00:00Z" } });
   assert.equal(projectHref(archived), null);
   assert.equal(projectLabel(archived), "Project deleted · Learning archive");
-  assert.match(library, /\{project && <Link href=\{project\}/);
-  assert.match(detail, /\{project && <Button asChild variant="outline" size="sm"><Link href=\{project\}>/);
+  assert.match(library, /\{project && <PageLink href=\{project\}/);
+  assert.match(detail, /\{project && <Button asChild variant="outline" size="sm"><PageLink href=\{project\}>/);
   assert.match(detail, /Project deleted<\/span>[\s\S]*?Learning data retained/);
 });
 
@@ -259,7 +259,7 @@ test("a remotely deleted video keeps Open project but has no working YouTube/Stu
   assert.match(detail, /<Button variant="outline" size="sm" disabled aria-describedby="youtube-actions-reason"><ExternalLink className="size-3\.5" \/> Open in YouTube Studio<\/Button>/);
   assert.match(detail, /id="youtube-actions-reason"[^>]*>\{video\.youtube_actions\.reason\}/);
   // Open project is still decided by the project alone
-  assert.match(detail, /\{project && <Button asChild variant="outline" size="sm"><Link href=\{project\}>/);
+  assert.match(detail, /\{project && <Button asChild variant="outline" size="sm"><PageLink href=\{project\}>/);
 });
 
 test("placeholder counters of a never-public video are not shown as 0; a real 0 stays 0", () => {

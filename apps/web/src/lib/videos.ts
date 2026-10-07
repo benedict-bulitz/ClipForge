@@ -336,7 +336,7 @@ export function liveStatsNote(state: LiveStatsState): string | null {
 }
 
 /** The Open project link only exists while the project does (never a 404 link). */
-export function projectHref(video: Pick<LibraryVideo, "project">): string | null {
+export function projectHref(video: Pick<LibraryVideo, "project">): `/projects/${string}` | null {
   return video.project.available ? `/projects/${video.project.id}` : null;
 }
 

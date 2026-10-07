@@ -208,12 +208,13 @@ test("a failed job stops polling and is reported", async () => {
   assert.equal(clock.pending.size, 0);
 });
 
-test("pages use the watcher and open the finished project without a reload", () => {
+test("pages use the watcher; Home opens the finished project as a real page (browser history entry)", () => {
   assert.match(projectPage, /createGenerationWatcher/);
   assert.doesNotMatch(projectPage, /setInterval/); // no overlapping polls
   assert.match(projectPage, /watcher\.stop\(\)/);
   assert.match(projectPage, /jobProgressPercent/);
   assert.match(home, /openWhenComplete\(started\)/);
-  assert.match(home, /router\.push\(`\/projects\/\$\{project\.id\}`\)/);
+  assert.match(home, /window\.location\.assign\(`\/projects\/\$\{project\.id\}`\)/);
+  assert.doesNotMatch(home, /router\.push\(|useRouter\(/);
   assert.match(home, /withTimeout\(\(signal\) => listGenerationJobs\(signal\)/);
 });

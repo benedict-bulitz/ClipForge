@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { ArrowLeft, CalendarClock, Clapperboard, ExternalLink, FolderOpen, LoaderCircle, RefreshCw } from "lucide-react";
 import { ApiError, getVideo, refreshYouTubeAnalytics, syncYouTubeUpload } from "@/lib/api";
@@ -38,7 +37,7 @@ import { DeleteVideoButton, DeleteVideoDialog } from "./delete-video-dialog";
 import { ThemeToggle } from "./theme-toggle";
 import { BackLink } from "./back-link";
 import { StateChip, VideoThumbnail, scheduledTime } from "./video-library";
-import { SectionLink } from "./section-link";
+import { PageLink } from "./page-link";
 
 const CURVE_WIDTH = 600;
 const CURVE_HEIGHT = 160;
@@ -161,7 +160,7 @@ export function VideoDetailPage({ videoId }: { videoId: string }) {
   const header = (
     <header className="sticky top-0 z-40 border-b border-[var(--border)] bg-[var(--surface)] backdrop-blur-xl">
       <div className="mx-auto flex min-h-16 max-w-[1100px] items-center justify-between gap-4 px-4 sm:px-6">
-        <SectionLink href="/" aria-label="ClipForge home"><Brand /></SectionLink>
+        <PageLink href="/" aria-label="ClipForge home"><Brand /></PageLink>
         <nav aria-label="Main" className="flex items-center gap-1">
           <ThemeToggle />
           <Button asChild variant="ghost" size="sm"><BackLink href="/videos"><ArrowLeft className="size-3.5" /> <Clapperboard className="size-3.5" /> Videos</BackLink></Button>
@@ -235,7 +234,7 @@ export function VideoDetailPage({ videoId }: { videoId: string }) {
               <p className="mt-1 text-xs"><span className="font-semibold">Project deleted</span> <span className="text-[var(--muted-foreground)]">· Learning data retained{video.project.archived_at ? ` since ${formatDateTime(video.project.archived_at)}` : ""}</span></p>
             )}
             <div className="mt-3 flex flex-wrap gap-2 text-xs">
-              {project && <Button asChild variant="outline" size="sm"><Link href={project}><FolderOpen className="size-3.5" /> Open project</Link></Button>}
+              {project && <Button asChild variant="outline" size="sm"><PageLink href={project}><FolderOpen className="size-3.5" /> Open project</PageLink></Button>}
               {video.youtube_actions.available ? (
                 <>
                   {video.watch_url && <Button asChild variant="outline" size="sm"><a href={video.shorts_url ?? video.watch_url} target="_blank" rel="noreferrer"><ExternalLink className="size-3.5" /> Open on YouTube</a></Button>}

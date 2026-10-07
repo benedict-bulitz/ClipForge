@@ -1,8 +1,6 @@
 "use client";
 
-import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
 import { ArrowRight, ChevronDown, Clapperboard, Clock3, CornerDownLeft, ListVideo, LoaderCircle, Plus, RefreshCw, Settings, Sparkles, Trash2 } from "lucide-react";
 import { ApiError, cancelGenerationJob, clearGenerationQueue, deleteAllProjects, getBulkProjectDeletePlan, getGenerationJob, getProject, listGenerationJobs, listProjectOverview, loadTopicSuggestions, removeQueuedGenerationJob, selectAutoTopic, startGeneration } from "@/lib/api";
 import { createGenerationWatcher, generationTimeLabel, POLL_TIMEOUT_MS, withTimeout, type GenerationWatcher } from "@/lib/generation-poll";
@@ -23,13 +21,12 @@ import {
   saveCreatePreferences,
   type CreateOptions,
 } from "@/lib/creation-preferences";
-import { SectionLink } from "@/components/section-link";
+import { PageLink } from "@/components/page-link";
 
 /** Discovery may run (once) behind a chip refill; it never blocks anything else. */
 const SUGGESTION_TIMEOUT_MS = 90_000;
 
 export default function Home() {
-  const router = useRouter();
   const promptRef = useRef<HTMLTextAreaElement>(null);
   const preferencesReady = useRef(false);
   const generationRequest = useRef(false);
@@ -108,7 +105,10 @@ export default function Home() {
       onCompleted: (project) => {
         if (!mounted.current || startedWatcher.current !== watcher) return;
         startedWatcher.current = null;
-        router.push(`/projects/${project.id}`);
+        // A real page: a document navigation, so Back returns here (Safari skips entries
+        // that Next.js creates with pushState, so router.push is deliberately not used).
+        // eslint-disable-next-line @next/next/no-location-assign-relative-destination
+        window.location.assign(`/projects/${project.id}`);
       },
       onFailed: () => {
         if (startedWatcher.current === watcher) startedWatcher.current = null;
@@ -337,10 +337,10 @@ export default function Home() {
           <span className="hidden text-sm text-[#77776d] sm:block">Your idea. Fully directed.</span>
           <ThemeToggle />
           <Button asChild variant="ghost" size="sm">
-            <SectionLink href="/videos"><Clapperboard className="size-3.5" /> <span className="hidden sm:inline">Videos</span></SectionLink>
+            <PageLink href="/videos"><Clapperboard className="size-3.5" /> <span className="hidden sm:inline">Videos</span></PageLink>
           </Button>
           <Button asChild variant="ghost" size="sm">
-            <SectionLink href="/settings/integrations"><Settings className="size-3.5" /> <span className="hidden sm:inline">Settings</span></SectionLink>
+            <PageLink href="/settings/integrations"><Settings className="size-3.5" /> <span className="hidden sm:inline">Settings</span></PageLink>
           </Button>
           <Button variant="outline" size="sm" onClick={newProject}><Plus className="size-3.5" /> New project</Button>
         </div>
@@ -415,10 +415,10 @@ export default function Home() {
           {history.length > 0 ? (
             <div id="recent-projects-list" className="grid gap-2 sm:grid-cols-2">
               {history.map((project) => (
-                <Link key={project.id} href={`/projects/${project.id}`} className="cf-surface group rounded-[18px] border p-4 transition-[transform,background-color,border-color,box-shadow] duration-150 ease-[cubic-bezier(.23,1,.32,1)] active:scale-[.99] hover:bg-[var(--surface-hover)] hover:shadow-sm">
+                <PageLink key={project.id} href={`/projects/${project.id}`} className="cf-surface group rounded-[18px] border p-4 transition-[transform,background-color,border-color,box-shadow] duration-150 ease-[cubic-bezier(.23,1,.32,1)] active:scale-[.99] hover:bg-[var(--surface-hover)] hover:shadow-sm">
                   <p className="truncate text-sm font-semibold">{project.title}</p>
                   <p className="mono mt-2 text-[9px] uppercase tracking-[.1em] text-[#929289]">{project.current_revision ? `v${project.current_revision} · ` : ""}{historyStatusLabel(project.status)}</p>
-                </Link>
+                </PageLink>
               ))}
             </div>
           ) : projectsLoaded ? (
@@ -435,7 +435,7 @@ export default function Home() {
             <h2 id="bulk-delete-title" className="text-lg font-semibold">Alle Projekte wirklich löschen?</h2>
             <p className="mt-2 text-sm leading-6 text-[var(--muted-foreground)]">Alle Projekte in ClipForge – lokal gerenderte Videodateien, Audio-Dateien, Medienableitungen und Projektdaten – sowie fehlgeschlagene Anfragen werden dauerhaft gelöscht. Wiederverwendbare Caches bleiben erhalten.</p>
             <p className="mt-4 rounded-xl bg-black/[.04] px-3 py-2 text-sm font-semibold">{bulkDeleteSummary(bulkDeletePlan)}</p>
-            {(bulkDeletePlan.projects_keeping_learning_record ?? 0) > 0 && <p className="mt-2 text-xs text-[var(--muted-foreground)]">{bulkDeletePlan.projects_keeping_learning_record} auf YouTube hochgeladene{bulkDeletePlan.projects_keeping_learning_record === 1 ? "s Video bleibt" : " Videos bleiben"} in <SectionLink href="/videos" className="underline">Videos</SectionLink> erhalten (kompakte Analyse- und Lerndaten). YouTube-Videos werden nie gelöscht.</p>}
+            {(bulkDeletePlan.projects_keeping_learning_record ?? 0) > 0 && <p className="mt-2 text-xs text-[var(--muted-foreground)]">{bulkDeletePlan.projects_keeping_learning_record} auf YouTube hochgeladene{bulkDeletePlan.projects_keeping_learning_record === 1 ? "s Video bleibt" : " Videos bleiben"} in <PageLink href="/videos" className="underline">Videos</PageLink> erhalten (kompakte Analyse- und Lerndaten). YouTube-Videos werden nie gelöscht.</p>}
             <label className="mt-5 block text-sm font-medium">Zum Bestätigen <span className="font-bold">LÖSCHEN</span> eingeben
               <input aria-label="Type LÖSCHEN to confirm deletion" value={bulkDeletePhrase} onChange={(event) => setBulkDeletePhrase(event.target.value)} className="mt-2 w-full rounded-xl border bg-transparent px-3 py-2 outline-none focus:border-[#ff6838]" autoComplete="off" />
             </label>
@@ -521,17 +521,17 @@ function GenerationQueue({ jobs, onRemove, onClear, onCancel, cancelPending, bus
     <section id="video-queue-panel" className="queue-card cf-surface mt-5 w-full max-w-[780px] border p-4 text-left" aria-label="Video Queue" aria-live="polite">
       <div className="mb-3 flex items-center justify-between gap-3">
         {jobs.length === 0 ? <p className="text-sm text-[var(--muted-foreground)]">Keine Videos in der Warteschlange.</p> : <span />}
-        <Button asChild variant="outline" size="sm" className="shrink-0"><SectionLink href="/queue"><ListVideo className="size-3.5" /> Open Queue Overview <ArrowRight className="size-3.5" /></SectionLink></Button>
+        <Button asChild variant="outline" size="sm" className="shrink-0"><PageLink href="/queue"><ListVideo className="size-3.5" /> Open Queue Overview <ArrowRight className="size-3.5" /></PageLink></Button>
       </div>
       {running.map((item) => {
         const view = cancelView(item, cancelPending);
         const stopped = view === "cancelled";
         return <div key={item.project_id} className={`mb-2 rounded-xl border p-4 ${stopped ? "border-[var(--border)] bg-[var(--surface-hover)]" : "border-[#ff6838]/30 bg-[#ff6838]/5"}`}>
           <div className="flex items-start justify-between gap-3">
-            <Link href={`/projects/${item.project_id}`} className="min-w-0 flex-1">
+            <PageLink href={`/projects/${item.project_id}`} className="min-w-0 flex-1">
               <p className={`flex items-center gap-2 text-xs font-bold ${stopped ? "text-[var(--muted-foreground)]" : "text-[#d94c20]"}`}><span>{view === "cancelling" ? `● ${CANCELLING_LABEL}` : stopped ? CANCELLED_LABEL : "● Wird erstellt"}</span>{!stopped && <span>{Math.round(item.progress * 100)}%</span>}</p>
               <p className="mt-2 break-words text-sm font-semibold">{item.prompt}</p>
-            </Link>
+            </PageLink>
             {view === "cancel" && <button type="button" onClick={() => onCancel(item.id)} className="queue-cancel cf-text-error shrink-0 text-xs font-semibold hover:underline">{CANCEL_LABEL}</button>}
             {view === "cancelling" && <span className="queue-cancel inline-flex shrink-0 items-center gap-1.5 text-xs font-semibold text-[var(--muted-foreground)]" role="status"><LoaderCircle className="size-3 animate-spin" aria-hidden /> {CANCELLING_LABEL}</span>}
           </div>
@@ -542,7 +542,7 @@ function GenerationQueue({ jobs, onRemove, onClear, onCancel, cancelPending, bus
       })}
       {waiting.length > 0 && <div className="mb-2 mt-4 flex items-center justify-between gap-3"><p className="text-[11px] font-bold uppercase tracking-[.12em] text-[#85857c]">Warteschlange</p><button type="button" disabled={busy} onClick={() => setClearConfirmationOpen(true)} className="text-xs font-semibold text-red-700 hover:text-red-800 disabled:opacity-50">Clear Queue</button></div>}
       {clearConfirmationOpen && <div className="cf-tone-error mb-3 flex items-center justify-between gap-3 rounded-xl border px-3 py-2 text-xs"><span>Clear {waiting.length} queued project{waiting.length === 1 ? "" : "s"}?</span><span className="flex gap-2"><button type="button" disabled={busy} onClick={() => setClearConfirmationOpen(false)}>Cancel</button><button type="button" disabled={busy} onClick={() => { setClearConfirmationOpen(false); onClear(); }} className="font-bold underline">Clear Queue</button></span></div>}
-      <div className="grid gap-2">{waiting.map((item) => <div key={item.project_id} className="flex items-start gap-3 rounded-xl border p-3 hover:bg-[var(--surface-hover)]"><Link href={`/projects/${item.project_id}`} className="flex min-w-0 flex-1 items-start gap-3"><span className="mono shrink-0 text-xs font-bold text-[#d94c20]">#{item.queue_position}</span><span className="min-w-0"><span className="block break-words text-sm font-semibold">{item.prompt}</span><span className="mt-1 block text-xs text-[var(--muted-foreground)]">In Warteschlange</span></span></Link><button type="button" aria-label={`Remove ${item.prompt} from queue`} disabled={busy} onClick={() => onRemove(item.id)} className="shrink-0 text-xs font-semibold text-red-700 hover:text-red-800 disabled:opacity-50">Remove</button></div>)}</div>
+      <div className="grid gap-2">{waiting.map((item) => <div key={item.project_id} className="flex items-start gap-3 rounded-xl border p-3 hover:bg-[var(--surface-hover)]"><PageLink href={`/projects/${item.project_id}`} className="flex min-w-0 flex-1 items-start gap-3"><span className="mono shrink-0 text-xs font-bold text-[#d94c20]">#{item.queue_position}</span><span className="min-w-0"><span className="block break-words text-sm font-semibold">{item.prompt}</span><span className="mt-1 block text-xs text-[var(--muted-foreground)]">In Warteschlange</span></span></PageLink><button type="button" aria-label={`Remove ${item.prompt} from queue`} disabled={busy} onClick={() => onRemove(item.id)} className="shrink-0 text-xs font-semibold text-red-700 hover:text-red-800 disabled:opacity-50">Remove</button></div>)}</div>
     </section>
   );
 }

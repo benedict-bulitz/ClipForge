@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { ArrowLeft, ArrowRight, CalendarClock, Clapperboard, ListVideo, LoaderCircle, Play, RefreshCw, Settings, Upload } from "lucide-react";
@@ -34,7 +33,7 @@ import { Alert } from "./ui/alert";
 import { Button } from "./ui/button";
 import { BackLink } from "./back-link";
 import { UploadSheet } from "./upload-sheet";
-import { SectionLink } from "./section-link";
+import { PageLink } from "./page-link";
 
 /** While an upload continues in the background, its row is re-read on this cadence (bounded). */
 const UPLOAD_FOLLOW_UP_MS = 5000;
@@ -132,11 +131,11 @@ export function QueueOverviewPage() {
     <main className="theme-app min-h-screen bg-[var(--background)]">
       <header className="sticky top-0 z-40 border-b border-[var(--border)] bg-[var(--surface)] backdrop-blur-xl">
         <div className="mx-auto flex min-h-16 max-w-[1100px] items-center justify-between gap-4 px-4 sm:px-6">
-          <SectionLink href="/" aria-label="ClipForge home"><Brand /></SectionLink>
+          <PageLink href="/" aria-label="ClipForge home"><Brand /></PageLink>
           <nav aria-label="Main" className="flex items-center gap-1">
             <ThemeToggle />
-            <Button asChild variant="ghost" size="sm"><SectionLink href="/videos"><Clapperboard className="size-3.5" /> <span className="hidden sm:inline">Videos</span></SectionLink></Button>
-            <Button asChild variant="ghost" size="sm"><SectionLink href="/settings/integrations"><Settings className="size-3.5" /> <span className="hidden sm:inline">Settings</span></SectionLink></Button>
+            <Button asChild variant="ghost" size="sm"><PageLink href="/videos"><Clapperboard className="size-3.5" /> <span className="hidden sm:inline">Videos</span></PageLink></Button>
+            <Button asChild variant="ghost" size="sm"><PageLink href="/settings/integrations"><Settings className="size-3.5" /> <span className="hidden sm:inline">Settings</span></PageLink></Button>
             <Button asChild variant="ghost" size="sm"><BackLink href="/"><ArrowLeft className="size-3.5" /> <span className="hidden sm:inline">Studio</span></BackLink></Button>
           </nav>
         </div>
@@ -171,7 +170,7 @@ export function QueueOverviewPage() {
           <div className="workspace-card mt-8 p-6 text-center">
             <p className="font-semibold">The queue is empty.</p>
             <p className="mt-1 text-sm text-[var(--muted-foreground)]">Videos you generate in the Studio appear here while they are made.</p>
-            <Button asChild variant="accent" size="sm" className="mt-4"><SectionLink href="/">Open the Studio <ArrowRight className="size-3.5" /></SectionLink></Button>
+            <Button asChild variant="accent" size="sm" className="mt-4"><PageLink href="/">Open the Studio <ArrowRight className="size-3.5" /></PageLink></Button>
           </div>
         )}
 
@@ -261,10 +260,10 @@ function QueueRow({ item, overview, playback, opening, locked, error, onUpload, 
           </Button>
         )}
         {action.kind === "connect" && (
-          <Button asChild size="sm" variant="outline"><SectionLink href="/settings/integrations">{action.label}</SectionLink></Button>
+          <Button asChild size="sm" variant="outline"><PageLink href="/settings/integrations">{action.label}</PageLink></Button>
         )}
         {status.state !== "unavailable" && (
-          <Button asChild size="sm" variant="outline"><Link href={`/projects/${job.project_id}`}>View Details <ArrowRight className="size-3.5" /></Link></Button>
+          <Button asChild size="sm" variant="outline"><PageLink href={`/projects/${job.project_id}`}>View Details <ArrowRight className="size-3.5" /></PageLink></Button>
         )}
         {action.kind === "none" && action.reason && <p className="text-[11px] text-[var(--muted-foreground)]">{action.reason}</p>}
         {error && <p role="alert" className="cf-text-error text-[11px] font-medium">{error}</p>}

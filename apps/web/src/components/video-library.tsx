@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowLeft, CalendarClock, Clapperboard, ExternalLink, Film, LoaderCircle, RefreshCw, Search, Settings } from "lucide-react";
@@ -51,7 +50,7 @@ import { Alert } from "./ui/alert";
 import { Button } from "./ui/button";
 import { BackLink } from "./back-link";
 import { ThemeToggle } from "./theme-toggle";
-import { SectionLink } from "./section-link";
+import { PageLink } from "./page-link";
 
 const SEARCH_DEBOUNCE_MS = 250;
 
@@ -116,7 +115,7 @@ function YouTubeLinks({ video }: { video: LibraryVideo }) {
 }
 
 function VideoRow({ video, onDelete }: { video: LibraryVideo; onDelete: () => void }) {
-  const href = `/videos/${video.id}`;
+  const href: `/videos/${string}` = `/videos/${video.id}`;
   const project = projectHref(video);
   const state = video.analytics.state;
   const scheduled = video.state === "scheduled" && video.scheduled_for;
@@ -124,11 +123,11 @@ function VideoRow({ video, onDelete }: { video: LibraryVideo; onDelete: () => vo
   const statsNote = video.live_stats_state === "not_published" && state === "not_published" ? "Stats start after publication" : `Analytics: ${analyticsStateLabel(state)}`;
   return (
     <li className="workspace-card flex gap-3 p-3 sm:gap-4" data-video-id={video.youtube_video_id}>
-      <Link href={href} aria-hidden tabIndex={-1}><VideoThumbnail video={video} className="w-14 sm:w-16" /></Link>
+      <PageLink href={href} aria-hidden tabIndex={-1}><VideoThumbnail video={video} className="w-14 sm:w-16" /></PageLink>
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-1">
           <div className="min-w-0">
-            <Link href={href} className="line-clamp-2 break-words font-semibold hover:underline">{video.title}</Link>
+            <PageLink href={href} className="line-clamp-2 break-words font-semibold hover:underline">{video.title}</PageLink>
             <p className={cn("mt-0.5 flex items-center gap-1 text-xs", scheduled ? "cf-text-info font-semibold" : "font-medium")} aria-label="Date">
               {scheduled && <CalendarClock className="size-3.5 shrink-0" />}
               {dateLine(video, shortDate, (iso) => scheduledTime(iso, video.schedule_timezone))}
@@ -155,7 +154,7 @@ function VideoRow({ video, onDelete }: { video: LibraryVideo; onDelete: () => vo
           {video.stale && <span className="cf-text-warning">Status may be outdated</span>}
           <span className="mono text-[10px] text-[var(--muted-foreground)]" title="YouTube video ID">ID {video.youtube_video_id}</span>
           <span className="ml-auto flex items-center gap-1">
-            {project && <Link href={project} className="interactive-text">Open project</Link>}
+            {project && <PageLink href={project} className="interactive-text">Open project</PageLink>}
             <YouTubeLinks video={video} />
             <DeleteVideoButton video={video} onClick={onDelete} />
           </span>
@@ -193,7 +192,7 @@ function SocialVideoRow({ video, onDelete }: { video: SocialLibraryVideo; onDele
           <span className={cn("font-semibold", video.project.available ? "cf-text-success" : "text-[var(--muted-foreground)]")}>{projectLabel(video)}</span>
           <span className="text-[var(--muted-foreground)]">Analytics: not collected for {PLATFORM_LABELS[video.platform]}</span>
           <span className="ml-auto flex items-center gap-1">
-            {project && <Link href={project} className="interactive-text">Open project</Link>}
+            {project && <PageLink href={project} className="interactive-text">Open project</PageLink>}
             {video.remote_url && <a href={video.remote_url} target="_blank" rel="noreferrer" className="interactive-text"><ExternalLink className="size-3" /> {PLATFORM_LABELS[video.platform]}</a>}
             <DeleteVideoButton video={video} onClick={onDelete} />
           </span>
@@ -343,11 +342,11 @@ export function VideoLibrary({ initialFilters }: { initialFilters: LibraryFilter
     <main className="theme-app min-h-screen bg-[var(--background)]">
       <header className="sticky top-0 z-40 border-b border-[var(--border)] bg-[var(--surface)] backdrop-blur-xl">
         <div className="mx-auto flex min-h-16 max-w-[1100px] items-center justify-between gap-4 px-4 sm:px-6">
-          <SectionLink href="/" aria-label="ClipForge home"><Brand /></SectionLink>
+          <PageLink href="/" aria-label="ClipForge home"><Brand /></PageLink>
           <nav aria-label="Main" className="flex items-center gap-1">
             <ThemeToggle />
-            <Button asChild variant="ghost" size="sm"><SectionLink href="/videos" aria-current="page"><Clapperboard className="size-3.5" /> <span className="hidden sm:inline">Videos</span></SectionLink></Button>
-            <Button asChild variant="ghost" size="sm"><SectionLink href="/settings/integrations"><Settings className="size-3.5" /> <span className="hidden sm:inline">Settings</span></SectionLink></Button>
+            <Button asChild variant="ghost" size="sm"><PageLink href="/videos" aria-current="page"><Clapperboard className="size-3.5" /> <span className="hidden sm:inline">Videos</span></PageLink></Button>
+            <Button asChild variant="ghost" size="sm"><PageLink href="/settings/integrations"><Settings className="size-3.5" /> <span className="hidden sm:inline">Settings</span></PageLink></Button>
             <Button asChild variant="ghost" size="sm"><BackLink href="/"><ArrowLeft className="size-3.5" /> <span className="hidden sm:inline">Studio</span></BackLink></Button>
           </nav>
         </div>

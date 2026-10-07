@@ -11,7 +11,7 @@ import { Brand } from "./brand";
 import { Button } from "./ui/button";
 import { BackLink } from "./back-link";
 import { ThemeToggle } from "./theme-toggle";
-import { SectionLink } from "./section-link";
+import { PageLink } from "./page-link";
 
 const futureSections = [
   { label: "System", icon: Settings2 },
@@ -25,13 +25,13 @@ export function SettingsShell({ children }: { children: React.ReactNode }) {
       <div className="noise" />
       <header className="sticky top-0 z-40 border-b border-[var(--border)] bg-[var(--surface)] backdrop-blur-xl">
         <div className="mx-auto flex min-h-16 max-w-[1320px] items-center justify-between gap-4 px-4 py-2 sm:px-6 lg:px-8">
-          <SectionLink href="/" aria-label="ClipForge home" className="rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#ff6838]/40">
+          <PageLink href="/" aria-label="ClipForge home" className="rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#ff6838]/40">
             <Brand />
-          </SectionLink>
+          </PageLink>
           <div className="flex items-center gap-2">
             <ThemeToggle />
             <Button asChild variant="ghost" size="sm">
-              <SectionLink href="/videos"><Clapperboard className="size-3.5" /> Videos</SectionLink>
+              <PageLink href="/videos"><Clapperboard className="size-3.5" /> Videos</PageLink>
             </Button>
             <Button asChild variant="ghost" size="sm">
               <BackLink href="/" match="any"><ArrowLeft className="size-3.5" /> Back</BackLink>
@@ -48,13 +48,13 @@ export function SettingsShell({ children }: { children: React.ReactNode }) {
               <span className="text-sm font-bold">Settings</span>
             </div>
             <nav aria-label="Settings sections" className="flex gap-2 overflow-x-auto pb-2 md:block md:space-y-1 md:overflow-visible md:pb-0">
-              <SectionLink
+              <PageLink
                 href="/settings/integrations"
                 aria-current="page"
                 className="flex shrink-0 items-center gap-2.5 rounded-xl bg-[#171714] px-3.5 py-2.5 text-sm font-semibold text-white shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#ff6838]/40"
               >
                 <PlugZap className="size-4" /> Integrations
-              </SectionLink>
+              </PageLink>
               {futureSections.map(({ label, icon: Icon }) => (
                 <span
                   key={label}

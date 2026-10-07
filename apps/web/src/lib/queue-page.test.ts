@@ -245,7 +245,7 @@ test("View Details opens the project's full page and the Studio queue links to /
   assert.match(component, /href=\{`\/projects\/\$\{job\.project_id\}`\}>View Details/);
   assert.match(component, /status\.state !== "unavailable"/);
   assert.match(route, /QueueOverviewPage/);
-  assert.match(home, /<SectionLink href="\/queue">[^]*Open Queue Overview/);
+  assert.match(home, /<PageLink href="\/queue">[^]*Open Queue Overview/);
   assert.match(api, /"\/generation-jobs\/overview"/);
 });
 

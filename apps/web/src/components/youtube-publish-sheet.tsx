@@ -54,7 +54,7 @@ import { PublishShell } from "./publish-shell";
 import { Alert } from "./ui/alert";
 import { Button } from "./ui/button";
 import { ScheduleFields } from "./youtube-schedule-fields";
-import { SectionLink } from "./section-link";
+import { PageLink } from "./page-link";
 
 const VISIBILITY_COPY: Record<Visibility, { label: string; hint: string }> = {
   private: { label: "Private", hint: "Only you can see it. Publish later." },
@@ -653,7 +653,7 @@ function PublishFeedback({ phase, submitError }: { phase: PublishPhase | null; s
 
 function Shell({ children, onClose, selector }: { children: React.ReactNode; onClose: () => void; selector?: React.ReactNode }) {
   return (
-    <PublishShell onClose={onClose} selector={selector} subtitle={<>YouTube · straight from ClipForge — no export needed. <SectionLink href="/settings/integrations#youtube" className="underline">Upload defaults</SectionLink></>}>
+    <PublishShell onClose={onClose} selector={selector} subtitle={<>YouTube · straight from ClipForge — no export needed. <PageLink href="/settings/integrations#youtube" className="underline">Upload defaults</PageLink></>}>
       {children}
     </PublishShell>
   );
