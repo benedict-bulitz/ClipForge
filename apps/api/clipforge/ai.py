@@ -52,6 +52,10 @@ DIRECTOR_INSTRUCTIONS = (
     "repeat or lightly paraphrase the user's question: a question hook must add genuine tension, challenge, "
     "contrast, implication, or insight. For each script block, return a concise visual_intents entry describing "
     "physical objects, actions, context, visual_strategy, and up to four English provider-facing media_queries. "
+    "Also give, in English: entities (proper names of the real people, places, objects, missions or events the "
+    "scene must show, empty when none), location and time_period of what is shown (empty when not specific), "
+    "up to three alternate_terms (other common, scientific or archival names a photo archive would use), and "
+    "factual_sensitivity (real_person, historical_event, scientific_specific, real_place_or_object, or none). "
     "For each media query also return, in media_query_targets at the same position, a stable target key for what "
     "it depicts: subject_a or subject_b for the two sides of a comparison (the same key for the same side in every "
     "block), shared for the concept both sides share, or context. In payoff_plan, protected_visual_target is the "
@@ -125,6 +129,15 @@ class AIVisualIntent(BaseModel):
     visual_strategy: Literal["literal", "process", "physical_example", "diagram_or_card"] = "literal"
     media_queries: list[str] = Field(default_factory=list, max_length=4)
     media_query_targets: list[str] = Field(default_factory=list, max_length=4)
+    # Search Planner V2 evidence (English): named real entities, where/when the
+    # shown thing is, other names for it, and how factually specific it is.
+    entities: list[str] = Field(default_factory=list, max_length=3)
+    location: str = Field(default="", max_length=80)
+    time_period: str = Field(default="", max_length=40)
+    alternate_terms: list[str] = Field(default_factory=list, max_length=3)
+    factual_sensitivity: Literal[
+        "none", "real_place_or_object", "real_person", "historical_event", "scientific_specific"
+    ] = "none"
 
 
 class AIPayoffPlan(BaseModel):

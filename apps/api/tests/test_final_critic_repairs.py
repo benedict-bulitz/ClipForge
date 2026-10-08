@@ -388,8 +388,10 @@ def test_wet_finger_render_never_keeps_urban_or_text_junk(monkeypatch, tmp_path)
         },
         concepts={"graffiti": "graffiti", "bus": "bus", "book": "book", "city": "city", "city2": "city", "bus2": "bus", "fingers": "hand"},
     )
-    media_pass(state, tmp_path, initial)  # metadata-only: the urban graffiti clip wins
-    assert scene(state, "scene_01_01")["media"]["provider_id"] == "graffiti"
+    media_pass(state, tmp_path, initial)  # metadata-only: an urban/text junk asset wins
+    # The Visual Judge breaks the metadata tie by visual-impact wording; every
+    # one of these candidates shows junk in its actual frames.
+    assert scene(state, "scene_01_01")["media"]["provider_id"] in {"graffiti", "bus", "book", "city"}
     render(state, tmp_path)
     repair = ImageProvider(photos={**initial.photos, HAND_Q: [*initial.photos[HAND_Q], photo("fingers", HAND_Q, "Close-up of wrinkled wet fingertips")]},
                            concepts=initial.concepts)

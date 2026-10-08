@@ -175,7 +175,7 @@ def discover_scene_media_candidates(
         passes.append([(commons, "photo")])
     try:
         from .source_router import route_sources
-        routed = any(p.provider in {"openverse", "nasa", "loc", "europeana"} for p in registry.enabled())
+        routed = any(p.provider in {"openverse", "nasa", "loc", "europeana", "flickr"} for p in registry.enabled())
         work = [(query, [(s.adapter, s.kind) for s in group])
                 for query in queries[:3] for group in route_sources(registry, scene, state, query, preferred)] if routed else [(query, group) for group in passes for query in queries]
         for query, search_pass in work:

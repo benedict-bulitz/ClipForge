@@ -53,7 +53,7 @@ from .visual_verifier import (
 
 PEXELS_API = "https://api.pexels.com/v1"
 WIKIMEDIA_API = "https://commons.wikimedia.org/w/api.php"
-REAL_MEDIA_PROVIDERS = ("pexels", "wikimedia", "pixabay", "openverse", "nasa", "europeana", "loc")
+REAL_MEDIA_PROVIDERS = ("pexels", "wikimedia", "pixabay", "openverse", "nasa", "europeana", "loc", "flickr")
 # Final scene assets that are not real provider media; each carries provenance.
 GENERATED_ASSET_SOURCE = "generated_openai"
 GRAPHIC_ASSET_SOURCE = "simple_graphic"
@@ -746,13 +746,44 @@ def build_visual_query_plan(scene: dict[str, Any], state: dict[str, Any]) -> dic
     if structured:
         # Structured identity: the planner said which target reveals the payoff.
         blocked, protected_terms = _structured_protection(candidates, query_targets, protected_key, protected_text)
-        queries = [query for query in candidates if query not in blocked][:3]
+        filtered = [query for query in candidates if query not in blocked]
     else:
         # Legacy plans without target keys: best-effort word-level protection.
         protected_terms = _protected_side_terms(candidates, protected_text)
-        queries = [
+        filtered = [
             query for query in candidates if not _mentions(_visual_query_tokens(query), protected_terms)
-        ][:3]
+        ]
+    # Search Planner V2 facets (entity/period/location/alternate terminology
+    # from the full story context). They never carry a target key, so they
+    # pass a stricter version of the same protection: any protected term or
+    # any word of the protected payoff text blocks the facet.
+    from .visual_search_planner import dedupe_queries, plan_scene_search
+
+    # A query the protection blocked names the protected subject in the
+    # planner's own (English) words; its distinguishing terms block facets too.
+    allowed_tokens = set().union(*(_visual_query_tokens(query) for query in filtered)) if filtered else set()
+    blocked_tokens = set().union(*(
+        _visual_query_tokens(query) for query in candidates if query not in filtered
+    )) if len(filtered) < len(candidates) else set()
+    facet_blockers = set(protected_terms) | _visual_query_tokens(protected_text) | (blocked_tokens - allowed_tokens)
+
+    def facet_allowed(query: str) -> bool:
+        tokens = _visual_query_tokens(query)
+        return not _mentions(tokens, facet_blockers)
+
+    search_plan = plan_scene_search(
+        scene, state, authored=[query for query in filtered if query in supplied], allowed=facet_allowed
+    )
+    facet_queries = [item["query"] for item in search_plan["facets"] if item.get("retrieval", True)]
+    planned_intent = search_plan["signals"]["intent_source"] not in {"narration_fallback", "none"}
+    authored = [query for query in filtered if query in supplied]
+    fallback_queries = [query for query in filtered if query not in supplied]
+    if not explicitly_refreshed and planned_intent and facet_queries:
+        ordered = [*authored, *facet_queries, *fallback_queries]
+    else:
+        ordered = filtered
+    queries = dedupe_queries(ordered)[:3]
+    search_plan["selected_queries"] = list(queries)
     shared, sides = _query_structure(queries)
     if not queries:
         queries = [shared or "nature landscape"]
@@ -774,7 +805,12 @@ def build_visual_query_plan(scene: dict[str, Any], state: dict[str, Any]) -> dic
         "comparison_coverage": {label: True for label in side_labels},
         "protected_entities": sorted(protected_terms),
         "shared_subject_coverage": bool(shared),
-        "query_quality": "explicit_visual_intent" if supplied else "scene_text_fallback",
+        "query_quality": (
+            "explicit_visual_intent" if supplied
+            else "planned_facets" if any(query in facet_queries for query in queries)
+            else "scene_text_fallback"
+        ),
+        "search_plan": search_plan,
     }
 
 
@@ -1383,10 +1419,21 @@ def _rank_verified(
 
     targets = scene_coverage_targets(scene, state, build_visual_query_plan(scene, state))["targets"]
     duration = max(1.0, float(scene.get("end", 0)) - float(scene.get("start", 0)))
-    return prefer_useful_novelty(
+    ranked = prefer_useful_novelty(
         ranked, scene, state,
         coverage=lambda row: tuple(candidate_target_coverage(*row, target, duration) for target in targets),
     )
+    from .visual_judge import judge_and_rank
+
+    return judge_and_rank(ranked, scene, state, portrait=_portrait(state))
+
+
+def _portrait(state: dict[str, Any]) -> bool:
+    timeline = state.get("timeline") if isinstance(state.get("timeline"), dict) else {}
+    try:
+        return int(timeline.get("height") or 1920) >= int(timeline.get("width") or 1080)
+    except (TypeError, ValueError):
+        return True
 
 
 # ---------------------------------------------------------------------------
@@ -1741,6 +1788,8 @@ def run_staged_scene_search(
     extra_clients: list[Any] | None = None,
     acquisition_budget: AcquisitionBudget | None = None,
     registry: ProviderRegistry | None = None,
+    vision_judge: Any | None = None,
+    vision_budget: dict[str, int] | None = None,
 ) -> StagedSearchResult:
     """Execute planned queries one stage at a time within a hard query budget."""
     if registry is not None:
@@ -1748,7 +1797,8 @@ def run_staged_scene_search(
         return run_routed_scene_search(queries, scene, state, query_plan, registry=registry,
                                       preferred_kind=preferred_kind, portrait=portrait,
                                       scene_duration=scene_duration, used=used, verifier=verifier,
-                                      query_budget=budget, acquisition_budget=acquisition_budget)
+                                      query_budget=budget, acquisition_budget=acquisition_budget,
+                                      vision_judge=vision_judge, vision_budget=vision_budget)
     acquisition_budget = acquisition_budget or AcquisitionBudget()
     budget = max(1, min(int(budget), MAX_SCENE_QUERY_BUDGET))
     planned = list(dict.fromkeys(query for query in queries if query))
@@ -1856,6 +1906,10 @@ def run_staged_scene_search(
         ranked, scene, state,
         coverage=lambda row: tuple(candidate_target_coverage(*row, target, scene_duration) for target in targets),
     )
+    from .visual_judge import judge_and_rank, summarize
+
+    ranked = judge_and_rank(ranked, scene, state, portrait=portrait,
+                            vision_judge=vision_judge, vision_budget=vision_budget)
     executed = [stage["query"] for stage in stages]
     provenance = {
         "version": 1,
@@ -1888,6 +1942,7 @@ def run_staged_scene_search(
         "duplicate_count": duplicates,
         "visual_verification": "ok" if verification_ok else "failed_metadata_fallback",
         "acquisition_budget": acquisition_budget.snapshot(),
+        "judge": summarize(ranked),
     }
     return StagedSearchResult(
         ranked,
@@ -2006,12 +2061,21 @@ class _SceneQualityGate:
         scene_duration: float,
         strong_required: bool,
         protected_terms: set[str] | None = None,
+        *,
+        judge_scene: dict[str, Any] | None = None,
+        judge_state: dict[str, Any] | None = None,
+        portrait: bool = True,
     ):
         self.targets = targets
         self.scene_duration = scene_duration
         self.strong_required = strong_required
         self.protected_terms = protected_terms or set()
         self.rejections: dict[str, int] = {}
+        # Fresh acquisition also applies the Visual Judge's hard requirements.
+        # Persisted/reused assets keep the established destination authority.
+        self.judge_scene = judge_scene
+        self.judge_state = judge_state
+        self.portrait = portrait
 
     def __call__(
         self,
@@ -2025,6 +2089,16 @@ class _SceneQualityGate:
             accepted, reason = False, "protected_reveal_before_story_reveal"
         if accepted and not _meets_strategy(candidate, relevance, self.targets, self.scene_duration, self.strong_required):
             accepted, reason = False, "not_strong_for_graphic_scene"
+        if accepted and self.judge_scene is not None:
+            from .visual_judge import judge_candidate
+
+            verdict = relevance.get("judge")
+            if not isinstance(verdict, dict):
+                verdict = relevance["judge"] = judge_candidate(
+                    candidate, relevance, self.judge_scene, self.judge_state or {}, portrait=self.portrait
+                )
+            if verdict.get("reject"):
+                accepted, reason = False, f"judge_{(verdict.get('reasons') or ['rejected'])[0]}"
         relevance["acceptance"] = {"accepted": accepted, "reason": reason, "authority": "real_media_quality_gate"}
         if not accepted:
             self.rejections[reason] = self.rejections.get(reason, 0) + 1
@@ -2079,6 +2153,15 @@ def prepare_project_media(
     director.generation_policy(state, settings)
     arc = director.story_arc(state)
     run_state: dict[str, Any] = {}
+    from .visual_judge import get_vision_judge
+
+    vision_judge = get_vision_judge(settings)
+    judge_state = state.setdefault("visual_judge", {})
+    vision_budget = {
+        "remaining": max(0, int(getattr(settings, "visual_judge_vlm_max_per_project", 0)) - int(judge_state.get("vlm_calls") or 0)),
+        "used": 0,
+        "per_scene": max(0, int(getattr(settings, "visual_judge_vlm_max_per_scene", 3))),
+    }
     asset_root = settings.render_root.resolve() / project_id / "assets"
     portrait = int(state["timeline"]["height"]) >= int(state["timeline"]["width"])
     used: set[str] = set()
@@ -2209,7 +2292,8 @@ def prepare_project_media(
             preferred_kind = "video"
         metadata: dict[str, Any] | None = None
         accept = _SceneQualityGate(
-            coverage_targets, duration, strong_required, protected_candidate_terms(state, query_plan)
+            coverage_targets, duration, strong_required, protected_candidate_terms(state, query_plan),
+            judge_scene=scene, judge_state=state, portrait=portrait,
         )
         gate_rejections = accept.rejections
 
@@ -2230,7 +2314,9 @@ def prepare_project_media(
             verifier=visual_verifier,
             extra_clients=extras,
             acquisition_budget=acquisition_budget,
-            registry=registry if any(p.provider in {"openverse", "nasa", "loc", "europeana"} for p in registry.enabled()) else None,
+            registry=registry if any(p.provider in {"openverse", "nasa", "loc", "europeana", "flickr"} for p in registry.enabled()) else None,
+            vision_judge=vision_judge,
+            vision_budget=vision_budget,
         )
         search_provenance = staged.provenance
         # Later fallbacks follow the scene-aware query order, not the global plan.
@@ -2242,9 +2328,28 @@ def prepare_project_media(
         pexels_candidates = staged.candidates if pexels is not None else []
         commons_candidates = [] if pexels is not None else list(staged.candidates)
         winning_source = "staged_search"
+        # AI fallback rules: a weak real winner of a non-factual scene is held
+        # while a generated image is tried first; it remains the fallback.
+        held: tuple[MediaCandidate, dict[str, Any]] | None = None
+        ai_decision: dict[str, Any] | None = None
         for candidate, relevance in staged.ranked:
             if not accept(candidate, relevance):
                 continue
+            if ai_decision is None:
+                from .visual_fallback_policy import ai_fallback_decision
+
+                generation_available = (
+                    director.GENERATED_IMAGE in (strategy.get("fallback_chain") or [])
+                    and not run_state.get("generation_blocked")
+                    and director.auto_generation_block_reason(state, scene, settings, generator) is None
+                )
+                ai_decision = ai_fallback_decision(
+                    scene, state, relevance.get("judge"), generation_available=generation_available
+                )
+                search_provenance["ai_fallback"] = ai_decision
+                if ai_decision["prefer"]:
+                    held = (candidate, relevance)
+                    break
             try:
                 metadata = cache(candidate, relevance)
                 break
@@ -2255,7 +2360,7 @@ def prepare_project_media(
         # failed in the staged search is not retried.
         scene_verifier = _METADATA_ONLY_VERIFIER if staged.verifier_failed else visual_verifier
 
-        if metadata is None and staged.ranked and search_provenance.get("routed"):
+        if metadata is None and held is None and staged.ranked and search_provenance.get("routed"):
             # Strong coverage stopped discovery, but none of that pool could
             # be downloaded/admitted. Widen the SAME executed queries, skipping
             # all attempted provider/kind pairs, under the remaining budget.
@@ -2288,7 +2393,7 @@ def prepare_project_media(
 
         # A failed Pexels download must not skip the remaining free source.
         # Only already executed query strings are reused: no new logical query.
-        if metadata is None and pexels is not None and not search_provenance.get("routed"):
+        if metadata is None and held is None and pexels is not None and not search_provenance.get("routed"):
             winning_source = "wikimedia_fallback"
             fallback_ledger = CandidateLedger(excluded | set().union(*(asset_keys(item) for item in staged.candidates)))
             for query in list(search_provenance["executed_queries"]):
@@ -2323,7 +2428,7 @@ def prepare_project_media(
                 except MediaProviderError as exc:
                     failure = exc
 
-        if metadata is None and not strong_required:
+        if metadata is None and held is None and not strong_required:
             # Queries are relaxed here, acceptance never is: every candidate
             # still passes the same quality gate (and the presentation gate).
             winning_source = "relaxed_fallback"
@@ -2406,6 +2511,8 @@ def prepare_project_media(
             _record_search_winner(search_provenance, metadata, winning_source)
         _accumulate_search_totals(search_totals, search_provenance)
         failure_reason = f"no_accepted_real_media:{search_provenance.get('stop_reason')}:{search_provenance.get('final_coverage')}"
+        if held is not None:
+            failure_reason = f"{ai_decision['reason']}:best_real_score={(held[1].get('judge') or {}).get('final_score')}"
         if metadata is not None:
             director.record_decision(scene, strategy, director.ACCEPTED_REAL, preferred_kind_type(metadata), f"real_media_{winning_source}")
         else:
@@ -2424,8 +2531,21 @@ def prepare_project_media(
             )
             if metadata is not None and str(metadata.get("identity") or "") in rejected:
                 metadata, resolved_type = None, None  # e.g. a cached copy of a rejected generated image
+            if metadata is None and held is not None:
+                # Generation did not produce an accepted image: the weak but
+                # gate-accepted real candidate is still better than nothing.
+                try:
+                    metadata = cache(*held)
+                    resolved_type = preferred_kind_type(metadata)
+                    search_provenance["ai_fallback"]["outcome"] = "kept_weak_real_media"
+                except MediaProviderError as exc:
+                    failure = exc
+            elif metadata is not None and held is not None:
+                search_provenance["ai_fallback"]["outcome"] = "generated_replaced_weak_real_media"
             _record_search_winner(search_provenance, metadata, resolved_type or "none")
-            if metadata is not None:
+            if metadata is not None and held is not None and media_source(metadata) in REAL_MEDIA_PROVIDERS:
+                director.record_decision(scene, strategy, director.ACCEPTED_REAL, resolved_type, "real_media_low_confidence_kept")
+            elif metadata is not None:
                 decision = director.GENERATE_FALLBACK if resolved_type == director.GENERATED_IMAGE else director.DEGRADED
                 director.record_decision(scene, strategy, decision, resolved_type, failure_reason)
         if metadata is None:
@@ -2549,6 +2669,10 @@ def prepare_project_media(
                 selected_count += 1
                 missing_media_count -= 1
     attach_project_overlays(scenes)
+    from .visual_transform import apply_transformation
+
+    for scene in scenes:
+        apply_transformation(scene, state)
     assets["license_manifest"] = manifest
     assets["selected_count"] = selected_count
     assets.pop("generated_card_count", None)
@@ -2588,6 +2712,9 @@ def prepare_project_media(
             provider="pexels+wikimedia" if settings.pexels_api_key else "wikimedia",
             diagnostic="No real media is available. Rendering is blocked; retry free media discovery.",
         )
+    judge_state["version"] = 1
+    judge_state["vlm_provider"] = getattr(vision_judge, "name", "none") if vision_judge is not None else "none"
+    judge_state["vlm_calls"] = int(judge_state.get("vlm_calls") or 0) + vision_budget["used"]
     registry.close()
     report_progress(
         progress,
@@ -2881,6 +3008,7 @@ def complete_project_visuals(
     Paid attempts retain the existing project/scene limits and circuit breaker.
     """
     from . import visual_director as director
+    from . import visual_quality_gate as visual_gate
     from .image_generation import get_image_generator
 
     generator = image_generator if image_generator is not None else get_image_generator(settings)
@@ -2906,7 +3034,15 @@ def complete_project_visuals(
         director.resolve_acquisition_intent(scene, state, settings)
         current = scene.get("media") or {}
         reused = scene.get("asset_status") in {"related_media_reused", "real_media_reused", "generated_media_reused", "block_visual_continued"}
-        if cached_scene_asset_path(current, settings) and destination_asset_allowed(current, scene, state, reuse=reused, settings=settings, verifier=verifier, acquisition_budget=budget):
+        gate_failure: dict[str, Any] | None = None
+        admitted = bool(cached_scene_asset_path(current, settings)) and destination_asset_allowed(
+            current, scene, state, reuse=reused, settings=settings, verifier=verifier, acquisition_budget=budget
+        )
+        if admitted:
+            gate = scene["visual_gate"] = visual_gate.evaluate_scene(scene, state, settings)
+            if visual_gate.needs_replacement(gate, scene):
+                gate_failure = gate
+        if admitted and gate_failure is None:
             scene.setdefault("media_search", {})["acquisition_budget"] = budget.snapshot()
             refresh_rights_acceptance(current)
             scene.pop("fallback_completion", None)
@@ -2922,7 +3058,10 @@ def complete_project_visuals(
         strategy = scene.get("visual_director")
         if not isinstance(strategy, dict) or not strategy.get("fallback_chain"):
             strategy = director.plan_scene_strategy(scene, state, build_visual_query_plan(scene, state), settings=settings)
-        reason = "no_usable_source_at_render_admission"
+        reason = (
+            "visual_quality_gate:" + ",".join(gate_failure["failures"]) if gate_failure
+            else "no_usable_source_at_render_admission"
+        )
         metadata, resolved = director.resolve_scene_fallback(
             scene, state, strategy, project_id=project_id, settings=settings,
             generator=generator, verifier=verifier, failure_reason=reason, run_state=run_state,
@@ -2935,6 +3074,8 @@ def complete_project_visuals(
                 asset = other.get("media") or {}
                 if other is scene or not cached_scene_asset_path(asset, settings):
                     continue
+                if gate_failure and asset_keys(asset) & asset_keys(current):
+                    continue  # never "repair" a failing visual with itself
                 if destination_asset_allowed(asset, scene, state, reuse=True, strategy=strategy,
                                              settings=settings, verifier=verifier, acquisition_budget=budget):
                     candidates.append(asset)
@@ -2950,6 +3091,11 @@ def complete_project_visuals(
             if metadata is not None and not destination_asset_allowed(metadata, scene, state):
                 metadata, resolved = None, None
         scene.setdefault("media_search", {})["acquisition_budget"] = budget.snapshot()
+        if gate_failure and (metadata is None or cached_scene_asset_path(metadata, settings) is None):
+            # No permitted alternative: keep the admitted visual (its rights and
+            # destination gates passed) and report the failing quality checks.
+            scene["fallback_completion"] = {"status": "kept_failing_quality_gate", "reason": reason}
+            continue
         if metadata is None or cached_scene_asset_path(metadata, settings) is None:
             scene.pop("media", None)
             scene["asset_status"] = "real_media_unavailable"
@@ -2963,7 +3109,13 @@ def complete_project_visuals(
         scene.pop("fallback_reason", None)
         scene["fallback_completion"] = {"status": "selected", "resolved_type": resolved, "reason": reason}
         director.record_decision(scene, strategy, director.GENERATE_FALLBACK if resolved == director.GENERATED_IMAGE else director.DEGRADED, resolved, reason)
+        from .visual_transform import apply_transformation
+
+        apply_transformation(scene, state)
     attach_project_overlays(scenes)
+    for scene in scenes:
+        scene["visual_gate"] = visual_gate.evaluate_scene(scene, state, settings)
+    visual_gate.summarize(state)
     assets = state.setdefault("assets", {})
     assets["license_manifest"] = [dict(scene["media"]) for scene in scenes if scene.get("media") and cached_scene_asset_path(scene["media"], settings)]
     assets["selected_count"] = sum(scene.get("asset_status") != "real_media_unavailable" and bool(scene.get("media")) for scene in scenes)

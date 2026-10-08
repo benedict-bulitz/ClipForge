@@ -184,10 +184,11 @@ def _write_visual_diagnostics(state: dict, project_id: str, settings: Settings, 
     path = settings.render_root.resolve() / project_id / "diagnostics" / "visual-acquisition.json"
     keys = ("id", "block_id", "narration", "visual_goal", "visual_intent", "story_role", "asset_status",
             "search_queries", "visual_query_plan", "media_search", "visual_director", "fallback_reason",
-            "fallback_completion", "media")
+            "fallback_completion", "media", "visual_transform", "visual_gate")
     evidence = {"status": status, "scenes": [{key: scene[key] for key in keys if key in scene}
                                               for scene in state.get("scenes") or []],
-                "visual_director": state.get("visual_director"), "assets": state.get("assets")}
+                "visual_director": state.get("visual_director"), "assets": state.get("assets"),
+                "visual_judge": state.get("visual_judge"), "visual_quality_gate": state.get("visual_quality_gate")}
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         staging = path.with_suffix(".partial")
@@ -1078,6 +1079,11 @@ def still_motion_plan(
     step = (max_zoom - 1.0) / max(1, frames - 1)
     pan_zoom = 1.0 + (max_zoom - 1.0) * 0.75
     pattern = ("push_in", "pan", "pull_out")[index % 3]
+    planned = (scene.get("visual_transform") or {}).get("motion_pattern") if isinstance(scene.get("visual_transform"), dict) else None
+    if planned == "static":
+        return {"type": "static", "max_zoom": 1.0, "zoom": "min(zoom+0.0000,1.0)", "x": f"{anchor:.4f}", "reason": "transform_plan"}
+    if planned in {"push_in", "pan", "pull_out"}:
+        pattern = planned
     if pattern == "pan" and focal is not None:
         window = safe_pan_range(focal[0], pan_zoom)
         if window is None:

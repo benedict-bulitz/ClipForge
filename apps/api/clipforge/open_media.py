@@ -168,7 +168,7 @@ class OpenMediaProvider:
             self.provider,
             " ".join(query.casefold().split()),
             kind,
-            tuple(sorted((k, v) for k, v in params.items() if k not in {"q", "query"})),
+            tuple(sorted((k, v) for k, v in params.items() if k not in {"q", "query", "text", "api_key"})),
         )
         with _LOCK:
             cached = _CACHE.get(key)
@@ -844,6 +844,108 @@ class LOCProvider(OpenMediaProvider):
                         "collection": row.get("partof") or [],
                         "rights": raw,
                     },
+                    rank=12 - len(result),
+                )
+            )
+        return result
+
+
+# Flickr license IDs (flickr.photos.licenses.getInfo). Only asset-level grants
+# that the shared rights authority can establish are requested: CC BY 2.0/4.0,
+# CC0 and the Public Domain Mark. "No known copyright restrictions" (7) and
+# "United States Government Work" (8) are not affirmative grants here, and
+# NC/ND/SA variants are never requested.
+FLICKR_LICENSE_URIS = {
+    "4": "https://creativecommons.org/licenses/by/2.0/",
+    "9": "https://creativecommons.org/publicdomain/zero/1.0/",
+    "10": "https://creativecommons.org/publicdomain/mark/1.0/",
+    "11": "https://creativecommons.org/licenses/by/4.0/",
+}
+
+
+class FlickrProvider(OpenMediaProvider):
+    """Optional Creative-Commons Flickr search, enabled only with FLICKR_API_KEY.
+
+    The request filters licenses server-side AND every returned row is
+    re-checked: a row whose license is not in the strict allow-list is dropped
+    even if the API returned it. Attribution keeps owner, photo page and deed.
+    """
+
+    provider = "flickr"
+    endpoint = "https://www.flickr.com/services/rest/"
+    capabilities = ProviderCapabilities(
+        ("photo",), page_limit=12, suitability=("concrete_entity_or_place", "space_or_earth_observation")
+    )
+    per_minute = 30  # Flickr allows 3600/hour per key; stay far below it.
+
+    def __init__(self, api_key: str, *, client: httpx.Client | None = None):
+        super().__init__(client=client)
+        self._api_key = api_key
+
+    def __repr__(self) -> str:
+        return "FlickrProvider(api_key=<redacted>)"
+
+    def params(self, query: str) -> dict:
+        return {
+            "method": "flickr.photos.search",
+            "api_key": self._api_key,
+            "text": query[:200],
+            "license": ",".join(FLICKR_LICENSE_URIS),
+            "content_types": "0",
+            "media": "photos",
+            "safe_search": "1",
+            "sort": "relevance",
+            "per_page": 12,
+            "page": 1,
+            "extras": "license,owner_name,url_l,url_c,o_dims,description,tags,date_taken,path_alias",
+            "format": "json",
+            "nojsoncallback": "1",
+        }
+
+    def normalize(self, rows: object, kind: str, *, query: str = "") -> list:
+        from .media import MediaProviderError
+
+        if not isinstance(rows, dict):
+            raise TypeError("Expected Flickr object")
+        if rows.get("stat") != "ok":
+            if str(rows.get("code")) in {"100", "105"}:
+                self.disabled = True
+                raise MediaProviderError("invalid_credentials", "Flickr rejected the API key.")
+            raise TypeError("Flickr search failed")
+        photos = (rows.get("photos") or {}).get("photo")
+        if not isinstance(photos, list):
+            raise TypeError("Expected Flickr photos")
+        result = []
+        for row in photos[:12]:
+            if not isinstance(row, dict) or not row.get("id") or not row.get("owner"):
+                continue
+            license_uri = FLICKR_LICENSE_URIS.get(str(row.get("license")))
+            if not license_uri:
+                continue  # strict allow-list, independent of the request filter
+            image = url(row.get("url_l")) or url(row.get("url_c"))
+            if not image:
+                continue
+            owner = plain(row.get("owner"))
+            page = f"https://www.flickr.com/photos/{quote(owner, safe='@')}/{quote(str(row['id']))}/"
+            creator, title = plain(row.get("ownername")), plain(row.get("title"))
+            description = plain((row.get("description") or {}).get("_content") if isinstance(row.get("description"), dict) else "")
+            width = integer(row.get("width_l") or row.get("width_c"))
+            height = integer(row.get("height_l") or row.get("height_c"))
+            rights = uri_rights(
+                license_uri, source=f"flickr_api:{row['id']}:license={row.get('license')}",
+                creator=creator, page=page, title=title,
+            )
+            result.append(
+                candidate(
+                    self.provider, str(row["id"]), query, page=page, image=image,
+                    creator=creator, creator_url=f"https://www.flickr.com/photos/{quote(owner, safe='@')}/",
+                    title=title, description=description[:600],
+                    tags=tuple(str(row.get("tags") or "").split()[:20]),
+                    preview=url(row.get("url_c")) or image, width=width, height=height,
+                    rights=rights,
+                    origin={"provider": "flickr", "source_url": page, "media_url": image,
+                            "item_id": str(row["id"]), "date_taken": plain(row.get("datetaken")),
+                            "canonical_id": str(row["id"])},
                     rank=12 - len(result),
                 )
             )

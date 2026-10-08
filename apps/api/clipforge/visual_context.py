@@ -12,7 +12,7 @@ from typing import Any
 
 POSITIVE_INTENT_FIELDS = (
     "visual_goal", "subject", "objects", "actions", "context", "action_state",
-    "key_detail", "subjects_to_show", "named_entities", "media_queries",
+    "key_detail", "subjects_to_show", "named_entities", "media_queries", "entities", "location", "time_period",
 )
 HISTORICAL_WORDS = {"history", "historical", "archival", "archive", "historic", "century", "antique", "geschichte", "historisch"}
 

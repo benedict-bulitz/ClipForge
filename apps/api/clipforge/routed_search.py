@@ -32,6 +32,8 @@ def run_routed_scene_search(
     acquisition_budget: AcquisitionBudget | None = None,
     skip_searches: set[tuple[str, str, str]] | None = None,
     widen_fully: bool = False,
+    vision_judge: Any | None = None,
+    vision_budget: dict[str, int] | None = None,
 ) -> Any:
     from .media import (
         _METADATA_ONLY_VERIFIER,
@@ -68,6 +70,9 @@ def run_routed_scene_search(
     verification_ok = True
     active_verifier = verifier
     stop_reason = "no_queries"
+    from .source_router import routing_decision
+
+    routing = routing_decision(registry, scene, state, planned[0] if planned else "")
     while remaining:
         query = (
             remaining.pop(0) if not stages else select_fallback_query(remaining, coverage, targets)
@@ -87,9 +92,10 @@ def run_routed_scene_search(
             "widening_reasons": [],
             "candidate_evidence": [],
         }
-        groups = route_sources(registry, scene, state, query, preferred_kind)
+        groups = route_sources(registry, scene, state, query, preferred_kind, stage_index=len(stages))
         stage["routed_providers"] = [
-            {"provider": s.adapter.provider, "kind": s.kind, "reason": s.reason, "tier": i}
+            {"provider": s.adapter.provider, "kind": s.kind, "reason": s.reason, "tier": i,
+             **({"query": s.query} if s.query else {})}
             for i, group in enumerate(groups)
             for s in group
         ]
@@ -103,9 +109,11 @@ def run_routed_scene_search(
             for source in sources:
                 if (query, source.adapter.provider, source.kind) in (skip_searches or set()):
                     continue
+                sent = source.query or query
                 stats = {
                     "provider": source.adapter.provider,
                     "kind": source.kind,
+                    "query_sent": sent,
                     "requests": 0,
                     "returned": 0,
                     "rights_rejects": 0,
@@ -116,8 +124,8 @@ def run_routed_scene_search(
                 before = budget.search_requests
                 try:
                     results = provider_call(
-                        lambda source=source, query=query: source.adapter.search(
-                            query,
+                        lambda source=source, sent=sent: source.adapter.search(
+                            sent,
                             source.kind,
                             portrait=portrait,
                             scene_duration=scene_duration,
@@ -223,14 +231,23 @@ def run_routed_scene_search(
         ranked, scene, state,
         coverage=lambda row: tuple(candidate_target_coverage(*row, target, scene_duration) for target in targets),
     )
+    from .visual_judge import judge_and_rank, summarize
+
+    ranked = judge_and_rank(ranked, scene, state, portrait=portrait,
+                            vision_judge=vision_judge, vision_budget=vision_budget)
     for stage in stages:
         for evidence in stage["candidate_evidence"]:
             if evidence["identity"] in rows:
                 evidence["diversity"] = rows[evidence["identity"]][1].get("diversity")
+                verdict = rows[evidence["identity"]][1].get("judge")
+                if verdict:
+                    evidence["judge"] = {key: verdict[key] for key in (
+                        "scores", "final_score", "reject", "reasons", "confidence", "rationale")}
     reasons = [reason for stage in stages for reason in stage["widening_reasons"]]
     provenance = {
         "version": 2,
         "routed": True,
+        "routing": routing,
         "query_budget": query_budget,
         "planned_queries": planned,
         "executed_queries": [stage["query"] for stage in stages],
@@ -255,6 +272,7 @@ def run_routed_scene_search(
         "duplicate_count": sum(s["duplicates"] for s in stages),
         "visual_verification": "ok" if verification_ok else "failed_metadata_fallback",
         "acquisition_budget": budget.snapshot(),
+        "judge": summarize(ranked),
     }
     return StagedSearchResult(
         ranked,

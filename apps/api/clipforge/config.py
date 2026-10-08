@@ -44,6 +44,8 @@ class Settings(BaseSettings):
     pexels_api_key: str | None = None
     pixabay_api_key: str | None = None
     europeana_api_key: str | None = None
+    # Optional Creative-Commons Flickr search (strict CC BY / CC0 / PDM only).
+    flickr_api_key: str | None = None
     # Visual Director V2: paid generated-image fallback after free media fails.
     generated_image_fallback_enabled: bool = True
     generated_image_model: str = "gpt-image-2"
@@ -52,6 +54,13 @@ class Settings(BaseSettings):
     generated_image_timeout_seconds: float = 90.0
     max_auto_generated_images_per_project: int = 3
     max_generation_attempts_per_scene: int = 1
+    # Visual Judge: optional vision-language judge on each scene's bounded
+    # shortlist ("none" keeps deterministic + local OpenCLIP judging only;
+    # "openai" uses the worker model with low-detail image input).
+    visual_judge_vlm_provider: str = "none"
+    visual_judge_vlm_model: str | None = None
+    visual_judge_vlm_max_per_scene: int = 3
+    visual_judge_vlm_max_per_project: int = 24
     # Turn a Story Arc fact into a concrete visual (worker model) before
     # generating an image; deterministic fallback when disabled or offline.
     visual_prompt_translation_enabled: bool = True

@@ -330,8 +330,16 @@ def create_provider_registry(
     # Explicit client injection describes a caller-owned provider universe.
     # Production uses the catalog; tests/custom clients never open hidden APIs.
     if client is None and fallback_client is None and extra_clients is None:
-        from .open_media import EuropeanaProvider, LOCProvider, NASAProvider, OpenverseProvider
+        from .open_media import (
+            EuropeanaProvider,
+            FlickrProvider,
+            LOCProvider,
+            NASAProvider,
+            OpenverseProvider,
+        )
         providers.extend([OpenverseProvider(), NASAProvider(), LOCProvider()])
         if getattr(settings, "europeana_api_key", None):
             providers.append(EuropeanaProvider(settings.europeana_api_key))
+        if getattr(settings, "flickr_api_key", None):
+            providers.append(FlickrProvider(settings.flickr_api_key))
     return ProviderRegistry(providers)

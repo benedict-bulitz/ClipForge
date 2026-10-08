@@ -813,6 +813,14 @@ def build_generation_prompt(
     phrases = [description["subject"], *description["details"]]
     fiction = str((state.get("intent") or {}).get("content_type") or "").casefold() in {"fiction", "story", "fictional_story"}
     style = "Cinematic, realistic still image" if fiction else "Photorealistic, documentary-style photograph"
+    from .visual_fallback_policy import generation_restriction
+
+    restriction = generation_restriction(scene, state)
+    illustrative = not fiction and restriction["style"] == "illustrative_reconstruction"
+    if illustrative:
+        # Never a fake archival photograph of a real historical event.
+        style = ("Clearly illustrative painted reconstruction (an illustration, not a photograph or archival "
+                 "record), without identifiable real people,")
     direction = _ROLE_DIRECTION.get(str(strategy.get("visual_role") or strategy.get("story_role") or ""), "a clear view of the subject")
     details = ", ".join(description["details"])
     prompt = (
@@ -835,7 +843,8 @@ def build_generation_prompt(
         "reveal_safe": reveal_safe,
         "visual_source": description["source"],
         "visual_concept": description.get("concept") or {"subject": description["subject"]},
-        "verification_texts": [f"a photo of {phrase}" for phrase in phrases[:3]],
+        "verification_texts": [f"{'an illustration' if illustrative else 'a photo'} of {phrase}" for phrase in phrases[:3]],
+        "illustrative": illustrative,
     }
 
 
@@ -1169,8 +1178,15 @@ def resolve_scene_fallback(
     # Steps before reuse run first; media.py then tries reusing accepted
     # project visuals; the remaining steps (the full-screen graphic) last.
     steps = chain[:split] if phase == "before_reuse" else chain[split + 1:]
+    from .visual_fallback_policy import generation_restriction
+
     for step in steps:
         if step == GENERATED_IMAGE:
+            restriction = generation_restriction(scene, state)
+            if not restriction["allowed"]:
+                # A generated likeness of a real, named person is never made.
+                generation.update(status=f"blocked_{restriction['reason']}")
+                continue
             blocked = run_state.get("generation_blocked") or auto_generation_block_reason(state, scene, settings, generator)
             if blocked:
                 generation.update(status=blocked)
