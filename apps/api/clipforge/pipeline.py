@@ -51,6 +51,12 @@ from .script_review import (
     compact_script_draft,
     review_script_v2,
 )
+from .script_story_quality import (
+    ScriptStoryQualityProvider,
+    current_script_story_quality,
+    run_script_story_quality_v1,
+    script_quality_signature,
+)
 from .script_writer import (
     OpenAIScriptWriterProvider,
     ScriptBlockV2,
@@ -1134,6 +1140,17 @@ def _refresh_script_derivatives(
     duration = round(min(max_duration, max(effective_minimum, natural_duration)), 2)
     state["script"]["text"] = script_text
     state["script"]["word_count"] = word_count
+    previous_quality = state["script"].get("script_story_quality_v1")
+    if not isinstance(previous_quality, dict) or previous_quality.get("final_signature") != script_quality_signature(blocks):
+        refreshed_quality = current_script_story_quality(state)
+        state["script"]["script_story_quality_v1"] = {
+            **refreshed_quality,
+            "final_signature": script_quality_signature(blocks),
+            "final_scores": refreshed_quality.get("dimensions", {}),
+            "refresh_source": "script_derivatives",
+            "prior_actions": list((previous_quality or {}).get("actions") or []),
+            "provider": (previous_quality or {}).get("provider", {"status": "not_requested"}),
+        }
     state["duration"]["estimated_seconds"] = duration
     state["duration"]["natural_seconds"] = natural_duration
     state["duration"]["effective_minimum_seconds"] = effective_minimum
@@ -1209,6 +1226,7 @@ def build_initial_state(
     progress: ProgressCallback | None = None,
     script_writer_provider: ScriptWriterProvider | None = None,
     script_review_provider: ScriptReviewProvider | None = None,
+    script_quality_provider: ScriptStoryQualityProvider | None = None,
 ) -> dict[str, Any]:
     """Generate the project state; a script that cannot answer gets one research retry.
 
@@ -1217,7 +1235,12 @@ def build_initial_state(
     (``script`` stage, ``script.readiness``) and is never rendered; nothing
     is invented to fill the gap.
     """
-    kwargs = {"progress": progress, "script_writer_provider": script_writer_provider, "script_review_provider": script_review_provider}
+    kwargs = {
+        "progress": progress,
+        "script_writer_provider": script_writer_provider,
+        "script_review_provider": script_review_provider,
+        "script_quality_provider": script_quality_provider,
+    }
     state = _build_initial_state(prompt, options, settings, **kwargs)
     attempts = [{"query": prompt, "readiness": state["script"]["readiness"]["status"], "facts": len(state.get("facts") or [])}]
     if state["research"].get("retry"):
@@ -1276,6 +1299,7 @@ def _build_initial_state(
     progress: ProgressCallback | None = None,
     script_writer_provider: ScriptWriterProvider | None = None,
     script_review_provider: ScriptReviewProvider | None = None,
+    script_quality_provider: ScriptStoryQualityProvider | None = None,
     research_query: str | None = None,
     research_focus: str | None = None,
 ) -> dict[str, Any]:
@@ -1527,6 +1551,44 @@ def _build_initial_state(
     )
     for index, block in enumerate(blocks, 1):
         block["id"] = f"voice_block_{index:02d}"
+
+    # Script & Story Quality V1 is the final content-only boundary. It sees
+    # the selected Triple Hook and protected reveal, but runs before scenes,
+    # captions, voice blocks or any visual production derivative is created.
+    quality_context = {
+        "prompt": prompt,
+        "intent": intent,
+        "facts": facts,
+        "story_arc": story_arc,
+        "payoff_plan": payoff_plan,
+        "novelty_plan": novelty_plan,
+        "explanation_audit": explanation_audit,
+        "reaction_plan": {"planned_arc": planned_reaction_arc},
+        "script": {"triple_hook": triple_hook, "selected_hook": selected_hook_candidate.text if selected_hook_candidate else None},
+    }
+    blocks, script_story_quality = run_script_story_quality_v1(
+        blocks,
+        quality_context,
+        # Script Review V2 already supplies the bounded AI explanatory audit
+        # consumed above. A dedicated provider remains injectable for staged
+        # rollout and tests without adding an unconditional production call.
+        provider=script_quality_provider,
+    )
+    # Provider and deterministic edits may change block count or payoff
+    # wording, never the selected hook or protected reveal contract.
+    if selected_hook_candidate:
+        blocks = _apply_selected_hook(blocks, selected_hook_candidate.text)
+    for index, block in enumerate(blocks, 1):
+        block["id"] = f"voice_block_{index:02d}"
+    payoff_plan = _safe_payoff_plan(
+        intent,
+        blocks,
+        supplied={**payoff_plan, "payoff": "", "supporting_information": []},
+        format_plan=format_plan,
+        novelty_plan=novelty_plan,
+        story_arc=story_arc,
+    )
+    script_story_quality["final_signature"] = script_story_quality["signature"] = script_quality_signature(blocks)
     hook_block = next((block for block in blocks if _is_hook_block(block)), None)
     selected_hook = (
         selected_hook_candidate.text
@@ -1613,6 +1675,7 @@ def _build_initial_state(
             "word_count": word_count,
             "blocks": blocks,
             "script_writer_v2": script_writer_diagnostics,
+            "script_story_quality_v1": script_story_quality,
             "narration_owned_by_v2": script_writer_diagnostics.get("status") == "v2_success",
             "selected_hook": selected_hook,
             "selected_hook_strategy": triple_hook.get("selected_strategy") if selected_hook_candidate else None,

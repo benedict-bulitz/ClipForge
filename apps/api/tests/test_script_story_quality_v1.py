@@ -1,0 +1,283 @@
+"""Script & Story Quality V1: deterministic content editing and safety gates."""
+from __future__ import annotations
+
+import copy
+import inspect
+
+from clipforge import pipeline
+from clipforge.script_story_quality import (
+    QualityEditBlock,
+    QualityProviderResponse,
+    QualityProviderResult,
+    assess_script_story_quality,
+    run_script_story_quality_v1,
+    validate_provider_blocks,
+)
+
+
+def fact(identifier: str, claim: str) -> dict:
+    return {
+        "id": identifier,
+        "claim": claim,
+        "confidence": 0.95,
+        "importance": 0.9,
+        "verification": "source_attributed",
+        "sources": [{"label": identifier, "url": f"https://{identifier}.test/source"}],
+    }
+
+
+FACTS = [
+    fact("fact_01", "When you stand, gravity pulls blood from your upper body toward your legs."),
+    fact("fact_02", "Baroreceptors respond by tightening blood vessels and raising the heart rate."),
+    fact("fact_03", "Before circulation compensates, the brain briefly gets less oxygen, so vision can go dark."),
+]
+
+
+ARC = {
+    "primary_question": "Why can your vision go dark when you stand up quickly?",
+    "primary_answer_id": "fact_03",
+    "final_payoff_id": "fact_03",
+    "order": ["fact_01", "fact_02", "fact_03"],
+    "curiosity_gap": {"withhold_answer": True},
+    "hook": {"protected_ids": ["fact_03"], "allowed_ids": ["fact_01", "fact_02"]},
+    "units": [
+        {"id": "fact_01", "role": "supporting_fact", "depends_on": [], "may_be_omitted": False},
+        {"id": "fact_02", "role": "explanation", "depends_on": ["fact_01"], "may_be_omitted": False},
+        {"id": "fact_03", "role": "primary_answer", "depends_on": ["fact_01", "fact_02"], "may_be_omitted": False},
+    ],
+    "question_contract": {
+        "core_question": "Why can your vision go dark when you stand up quickly?",
+        "essential_explanation_chain": ["fact_01", "fact_02", "fact_03"],
+        "explanation_spine": {"status": "complete", "mechanism": ["fact_01", "fact_02"]},
+    },
+}
+
+
+def block(identifier: str, role: str, text: str, fact_ids: list[str] | None = None) -> dict:
+    return {"id": identifier, "role": role, "text": text, "fact_ids": list(fact_ids or [])}
+
+
+def context(*, facts: list[dict] | None = None, arc: dict | None = None) -> dict:
+    return {
+        "prompt": "Why can your vision go dark when you stand up quickly?",
+        "intent": {
+            "question": "Why can your vision go dark when you stand up quickly?",
+            "topic": "vision after standing",
+            "language": "en",
+            "research_required": True,
+            "content_type": "factual_explainer",
+        },
+        "facts": copy.deepcopy(FACTS if facts is None else facts),
+        "story_arc": copy.deepcopy(ARC if arc is None else arc),
+        "novelty_plan": {"explanatory_gain": ["fact_01", "fact_02", "fact_03"]},
+        "payoff_plan": {
+            "reveal_policy": "after_supporting_information",
+            "hook_must_not_reveal": FACTS[2]["claim"],
+            "primary_answer_id": "fact_03",
+            "final_payoff_id": "fact_03",
+        },
+        "script": {"triple_hook": {"verbal_hook": "Stand up fast and your circulation has to react."}},
+        "reaction_plan": {"planned_arc": {"hook_reaction": "curiosity", "payoff_reaction": "insight"}},
+    }
+
+
+def strong_blocks() -> list[dict]:
+    return [
+        block("b1", "hook", "Stand up fast and your circulation has to react."),
+        block("b2", "explanation", FACTS[0]["claim"], ["fact_01"]),
+        block("b3", "explanation", FACTS[1]["claim"], ["fact_02"]),
+        block("b4", "payoff", FACTS[2]["claim"], ["fact_03"]),
+    ]
+
+
+def issue_types(report: dict) -> set[str]:
+    return {str(item["issue_type"]) for item in report["issues"]}
+
+
+def test_pipeline_runs_quality_before_production_derivatives():
+    source = inspect.getsource(pipeline._build_initial_state)
+    quality = source.index("run_script_story_quality_v1(")
+    assert quality < source.index("script_text =", quality)
+    assert quality < source.index("_build_scenes(", quality)
+
+
+def test_filler_detection_and_removal():
+    blocks = strong_blocks()
+    blocks.insert(2, block("filler", "support", "You won't believe what happens next."))
+    report = assess_script_story_quality(blocks, context())
+    assert "filler" in issue_types(report)
+    edited, diagnostics = run_script_story_quality_v1(blocks, context())
+    assert all(item["id"] != "filler" for item in edited)
+    assert any(action["action"] == "remove" for action in diagnostics["actions"])
+
+
+def test_redundancy_detection_and_merge():
+    blocks = strong_blocks()
+    blocks.insert(2, block("repeat", "support", FACTS[0]["claim"], ["fact_01"]))
+    report = assess_script_story_quality(blocks, context())
+    assert "redundancy" in issue_types(report)
+    edited, _ = run_script_story_quality_v1(blocks, context())
+    assert sum(item["text"] == FACTS[0]["claim"] for item in edited) == 1
+
+
+def test_repeated_paraphrase_is_distinguished_from_exact_repetition():
+    blocks = strong_blocks()
+    blocks.insert(2, block("paraphrase", "support", "Gravity moves blood toward your legs when you stand.", ["fact_01"]))
+    report = assess_script_story_quality(blocks, context())
+    assert "repeated_paraphrase" in issue_types(report)
+
+
+def test_low_information_line_is_reported():
+    blocks = strong_blocks()
+    blocks.insert(2, block("weak", "support", "This is important.", []))
+    report = assess_script_story_quality(blocks, context())
+    assert {"generic_statement", "low_information_line"} & issue_types(report)
+
+
+def test_generic_statement_uses_exact_research_backed_specificity():
+    blocks = strong_blocks()
+    blocks[2] = block("b3", "explanation", "This is important.", ["fact_02"])
+    edited, report = run_script_story_quality_v1(blocks, context())
+    replacement = next(item for item in edited if item["id"] == "b3")
+    assert replacement["text"] == FACTS[1]["claim"]
+    assert any(action["action"] == "replace_with_supported_specific" for action in report["actions"])
+
+
+def test_premature_reveal_is_detected_and_restored_after_dependencies():
+    blocks = [strong_blocks()[0], strong_blocks()[3], strong_blocks()[1], strong_blocks()[2]]
+    report = assess_script_story_quality(blocks, context())
+    assert "premature_reveal" in issue_types(report)
+    edited, diagnostics = run_script_story_quality_v1(blocks, context())
+    assert [item["id"] for item in edited] == ["b1", "b2", "b3", "b4"]
+    assert any(action["action"] == "reorder" for action in diagnostics["actions"])
+
+
+def test_payoff_and_selected_hook_survive_safe_edits():
+    blocks = strong_blocks()
+    blocks.insert(2, block("filler", "support", "Pretty wild, right?"))
+    edited, _ = run_script_story_quality_v1(blocks, context())
+    assert edited[0]["text"] == blocks[0]["text"]
+    payoff = next(item for item in edited if item["role"] == "payoff")
+    assert payoff["fact_ids"] == ["fact_03"] and payoff["text"] == FACTS[2]["claim"]
+
+
+def test_post_payoff_fluff_is_removed():
+    blocks = [*strong_blocks(), block("outro", "support", "Thanks for watching. Follow for more!")]
+    report = assess_script_story_quality(blocks, context())
+    assert "post_payoff_fluff" in issue_types(report)
+    edited, _ = run_script_story_quality_v1(blocks, context())
+    assert edited[-1]["role"] == "payoff" and all(item["id"] != "outro" for item in edited)
+
+
+def test_logical_dependency_violation_is_reported_and_reordered():
+    blocks = [strong_blocks()[0], strong_blocks()[2], strong_blocks()[1], strong_blocks()[3]]
+    report = assess_script_story_quality(blocks, context())
+    assert "poor_fact_ordering" in issue_types(report)
+    # The existing reveal-order authority only moves protected answers; a
+    # non-reveal dependency violation is diagnosed rather than guessed away.
+    edited, final = run_script_story_quality_v1(blocks, context())
+    assert [item["id"] for item in edited] == ["b1", "b3", "b2", "b4"]
+    assert final["gate"]["status"] == "passed_with_warnings"
+
+
+def test_unsupported_fact_and_number_are_rejected():
+    candidate = copy.deepcopy(strong_blocks())
+    candidate[2]["text"] = "Baroreceptors respond in exactly 17 seconds by releasing fictionalzyme."
+    assert validate_provider_blocks(strong_blocks(), candidate, context()) == [
+        "block 3 adds untraceable words: exactly, fictionalzyme, releasing, seconds",
+        "block 3 adds unsupported numbers: 17",
+    ]
+
+
+class UnsafeProvider:
+    name = "unsafe-test"
+
+    def edit(self, request):
+        blocks = [
+            QualityEditBlock(role=item["role"], text=item["text"], fact_ids=item.get("fact_ids") or [])
+            for item in request.blocks
+        ]
+        blocks[2] = QualityEditBlock(
+            role="explanation",
+            text="Baroreceptors release fictionalzyme in exactly 17 seconds.",
+            fact_ids=["fact_02"],
+        )
+        response = QualityProviderResponse(status="revise", blocks=blocks)
+        return QualityProviderResult(response, "revised")
+
+
+def test_unsafe_provider_revision_is_rejected_without_losing_safe_script():
+    blocks = [strong_blocks()[0], strong_blocks()[2], strong_blocks()[1], strong_blocks()[3]]
+    edited, report = run_script_story_quality_v1(blocks, context(), UnsafeProvider())
+    assert all("fictionalzyme" not in item["text"] for item in edited)
+    assert report["provider"]["status"] == "validation_error"
+    assert report["provider"]["rejected_revision"] is True
+
+
+def test_too_thin_script_requests_research_instead_of_padding():
+    blocks = [
+        block("b1", "hook", "Something happens when you stand."),
+        block("b2", "payoff", "This is important."),
+    ]
+    report = assess_script_story_quality(blocks, context(facts=[]))
+    assert report["length_assessment"] == "too_thin"
+    assert report["research_insufficient"] is True
+    assert "too_thin" in issue_types(report)
+
+
+def test_artificial_lengthening_is_blocked():
+    blocks = [
+        strong_blocks()[0],
+        block("f1", "support", "You won't believe what happens next."),
+        block("f2", "support", "The answer may surprise you."),
+        strong_blocks()[1],
+        strong_blocks()[3],
+    ]
+    report = assess_script_story_quality(blocks, context())
+    assert report["length_assessment"] == "unnecessary_length"
+    assert "artificial_lengthening" in report["gate"]["blocking"]
+
+
+def test_conclusion_that_only_restates_the_question_has_weak_payoff():
+    blocks = strong_blocks()
+    blocks[-1] = block("b4", "payoff", "That is why vision can go dark when you stand up quickly.", ["fact_03"])
+    report = assess_script_story_quality(blocks, context())
+    assert "weak_payoff" in issue_types(report)
+
+
+def test_already_strong_script_is_a_no_op():
+    blocks = strong_blocks()
+    edited, report = run_script_story_quality_v1(blocks, context())
+    assert edited == blocks
+    assert report["actions"] == []
+    assert set(report["dimensions"]) == {
+        "information_density", "information_gain", "relevance_to_core_question", "redundancy",
+        "specificity", "clarity", "logical_progression", "curiosity_progression", "payoff_strength",
+        "post_payoff_efficiency", "factual_support", "spoken_naturalness",
+    }
+
+
+def test_second_pass_is_idempotent():
+    blocks = strong_blocks()
+    blocks.insert(2, block("filler", "support", "You won't believe what happens next."))
+    first, _ = run_script_story_quality_v1(blocks, context())
+    second, report = run_script_story_quality_v1(first, context())
+    assert second == first
+    assert report["actions"] == []
+
+
+class UnavailableProvider:
+    name = "offline-test"
+
+    def edit(self, request):
+        raise RuntimeError("provider offline")
+
+
+def test_provider_unavailable_keeps_deterministic_repairs():
+    # A non-reveal dependency violation remains actionable after the bounded
+    # deterministic pass, so the optional provider is attempted.
+    blocks = [strong_blocks()[0], strong_blocks()[2], strong_blocks()[1], strong_blocks()[3]]
+    edited, report = run_script_story_quality_v1(blocks, context(), UnavailableProvider())
+    assert edited == blocks
+    assert report["provider"]["status"] == "provider_error"
+    assert "provider offline" in report["provider"]["error"]

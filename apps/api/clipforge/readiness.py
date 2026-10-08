@@ -12,6 +12,7 @@ from typing import Any
 
 from .novelty import current_information_gain
 from .renderer import RenderUnavailable
+from .script_story_quality import current_script_story_quality
 from .triple_hook import state_context
 from .verbal_hook import narrates_failure, ungrounded_cause
 
@@ -22,6 +23,18 @@ CONTENT_BLOCKERS = {
     "answer_insufficient",
     "narrated_failure",
     "no_question_relevant_information",
+}
+
+# Only objective Script & Story Quality V1 failures join the production
+# contract. Advisory payoff/style findings remain visible without blocking a
+# render that still answers the question.
+QUALITY_CONTENT_BLOCKERS = {
+    "artificial_lengthening",
+    "filler",
+    "post_payoff_fluff",
+    "premature_reveal",
+    "too_thin",
+    "unsupported_claim",
 }
 
 
@@ -46,6 +59,24 @@ def content_readiness(state: dict[str, Any]) -> dict[str, Any]:
     for issue in report.get("issues") or []:
         if issue.get("severity") == "error" and issue.get("code") in CONTENT_BLOCKERS:
             blocking.append({"code": f"information_gain_{issue['code']}", "message": str(issue.get("message") or "")[:320]})
+    quality = current_script_story_quality(state)
+    for issue_type in (quality.get("gate") or {}).get("blocking") or []:
+        if issue_type not in QUALITY_CONTENT_BLOCKERS:
+            continue
+        issue = next(
+            (
+                item
+                for item in quality.get("issues") or []
+                if item.get("issue_type") == issue_type and item.get("severity") == "error"
+            ),
+            {},
+        )
+        code = f"script_story_quality_{issue_type}"
+        if not any(item["code"] == code for item in blocking):
+            blocking.append({
+                "code": code,
+                "message": str(issue.get("reason") or f"Script & Story Quality V1: {issue_type}.")[:320],
+            })
     # Research Pipeline V2: no direct answer was found in any retrieved source.
     research = state.get("research") if isinstance(state.get("research"), dict) else {}
     package = research.get("package") if isinstance(research.get("package"), dict) else None
@@ -74,7 +105,9 @@ def content_readiness(state: dict[str, Any]) -> dict[str, Any]:
     sufficiency = report.get("answer_sufficiency") if isinstance(report.get("answer_sufficiency"), dict) else {}
     research_required = (bool(sufficiency.get("research_required")) and any(
         item["code"] == "information_gain_answer_insufficient" for item in blocking
-    )) or any(item["code"] == "research_insufficient" for item in blocking)
+    )) or any(item["code"] == "research_insufficient" for item in blocking) or bool(
+        quality.get("research_insufficient") and blocking
+    )
     if not blocking:
         status = "ready"
     elif research_required:
