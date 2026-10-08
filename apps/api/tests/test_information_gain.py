@@ -286,7 +286,8 @@ def test_review_and_quality_gate_consume_the_same_findings():
     gate = pre_render_quality_gate(state)
     codes = {issue["code"] for issue in gate["issues"]}
     assert {"information_gain_redundant_segment", "information_gain_payoff_restates_question"} <= codes
-    assert gate["status"] == "passed_with_warnings"
+    assert {"script_story_quality_low_information_gain", "script_story_quality_weak_payoff"} <= codes
+    assert gate["status"] == "fallback" and gate["ready"] is False
 
 
 def test_shorter_high_density_script_beats_longer_repetitive_script():

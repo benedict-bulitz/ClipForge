@@ -391,7 +391,9 @@ def test_fresh_generation_uses_v2_body_and_preserves_legacy_hook(monkeypatch) ->
     )
     assert "Das Loch gleicht" in state["script"]["text"]
     assert state["script"]["blocks"][1]["fact_ids"] == ["fact_01"]
-    assert [block["role"] for block in state["script"]["blocks"][1:]] == ["answer", "payoff"]
+    # The unsupported closing flourish is removed; the supported answer
+    # becomes the payoff instead of being repeated in a second block.
+    assert [block["role"] for block in state["script"]["blocks"][1:]] == ["payoff"]
 
 
 @pytest.mark.parametrize(

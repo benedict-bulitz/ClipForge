@@ -28,8 +28,9 @@ from .novelty import (
     fact_is_supported,
     prune_redundant_information,
 )
-from .payoff import trim_post_payoff_fluff
-from .story_arc import arc_units, order_blocks_for_reveal
+from .payoff import reveals_protected_payoff, trim_post_payoff_fluff
+from .story_arc import arc_units, is_explanatory_question, order_blocks_for_reveal
+from .verbal_hook import information_gain, proposition_words
 
 QUALITY_VERSION = 1
 QUALITY_DIMENSIONS = (
@@ -60,8 +61,18 @@ _POST_PAYOFF_FLUFF = re.compile(
     r"danke fürs (?:zuschauen|ansehen)|folge für mehr|bis zum nächsten mal|pretty (?:wild|cool)|"
     r"ziemlich (?:wild|cool|verrückt))\b"
 )
+_COPULAR_LABEL = re.compile(
+    r"(?i)^\W*(?:that|this|it|those|these|the|das|dies|dieses|diese|dieser)\b"
+    r"[^.!?]{0,45}\b(?:is|are|was|were|means?|refers? to|ist|sind|war|bedeutet|nennt man)\b"
+)
+_VAGUE_CAUSE = re.compile(
+    r"(?i)\b(?:caused by|happens? because of|comes? from|verursacht durch|entsteht durch)\s+"
+    r"(?:something|things?|a process|some process|different factors?|various factors?|"
+    r"etwas|einen prozess|verschiedene faktoren)\b"
+)
 _WORDS = re.compile(r"[a-zäöüß0-9]+", re.IGNORECASE)
 _NUMBERS = re.compile(r"\b\d+(?:[.,]\d+)?(?:\s*%)?\b")
+_SPECIFICITY_FLOOR = 0.45
 _COMMON_EDITOR_WORDS = {
     "a", "an", "and", "are", "as", "at", "because", "but", "by", "can", "does", "for",
     "from", "has", "have", "in", "is", "it", "its", "not", "of", "on", "or", "so", "that",
@@ -227,6 +238,167 @@ def _body_units(report: dict[str, Any]) -> list[dict[str, Any]]:
     return [unit for unit in report.get("units") or [] if unit.get("category") != "hook"]
 
 
+def _supported_facts(context: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    return {
+        str(fact.get("id")): fact
+        for fact in context.get("facts") or []
+        if isinstance(fact, dict) and fact.get("id") and fact_is_supported(fact)
+    }
+
+
+def _mechanism_fact_ids(context: dict[str, Any]) -> set[str]:
+    arc = context.get("story_arc") if isinstance(context.get("story_arc"), dict) else {}
+    contract = arc.get("question_contract") if isinstance(arc.get("question_contract"), dict) else {}
+    spine = contract.get("explanation_spine") if isinstance(contract.get("explanation_spine"), dict) else {}
+    explicit = {str(item) for item in spine.get("mechanism") or []}
+    if explicit:
+        return explicit
+    return {
+        fact_id
+        for fact_id, unit in arc_units(arc).items()
+        if str(unit.get("role") or "").casefold() in {"cause", "explanation", "mechanism"}
+    }
+
+
+def _claim_coverage(text: str, claims: list[str]) -> tuple[float, list[str]]:
+    """How much supported claim meaning is present in ``text``.
+
+    ``information_gain`` supplies the repository's synonym/inflection-aware
+    comparison.  Here the direction is intentionally reversed: facts are the
+    candidate sentence, so their remaining gain terms are the specifics the
+    script failed to say.
+    """
+    claim_text = " ".join(claim for claim in claims if claim)
+    terms = proposition_words(claim_text)
+    if not terms:
+        return 1.0, []
+    missing = [
+        item for item in information_gain(text, claim_text)
+        if item != "negation" and not _NUMBERS.fullmatch(item)
+    ]
+    return max(0.0, 1.0 - len(set(missing)) / len(terms)), list(dict.fromkeys(missing))
+
+
+def _semantic_quality_signals(
+    report: dict[str, Any], context: dict[str, Any]
+) -> dict[str, Any]:
+    """Meaning-level signals that lexical novelty and role labels cannot prove."""
+    facts = _supported_facts(context)
+    mechanism_ids = _mechanism_fact_ids(context) & set(facts)
+    arc = context.get("story_arc") if isinstance(context.get("story_arc"), dict) else {}
+    question = str(
+        (context.get("intent") or {}).get("question")
+        or arc.get("primary_question")
+        or context.get("prompt")
+        or ""
+    )
+    explanatory = is_explanatory_question(question)
+    tautological_answers: dict[str, dict[str, Any]] = {}
+    specificity_gaps: dict[str, dict[str, Any]] = {}
+    analogy_repetitions: set[str] = set()
+    coverage_by_id: dict[str, float] = {}
+    units = _body_units(report)
+    carrier_texts: dict[str, list[str]] = {}
+    for unit in units:
+        for fact_id in (unit.get("evidence") or {}).get("fact_ids") or []:
+            carrier_texts.setdefault(str(fact_id), []).append(str(unit.get("text") or ""))
+
+    for unit in units:
+        block_id = str(unit.get("block_id") or "")
+        fact_ids = [str(item) for item in (unit.get("evidence") or {}).get("fact_ids") or []]
+        cited = [facts[fact_id] for fact_id in fact_ids if fact_id in facts]
+        claims = [str(fact.get("claim") or "") for fact in cited]
+        coverage, _missing = _claim_coverage(str(unit.get("text") or ""), claims)
+        coverage_by_id[block_id] = coverage
+        cited_mechanisms = [facts[fact_id] for fact_id in fact_ids if fact_id in mechanism_ids]
+        aggregate_mechanism_text = " ".join(
+            text
+            for fact_id in fact_ids if fact_id in mechanism_ids
+            for text in carrier_texts.get(fact_id, [])
+        )
+        mechanism_coverage, mechanism_missing = _claim_coverage(
+            aggregate_mechanism_text,
+            [str(fact.get("claim") or "") for fact in cited_mechanisms],
+        )
+
+        if unit.get("hook_spent"):
+            analogy_repetitions.add(block_id)
+
+        if (
+            cited_mechanisms
+            and mechanism_coverage < _SPECIFICITY_FLOOR
+            and len(mechanism_missing) >= 3
+            and not (unit.get("is_payoff") and (report.get("payoff") or {}).get("status") == "pass")
+        ):
+            specificity_gaps[block_id] = {
+                "coverage": round(mechanism_coverage, 3),
+                "missing_terms": mechanism_missing[:8],
+                "fact_ids": [str(fact.get("id")) for fact in cited_mechanisms],
+            }
+
+        if explanatory and str(unit.get("role") or "").casefold() == "answer" and mechanism_ids:
+            all_mechanism_coverage = max(
+                (
+                    _claim_coverage(
+                        str(unit.get("text") or ""),
+                        [str(facts[fact_id].get("claim") or "")],
+                    )[0]
+                    for fact_id in mechanism_ids
+                ),
+                default=0.0,
+            )
+            label_only = bool(_COPULAR_LABEL.search(str(unit.get("text") or "")))
+            vague_cause = bool(_VAGUE_CAUSE.search(str(unit.get("text") or "")))
+            # A why/how answer must state a real result or mechanism.  A
+            # copular label is accepted only when it carries a substantial
+            # portion of a supported mechanism (for example "a cloud of ice
+            # crystals"), not merely a new name for the subject.
+            if vague_cause or (label_only and all_mechanism_coverage < _SPECIFICITY_FLOOR):
+                tautological_answers[block_id] = {
+                    "coverage": round(all_mechanism_coverage, 3),
+                    "reason": (
+                        "The answer uses a vague causal placeholder instead of the supported mechanism."
+                        if vague_cause
+                        else "The answer only labels or redescribes the subject instead of answering the explanatory question."
+                    ),
+                }
+
+    payoff = report.get("payoff") if isinstance(report.get("payoff"), dict) else {}
+    failed_payoff_id = str(payoff.get("block_id") or "") if payoff.get("status") == "fail" else ""
+    disqualified = set(tautological_answers) | set(specificity_gaps) | analogy_repetitions
+    if failed_payoff_id:
+        disqualified.add(failed_payoff_id)
+    meaningful = [
+        unit for unit in units
+        if str(unit.get("block_id") or "") not in disqualified
+        and unit.get("counts_as_gain")
+        and unit.get("beat_class") == "useful_gain"
+        and unit.get("explanatory_delta") not in {"context_only", "restatement", "tangent", "weak_value"}
+    ]
+    meaningful_mechanisms = [
+        unit for unit in meaningful
+        if {str(item) for item in (unit.get("evidence") or {}).get("fact_ids") or []} & mechanism_ids
+    ]
+    ratio = len(meaningful) / len(units) if units else 0.0
+    low_information_gain = bool(
+        units
+        and (
+            (len(units) >= 3 and (len(meaningful) < 2 or ratio < 0.5))
+            or (explanatory and mechanism_ids and not meaningful_mechanisms)
+        )
+    )
+    return {
+        "tautological_answers": tautological_answers,
+        "specificity_gaps": specificity_gaps,
+        "analogy_repetitions": analogy_repetitions,
+        "failed_payoff_id": failed_payoff_id,
+        "meaningful_ids": {str(unit.get("block_id") or "") for unit in meaningful},
+        "meaningful_ratio": ratio,
+        "low_information_gain": low_information_gain,
+        "coverage_by_id": coverage_by_id,
+    }
+
+
 def _issue(
     issue_type: str,
     severity: str,
@@ -269,7 +441,8 @@ def _quality_scores(
 ) -> dict[str, int]:
     body = _body_units(report)
     total = max(1, len(body))
-    gain = [unit for unit in body if unit.get("counts_as_gain")]
+    semantic = _semantic_quality_signals(report, context)
+    gain = [unit for unit in body if str(unit.get("block_id") or "") in semantic["meaningful_ids"]]
     relevant = [unit for unit in body if unit.get("beat_class") != "off_chain"]
     supported = [
         unit for unit in body
@@ -278,10 +451,15 @@ def _quality_scores(
     clear = [unit for unit in body if (unit.get("language") or {}).get("status") != "complex"]
     specific = [
         unit for unit in body
-        if unit.get("category") in {"mechanism", "quantitative", "contrast", "resolution"}
-        or bool((unit.get("evidence") or {}).get("fact_ids"))
+        if str(unit.get("block_id") or "") in semantic["meaningful_ids"]
+        and (
+            unit.get("category") in {"mechanism", "quantitative", "contrast", "resolution"}
+            or semantic["coverage_by_id"].get(str(unit.get("block_id") or ""), 0.0) >= _SPECIFICITY_FLOOR
+        )
     ]
-    redundant = [unit for unit in body if unit.get("redundancy") != "none"]
+    redundant_ids = {
+        str(unit.get("block_id") or "") for unit in body if unit.get("redundancy") != "none"
+    } | set(semantic["tautological_answers"]) | semantic["analogy_repetitions"]
     order_violations = _dependency_violations(blocks, context.get("story_arc") or {})
     payoff = report.get("payoff") or {}
     payoff_score = 100 if payoff.get("result") == "strong" else 75 if payoff.get("status") == "pass" else 25
@@ -290,12 +468,12 @@ def _quality_scores(
     weak_tail = sum(1 for unit in body if unit.get("weak_tail"))
     protected = bool((context.get("story_arc") or {}).get("curiosity_gap", {}).get("withhold_answer"))
     premature = _premature_reveal(blocks, context)
-    avg_gain = sum(float(unit.get("information_gain_score") or 0.0) for unit in body) / total
+    avg_gain = sum(float(unit.get("information_gain_score") or 0.0) for unit in gain) / total
     return {
         "information_density": round(100 * len(gain) / total),
         "information_gain": round(100 * avg_gain),
         "relevance_to_core_question": round(100 * len(relevant) / total),
-        "redundancy": round(100 * (total - len(redundant)) / total),
+        "redundancy": round(100 * (total - len(redundant_ids)) / total),
         "specificity": round(100 * len(specific) / total),
         "clarity": round(100 * len(clear) / total),
         "logical_progression": max(0, 100 - 30 * len(order_violations)),
@@ -365,16 +543,15 @@ def assess_script_story_quality(
         "no_question_relevant_information": ("too_thin", "error", "Research the actual question before production."),
         "supported_gain_unused": ("low_information_line", "info", "Use an existing stronger fact if it improves the answer."),
         "hook_body_no_information_gain": ("weak_transition", "warning", "Make the first body beat advance beyond the hook."),
+        "hook_analogy_reuse": ("analogy_repetition", "error", "Remove the repeated analogy unless it adds a new supported explanation."),
     }
     for item in gain_report.get("issues") or []:
         code = str(item.get("code") or "")
         unit = by_id.get(str(item.get("block_id") or ""))
         if code == "payoff_unsupported":
             target = ("unsupported_claim", "error", "Remove it or replace it with existing supported research.")
-        elif code in {"payoff_missing", "payoff_weak_resolution"}:
+        elif code in {"payoff_missing", "payoff_weak_resolution"} or code.startswith("payoff_"):
             target = ("weak_payoff", "error", "End on the strongest supported resolution instead of a restatement.")
-        elif code.startswith("payoff_"):
-            target = ("weak_payoff", "warning", "End on the strongest supported resolution instead of a restatement.")
         elif code in mapping:
             target = mapping[code]
         else:
@@ -389,6 +566,41 @@ def assess_script_story_quality(
             continue
         mapped.add(key)
         issues.append(_issue(issue_type, severity, str(item.get("message") or code), action, unit))
+
+    semantic = _semantic_quality_signals(gain_report, context)
+    for block_id, finding in semantic["tautological_answers"].items():
+        unit = by_id.get(block_id)
+        key = ("tautological_answer", block_id)
+        if key not in mapped:
+            mapped.add(key)
+            issues.append(_issue(
+                "tautological_answer",
+                "error",
+                str(finding["reason"]),
+                "State the supported result or mechanism that actually answers the question.",
+                unit,
+            ))
+    for block_id, finding in semantic["specificity_gaps"].items():
+        unit = by_id.get(block_id)
+        key = ("vague_mechanism", block_id)
+        if key not in mapped:
+            mapped.add(key)
+            issues.append(_issue(
+                "vague_mechanism",
+                "warning",
+                "The line cites mechanism research but omits its concrete explanatory content: "
+                + ", ".join(finding["missing_terms"])
+                + ".",
+                "Replace the vague wording with the exact cited mechanism claim or request a grounded rewrite.",
+                unit,
+            ))
+    if semantic["low_information_gain"]:
+        issues.append(_issue(
+            "low_information_gain",
+            "error",
+            f"Only {len(semantic['meaningful_ids'])} of {len(body)} body beats add supported explanatory meaning.",
+            "Remove labels, repeated analogies and circular closure; use the supported mechanism instead.",
+        ))
 
     facts_by_id = {
         str(fact.get("id")): fact
@@ -500,26 +712,53 @@ def _supported_fact_replacement(
         for item in assessment.get("issues") or []
         if item.get("issue_type") == "generic_statement"
     }
+    vague_mechanism_ids = {
+        str(item.get("segment_id") or "")
+        for item in assessment.get("issues") or []
+        if item.get("issue_type") == "vague_mechanism"
+    }
     edited = copy.deepcopy(blocks)
     actions: list[dict[str, Any]] = []
+    protected_reveal = bool(
+        ((context.get("story_arc") or {}).get("curiosity_gap") or {}).get("withhold_answer")
+    )
     for block in edited:
-        if str(block.get("id") or "") not in generic_ids or str(block.get("role") or "").casefold() in {"hook", "payoff"}:
+        block_id = str(block.get("id") or "")
+        if block_id not in generic_ids | vague_mechanism_ids or str(block.get("role") or "").casefold() in {"hook", "payoff"}:
             continue
         fact_ids = [str(item) for item in block.get("fact_ids") or []]
-        if len(fact_ids) != 1 or fact_ids[0] not in facts:
+        selected_ids = [fact_id for fact_id in fact_ids if fact_id in facts]
+        if block_id in generic_ids and len(selected_ids) != 1:
             continue
-        claim = " ".join(str(facts[fact_ids[0]].get("claim") or "").split())
-        if not claim or claim == str(block.get("text") or ""):
+        if block_id in vague_mechanism_ids:
+            mechanism_ids = _mechanism_fact_ids(context)
+            selected_ids = [fact_id for fact_id in selected_ids if fact_id in mechanism_ids][:3]
+        claims = list(dict.fromkeys(
+            " ".join(str(facts[fact_id].get("claim") or "").split())
+            for fact_id in selected_ids
+            if str(facts[fact_id].get("claim") or "").strip()
+        ))
+        replacement = " ".join(claims)[:1_200].strip()
+        if not replacement or replacement == str(block.get("text") or ""):
+            continue
+        protected_ids = {
+            str(item)
+            for item in ((context.get("story_arc") or {}).get("hook") or {}).get("protected_ids") or []
+        }
+        if protected_reveal and (
+            set(selected_ids) & protected_ids
+            or reveals_protected_payoff(replacement, context.get("payoff_plan") or {})
+        ):
             continue
         before = str(block.get("text") or "")
-        block["text"] = claim
+        block["text"] = replacement
         actions.append({
             "action": "replace_with_supported_specific",
             "segment_ids": [block.get("id")],
             "before": before,
-            "after": claim,
-            "fact_ids": fact_ids,
-            "reason": "Replaced a generic line with the exact cited research claim.",
+            "after": replacement,
+            "fact_ids": selected_ids,
+            "reason": "Replaced vague wording with exact cited research claim text.",
         })
     return edited, actions
 
@@ -586,26 +825,28 @@ def _deterministic_edit(
                     ),
                     None,
                 )
-                fact_id = next(
-                    (
-                        str(item)
-                        for item in (carrier or {}).get("fact_ids") or []
-                        if str(item) in supported_facts
-                    ),
-                    None,
-                )
-                if fact_id:
+                if carrier is not None:
                     before = str(block.get("text") or "")
-                    block["text"] = " ".join(str(supported_facts[fact_id].get("claim") or "").split())
-                    block["fact_ids"] = [fact_id]
-                    kept.append(block)
+                    previous_role = str(carrier.get("role") or "")
+                    carrier["role"] = "payoff"
+                    carrier["fact_ids"] = list(dict.fromkeys([
+                        *[str(item) for item in carrier.get("fact_ids") or []],
+                        *[str(item) for item in block.get("fact_ids") or []],
+                    ]))
                     actions.append({
-                        "action": "replace_with_supported_specific",
+                        "action": "strengthen_payoff",
                         "segment_ids": [str(block.get("id") or "")],
                         "before": before,
-                        "after": block["text"],
-                        "fact_ids": [fact_id],
-                        "reason": "Replaced an unsupported payoff flourish with the exact supported answer fact.",
+                        "after": str(carrier.get("text") or ""),
+                        "fact_ids": list(carrier.get("fact_ids") or []),
+                        "reason": "Removed an unsupported closing flourish and ended on the preceding supported answer.",
+                        "details": {
+                            "action": "hand_over_unsupported_payoff",
+                            "block_id": block.get("id"),
+                            "text": before,
+                            "payoff_block_id": carrier.get("id"),
+                            "payoff_previous_role": previous_role,
+                        },
                     })
                     continue
             actions.append({

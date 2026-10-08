@@ -29,12 +29,16 @@ CONTENT_BLOCKERS = {
 # contract. Advisory payoff/style findings remain visible without blocking a
 # render that still answers the question.
 QUALITY_CONTENT_BLOCKERS = {
+    "analogy_repetition",
     "artificial_lengthening",
     "filler",
+    "low_information_gain",
     "post_payoff_fluff",
     "premature_reveal",
+    "tautological_answer",
     "too_thin",
     "unsupported_claim",
+    "weak_payoff",
 }
 
 
