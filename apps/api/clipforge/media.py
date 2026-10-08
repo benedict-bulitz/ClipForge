@@ -301,6 +301,12 @@ class WikimediaMediaClient:
                     description=_plain_metadata(str((metadata.get("ImageDescription") or {}).get("value") or "")) if isinstance(metadata.get("ImageDescription"), dict) else "",
                     preview_url=str(download_url),
                     rights=commons_rights(metadata, source_url=str(info.get("descriptionurl") or ""), creator=_plain_metadata(str(artist.get("value") or ""))),
+                    # Commons categories ("Newspapers", "Book pages") tell the
+                    # Visual Judge a scan is a document; they are not caption text.
+                    origin={"categories": [
+                        part.strip() for part in _plain_metadata(str((metadata.get("Categories") or {}).get("value") or "")).split("|")
+                        if part.strip()
+                    ][:12]} if isinstance(metadata.get("Categories"), dict) else {},
                 )
             )
         return sorted(candidates, key=lambda item: item.rank, reverse=True)
@@ -1347,6 +1353,7 @@ def verify_media_shortlist(
             "photographic_score": None,
             "diagram_score": None,
             "presentation_risk": False,
+            "document_score": None,
         }
         if result is not None:
             visual_data = {
@@ -1362,6 +1369,7 @@ def verify_media_shortlist(
                 "diagram_score": result.diagram_score,
                 "presentation_risk": result.presentation_risk,
                 "setting_evidence": result.setting_evidence,
+                "document_score": getattr(result, "document_score", None),
             }
         combined = dict(metadata, visual=visual_data)
         if result is not None and result.status == "verified":

@@ -52,6 +52,18 @@ _FAMILY_FACETS = {
     "commons": ("narrow", "entity", "entity_period", "alternate", "entity_location"),
     "stock": (),
 }
+# Domains whose catalogue search may return records about events/artifacts.
+# Everywhere else a bare name ("mars", "red planet") sent to a catalogue-style
+# engine returns books, newspaper pages, covers and stamps that MENTION the
+# subject; those families get the name together with the visual subject.
+DOCUMENT_TOLERANT_DOMAINS = frozenset({"historical", "art_culture"})
+# Without a name-bearing facet, those engines keep the visual logical query.
+_DEPICTION_FAMILY_FACETS = {
+    "archive": ("narrow", "alternate_subject", "entity_period", "entity_location"),
+    "space": ("narrow", "alternate_subject", "entity_period", "subject_action"),
+    "commons": ("narrow", "alternate_subject", "entity_period", "entity_location"),
+    "stock": (),
+}
 
 # ---------------------------------------------------------------------------
 # Domain classification (language vocabulary only; no topic tables)
@@ -298,7 +310,9 @@ _META_WORDS = frozenset({
     "the", "and", "its", "their", "his", "her", "for", "with", "into", "onto", "den", "dem",
 })
 # Facets that add factual precision the authored stock queries usually lack.
-FACTUAL_FACETS = frozenset({"entity_period", "entity_location", "narrow", "entity", "alternate", "period_subject"})
+FACTUAL_FACETS = frozenset({
+    "entity_period", "entity_location", "narrow", "entity", "alternate", "alternate_subject", "period_subject",
+})
 
 
 def _join(*parts: str, limit: int = 6) -> str:
@@ -345,6 +359,11 @@ def build_facets(scene: dict[str, Any], state: dict[str, Any], signals: dict[str
         ("narrow", _join(entity, subject) if entity and subject else "", "most specific factual query"),
         ("entity", _join(entity), "named entity alone"),
         *(("alternate", _join(term), "alternate terminology") for term in signals["alternate_terms"]),
+        *(
+            ("alternate_subject", _join(term, subject), "alternate terminology with the visual subject")
+            for term in signals["alternate_terms"]
+            if subject and signals["domain"] not in DOCUMENT_TOLERANT_DOMAINS
+        ),
         ("location_subject", _join(location, subject) if location and subject else "", "subject in its location"),
         ("period_subject", _join(subject, period) if period and subject and not entity else "", "subject at the stated time"),
         ("broader", _join(context, subject, limit=5) if context else "", "broader visual context"),
@@ -359,12 +378,13 @@ def build_facets(scene: dict[str, Any], state: dict[str, Any], signals: dict[str
     return facets[:MAX_FACETS]
 
 
-def source_queries(facets: list[dict[str, Any]]) -> dict[str, list[str]]:
+def source_queries(facets: list[dict[str, Any]], domain: str = "general") -> dict[str, list[str]]:
     by_facet: dict[str, str] = {}
     for item in facets:
         by_facet.setdefault(item["facet"], item["query"])
+    families = _FAMILY_FACETS if domain in DOCUMENT_TOLERANT_DOMAINS else _DEPICTION_FAMILY_FACETS
     result: dict[str, list[str]] = {}
-    for family, order in _FAMILY_FACETS.items():
+    for family, order in families.items():
         queries = dedupe_queries([by_facet[name] for name in order if name in by_facet])[:MAX_SOURCE_QUERIES]
         if queries:
             result[family] = queries
@@ -410,7 +430,7 @@ def plan_scene_search(
         "authored_queries": list(authored),
         "facets": safe,
         "protected_facets": rejected,
-        "source_queries": source_queries(safe),
+        "source_queries": source_queries(safe, signals["domain"]),
     }
 
 

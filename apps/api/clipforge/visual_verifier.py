@@ -25,6 +25,12 @@ MODEL_PRETRAINED = "laion2b_s34b_b79k"
 VISUAL_THRESHOLD = 0.18
 SCENE_VISUAL_THRESHOLD = 0.24
 PRESENTATION_RISK_MARGIN = 0.01
+# A printed page/cover/card ABOUT a subject rather than a picture OF it.
+DOCUMENT_PROMPTS = [
+    "a scanned newspaper or magazine page with columns of printed text",
+    "a printed page of a book, a document or a library catalogue card",
+    "a magazine cover, poster or postage stamp dominated by its printed title",
+]
 MAX_IMAGE_CACHE = 128
 MAX_TEXT_CACHE = 64
 MAX_VERIFY_VIDEO_BYTES = 40 * 1024 * 1024
@@ -50,6 +56,11 @@ class VisualVerification:
     visual_margin: float | None = None
     confidence: str = "low"
     setting_evidence: dict[str, Any] | None = None
+    # How much the image looks like a printed page/cover/card ABOUT a subject
+    # (newspaper, magazine, book page, catalogue card, stamp). Evidence for the
+    # Visual Judge's representational check; never a rejection on its own,
+    # because a document is the right visual when the scene is about it.
+    document_score: float | None = None
 
 
 class VisualPromptSet(list[str]):
@@ -274,6 +285,10 @@ class OpenClipVisualVerifier:
         risk = presentation_score >= max(photographic_score, diagram_score) + PRESENTATION_RISK_MARGIN
         return presentation_score, photographic_score, diagram_score, risk
 
+    def _document_score(self, image: Image.Image, *, asset_identity: str) -> float:
+        # Same identity as the presentation prompts: the image embedding is reused.
+        return self.score_image(image, DOCUMENT_PROMPTS, asset_identity=f"{asset_identity}:presentation")
+
     def score_video_frames(self, frames: list[Image.Image], texts: list[str], *, asset_identity: str = "video") -> VisualVerification:
         scores = []
         subject_scores = []
@@ -282,6 +297,7 @@ class OpenClipVisualVerifier:
         photographic_scores = []
         diagram_scores = []
         presentation_risks = []
+        document_scores = []
         setting_evidence = []
         for i, frame in enumerate(frames):
             identity = f"{asset_identity}:frame:{i}"
@@ -297,6 +313,7 @@ class OpenClipVisualVerifier:
             photographic_scores.append(photographic_score)
             diagram_scores.append(diagram_score)
             presentation_risks.append(presentation_risk)
+            document_scores.append(self._document_score(frame, asset_identity=identity))
             scores.append(combined)
             setting_evidence.append(self._setting_evidence(frame, texts, asset_identity=identity))
         return (
@@ -313,6 +330,7 @@ class OpenClipVisualVerifier:
                 float(statistics.median(diagram_scores)),
                 sum(presentation_risks) > len(presentation_risks) / 2,
                 setting_evidence=self._setting_consensus(setting_evidence),
+                document_score=float(statistics.median(document_scores)),
             )
             if scores
             else VisualVerification(None, "unavailable_frames")
@@ -402,6 +420,7 @@ class OpenClipVisualVerifier:
             presentation_score, photographic_score, diagram_score, presentation_risk = (
                 self._presentation_scores(image, asset_identity=identity)
             )
+            document_score = self._document_score(image, asset_identity=identity)
         except (OSError, ValueError, RuntimeError, ImportError, TypeError):
             return VisualVerification(None, "unavailable_image", "local_image")
         return VisualVerification(
@@ -417,6 +436,7 @@ class OpenClipVisualVerifier:
             diagram_score,
             presentation_risk,
             setting_evidence=self._setting_evidence(image, texts, asset_identity=identity),
+            document_score=document_score,
         )
 
     def verify_candidate(self, candidate: Any, texts: list[str]) -> VisualVerification:
@@ -448,6 +468,7 @@ class OpenClipVisualVerifier:
                             result.diagram_score,
                             result.presentation_risk,
                             setting_evidence=result.setting_evidence,
+                            document_score=result.document_score,
                         )
             except (OSError, ValueError, RuntimeError, httpx.HTTPError, subprocess.SubprocessError):
                 pass
@@ -479,6 +500,7 @@ class OpenClipVisualVerifier:
                 diagram_score,
                 presentation_risk,
                 setting_evidence=self._setting_evidence(image, texts, asset_identity=str(getattr(candidate, "identity", "image"))),
+                document_score=self._document_score(image, asset_identity=str(getattr(candidate, "identity", "image"))),
             )
         except (OSError, ValueError, RuntimeError, ImportError, httpx.HTTPError):
             return VisualVerification(None, "unavailable_preview")

@@ -7,8 +7,14 @@ they made. It adds what keyword relevance cannot express:
 1. Deterministic pre-filters: invalid license, missing media, unsupported
    kind, tiny resolution, impossible 9:16 reframe, watermark/text markers.
 2. Structured dimension scores in [0, 1]: semantic_match, factual_match,
-   visual_impact, vertical_fit, quality, novelty, continuity,
-   license_confidence.
+   representational_match, visual_impact, vertical_fit, quality, novelty,
+   continuity, license_confidence, source_authority.
+   ``representational_match`` asks whether the image depicts the thing the
+   narration explains or only *mentions* it: a newspaper page, magazine
+   cover, book page, catalogue card or stamp ABOUT a subject is a meta visual.
+   It is the right visual only when the scene itself is about a document
+   (a headline, treaty, poster, manuscript); otherwise it scores low and, for
+   physical/scientific scenes, is rejected.
 3. Hard requirements: semantic_match and factual_match below their floors
    reject the candidate, so an attractive but wrong asset cannot win on
    impact or resolution.
@@ -40,15 +46,76 @@ WEAK_SEMANTIC = 0.50
 WEAK_SEMANTIC_ABSTRACT = 0.55
 
 WEIGHTS = {
-    "semantic_match": 0.30,
-    "factual_match": 0.25,
-    "visual_impact": 0.12,
-    "vertical_fit": 0.10,
-    "quality": 0.08,
-    "novelty": 0.08,
-    "continuity": 0.04,
-    "license_confidence": 0.03,
+    "semantic_match": 0.25,
+    "factual_match": 0.22,
+    "representational_match": 0.15,
+    "visual_impact": 0.10,
+    "vertical_fit": 0.08,
+    "quality": 0.04,
+    "novelty": 0.07,
+    "continuity": 0.03,
+    "license_confidence": 0.02,
+    "source_authority": 0.04,
 }
+
+# Domains whose scenes are normally about events, artifacts and their records:
+# a document may be primary evidence there, so a meta visual is penalised but
+# never rejected outright. Every other domain expects a depiction.
+DOCUMENT_TOLERANT_DOMAINS = frozenset({"historical", "art_culture"})
+# A meta visual's metadata names the subject; that must not outweigh the fact
+# that it does not show it.
+META_SEMANTIC_CAP = 0.45
+META_REPRESENTATIONAL = 0.1
+# CLIP: the page/cover prompts must beat both the photographic and the diagram
+# prompts (same margin as the existing presentation-risk check).
+DOCUMENT_VISION_MARGIN = 0.01
+
+# Source authority per scene domain: authoritative direct imagery first. A
+# small weight: a tie-breaker between equally relevant candidates, never a
+# substitute for relevance.
+SOURCE_AUTHORITY: dict[str, dict[str, float]] = {
+    "space": {"nasa": 1.0, "wikimedia": 0.75, "openverse": 0.7, "flickr": 0.7, "pexels": 0.55, "pixabay": 0.55},
+    "historical": {"loc": 1.0, "europeana": 1.0, "wikimedia": 0.85, "openverse": 0.75, "flickr": 0.7, "pexels": 0.5, "pixabay": 0.5},
+    "art_culture": {"europeana": 1.0, "wikimedia": 0.85, "loc": 0.85, "openverse": 0.75, "flickr": 0.7, "pexels": 0.5, "pixabay": 0.5},
+    "anatomy": {"wikimedia": 0.9, "openverse": 0.8, "pexels": 0.6, "pixabay": 0.6},
+    "diagram": {"wikimedia": 0.9, "openverse": 0.8, "pexels": 0.6, "pixabay": 0.6},
+}
+NEUTRAL_AUTHORITY = 0.7
+
+# Meta-visual evidence in metadata. Phrases are reliable anywhere in the
+# caption; single words only in the title or Commons categories (long
+# descriptions mention "article" or "journal" for ordinary photos, and tags
+# name incidental props).
+_META_PHRASES = (
+    "newspaper page", "newspaper clipping", "newspaper cutting", "newspaper article", "newspaper headline",
+    "front page", "magazine cover", "magazine page", "cover of the magazine", "book cover", "book page",
+    "page from", "page of the", "title page", "scanned page", "scan of a page", "printed page",
+    "catalog card", "catalogue card", "index card", "card catalog", "finding aid", "postage stamp",
+    "mission logo", "mission patch", "mission insignia", "typewritten", "typescript", "screenshot",
+    "zeitungsartikel", "zeitungsseite", "zeitungsausschnitt", "titelseite", "titelblatt", "buchseite",
+    "buchcover", "zeitschriftencover", "karteikarte", "briefmarke",
+)
+_META_WORDS = frozenset({
+    "newspaper", "newspapers", "magazine", "magazines", "periodical", "periodicals", "article", "headline",
+    "headlines", "clipping", "clippings", "pamphlet", "brochure", "leaflet", "flyer", "poster", "posters",
+    "advertisement", "stamp", "stamps", "philately", "logo", "emblem", "insignia", "document", "documents",
+    "manuscript", "manuscripts", "book", "books", "zeitung", "zeitungen", "zeitschrift", "magazin", "artikel",
+    "schlagzeile", "plakat", "plakate", "flugblatt", "broschüre", "dokument", "dokumente", "handschrift",
+    "buch", "bücher", "werbung", "logos",
+})
+# Scene intent that makes a document the subject (EN + DE language vocabulary;
+# no topic tables). Words that are also ordinary science/everyday words are
+# left out ("law" of gravity, muscles "contract", "brief", "Erklärung",
+# "Gesetz", mountain "pass"); a map depicts a place and is never a meta visual.
+_DOCUMENT_SCENE_WORDS = frozenset({
+    "newspaper", "newspapers", "headline", "headlines", "front-page", "magazine", "article", "treaty",
+    "treaties", "document", "documents", "manuscript", "manuscripts", "letter", "letters", "telegram",
+    "poster", "posters", "propaganda", "leaflet", "leaflets", "pamphlet", "decree", "proclamation",
+    "edict", "certificate", "passport", "zeitung", "zeitungen", "schlagzeile", "schlagzeilen", "titelseite",
+    "vertrag", "verträge", "dokument", "dokumente", "urkunde", "handschrift", "telegramm", "plakat",
+    "plakate", "flugblatt", "flugblätter", "erlass", "dekret", "proklamation", "gesetzestext",
+    "reisepass", "zeitschrift", "artikel", "briefmarke", "logo", "emblem", "book", "buch",
+})
 
 # Output frame (portrait ClipForge default). Reframing a source below these
 # effective pixels means an upscale beyond ~3.2x: visibly soft on a phone.
@@ -99,6 +166,10 @@ def _tokens(text: str) -> set[str]:
         for word in re.findall(r"[\wäöüß-]+", str(text or "").casefold())
         if len(word) > 2 and word not in _STOP
     }
+
+
+def _words(text: str) -> set[str]:
+    return set(re.findall(r"[\wäöüß-]+", str(text or "").casefold()))
 
 
 def _matches(term_tokens: set[str], metadata: set[str]) -> int:
@@ -213,7 +284,13 @@ def scene_context(scene: dict[str, Any], state: dict[str, Any]) -> dict[str, Any
         scene.get("narration"), scene.get("visual_goal"), intent.get("visual_goal"),
         " ".join(str(v) for v in intent.get("objects") or []), " ".join(str(v) for v in intent.get("context") or []),
     ) if v)
+    domain = str(signals.get("domain") or "general")
+    wants_document = bool(_words(" ".join((
+        scene_text, str(intent.get("visual_goal") or ""), " ".join(str(v) for v in intent.get("media_queries") or []),
+    )).casefold()) & _DOCUMENT_SCENE_WORDS)
     return {
+        "wants_document": wants_document,
+        "direct_expected": not wants_document and domain not in DOCUMENT_TOLERANT_DOMAINS,
         "entities": list(signals.get("entities") or []),
         "alternate_terms": list(signals.get("alternate_terms") or []),
         "period": str(signals.get("period") or ""),
@@ -328,6 +405,54 @@ def impact_score(candidate: Any, relevance: dict[str, Any], context: dict[str, A
     if min(int(_value(candidate, "width") or 0), int(_value(candidate, "height") or 0)) >= 1080:
         value += 0.05
     return _clamp(value)
+
+
+def meta_visual_evidence(candidate: Any, relevance: dict[str, Any]) -> dict[str, Any]:
+    """Is this a picture ABOUT a subject (page, cover, card, stamp, logo) rather than OF it?
+
+    Metadata first (phrases anywhere, single words only in the title and
+    categories); the local CLIP page prompts when the image was verified.
+    """
+    origin = _value(candidate, "origin") or {}
+    # Tags often name incidental props ("book", "newspaper" on a lifestyle
+    # shot), so single words count only in the title and Commons categories.
+    label = " ".join((
+        str(_value(candidate, "title") or ""),
+        " ".join(str(v) for v in (origin.get("categories") or []) if isinstance(origin, dict)),
+    )).casefold()
+    tags = " ".join(_value(candidate, "tags") or ()).casefold()
+    text = f"{label} {tags} {str(_value(candidate, 'description') or '')[:600].casefold()}"
+    markers = [phrase for phrase in _META_PHRASES if phrase in text]
+    markers += sorted(_words(label) & _META_WORDS)
+    visual = relevance.get("visual") or {}
+    document, photo, diagram = visual.get("document_score"), visual.get("photographic_score"), visual.get("diagram_score")
+    vision = bool(
+        visual.get("status") == "verified" and document is not None and photo is not None
+        and float(document) >= max(float(photo), float(diagram or 0.0)) + DOCUMENT_VISION_MARGIN
+    )
+    if vision:
+        markers.append("vision:document_page")
+    return {
+        "meta": bool(markers),
+        "source": "vision" if vision and len(markers) == 1 else "metadata" if markers else None,
+        "markers": list(dict.fromkeys(markers))[:6],
+        "document_score": document,
+        "photographic_score": photo,
+    }
+
+
+def representational_score(evidence: dict[str, Any], context: dict[str, Any]) -> tuple[float, list[str]]:
+    """Does the image depict the thing/mechanism the narration discusses, not merely mention it?"""
+    if not evidence["meta"]:
+        return 1.0, []
+    if context.get("wants_document"):
+        return 1.0, ["document_is_the_scene_subject"]
+    return META_REPRESENTATIONAL, [f"meta_visual:{evidence['markers'][0]}"]
+
+
+def authority_score(candidate: Any, context: dict[str, Any]) -> float:
+    provider = str(_value(candidate, "provider") or "")
+    return SOURCE_AUTHORITY.get(context.get("domain") or "general", {}).get(provider, NEUTRAL_AUTHORITY)
 
 
 def vertical_score(candidate: Any, *, portrait: bool = True) -> tuple[float, dict[str, Any]]:
@@ -449,15 +574,27 @@ def judge_candidate(
     factual, factual_notes = factual_score(candidate, relevance, context)
     vertical, geometry = vertical_score(candidate, portrait=portrait)
     novelty, continuity, diversity_notes = novelty_continuity(candidate, context)
+    evidence = meta_visual_evidence(candidate, relevance)
+    representational, representation_notes = representational_score(evidence, context)
+    impact = impact_score(candidate, relevance, context)
+    if representational < 0.5:
+        # Metadata that only names the subject cannot outweigh a picture
+        # that does not show it; a text page is also weak short-form footage.
+        semantic = min(semantic, META_SEMANTIC_CAP)
+        impact = _clamp(impact - 0.3)
+        if context.get("direct_expected"):
+            reasons.append("meta_visual_not_depiction")
     scores = {
         "semantic_match": semantic,
         "factual_match": factual,
-        "visual_impact": impact_score(candidate, relevance, context),
+        "representational_match": representational,
+        "visual_impact": impact,
         "vertical_fit": vertical,
         "quality": quality_score(candidate),
         "novelty": novelty,
         "continuity": continuity,
         "license_confidence": license_score(candidate),
+        "source_authority": authority_score(candidate, context),
     }
     if relevance.get("confidence") == "rejected":
         reasons.append("semantic_authority_rejected")
@@ -481,6 +618,7 @@ def judge_candidate(
         f"semantic {semantic:.2f} (metadata {semantic_detail['metadata']}"
         + (f", clip {float(clip):.3f}" if clip is not None else ", unverified")
         + f"); factual {factual:.2f}" + (f" [{', '.join(factual_notes)}]" if factual_notes else "")
+        + f"; depicts {representational:.2f}" + (f" [{', '.join(representation_notes)}]" if representation_notes else "")
         + (f"; reframe {geometry.get('orientation')} keeps {geometry.get('retained_share', 0):.0%}" if geometry.get("known") else "")
         + (f"; {', '.join(diversity_notes)}" if diversity_notes else "")
     )
@@ -498,6 +636,14 @@ def judge_candidate(
             or (verified and clip is not None and float(clip) < STRONG_CLIP_MARGIN)
         ),
         "factual_notes": factual_notes,
+        "representation": {
+            "meta_visual": evidence["meta"],
+            "markers": evidence["markers"],
+            "source": evidence["source"],
+            "scene_wants_document": bool(context.get("wants_document")),
+            "direct_expected": bool(context.get("direct_expected")),
+            "notes": representation_notes,
+        },
         "diversity_notes": diversity_notes,
         "geometry": geometry,
         "rationale": rationale[:400],
@@ -518,10 +664,14 @@ VLM_INSTRUCTIONS = (
     "You judge one candidate image for one scene of a factual vertical short video. Score 0-10: "
     "semantic_match (does the image show what the scene describes), factual_match (is it the correct "
     "real subject/place/period named in the context, not a lookalike, replica, costume or different "
-    "entity; 10 when nothing specific is required), visual_impact (would it stop a scroll), vertical_fit "
-    "(does the main subject survive a centered 9:16 crop). Set watermark_or_text true for visible "
-    "watermarks, logos or text that dominates the frame, wrong_subject true when it clearly shows "
-    "something else, and reject when it must not be used. Keep rationale under 25 words."
+    "entity; 10 when nothing specific is required), representational_match (does the image visually "
+    "DEPICT the object, place, event or mechanism, rather than merely mention it in printed text: a "
+    "newspaper, magazine, book page, catalogue card, poster or stamp about the subject scores low unless "
+    "scene_wants_document is true), visual_impact (would it stop a scroll), vertical_fit (does the main "
+    "subject survive a centered 9:16 crop). Set document_page true when the image is mainly a printed "
+    "page, cover, card, poster, stamp or screenshot of text; watermark_or_text true for visible "
+    "watermarks, logos or overlaid captions; wrong_subject true when it clearly shows something else; "
+    "and reject when it must not be used. Keep rationale under 25 words."
 )
 
 
@@ -549,8 +699,10 @@ class OpenAIVisionJudge:
         class Verdict(BaseModel):
             semantic_match: int = Field(ge=0, le=10)
             factual_match: int = Field(ge=0, le=10)
+            representational_match: int = Field(ge=0, le=10)
             visual_impact: int = Field(ge=0, le=10)
             vertical_fit: int = Field(ge=0, le=10)
+            document_page: bool
             watermark_or_text: bool
             wrong_subject: bool
             reject: bool
@@ -594,19 +746,32 @@ def apply_vision_verdict(verdict: dict[str, Any], vlm: dict[str, Any]) -> dict[s
     scores["factual_match"] = _clamp(min(scores["factual_match"], float(vlm.get("factual_match") or 0) / 10))
     scores["visual_impact"] = _clamp(0.5 * scores["visual_impact"] + 0.05 * float(vlm.get("visual_impact") or 0))
     scores["vertical_fit"] = _clamp(min(scores["vertical_fit"], 0.3 + 0.07 * float(vlm.get("vertical_fit") or 0)))
+    representation = verdict.get("representation") or {}
+    wants_document = bool(representation.get("scene_wants_document"))
     reasons = list(verdict["reasons"])
+    if "representational_match" in scores and not wants_document:
+        if vlm.get("representational_match") is not None:
+            scores["representational_match"] = _clamp(min(
+                scores["representational_match"], float(vlm["representational_match"]) / 10,
+            ))
+        if vlm.get("document_page"):
+            scores["representational_match"] = min(scores["representational_match"], META_REPRESENTATIONAL)
+        if scores["representational_match"] < 0.5:
+            scores["semantic_match"] = min(scores["semantic_match"], META_SEMANTIC_CAP)
+            if representation.get("direct_expected"):
+                reasons.append("vlm_meta_visual_not_depiction")
     if vlm.get("reject"):
         reasons.append("vlm_reject")
     if vlm.get("wrong_subject"):
         reasons.append("vlm_wrong_subject")
-    if vlm.get("watermark_or_text"):
+    if vlm.get("watermark_or_text") and not (wants_document and vlm.get("document_page")):
         reasons.append("vlm_watermark_or_text")
     if scores["semantic_match"] < SEMANTIC_FLOOR:
         reasons.append("semantic_below_floor")
     if scores["factual_match"] < FACTUAL_FLOOR:
         reasons.append("factual_below_floor")
     reasons = list(dict.fromkeys(reasons))
-    final = round(sum(scores[key] * weight for key, weight in WEIGHTS.items()), 4)
+    final = round(sum(scores.get(key, 0.0) * weight for key, weight in WEIGHTS.items()), 4)
     return {
         **verdict,
         "scores": scores,
@@ -614,8 +779,8 @@ def apply_vision_verdict(verdict: dict[str, Any], vlm: dict[str, Any]) -> dict[s
         "reject": bool(reasons),
         "reasons": reasons,
         "vlm": {key: vlm.get(key) for key in (
-            "semantic_match", "factual_match", "visual_impact", "vertical_fit", "watermark_or_text",
-            "wrong_subject", "reject", "rationale",
+            "semantic_match", "factual_match", "representational_match", "visual_impact", "vertical_fit",
+            "document_page", "watermark_or_text", "wrong_subject", "reject", "rationale",
         )},
         "rationale": (verdict["rationale"] + f"; vlm: {str(vlm.get('rationale') or '')[:120]}")[:400],
     }
@@ -668,6 +833,7 @@ def judge_and_rank(
             verdict = vision_judge.judge(address, {
                 "scene": context["scene_text"][:400], "entities": context["entities"], "period": context["period"],
                 "candidate_title": str(_value(candidate, "title") or "")[:200],
+                "scene_wants_document": bool(context.get("wants_document")),
             })
             if verdict is None:
                 relevance["judge"]["vlm_status"] = "unavailable"

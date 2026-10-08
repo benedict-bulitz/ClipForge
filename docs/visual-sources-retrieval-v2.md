@@ -100,7 +100,12 @@ facets, protected facets and `source_queries` per family.
 
 Archives, NASA and Commons-style engines receive the planner's catalogue
 phrasing for stage *i* (e.g. `berlin wall 1961`); stock libraries keep the
-visual logical query. `media_search.routing` records domain, order and every
+visual logical query. Outside the historical and art domains those engines
+never receive a bare name (`mars`, `red planet`): a bare name returns books,
+newspaper pages, magazine covers and stamps that *mention* the subject. They
+get the name with the visual subject (`mars red martian soil`,
+`red planet martian soil`, facet `alternate_subject`), or the visual logical
+query when no such facet exists. `media_search.routing` records domain, order and every
 skipped provider with `unsuitable_for_domain:<domain>`; each provider stat
 records `query_sent`.
 
@@ -111,9 +116,28 @@ media, short side < 480, aspect wider than 2.6:1 (no meaningful 9:16 crop),
 effective long side after 9:16 reframe < 600 px (> 3.2× upscale),
 watermark/© markers, duplicate asset keys.
 
-Scores in [0, 1] (weights): semantic_match .30, factual_match .25,
-visual_impact .12, vertical_fit .10, quality .08, novelty .08, continuity .04,
-license_confidence .03.
+Scores in [0, 1] (weights): semantic_match .25, factual_match .22,
+representational_match .15, visual_impact .10, vertical_fit .08,
+novelty .07, quality .04, source_authority .04, continuity .03,
+license_confidence .02.
+
+- **representational_match** — does the image *depict* the object, place,
+  event or mechanism, or only *mention* it? A meta visual (newspaper/magazine
+  page or cover, book page, catalogue/index card, poster, stamp, logo,
+  screenshot of text) is detected from metadata (phrases anywhere; single
+  words only in the title and Commons categories) and, when the image was
+  verified locally, from CLIP page prompts (`document_score` beating the
+  photographic and diagram prompts). If the scene itself is about a document
+  (headline, treaty, poster, manuscript, letter, Zeitung, Vertrag, Plakat …)
+  the document scores 1.0. Otherwise it scores 0.1, its metadata-driven
+  semantic score is capped at 0.45 and its impact drops by 0.3; in every
+  domain except historical and art/culture it is rejected
+  (`meta_visual_not_depiction`). Historical/art scenes keep records as a
+  heavily penalised option, so an event photo still beats a catalogue card.
+- **source_authority** — per domain: space NASA 1.0 > Commons .7–.75 > stock
+  .55; historical/art archives 1.0 > Commons > stock; anatomy/diagram Commons
+  first; all other domains neutral. A tie-breaker between equally relevant
+  candidates, never a substitute for relevance.
 
 - **semantic_match** = existing metadata confidence/tier blended 50/50 with
   the existing OpenCLIP scene score (0.20→0, 0.34→1); unverified = metadata × 0.9.
@@ -131,9 +155,12 @@ license_confidence .03.
   `confidence`, `weak`, `factual_notes`, `diversity_notes`, `geometry`,
   `rationale`. Stored in `media.relevance.judge` and in candidate evidence.
 - Optional VLM (`VISUAL_JUDGE_VLM_PROVIDER=openai`, default `none`): top 3 per
-  scene, 24 per project, low-detail preview image, structured 0–10 scores. It
-  can lower scores or veto (`vlm_wrong_subject`, `vlm_watermark_or_text`,
-  `vlm_reject`); it never resurrects a deterministic rejection.
+  scene, 24 per project, low-detail preview image, structured 0–10 scores
+  including `representational_match` and a `document_page` flag. It can lower
+  scores or veto (`vlm_wrong_subject`, `vlm_watermark_or_text`,
+  `vlm_meta_visual_not_depiction`, `vlm_reject`); text on a document is not a
+  veto when the scene wants the document. It never resurrects a
+  deterministic rejection.
 
 The judge applies to fresh acquisition. Persisted, reused and user-selected
 assets keep their established destination authority (no silent replacement on
@@ -207,6 +234,15 @@ malformed/invalid key, registry gating, pre-filter, geometry, factual/semantic
 rejection, ranking, ties, adjacent diversity, VLM bounds/veto/no-resurrection,
 AI fallback table and integration, unavailable-source widening,
 transformation plans, renderer move, final gate replacement / keep / repeat.
+
+`apps/api/tests/test_visual_representational_match.py` (16 cases, from the
+real "Warum ist der Mars rot?" run, generalised): scientific image vs article, incidental prop tags,
+place vs article, object vs magazine page, vision-only page detection, Commons
+categories, long descriptions that mention a paper, document wins in a
+document scene, event photo vs catalogue card, metadata-only relevance capped,
+source authority tie-break, VLM document veto and document-scene exemption,
+no bare names to catalogue engines, unchanged historical phrasing, CLIP
+`document_score` plumbing.
 
 ## Remaining limitations (need real local runs)
 
