@@ -1,14 +1,13 @@
-"""Script & Story Quality V1.
+"""Script & Story Quality V1: deterministic critic, fallback editor and gate.
 
-This is the last content-only pass before narration becomes production input.
 It composes the existing information-gain, Story Arc and payoff authorities;
 it does not invent a second hook, reveal plan, fact model or duration target.
 
-The deterministic editor can only remove weak material, restore Story Arc
-ordering, or replace a vague line with the exact text of a cited supported
-fact.  An optional provider may propose a broader wording edit, but that edit
-is accepted only when every new content word and number is traceable to the
-original script or the cited research facts.
+Its assessment is critic input for the holistic AI editor
+(``script_story_rewrite``).  Its editor is the fallback when no AI editor is
+available: it can only remove weak material, restore Story Arc ordering, or
+replace a vague line with the exact text of a cited supported fact.  It is
+deliberately not a creative writer.
 """
 from __future__ import annotations
 
@@ -16,13 +15,8 @@ import copy
 import hashlib
 import json
 import re
-from dataclasses import dataclass
-from typing import Any, Literal, Protocol
+from typing import Any
 
-from openai import OpenAI, OpenAIError
-from pydantic import BaseModel, ConfigDict, Field
-
-from .config import Settings
 from .novelty import (
     assess_information_gain,
     fact_is_supported,
@@ -70,147 +64,8 @@ _VAGUE_CAUSE = re.compile(
     r"(?:something|things?|a process|some process|different factors?|various factors?|"
     r"etwas|einen prozess|verschiedene faktoren)\b"
 )
-_WORDS = re.compile(r"[a-zäöüß0-9]+", re.IGNORECASE)
 _NUMBERS = re.compile(r"\b\d+(?:[.,]\d+)?(?:\s*%)?\b")
 _SPECIFICITY_FLOOR = 0.45
-_COMMON_EDITOR_WORDS = {
-    "a", "an", "and", "are", "as", "at", "because", "but", "by", "can", "does", "for",
-    "from", "has", "have", "in", "is", "it", "its", "not", "of", "on", "or", "so", "that",
-    "the", "their", "then", "there", "therefore", "this", "to", "until", "was", "when", "which",
-    "while", "with", "without", "you", "your", "ein", "eine", "einer", "eines", "als", "aber",
-    "auch", "auf", "aus", "bei", "bis", "das", "dass", "darum", "der", "des", "deshalb", "die",
-    "dies", "durch", "er", "es", "für", "hat", "im", "ist", "mit", "nicht",
-    "oder", "sich", "sie", "und", "von", "wenn", "wird", "zu", "zum", "zur",
-}
-
-
-class QualityEditBlock(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    role: Literal["hook", "answer", "explanation", "support", "payoff", "detail", "status"]
-    text: str = Field(min_length=1, max_length=1_200)
-    fact_ids: list[str] = Field(default_factory=list, max_length=8)
-
-
-class QualityProviderIssue(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    issue_type: str = Field(min_length=2, max_length=64)
-    severity: Literal["info", "warning", "error"]
-    segment_id: str | None = Field(default=None, max_length=80)
-    reason: str = Field(min_length=2, max_length=280)
-    suggested_action: str = Field(min_length=2, max_length=160)
-
-
-class QualityProviderAction(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    action: Literal["remove", "merge", "reorder", "tighten", "strengthen_payoff", "replace_with_supported_specific"]
-    segment_ids: list[str] = Field(default_factory=list, max_length=8)
-    reason: str = Field(min_length=2, max_length=240)
-
-
-class QualityProviderResponse(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    status: Literal["approve", "revise", "needs_research"]
-    issues: list[QualityProviderIssue] = Field(default_factory=list, max_length=20)
-    actions: list[QualityProviderAction] = Field(default_factory=list, max_length=20)
-    blocks: list[QualityEditBlock] | None = Field(default=None, max_length=12)
-    research_need: str = Field(default="", max_length=320)
-
-
-@dataclass(frozen=True)
-class QualityProviderResult:
-    response: QualityProviderResponse | None
-    status: Literal["approved", "revised", "needs_research", "provider_error", "validation_error"]
-    error: str | None = None
-
-
-@dataclass(frozen=True)
-class QualityRequest:
-    prompt: str
-    language: str
-    blocks: list[dict[str, Any]]
-    facts: list[dict[str, Any]]
-    story_arc: dict[str, Any]
-    payoff_plan: dict[str, Any]
-    triple_hook: dict[str, Any]
-    reaction_plan: dict[str, Any]
-    detected_issues: list[dict[str, Any]]
-
-    def model_input(self) -> dict[str, Any]:
-        return {
-            "prompt": self.prompt,
-            "language": self.language,
-            "blocks": self.blocks,
-            "facts": [
-                {
-                    "id": fact.get("id"),
-                    "claim": fact.get("claim"),
-                    "verification": fact.get("verification"),
-                    "supported": fact_is_supported(fact),
-                }
-                for fact in self.facts
-            ],
-            "story_arc": self.story_arc,
-            "payoff_plan": self.payoff_plan,
-            "triple_hook": self.triple_hook,
-            "reaction_plan": self.reaction_plan,
-            "detected_issues": self.detected_issues,
-        }
-
-
-class ScriptStoryQualityProvider(Protocol):
-    name: str
-
-    def edit(self, request: QualityRequest) -> QualityProviderResult: ...
-
-
-SCRIPT_STORY_QUALITY_V1_INSTRUCTIONS = (
-    "You are ClipForge's Script & Story Quality V1 editor. Tighten the complete spoken script without "
-    "changing its answer, selected hook, protected reveal intent, fact IDs, or research meaning. Remove "
-    "filler, redundancy, paraphrase, weak transitions, unnecessary setup and post-payoff fluff; reorder "
-    "only when Story Arc dependencies allow it; replace vague wording only with specifics stated in the "
-    "supplied facts; and strengthen payoff wording only from those facts. Every beat must add useful new "
-    "information toward the original question. Never invent a fact, number, scene, hook or duration target. "
-    "Never move a protected answer earlier. Keep the first hook block byte-for-byte unchanged. Preserve all "
-    "non-optional research facts and stop immediately after concise closure. If the evidence cannot support a "
-    "stronger complete answer, return needs_research instead of guessing. Return only the structured output."
-)
-
-
-class OpenAIScriptStoryQualityProvider:
-    name = "openai"
-
-    def __init__(self, settings: Settings):
-        self._client = OpenAI(api_key=settings.openai_api_key)
-        self._model = settings.openai_worker_model
-
-    def edit(self, request: QualityRequest) -> QualityProviderResult:
-        try:
-            response = self._client.responses.parse(
-                model=self._model,
-                instructions=SCRIPT_STORY_QUALITY_V1_INSTRUCTIONS,
-                input=json.dumps(request.model_input(), ensure_ascii=False),
-                text_format=QualityProviderResponse,
-                max_output_tokens=3_000,
-                store=False,
-            )
-            parsed = response.output_parsed
-            if not isinstance(parsed, QualityProviderResponse):
-                return QualityProviderResult(None, "provider_error", "No parsed Script & Story Quality V1 result")
-            if parsed.status == "approve":
-                if parsed.blocks is not None:
-                    return QualityProviderResult(None, "validation_error", "Approved response must not replace blocks")
-                return QualityProviderResult(parsed, "approved")
-            if parsed.status == "needs_research":
-                return QualityProviderResult(parsed, "needs_research")
-            if not parsed.blocks:
-                return QualityProviderResult(None, "validation_error", "Revised response must include blocks")
-            return QualityProviderResult(parsed, "revised")
-        except (OpenAIError, ValueError, TypeError) as exc:
-            return QualityProviderResult(None, "provider_error", str(exc)[:240])
 
 
 def script_quality_signature(blocks: list[dict[str, Any]]) -> str:
@@ -872,138 +727,21 @@ def _deterministic_edit(
     return specific, [*actions, *replacements]
 
 
-def _meaningful_words(value: object) -> set[str]:
-    return {
-        word.casefold()
-        for word in _WORDS.findall(str(value or ""))
-        if len(word) > 1 and not word.isdigit()
-    }
-
-
-def _essential_fact_ids(context: dict[str, Any], original: list[dict[str, Any]]) -> set[str]:
-    arc = context.get("story_arc") if isinstance(context.get("story_arc"), dict) else {}
-    units = arc_units(arc)
-    essential = {
-        fact_id for fact_id, unit in units.items() if not unit.get("may_be_omitted")
-    }
-    essential |= {str(arc.get(key)) for key in ("primary_answer_id", "final_payoff_id") if arc.get(key)}
-    original_ids = {str(item) for block in original for item in block.get("fact_ids") or []}
-    return essential & original_ids
-
-
-def validate_provider_blocks(
-    original: list[dict[str, Any]], candidate: list[dict[str, Any]], context: dict[str, Any]
-) -> list[str]:
-    """Reject any provider edit that cannot be traced to current evidence."""
-    errors: list[str] = []
-    hooks = [block for block in candidate if str(block.get("role") or "").casefold() == "hook"]
-    original_hook = next((block for block in original if str(block.get("role") or "").casefold() == "hook"), None)
-    if original_hook:
-        if len(hooks) != 1 or candidate[0] is not hooks[0] or str(hooks[0].get("text") or "") != str(original_hook.get("text") or ""):
-            errors.append("selected hook changed")
-    elif hooks:
-        errors.append("provider added a hook")
-
-    facts = {
-        str(fact.get("id")): fact
-        for fact in context.get("facts") or []
-        if isinstance(fact, dict) and fact.get("id")
-    }
-    known = set(facts)
-    candidate_ids = {str(item) for block in candidate for item in block.get("fact_ids") or []}
-    missing = _essential_fact_ids(context, original) - candidate_ids
-    if missing:
-        errors.append("important research facts were discarded: " + ", ".join(sorted(missing)))
-    original_words = _meaningful_words(" ".join(str(block.get("text") or "") for block in original))
-    original_numbers = set(_NUMBERS.findall(" ".join(str(block.get("text") or "") for block in original)))
-    for index, block in enumerate(candidate):
-        fact_ids = [str(item) for item in block.get("fact_ids") or []]
-        unknown = sorted(set(fact_ids) - known)
-        if unknown:
-            errors.append(f"block {index + 1} references unknown fact IDs: {', '.join(unknown)}")
-            continue
-        unsupported = [fact_id for fact_id in fact_ids if not fact_is_supported(facts[fact_id])]
-        if unsupported:
-            errors.append(f"block {index + 1} references unsupported fact IDs: {', '.join(unsupported)}")
-        evidence = " ".join(str(facts[fact_id].get("claim") or "") for fact_id in fact_ids if fact_id in facts)
-        allowed_words = original_words | _meaningful_words(evidence) | _COMMON_EDITOR_WORDS
-        new_words = sorted(_meaningful_words(block.get("text")) - allowed_words)
-        if new_words:
-            errors.append(f"block {index + 1} adds untraceable words: {', '.join(new_words[:8])}")
-        allowed_numbers = original_numbers | set(_NUMBERS.findall(evidence))
-        new_numbers = sorted(set(_NUMBERS.findall(str(block.get("text") or ""))) - allowed_numbers)
-        if new_numbers:
-            errors.append(f"block {index + 1} adds unsupported numbers: {', '.join(new_numbers)}")
-    ordered = order_blocks_for_reveal(copy.deepcopy(candidate), context.get("story_arc") or {})
-    if script_quality_signature(ordered) != script_quality_signature(candidate):
-        errors.append("provider moved the protected reveal before its dependencies")
-    if _premature_reveal(candidate, context):
-        errors.append("provider exposed the protected payoff early")
-    return list(dict.fromkeys(errors))
-
-
 def run_script_story_quality_v1(
-    blocks: list[dict[str, Any]],
-    context: dict[str, Any],
-    provider: ScriptStoryQualityProvider | None = None,
+    blocks: list[dict[str, Any]], context: dict[str, Any]
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Edit once, validate, and return production blocks plus diagnostics."""
+    """The deterministic pass: edit once, re-assess, return production blocks plus diagnostics.
+
+    It is the fallback when no AI editor is available; the AI path
+    (``script_story_rewrite.run_script_story_quality``) uses its findings as
+    critic input and its result as the grounded draft.
+    """
     original = copy.deepcopy(blocks)
     original_report = assess_script_story_quality(original, context)
     edited, actions = _deterministic_edit(original, context)
-    provider_diagnostics: dict[str, Any] = {
-        "status": "not_requested" if provider is None else "not_run",
-        "provider": getattr(provider, "name", None),
-        "error": None,
-        "issues": [],
-    }
-    intermediate = assess_script_story_quality(edited, context)
-    actionable = [item for item in intermediate["issues"] if item["severity"] in {"warning", "error"}]
-    if provider is not None and actionable:
-        request = QualityRequest(
-            prompt=str(context.get("prompt") or ""),
-            language=str((context.get("intent") or {}).get("language") or "en"),
-            blocks=copy.deepcopy(edited),
-            facts=copy.deepcopy(context.get("facts") or []),
-            story_arc=copy.deepcopy(context.get("story_arc") or {}),
-            payoff_plan=copy.deepcopy(context.get("payoff_plan") or {}),
-            triple_hook=copy.deepcopy((context.get("script") or {}).get("triple_hook") or {}),
-            reaction_plan=copy.deepcopy(context.get("reaction_plan") or {}),
-            detected_issues=copy.deepcopy(actionable),
-        )
-        try:
-            result = provider.edit(request)
-        except Exception as exc:  # noqa: BLE001 - a valid deterministic result always survives
-            result = QualityProviderResult(None, "provider_error", f"{type(exc).__name__}: {str(exc)[:180]}")
-        provider_diagnostics.update(status=result.status, error=result.error)
-        if result.response:
-            provider_diagnostics["issues"] = [item.model_dump(mode="json") for item in result.response.issues]
-            if result.response.status == "needs_research":
-                provider_diagnostics["research_need"] = result.response.research_need
-            elif result.response.status == "revise" and result.response.blocks:
-                candidate = [block.model_dump(mode="json") for block in result.response.blocks]
-                for index, block in enumerate(candidate, 1):
-                    block["id"] = str(edited[index - 1].get("id") or f"voice_block_{index:02d}") if index <= len(edited) else f"voice_block_{index:02d}"
-                validation_errors = validate_provider_blocks(edited, candidate, context)
-                if validation_errors:
-                    provider_diagnostics.update(
-                        status="validation_error",
-                        error="; ".join(validation_errors)[:600],
-                        rejected_revision=True,
-                    )
-                else:
-                    edited = candidate
-                    actions.extend(item.model_dump(mode="json") for item in result.response.actions)
-                    provider_diagnostics["accepted_revision"] = True
-    elif provider is not None:
-        provider_diagnostics["status"] = "skipped_already_strong"
+    provider_diagnostics: dict[str, Any] = {"status": "not_requested", "provider": None, "error": None, "issues": []}
 
     final_report = assess_script_story_quality(edited, context)
-    if provider_diagnostics.get("status") == "needs_research":
-        final_report["research_insufficient"] = True
-        if "needs_research" not in final_report["gate"]["blocking"]:
-            final_report["gate"]["blocking"].append("needs_research")
-        final_report["gate"].update(ready=False, status="blocked")
     final_report.update({
         "original_signature": script_quality_signature(original),
         "final_signature": script_quality_signature(edited),

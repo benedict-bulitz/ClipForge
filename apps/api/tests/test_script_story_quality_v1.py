@@ -6,12 +6,8 @@ import inspect
 
 from clipforge import pipeline
 from clipforge.script_story_quality import (
-    QualityEditBlock,
-    QualityProviderResponse,
-    QualityProviderResult,
     assess_script_story_quality,
     run_script_story_quality_v1,
-    validate_provider_blocks,
 )
 
 
@@ -209,7 +205,7 @@ def issue_types(report: dict) -> set[str]:
 
 def test_pipeline_runs_quality_before_production_derivatives():
     source = inspect.getsource(pipeline._build_initial_state)
-    quality = source.index("run_script_story_quality_v1(")
+    quality = source.index("run_script_story_quality(")
     assert quality < source.index("script_text =", quality)
     assert quality < source.index("_build_scenes(", quality)
 
@@ -291,40 +287,6 @@ def test_logical_dependency_violation_is_reported_and_reordered():
     edited, final = run_script_story_quality_v1(blocks, context())
     assert [item["id"] for item in edited] == ["b1", "b3", "b2", "b4"]
     assert final["gate"]["status"] == "passed_with_warnings"
-
-
-def test_unsupported_fact_and_number_are_rejected():
-    candidate = copy.deepcopy(strong_blocks())
-    candidate[2]["text"] = "Baroreceptors respond in exactly 17 seconds by releasing fictionalzyme."
-    assert validate_provider_blocks(strong_blocks(), candidate, context()) == [
-        "block 3 adds untraceable words: exactly, fictionalzyme, releasing, seconds",
-        "block 3 adds unsupported numbers: 17",
-    ]
-
-
-class UnsafeProvider:
-    name = "unsafe-test"
-
-    def edit(self, request):
-        blocks = [
-            QualityEditBlock(role=item["role"], text=item["text"], fact_ids=item.get("fact_ids") or [])
-            for item in request.blocks
-        ]
-        blocks[2] = QualityEditBlock(
-            role="explanation",
-            text="Baroreceptors release fictionalzyme in exactly 17 seconds.",
-            fact_ids=["fact_02"],
-        )
-        response = QualityProviderResponse(status="revise", blocks=blocks)
-        return QualityProviderResult(response, "revised")
-
-
-def test_unsafe_provider_revision_is_rejected_without_losing_safe_script():
-    blocks = [strong_blocks()[0], strong_blocks()[2], strong_blocks()[1], strong_blocks()[3]]
-    edited, report = run_script_story_quality_v1(blocks, context(), UnsafeProvider())
-    assert all("fictionalzyme" not in item["text"] for item in edited)
-    assert report["provider"]["status"] == "validation_error"
-    assert report["provider"]["rejected_revision"] is True
 
 
 def test_too_thin_script_requests_research_instead_of_padding():
@@ -468,20 +430,3 @@ def test_second_pass_is_idempotent():
     second, report = run_script_story_quality_v1(first, context())
     assert second == first
     assert report["actions"] == []
-
-
-class UnavailableProvider:
-    name = "offline-test"
-
-    def edit(self, request):
-        raise RuntimeError("provider offline")
-
-
-def test_provider_unavailable_keeps_deterministic_repairs():
-    # A non-reveal dependency violation remains actionable after the bounded
-    # deterministic pass, so the optional provider is attempted.
-    blocks = [strong_blocks()[0], strong_blocks()[2], strong_blocks()[1], strong_blocks()[3]]
-    edited, report = run_script_story_quality_v1(blocks, context(), UnavailableProvider())
-    assert edited == blocks
-    assert report["provider"]["status"] == "provider_error"
-    assert "provider offline" in report["provider"]["error"]

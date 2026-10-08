@@ -29,7 +29,12 @@ from .narration import (
     clean_script_blocks,
     contamination_issues,
 )
-from .novelty import current_information_gain, prune_redundant_information, safe_novelty_plan
+from .novelty import (
+    current_information_gain,
+    prune_redundant_information,
+    safe_novelty_plan,
+    verified_script_key,
+)
 from .pacing import analyze_pacing
 from .payoff import (
     _is_protected_question,
@@ -51,11 +56,11 @@ from .script_review import (
     compact_script_draft,
     review_script_v2,
 )
-from .script_story_quality import (
-    ScriptStoryQualityProvider,
-    current_script_story_quality,
-    run_script_story_quality_v1,
-    script_quality_signature,
+from .script_story_quality import current_script_story_quality, script_quality_signature
+from .script_story_rewrite import (
+    OpenAIScriptStoryProvider,
+    ScriptStoryProvider,
+    run_script_story_quality,
 )
 from .script_writer import (
     OpenAIScriptWriterProvider,
@@ -1226,7 +1231,7 @@ def build_initial_state(
     progress: ProgressCallback | None = None,
     script_writer_provider: ScriptWriterProvider | None = None,
     script_review_provider: ScriptReviewProvider | None = None,
-    script_quality_provider: ScriptStoryQualityProvider | None = None,
+    script_quality_provider: ScriptStoryProvider | None = None,
 ) -> dict[str, Any]:
     """Generate the project state; a script that cannot answer gets one research retry.
 
@@ -1299,7 +1304,7 @@ def _build_initial_state(
     progress: ProgressCallback | None = None,
     script_writer_provider: ScriptWriterProvider | None = None,
     script_review_provider: ScriptReviewProvider | None = None,
-    script_quality_provider: ScriptStoryQualityProvider | None = None,
+    script_quality_provider: ScriptStoryProvider | None = None,
     research_query: str | None = None,
     research_focus: str | None = None,
 ) -> dict[str, Any]:
@@ -1552,31 +1557,44 @@ def _build_initial_state(
     for index, block in enumerate(blocks, 1):
         block["id"] = f"voice_block_{index:02d}"
 
-    # Script & Story Quality V1 is the final content-only boundary. It sees
-    # the selected Triple Hook and protected reveal, but runs before scenes,
-    # captions, voice blocks or any visual production derivative is created.
+    # Script & Story Quality is the final content-only boundary, before
+    # scenes, captions, voice blocks or any visual production derivative.
+    # With an AI editor it is critic -> holistic rewrite -> verifier (one
+    # bounded repair); otherwise the deterministic V1 pass.  The rewrite may
+    # change every sentence, the beat count and the hook wording; it is held
+    # to the hook *intent*, the reveal contract and the research, and to the
+    # same word budget as duration fitting.
+    word_budget = max(12, int(max_duration * wpm / 60))
     quality_context = {
         "prompt": prompt,
         "intent": intent,
         "facts": facts,
         "story_arc": story_arc,
         "payoff_plan": payoff_plan,
+        "format_plan": format_plan,
         "novelty_plan": novelty_plan,
         "explanation_audit": explanation_audit,
         "reaction_plan": {"planned_arc": planned_reaction_arc},
+        "word_budget": word_budget,
         "script": {"triple_hook": triple_hook, "selected_hook": selected_hook_candidate.text if selected_hook_candidate else None},
     }
-    blocks, script_story_quality = run_script_story_quality_v1(
-        blocks,
-        quality_context,
-        # Script Review V2 already supplies the bounded AI explanatory audit
-        # consumed above. A dedicated provider remains injectable for staged
-        # rollout and tests without adding an unconditional production call.
-        provider=script_quality_provider,
-    )
-    # Provider and deterministic edits may change block count or payoff
-    # wording, never the selected hook or protected reveal contract.
-    if selected_hook_candidate:
+    if script_quality_provider is None and settings.openai_api_key and settings.script_holistic_rewrite_enabled:
+        script_quality_provider = OpenAIScriptStoryProvider(settings)
+    blocks, script_story_quality = run_script_story_quality(blocks, quality_context, provider=script_quality_provider)
+    rewrite = script_story_quality.get("rewrite") if isinstance(script_story_quality.get("rewrite"), dict) else None
+    if rewrite is not None:
+        # The verified rewrite owns the narration, its hook wording included
+        # (the hook intent and reveal contract were verified, not the words).
+        blocks = _normalise_blocks(blocks, max_duration, wpm, story_arc)
+        blocks, hook_transition = _advance_after_hook(blocks, story_arc)
+        verified_audit = (script_story_quality.get("holistic") or {}).get("explanation_audit")
+        if verified_audit:
+            # Bound to the words that were verified (normalisation only re-splits them).
+            explanation_audit = {
+                **verified_audit,
+                "verified_script": verified_script_key([str(block.get("text") or "") for block in blocks]),
+            }
+    elif selected_hook_candidate:
         blocks = _apply_selected_hook(blocks, selected_hook_candidate.text)
     for index, block in enumerate(blocks, 1):
         block["id"] = f"voice_block_{index:02d}"
@@ -1590,11 +1608,11 @@ def _build_initial_state(
     )
     script_story_quality["final_signature"] = script_story_quality["signature"] = script_quality_signature(blocks)
     hook_block = next((block for block in blocks if _is_hook_block(block)), None)
-    selected_hook = (
-        selected_hook_candidate.text
-        if selected_hook_candidate
-        else (str(hook_block.get("text")) if hook_block else None)
-    )
+    if selected_hook_candidate and not (rewrite is not None and hook_block):
+        selected_hook = selected_hook_candidate.text
+    else:
+        # No Triple Hook, or the verified rewrite's own hook wording.
+        selected_hook = str(hook_block.get("text")) if hook_block else None
     triple_hook["verbal_hook"] = selected_hook or ""
     # All three hook channels share the same story brief.
     triple_hook["story_brief"] = {

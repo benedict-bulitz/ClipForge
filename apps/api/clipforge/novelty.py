@@ -586,6 +586,18 @@ def _language(text: str, context: dict[str, Any]) -> dict[str, Any]:
     return {"score": score, "codes": codes, "status": "complex" if hard else "clear"}
 
 
+# The audit source of Script & Story Quality's independent AI verifier.  It
+# judged the complete final script against the original question (its
+# conditions included), so its "answered" verdict outranks the lexical
+# mechanism/condition links below, which cannot see a paraphrased cause.
+VERIFIED_AUDIT_SOURCE = "script_story_verifier"
+
+
+def verified_script_key(texts: list[str]) -> str:
+    """The words a verifier saw (order-free): a later edit invalidates its verdict."""
+    return " ".join(sorted(re.findall(r"\w+", " ".join(texts).casefold())))
+
+
 # Explanatory delta: what the viewer can *explain* after a beat that they
 # could not before (stricter than new information).
 EXPLANATORY_DELTAS = (
@@ -797,8 +809,16 @@ def _answer_sufficiency(units: list[dict[str, Any]], context: dict[str, Any], pa
     if explanatory and missing_research:
         reasons.append("research_has_no_mechanism")
     structural = {"no_mechanism_linked_to_question", "payoff_does_not_resolve"} & set(reasons)
+    audit = context.get("audit") or {}
+    verified = bool(
+        ai and ai["verdict"] == "answered" and audit.get("source") == VERIFIED_AUDIT_SOURCE
+        and audit.get("verified_script") == verified_script_key([unit["text"] for unit in units])
+    )
     if not explanatory and not ai:
         status = "not_applicable"
+    elif verified and not {"question_left_open", "answers_excluded_interpretation"} & set(reasons):
+        # The verifier read the whole script; lexical links stay diagnostics.
+        status = "uncertain" if reasons else "pass"
     elif (
         {"review_unanswered", "question_left_open", "answers_excluded_interpretation"} & set(reasons)
         or ("condition_not_explained" in reasons and _ESSENTIAL_CONDITION.search(question))

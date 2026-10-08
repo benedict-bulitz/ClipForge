@@ -61,6 +61,9 @@ class Settings(BaseSettings):
     final_critic_max_repair_passes: int = 1
     # Optional stronger vision critic; "none" keeps V1 local/free only.
     final_critic_vision_provider: str = "none"
+    # Script & Story Quality: AI critic -> holistic rewrite -> verifier (at
+    # most one repair). Off, or without a key, the deterministic pass runs.
+    script_holistic_rewrite_enabled: bool = True
     shortform_max_duration: int = 180
     # YouTube Learning Loop: OAuth client (keyring overrides the environment),
     # the local callback registered with that client, and the minimum number

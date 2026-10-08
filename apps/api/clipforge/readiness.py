@@ -25,16 +25,20 @@ CONTENT_BLOCKERS = {
     "no_question_relevant_information",
 }
 
-# Only objective Script & Story Quality V1 failures join the production
+# Only objective Script & Story Quality failures join the production
 # contract. Advisory payoff/style findings remain visible without blocking a
-# render that still answers the question.
+# render that still answers the question.  When the AI verifier accepted a
+# holistic rewrite, the lexical V1 findings are advisory and only hard
+# grounding/reveal failures can appear in its gate.
 QUALITY_CONTENT_BLOCKERS = {
     "analogy_repetition",
     "artificial_lengthening",
     "filler",
     "low_information_gain",
+    "needs_research",
     "post_payoff_fluff",
     "premature_reveal",
+    "rewrite_hard_failure",
     "tautological_answer",
     "too_thin",
     "unsupported_claim",

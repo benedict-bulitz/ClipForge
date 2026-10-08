@@ -151,3 +151,17 @@ def no_publishing_scheduler(monkeypatch):
     started: list[object] = []
     monkeypatch.setattr(main, "start_publishing_scheduler", lambda thread: started.append(thread) or thread)
     return started
+
+
+@pytest.fixture(autouse=True)
+def offline_script_story_editor(monkeypatch):
+    """The AI script editor is never reached: it behaves as unavailable (deterministic fallback).
+
+    Tests that exercise critic -> rewrite -> verifier inject a fake provider.
+    """
+    from clipforge import script_story_rewrite
+
+    def offline(*_args, **_kwargs):
+        raise script_story_rewrite.ScriptStoryProviderError("AI script editor is offline in the test suite")
+
+    monkeypatch.setattr(script_story_rewrite.OpenAIScriptStoryProvider, "_parse", offline)

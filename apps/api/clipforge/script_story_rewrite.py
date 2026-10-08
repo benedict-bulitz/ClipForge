@@ -1,0 +1,900 @@
+"""Script & Story Quality V2: critic -> holistic creative rewrite -> verifier.
+
+The first draft is an input, not something to preserve.  When an AI provider
+is available it works like a strong human editor:
+
+1. **Critic** - judges the whole draft (hook, depth, mechanism, redundancy,
+   progression, payoff, unsupported statements, missed research facts).
+2. **Holistic rewrite** - rewrites the *entire* script from the full research
+   dossier, the story contract and the critic report.  It may change every
+   sentence, the hook wording, the beat count and order, the answer structure
+   and the payoff, and may use any supported research fact.
+3. **Verifier** - independently checks hard requirements (grounding, numbers,
+   reveal contract, answered question, payoff) and objective quality.  At most
+   one bounded repair attempt follows a failed verification.
+
+Only *intent* is protected: the hook keeps its curiosity promise without
+spending the protected answer, the reveal never moves earlier than its
+dependencies, and the payoff answers the question.  Exact wording is never
+protected.
+
+Hard rules stay deterministic where they can be (cited fact IDs exist and are
+usable, every number is in the research, protected reveal order by fact
+identity, duration budget, language) and are re-checked by the AI verifier
+for meaning (no invented or contradicting claims).
+
+Without a provider, or when it is unavailable, the deterministic Script &
+Story Quality V1 pass is the fallback and its gate stays authoritative.
+"""
+from __future__ import annotations
+
+import copy
+import json
+from collections.abc import Callable
+from typing import Any, Literal, Protocol
+
+from openai import OpenAI, OpenAIError
+from pydantic import BaseModel, ConfigDict, Field
+
+from .config import Settings
+from .language import detect_text_language
+from .novelty import (
+    VERIFIED_AUDIT_SOURCE,
+    assess_information_gain,
+    fact_is_supported,
+    verified_script_key,
+)
+from .payoff import reveals_protected_payoff
+from .script_review import ScriptReviewSentence, ScriptReviewSufficiency
+from .script_story_quality import (
+    _premature_reveal,
+    assess_script_story_quality,
+    run_script_story_quality_v1,
+    script_quality_signature,
+)
+from .story_arc import arc_units, story_brief
+from .verbal_hook import _numbers, _rounded_from, information_gain, proposition_words
+
+REWRITE_VERSION = 2
+# One holistic rewrite plus one bounded repair; never an open-ended loop.
+MAX_REWRITE_ATTEMPTS = 2
+# A payoff that adds less than this share of new propositions beyond the
+# answer beat says the same thing twice (language independent: it compares
+# meaning tokens, not wording).
+ANSWER_PAYOFF_MIN_NEW_SHARE = 0.35
+# Deterministic V1 findings that stay hard even when the AI verifier passes a
+# rewrite: they are objective grounding/reveal failures, not style.
+DETERMINISTIC_HARD_V1 = {"unsupported_claim", "premature_reveal"}
+
+BeatRole = Literal["hook", "answer", "explanation", "support", "detail", "payoff"]
+Severity = Literal["hard", "major", "minor"]
+
+
+# ---------------------------------------------------------------------------
+# Structured provider contracts
+# ---------------------------------------------------------------------------
+
+
+class EditorFinding(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    code: str = Field(min_length=2, max_length=48)
+    severity: Severity
+    beat_index: int | None = Field(default=None, ge=1, le=40)
+    message: str = Field(min_length=2, max_length=320)
+
+
+class CriticResponse(BaseModel):
+    """The critic's judgement of the first draft."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    verdict: Literal["strong", "rewrite", "needs_research"]
+    findings: list[EditorFinding] = Field(default_factory=list, max_length=16)
+    missed_fact_ids: list[str] = Field(default_factory=list, max_length=12)
+    research_need: str = Field(default="", max_length=320)
+
+
+class RewriteBeat(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    role: BeatRole
+    text: str = Field(min_length=1, max_length=600)
+    fact_ids: list[str] = Field(default_factory=list, max_length=8)
+
+
+class RewriteResponse(BaseModel):
+    """A complete new script; beat count and order are free."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["rewritten", "needs_research"]
+    beats: list[RewriteBeat] = Field(default_factory=list, max_length=16)
+    hook_intent_preserved: bool = True
+    hook_intent_note: str = Field(default="", max_length=240)
+    reveal_beat_index: int | None = Field(default=None, ge=1, le=40)
+    payoff_beat_index: int | None = Field(default=None, ge=1, le=40)
+    rationale: str = Field(default="", max_length=600)
+    research_insufficiency: str = Field(default="", max_length=320)
+
+
+class VerifierResponse(BaseModel):
+    """Independent verification of one rewrite."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    grounded: bool
+    answers_question: bool
+    payoff_fulfilled: bool
+    premature_reveal: bool
+    hook_promise_kept: bool
+    answer_payoff_duplicate: bool
+    better_than_draft: bool
+    findings: list[EditorFinding] = Field(default_factory=list, max_length=16)
+    answer_sufficiency: ScriptReviewSufficiency
+    explanation_audit: list[ScriptReviewSentence] = Field(default_factory=list, max_length=24)
+
+
+class ScriptStoryProviderError(RuntimeError):
+    """The AI editor could not be reached or returned nothing usable."""
+
+
+class ScriptStoryProvider(Protocol):
+    """Critic, holistic rewriter and verifier.  Each call may raise."""
+
+    name: str
+
+    def critique(self, brief: dict[str, Any]) -> CriticResponse: ...
+
+    def rewrite(self, brief: dict[str, Any]) -> RewriteResponse: ...
+
+    def verify(self, brief: dict[str, Any]) -> VerifierResponse: ...
+
+
+SHARED_RULES = (
+    "Facts: research.facts is the only evidence. A fact with usable=false must not be used. Every factual "
+    "statement must be supported by usable facts; cite their exact ids. Never invent facts, mechanisms, "
+    "numbers, statistics, dates, names or sources, never cite an id that is not listed, never contradict the "
+    "research. Reveal contract: when reveal_contract.withhold_answer is true the protected answer may be said "
+    "only after the facts it depends on; later is fine, earlier never, and the hook never states or implies "
+    "it. Write for the ear in the target language (language field); never mix languages. "
+)
+
+CRITIC_INSTRUCTIONS = (
+    "You are the critic of ClipForge's short-form script desk. Judge the complete first draft (draft.beats) "
+    "against the original question, the research dossier and the story contract the way a demanding senior "
+    "editor would. Look for: weak or generic hook, shallow explanation, missing mechanism (a why/how answer "
+    "that only names the result, e.g. 'X counters Y', instead of explaining what actually happens), "
+    "redundancy, weak information progression, low specificity, repeated analogy, tautological answer, an "
+    "answer and payoff that say the same thing, weak payoff, a concept mentioned but never used, filler, "
+    "unnatural spoken language, unsupported statements, and strong research facts the draft failed to use. "
+    + SHARED_RULES
+    + "Severity: hard only for unsupported or contradicting statements, a premature protected reveal, or a "
+    "question that is not answered; major for objectively weak writing a viewer would notice; minor for "
+    "taste. beat_index is the 1-based draft beat. missed_fact_ids lists usable fact ids that would "
+    "materially improve the explanation. verdict: strong only if you would ship the draft unchanged; "
+    "needs_research only if the research cannot support a complete answer (say what is missing in "
+    "research_need); otherwise rewrite. deterministic_findings are lexical hints and may be wrong. Return only "
+    "the structured output."
+)
+
+REWRITE_INSTRUCTIONS = (
+    "You are the senior editor of ClipForge's short-form script desk. Write the BEST possible spoken script "
+    "for a vertical short video that answers the original question. You have full creative freedom: rewrite "
+    "every sentence, write new hook wording, reorder, merge, split, add or drop beats, change the answer "
+    "structure, rewrite the payoff completely, choose a better analogy or none, compress or expand. Use ANY "
+    "usable research fact, including facts the draft ignored, and choose the strongest subset. Quality beats "
+    "preserving the draft; do not patch critic findings one by one - optimise the whole script. "
+    + SHARED_RULES
+    + "Story contract: the first beat has role hook and keeps hook_intent (its curiosity promise and intended "
+    "viewer reaction) in new or old words, without spending the protected answer. The payoff must answer the "
+    "original question, deliver payoff_intent and leave the viewer with an 'ah, that is why' insight. For "
+    "why/how questions explain the mechanism step by step - what physically or causally happens and why it "
+    "produces the result - not only its name. An answer beat orients; the payoff closes the causal loop with "
+    "new information and must not restate the answer. Mention a concept (a list of factors, a technical "
+    "term) only if the script uses it. Every beat must give the viewer something new; no filler, no "
+    "throat-clearing, no generic outro, no repeated analogy; end right after the payoff. Short, concrete, "
+    "natural spoken sentences, one idea each. Stay within style.word_budget words in total. Every beat after "
+    "the hook cites the fact ids it relies on. "
+    "If the research cannot support a complete answer, return status needs_research with "
+    "research_insufficiency instead of guessing. reveal_beat_index and payoff_beat_index are 1-based "
+    "positions in your beats; hook_intent_preserved says whether your hook keeps hook_intent; rationale names "
+    "your main editorial decisions in 1-3 sentences. On a repair attempt (attempt 2) fix every hard and major "
+    "finding in verifier_findings and keep what worked in previous_rewrite. Return only the structured output."
+)
+
+VERIFIER_INSTRUCTIONS = (
+    "You are the independent verifier of ClipForge's short-form script desk. Check candidate.beats against "
+    "the research dossier and the story contract. You did not write it; be strict on hard requirements and "
+    "tolerant of style. "
+    + SHARED_RULES
+    + "Hard requirements: grounded (every factual statement is supported by usable research facts, nothing "
+    "invented, nothing contradicting, cited ids fit their sentences); premature_reveal (the protected answer "
+    "appears before its dependencies or in the hook); answers_question (the original question is actually "
+    "answered); payoff_fulfilled (the payoff delivers the promised resolution); hook_promise_kept (the hook "
+    "keeps the hook intent and its promise is paid off). Quality: information progression, sufficient "
+    "explanatory depth (a why/how answer must explain the mechanism, not just name the result), no severe "
+    "redundancy, answer_payoff_duplicate (answer and payoff say the same thing), strong relevant research "
+    "facts actually used, natural spoken language, no filler. Report findings: hard for violated hard "
+    "requirements, major only for objectively bad writing a viewer would notice, minor for taste. Never "
+    "fail a script for differing from the draft or for stylistic choices, and never demand perfection by "
+    "arbitrary numbers. better_than_draft compares candidate and draft as a whole. beat_index is 1-based in "
+    "candidate.beats. A condition in the question ('although they are heavy', 'je älter man wird') must be "
+    "explained causally, otherwise answers_question is false. Fill explanation_audit with one entry per "
+    "candidate sentence after the hook (quote it "
+    "exactly) and answer_sufficiency for the ORIGINAL question. deterministic_findings are lexical hints and "
+    "may be wrong. Return only the structured output."
+)
+
+
+class OpenAIScriptStoryProvider:
+    """Critic and verifier on the worker model, the rewrite on the director model."""
+
+    name = "openai"
+
+    def __init__(self, settings: Settings):
+        self._client = OpenAI(api_key=settings.openai_api_key)
+        self._worker = settings.openai_worker_model
+        self._writer = settings.openai_director_model
+
+    def _parse(self, *, model: str, instructions: str, brief: dict[str, Any], schema: type[BaseModel], tokens: int):
+        try:
+            response = self._client.responses.parse(
+                model=model,
+                instructions=instructions,
+                input=json.dumps(brief, ensure_ascii=False, default=str),
+                text_format=schema,
+                max_output_tokens=tokens,
+                store=False,
+            )
+        except (OpenAIError, ValueError, TypeError) as exc:
+            raise ScriptStoryProviderError(str(exc)[:240]) from exc
+        parsed = response.output_parsed
+        if not isinstance(parsed, schema):
+            raise ScriptStoryProviderError(f"No parsed {schema.__name__}")
+        return parsed
+
+    def critique(self, brief: dict[str, Any]) -> CriticResponse:
+        return self._parse(model=self._worker, instructions=CRITIC_INSTRUCTIONS, brief=brief, schema=CriticResponse, tokens=2_000)
+
+    def rewrite(self, brief: dict[str, Any]) -> RewriteResponse:
+        return self._parse(model=self._writer, instructions=REWRITE_INSTRUCTIONS, brief=brief, schema=RewriteResponse, tokens=4_000)
+
+    def verify(self, brief: dict[str, Any]) -> VerifierResponse:
+        return self._parse(model=self._worker, instructions=VERIFIER_INSTRUCTIONS, brief=brief, schema=VerifierResponse, tokens=3_000)
+
+
+# ---------------------------------------------------------------------------
+# The brief: everything an editor needs, not isolated sentences
+# ---------------------------------------------------------------------------
+
+
+def _role(block: dict[str, Any]) -> str:
+    return str(block.get("role") or "").casefold()
+
+
+def _ids(block: dict[str, Any]) -> list[str]:
+    return [str(item) for item in block.get("fact_ids") or [] if str(item)]
+
+
+def _beats(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {"index": index, "role": _role(block), "text": str(block.get("text") or ""), "fact_ids": _ids(block)}
+        for index, block in enumerate(blocks, 1)
+    ]
+
+
+def _arc(context: dict[str, Any]) -> dict[str, Any]:
+    return context.get("story_arc") if isinstance(context.get("story_arc"), dict) else {}
+
+
+def _payoff_plan(context: dict[str, Any]) -> dict[str, Any]:
+    return context.get("payoff_plan") if isinstance(context.get("payoff_plan"), dict) else {}
+
+
+def _triple_hook(context: dict[str, Any]) -> dict[str, Any]:
+    script = context.get("script") if isinstance(context.get("script"), dict) else {}
+    plan = script.get("triple_hook")
+    return plan if isinstance(plan, dict) else {}
+
+
+def _language(context: dict[str, Any]) -> str:
+    return str((context.get("intent") or {}).get("language") or "en")
+
+
+def _withhold(context: dict[str, Any]) -> bool:
+    return bool((_arc(context).get("curiosity_gap") or {}).get("withhold_answer")) or bool(
+        _payoff_plan(context).get("hook_must_not_reveal")
+    )
+
+
+def _protected_ids(context: dict[str, Any]) -> set[str]:
+    arc = _arc(context)
+    return {str(item) for item in (arc.get("hook") or {}).get("protected_ids") or []}
+
+
+def _usable_facts(context: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    return {
+        str(fact.get("id")): fact
+        for fact in context.get("facts") or []
+        if isinstance(fact, dict) and fact.get("id") and fact_is_supported(fact)
+    }
+
+
+def _small(value: Any, limit: int = 400) -> Any:
+    """JSON-safe, bounded copy for provider input."""
+    if isinstance(value, str):
+        return value[:limit]
+    if isinstance(value, dict):
+        return {str(key): _small(item, limit) for key, item in list(value.items())[:40]}
+    if isinstance(value, (list, tuple)):
+        return [_small(item, limit) for item in list(value)[:40]]
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    return str(value)[:limit]
+
+
+def _story(arc: dict[str, Any]) -> Any:
+    try:
+        return _small(story_brief(arc))
+    except (KeyError, TypeError):  # a partial (legacy) arc is still useful as-is
+        return _small(arc)
+
+
+def build_brief(blocks: list[dict[str, Any]], context: dict[str, Any], assessment: dict[str, Any]) -> dict[str, Any]:
+    """The complete editorial context shared by critic, rewriter and verifier."""
+    arc = _arc(context)
+    payoff = _payoff_plan(context)
+    hook = _triple_hook(context)
+    intent = context.get("intent") if isinstance(context.get("intent"), dict) else {}
+    units = arc_units(arc)
+    primary = str(arc.get("primary_answer_id") or "")
+    usable = _usable_facts(context)
+    script = context.get("script") if isinstance(context.get("script"), dict) else {}
+    gain = assessment.get("information_gain") if isinstance(assessment.get("information_gain"), dict) else {}
+    return {
+        "version": REWRITE_VERSION,
+        "question": {
+            "original": str(context.get("prompt") or ""),
+            "intended": str(
+                ((intent.get("question_intent") or {}) if isinstance(intent.get("question_intent"), dict) else {}).get(
+                    "intended_question"
+                )
+                or intent.get("question")
+                or arc.get("primary_question")
+                or ""
+            ),
+            "topic": str(intent.get("topic") or ""),
+        },
+        "language": _language(context),
+        "research": {
+            "facts": [
+                {
+                    "id": str(fact.get("id")),
+                    "claim": str(fact.get("claim") or "")[:600],
+                    "usable": str(fact.get("id")) in usable,
+                    "research_role": fact.get("research_role") or units.get(str(fact.get("id")), {}).get("role"),
+                    "priority": fact.get("priority"),
+                    "independent_sources": fact.get("independent_sources"),
+                    "sources": [
+                        str(source.get("label") or source.get("url") or "")[:80]
+                        for source in fact.get("sources") or []
+                        if isinstance(source, dict)
+                    ][:3],
+                }
+                for fact in context.get("facts") or []
+                if isinstance(fact, dict) and fact.get("id")
+            ],
+        },
+        "story_arc": _story(arc),
+        "hook_intent": {
+            "selected_hook": str(script.get("selected_hook") or hook.get("verbal_hook") or ""),
+            "strategy": hook.get("selected_strategy"),
+            "curiosity_target": _small(hook.get("curiosity_target")),
+            "promised_payoff": _small(hook.get("promised_payoff")),
+            "on_screen_text_hook": _small(hook.get("on_screen_text_hook")),
+            "intended_reaction": hook.get("intended_reaction"),
+            "hook_promise": _small((arc.get("question_contract") or {}).get("hook_promise")),
+        },
+        "reveal_contract": {
+            "withhold_answer": _withhold(context),
+            "protected_fact_ids": sorted(_protected_ids(context)),
+            "primary_answer_id": primary or None,
+            "must_follow_fact_ids": sorted(str(item) for item in units.get(primary, {}).get("depends_on") or []),
+            "must_not_reveal_early": _small(payoff.get("hook_must_not_reveal")),
+            "reveal_policy": payoff.get("reveal_policy"),
+        },
+        "payoff_intent": {
+            "final_payoff_id": arc.get("final_payoff_id"),
+            "payoff": _small(payoff.get("payoff")),
+            "payoff_type": payoff.get("payoff_type"),
+            "desired_viewer_reaction": payoff.get("desired_viewer_reaction"),
+        },
+        "viewer_reaction": _small((context.get("reaction_plan") or {}).get("planned_arc")),
+        "draft": {"beats": _beats(blocks)},
+        "deterministic_findings": [
+            {
+                "code": item.get("issue_type"),
+                "severity": item.get("severity"),
+                "beat_index": next(
+                    (index for index, block in enumerate(blocks, 1) if str(block.get("id") or "") == str(item.get("segment_id") or "")),
+                    None,
+                ),
+                "reason": str(item.get("reason") or "")[:240],
+            }
+            for item in assessment.get("issues") or []
+        ][:20],
+        "information_gain": {
+            "status": gain.get("status"),
+            "summary": _small(gain.get("summary")),
+            "issues": [
+                {"code": item.get("code"), "severity": item.get("severity"), "message": str(item.get("message") or "")[:200]}
+                for item in gain.get("issues") or []
+            ][:12],
+        },
+        "style": {
+            "format": "vertical short-form video narration, spoken aloud",
+            "word_budget": context.get("word_budget"),
+            "beat_roles": ["hook", "answer", "explanation", "support", "detail", "payoff"],
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
+# Deterministic verification (hard rules and objective signals)
+# ---------------------------------------------------------------------------
+
+
+def _finding(code: str, severity: str, message: str, beat_index: int | None = None, source: str = "deterministic") -> dict[str, Any]:
+    return {"code": code, "severity": severity, "beat_index": beat_index, "message": message[:320], "source": source}
+
+
+def _hook_findings(candidate: list[dict[str, Any]], context: dict[str, Any]) -> list[dict[str, Any]]:
+    """The rewritten hook keeps the hook *intent's* safety rules, not its wording."""
+    from .triple_hook import verbal_still_valid
+
+    hook = candidate[0] if candidate and _role(candidate[0]) == "hook" else None
+    if hook is None:
+        return []
+    text = str(hook.get("text") or "")
+    found: list[dict[str, Any]] = []
+    if _withhold(context) and set(_ids(hook)) & _protected_ids(context):
+        found.append(_finding("hook_reveals_answer", "hard", "The hook cites a protected payoff fact.", 1))
+    if _withhold(context) and reveals_protected_payoff(text, _payoff_plan(context)):
+        found.append(_finding("hook_reveals_answer", "hard", "The hook states the protected answer.", 1))
+    plan = _triple_hook(context)
+    state = {
+        **{key: context.get(key) for key in ("intent", "facts", "story_arc", "payoff_plan", "format_plan", "novelty_plan")},
+        "script": {"blocks": candidate, "triple_hook": plan},
+    }
+    try:
+        valid = verbal_still_valid(state, text, plan.get("selected_strategy"))
+    except Exception:  # noqa: BLE001 - an unassessable hook is judged by the other checks
+        valid = True
+    if not valid:
+        found.append(_finding(
+            "hook_safety", "hard",
+            "The hook fails the Triple Hook safety rules (spoiler, unsupported claim, clickbait, question echo or body duplicate).",
+            1,
+        ))
+    return found
+
+
+def _restore_hook(
+    candidate: list[dict[str, Any]], context: dict[str, Any], draft_hook: dict[str, Any]
+) -> tuple[list[dict[str, Any]], bool]:
+    """Replace an unsafe or missing rewritten hook by the draft's selected hook when that one is safe."""
+    original = str(draft_hook.get("text") or "").strip()
+    hooks = [block for block in candidate if _role(block) == "hook"]
+    if not original or len(hooks) > 1:
+        return candidate, False
+    body = [block for block in candidate if _role(block) != "hook"]
+    restored = [{"id": "voice_block_01", "role": "hook", "text": original, "fact_ids": _ids(draft_hook)}, *body]
+    if _hook_findings(restored, context):
+        return candidate, False
+    return restored, True
+
+
+def answer_payoff_duplicate(blocks: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """The answer beat and the payoff state the same proposition."""
+    answer = next((block for block in blocks if _role(block) == "answer"), None)
+    payoff = next((block for block in reversed(blocks) if _role(block) == "payoff"), None)
+    if answer is None or payoff is None or answer is payoff:
+        return None
+    said = proposition_words(payoff.get("text"))
+    if not said:
+        return None
+    new = [item for item in information_gain(str(answer.get("text") or ""), str(payoff.get("text") or "")) if item != "negation"]
+    share = len(new) / len(said)
+    if share >= ANSWER_PAYOFF_MIN_NEW_SHARE:
+        return None
+    return {"new_share": round(share, 3), "new_terms": new[:8]}
+
+
+def deterministic_findings(
+    candidate: list[dict[str, Any]], context: dict[str, Any], *, draft_has_hook: bool = True
+) -> list[dict[str, Any]]:
+    """Objective, language-independent checks of a rewritten script."""
+    found: list[dict[str, Any]] = []
+    roles = [_role(block) for block in candidate]
+    body = [block for block in candidate if _role(block) != "hook"]
+    if not body:
+        return [_finding("structure", "hard", "The rewrite has no body after the hook.")]
+    if roles.count("hook") > 1:
+        found.append(_finding("structure", "hard", "The rewrite has more than one hook beat."))
+    if draft_has_hook and roles[0] != "hook":
+        found.append(_finding("structure", "hard", "The rewrite must open with exactly one hook beat.", 1))
+    if not draft_has_hook and "hook" in roles:
+        found.append(_finding("structure", "hard", "No hook was selected for this script; the rewrite added one."))
+    if "payoff" not in roles:
+        found.append(_finding("no_payoff", "hard", "The rewrite has no payoff beat that resolves the question."))
+
+    facts = {str(fact.get("id")): fact for fact in context.get("facts") or [] if isinstance(fact, dict) and fact.get("id")}
+    usable = _usable_facts(context)
+    usable_claims = [str(fact.get("claim") or "") for fact in usable.values()]
+    allowed_numbers = set().union(*(_numbers(claim) for claim in usable_claims)) if usable_claims else set()
+    for index, block in enumerate(candidate, 1):
+        ids = _ids(block)
+        unknown = sorted(set(ids) - set(facts))
+        if unknown:
+            found.append(_finding("fabricated_fact_id", "hard", "Cites fact IDs that do not exist: " + ", ".join(unknown) + ".", index))
+        unusable = sorted(set(ids) & set(facts) - set(usable))
+        if unusable:
+            found.append(_finding("unusable_fact_id", "hard", "Cites research facts that are not supported: " + ", ".join(unusable) + ".", index))
+        if _role(block) != "hook" and not ids:
+            found.append(_finding("uncited_beat", "hard", "A factual beat cites no research fact.", index))
+        text = str(block.get("text") or "")
+        numbers = sorted(
+            number for number in _numbers(text)
+            if number not in allowed_numbers and not any(_rounded_from(text, claim) for claim in usable_claims)
+        )
+        if numbers:
+            found.append(_finding("unsupported_number", "hard", "Numbers not in the research: " + ", ".join(numbers) + ".", index))
+
+    for reveal in _premature_reveal(candidate, context):
+        found.append(_finding("premature_reveal", "hard", str(reveal["reason"]), int(reveal["index"]) + 1))
+    found.extend(_hook_findings(candidate, context))
+
+    budget = context.get("word_budget")
+    words = sum(len(str(block.get("text") or "").split()) for block in candidate)
+    if isinstance(budget, int) and budget > 0 and words > budget:
+        found.append(_finding("over_duration", "hard", f"The rewrite has {words} words; the duration budget allows {budget}."))
+    detected = detect_text_language(" ".join(str(block.get("text") or "") for block in candidate))
+    if detected not in {"unknown", _language(context)}:
+        found.append(_finding("language_mismatch", "hard", f"The rewrite is written in {detected}, not {_language(context)}."))
+
+    duplicate = answer_payoff_duplicate(candidate)
+    if duplicate:
+        found.append(_finding(
+            "answer_payoff_duplicate", "major",
+            f"The payoff adds only {round(100 * duplicate['new_share'])}% new meaning beyond the answer beat.",
+            max(index for index, role in enumerate(roles, 1) if role == "payoff"),
+        ))
+    payoff_index = max((index for index, role in enumerate(roles) if role == "payoff"), default=-1)
+    if 0 <= payoff_index < len(candidate) - 1:
+        found.append(_finding("post_payoff_tail", "minor", "Beats continue after the payoff.", payoff_index + 2))
+    return found
+
+
+def _content_blockers(candidate: list[dict[str, Any]], context: dict[str, Any]) -> list[dict[str, Any]]:
+    """Production content blockers (answer sufficiency, narrated failure) and V1 grounding errors."""
+    from .readiness import CONTENT_BLOCKERS
+
+    found: list[dict[str, Any]] = []
+    state = {**copy.deepcopy(context), "script": {**(context.get("script") or {}), "blocks": copy.deepcopy(candidate)}}
+    gain = assess_information_gain(state)
+    for issue in gain.get("issues") or []:
+        if issue.get("severity") == "error" and issue.get("code") in CONTENT_BLOCKERS:
+            found.append(_finding(f"content_{issue['code']}", "hard", str(issue.get("message") or issue["code"])))
+    report = assess_script_story_quality(candidate, context)
+    ids = {str(block.get("id") or ""): index for index, block in enumerate(candidate, 1)}
+    for issue in report.get("issues") or []:
+        if issue.get("severity") == "error" and issue.get("issue_type") in DETERMINISTIC_HARD_V1:
+            found.append(_finding(
+                str(issue["issue_type"]), "hard", str(issue.get("reason") or ""), ids.get(str(issue.get("segment_id") or "")),
+            ))
+    return found
+
+
+# ---------------------------------------------------------------------------
+# Orchestration
+# ---------------------------------------------------------------------------
+
+
+def _candidate_blocks(response: RewriteResponse) -> list[dict[str, Any]]:
+    return [
+        {
+            "id": f"voice_block_{index:02d}",
+            "role": beat.role,
+            "text": " ".join(beat.text.split()),
+            "fact_ids": list(dict.fromkeys(str(item) for item in beat.fact_ids if str(item).strip())),
+        }
+        for index, beat in enumerate(response.beats, 1)
+        if beat.text.strip()
+    ]
+
+
+def _verifier_findings(verdict: VerifierResponse) -> list[dict[str, Any]]:
+    found = [
+        _finding(item.code, item.severity, item.message, item.beat_index, source="verifier")
+        for item in verdict.findings
+    ]
+    checks = (
+        (not verdict.grounded, "ungrounded", "hard", "The verifier found statements the research does not support."),
+        (verdict.premature_reveal, "premature_reveal", "hard", "The verifier found the protected answer revealed too early."),
+        (not verdict.answers_question, "question_unanswered", "hard", "The verifier found the original question unanswered."),
+        (not verdict.payoff_fulfilled, "payoff_unfulfilled", "hard", "The verifier found the payoff unfulfilled."),
+        (verdict.answer_sufficiency.verdict == "unanswered", "question_unanswered", "hard", "Answer sufficiency: unanswered."),
+        (not verdict.hook_promise_kept, "hook_promise_broken", "major", "The hook promise is not kept."),
+        (verdict.answer_payoff_duplicate, "answer_payoff_duplicate", "major", "Answer and payoff say the same thing."),
+    )
+    known = {(item["code"], item["severity"]) for item in found}
+    for failed, code, severity, message in checks:
+        if failed and (code, severity) not in known:
+            known.add((code, severity))
+            found.append(_finding(code, severity, message, source="verifier"))
+    return found
+
+
+def _severity(findings: list[dict[str, Any]], level: str) -> list[dict[str, Any]]:
+    return [item for item in findings if item["severity"] == level]
+
+
+def _guard(call: Callable[[], Any]) -> tuple[Any, str | None]:
+    try:
+        return call(), None
+    except Exception as exc:  # noqa: BLE001 - every provider failure has a deterministic fallback
+        return None, f"{type(exc).__name__}: {str(exc)[:200]}"
+
+
+def _with_holistic(report: dict[str, Any], holistic: dict[str, Any], mode: str) -> dict[str, Any]:
+    report["mode"] = mode
+    report["holistic"] = holistic
+    report["provider"] = {
+        "status": holistic["status"],
+        "provider": holistic.get("provider"),
+        "error": holistic.get("error"),
+        "issues": [],
+    }
+    return report
+
+
+def _block_report(report: dict[str, Any], code: str, reason: str, *, research: bool) -> dict[str, Any]:
+    report = copy.deepcopy(report)
+    report["issues"].append({
+        "issue_type": code, "severity": "error", "segment_id": None, "segment": None,
+        "reason": reason[:320], "suggested_action": "Generate again or extend the research.",
+    })
+    blocking = sorted({*report["gate"].get("blocking", []), code})
+    report["gate"] = {"ready": False, "status": "blocked", "blocking": blocking}
+    report["research_insufficient"] = bool(report.get("research_insufficient") or research)
+    return report
+
+
+def _accepted_report(
+    original: list[dict[str, Any]], final: list[dict[str, Any]], context: dict[str, Any],
+    attempt: dict[str, Any], fallback_report: dict[str, Any],
+) -> dict[str, Any]:
+    audit = attempt.get("explanation_audit")
+    audited = {**context, "explanation_audit": audit} if audit else context
+    report = assess_script_story_quality(final, audited)
+    issues = []
+    for issue in report["issues"]:
+        if issue["severity"] == "error" and issue["issue_type"] not in DETERMINISTIC_HARD_V1:
+            # Lexical heuristics are critic signals; the verifier owns the verdict.
+            issue = {**issue, "severity": "warning", "advisory": True}
+        issues.append(issue)
+    for item in [*attempt["major"], *attempt["minor"]]:
+        issues.append({
+            "issue_type": item["code"], "severity": "warning" if item["severity"] == "major" else "info",
+            "segment_id": None, "segment": None, "reason": item["message"], "suggested_action": "Editorial note.",
+            "source": item.get("source"),
+        })
+    report["issues"] = issues
+    report["gate"] = {"ready": True, "status": "passed_with_warnings" if issues else "passed", "blocking": []}
+    report["research_insufficient"] = False
+    report.update({
+        "original_signature": script_quality_signature(original),
+        "final_signature": script_quality_signature(final),
+        "original_scores": fallback_report.get("original_scores") or {},
+        "final_scores": report["dimensions"],
+        "original_issues": fallback_report.get("original_issues") or [],
+        "actions": [{
+            "action": "holistic_rewrite",
+            "attempt": attempt["attempt"],
+            "segment_ids": [str(block.get("id") or "") for block in final],
+            "reason": attempt.get("rationale") or "Holistic creative rewrite.",
+        }],
+        "changes": {
+            "sentences_removed": [],
+            "segments_merged": [],
+            "segments_reordered": [],
+            "segments_rewritten": [[str(block.get("id") or "") for block in final]],
+        },
+    })
+    return report
+
+
+def run_script_story_quality(
+    blocks: list[dict[str, Any]],
+    context: dict[str, Any],
+    provider: ScriptStoryProvider | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Critic -> holistic rewrite -> verifier, with a bounded repair and a deterministic fallback.
+
+    Returns production blocks and the report persisted as
+    ``script.script_story_quality_v1``.  ``report["rewrite"]`` is present
+    only when an AI rewrite was accepted; its hook may differ from the
+    selected Triple Hook wording (the caller adopts it).
+    """
+    original = copy.deepcopy(blocks)
+    fallback_blocks, fallback_report = run_script_story_quality_v1(original, context)
+    holistic: dict[str, Any] = {
+        "version": REWRITE_VERSION,
+        "status": "not_requested",
+        "provider": getattr(provider, "name", None),
+        "error": None,
+        "critic": None,
+        "attempts": [],
+    }
+    if provider is None:
+        return fallback_blocks, _with_holistic(fallback_report, holistic, "deterministic")
+    if any(_role(block) == "status" for block in original) or not _usable_facts(context):
+        holistic["status"] = "not_applicable"
+        holistic["reason"] = "status_script" if any(_role(block) == "status" for block in original) else "no_supported_research"
+        return fallback_blocks, _with_holistic(fallback_report, holistic, "deterministic")
+
+    draft_assessment = assess_script_story_quality(original, context)
+    brief = build_brief(original, context, draft_assessment)
+    critic, error = _guard(lambda: provider.critique(brief))
+    if error is not None:
+        holistic.update(status="provider_unavailable", error=error)
+        return fallback_blocks, _with_holistic(fallback_report, holistic, "deterministic")
+    holistic["critic"] = critic.model_dump(mode="json")
+    critic_hard = [item for item in critic.findings if item.severity == "hard"]
+    critic_major = [item for item in critic.findings if item.severity == "major"]
+    draft_clean = bool(fallback_report["gate"]["ready"]) and not critic_hard
+    if critic.verdict == "strong" and draft_clean and not critic_major:
+        holistic["status"] = "skipped_already_strong"
+        return fallback_blocks, _with_holistic(fallback_report, holistic, "deterministic")
+
+    draft_hook = next((block for block in original if _role(block) == "hook"), None)
+    draft_has_hook = draft_hook is not None
+    critic_payload = {
+        "verdict": critic.verdict,
+        "findings": [item.model_dump(mode="json") for item in critic.findings],
+        "missed_fact_ids": list(critic.missed_fact_ids),
+        "research_need": critic.research_need,
+    }
+    attempts: list[dict[str, Any]] = []
+    research_need = ""
+    previous: list[dict[str, Any]] | None = None
+    repair_findings: list[dict[str, Any]] = []
+    for number in range(1, MAX_REWRITE_ATTEMPTS + 1):
+        request = {
+            **brief,
+            "critic": critic_payload,
+            "attempt": number,
+            "previous_rewrite": _beats(previous) if previous else None,
+            "verifier_findings": repair_findings or None,
+        }
+        response, error = _guard(lambda request=request: provider.rewrite(request))
+        if error is not None:
+            attempts.append({"attempt": number, "status": "provider_error", "error": error})
+            break
+        if response.status == "needs_research":
+            research_need = response.research_insufficiency or critic.research_need or "The research cannot support a complete answer."
+            attempts.append({"attempt": number, "status": "needs_research", "research_need": research_need})
+            break
+        candidate = _candidate_blocks(response)
+        hook_restored = False
+        if draft_has_hook and (
+            not candidate or _role(candidate[0]) != "hook" or _hook_findings(candidate, context)
+        ):
+            candidate, hook_restored = _restore_hook(candidate, context, draft_hook)
+        findings = deterministic_findings(candidate, context, draft_has_hook=draft_has_hook)
+        if hook_restored:
+            findings.append(_finding("hook_restored", "minor", "The rewritten hook broke the hook intent; the selected Triple Hook was kept.", 1))
+        verdict: VerifierResponse | None = None
+        verifier_error: str | None = None
+        if not _severity(findings, "hard"):
+            verify_brief = {
+                **brief,
+                "candidate": {"beats": _beats(candidate)},
+                "deterministic_findings": [item for item in findings if item["severity"] != "minor"],
+            }
+            verdict, verifier_error = _guard(lambda verify_brief=verify_brief: provider.verify(verify_brief))
+        audit = None
+        if verdict is not None:
+            findings.extend(_verifier_findings(verdict))
+            audit = {
+                "sentences": [item.model_dump(mode="json") for item in verdict.explanation_audit],
+                "answer_sufficiency": verdict.answer_sufficiency.model_dump(mode="json"),
+                "source": VERIFIED_AUDIT_SOURCE,
+                "verified_script": verified_script_key([str(block.get("text") or "") for block in candidate]),
+            }
+        if not _severity(findings, "hard"):
+            findings.extend(_content_blockers(candidate, {**context, "explanation_audit": audit} if audit else context))
+        if verdict is None and verifier_error is not None and not _severity(findings, "hard"):
+            # Without an independent AI verification the deterministic V1 gate governs.
+            gate = assess_script_story_quality(candidate, context)["gate"]
+            if not gate["ready"]:
+                findings.append(_finding(
+                    "unverified_rewrite", "hard",
+                    "The verifier was unavailable and the deterministic gate blocks: " + ", ".join(gate["blocking"]) + ".",
+                ))
+        attempt = {
+            "attempt": number,
+            "status": "verified" if verdict is not None else "deterministic_only",
+            "blocks": candidate,
+            "hook_changed": bool(
+                draft_hook and candidate and str(candidate[0].get("text") or "") != str(draft_hook.get("text") or "")
+            ),
+            "hook_restored": hook_restored,
+            "hook_intent_preserved": response.hook_intent_preserved,
+            "hook_intent_note": response.hook_intent_note,
+            "reveal_beat_index": response.reveal_beat_index,
+            "payoff_beat_index": response.payoff_beat_index,
+            "rationale": response.rationale,
+            "research_insufficiency": response.research_insufficiency,
+            "better_than_draft": verdict.better_than_draft if verdict is not None else None,
+            "verifier_error": verifier_error,
+            "explanation_audit": audit,
+            "hard": _severity(findings, "hard"),
+            "major": _severity(findings, "major"),
+            "minor": _severity(findings, "minor"),
+        }
+        attempts.append(attempt)
+        if not attempt["hard"] and not attempt["major"]:
+            break
+        previous = candidate
+        repair_findings = [*attempt["hard"], *attempt["major"]]
+
+    holistic["attempts"] = [
+        {key: value for key, value in item.items() if key not in {"explanation_audit"}} for item in attempts
+    ]
+    passing = [item for item in attempts if "blocks" in item and not item["hard"]]
+    if passing:
+        best = min(passing, key=lambda item: (len(item["major"]), -item["attempt"]))
+        if best["better_than_draft"] is False and draft_clean:
+            holistic.update(status="kept_draft_rewrite_not_better", selected_attempt=None)
+            return fallback_blocks, _with_holistic(fallback_report, holistic, "deterministic")
+        final = copy.deepcopy(best["blocks"])
+        holistic.update(
+            status="rewritten" if not best["major"] else "rewritten_with_warnings",
+            selected_attempt=best["attempt"],
+            explanation_audit=best.get("explanation_audit"),
+        )
+        report = _accepted_report(original, final, context, best, fallback_report)
+        report["rewrite"] = {
+            "attempt": best["attempt"],
+            "hook_text": str(final[0].get("text") or "") if final and _role(final[0]) == "hook" else None,
+            "hook_changed": best["hook_changed"],
+            "hook_restored": best["hook_restored"],
+            "hook_intent_preserved": best["hook_intent_preserved"],
+            "hook_intent_note": best["hook_intent_note"],
+            "reveal_beat_index": best["reveal_beat_index"],
+            "payoff_beat_index": best["payoff_beat_index"],
+            "rationale": best["rationale"],
+            "research_insufficiency": best["research_insufficiency"],
+            "beats": _beats(final),
+            "verified_by": "ai_verifier" if best["status"] == "verified" else "deterministic_gate",
+        }
+        return final, _with_holistic(report, holistic, "holistic_ai")
+
+    if research_need:
+        holistic.update(status="needs_research", research_need=research_need)
+        report = _block_report(fallback_report, "needs_research", research_need, research=True)
+        return fallback_blocks, _with_holistic(report, holistic, "deterministic")
+    if not any("blocks" in item for item in attempts):
+        # The rewriter itself was unreachable: the deterministic pass stands.
+        holistic.update(status="provider_unavailable", error=next((item.get("error") for item in attempts), None))
+        return fallback_blocks, _with_holistic(fallback_report, holistic, "deterministic")
+    if draft_clean:
+        holistic["status"] = "rewrite_rejected_kept_draft"
+        return fallback_blocks, _with_holistic(fallback_report, holistic, "deterministic")
+    last = next(item for item in reversed(attempts) if "blocks" in item)
+    reason = "The rewrite failed hard requirements twice: " + "; ".join(item["message"] for item in last["hard"][:3])
+    holistic["status"] = "needs_fix"
+    report = _block_report(fallback_report, "rewrite_hard_failure", reason, research=False)
+    return fallback_blocks, _with_holistic(report, holistic, "deterministic")
