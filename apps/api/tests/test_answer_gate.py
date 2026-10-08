@@ -347,7 +347,7 @@ def test_generation_job_stops_before_tts_and_render(db, monkeypatch, tmp_path, n
     failed = db.get(GenerationJob, job.id)
     project = db.get(Project, job.project_id)
     assert failed.status == "failed" and failed.failure_category == "research_required"
-    assert "research" in failed.failure_message
+    assert failed.failure_message == "ClipForge konnte für diese Frage noch keine ausreichend belegte Antwort erstellen. Bitte versuche es erneut."
     # No TTS, no media, no render: only the blocked initial revision exists.
     assert calls.render == calls.media == calls.voice == 0
     assert project.status == "needs_attention" and project.current_revision == 1

@@ -103,6 +103,12 @@ def content_readiness(state: dict[str, Any]) -> dict[str, Any]:
                 else "The retrieved sources do not contain a direct answer to the question."
             ),
         })
+    contract_coverage = state.get("contract_coverage") or {}
+    if state.get("contract") and contract_coverage.get("is_sufficient") is False:
+        blocking.append({
+            "code": "research_contract_insufficient",
+            "message": "Required research obligations unsupported: " + ", ".join(contract_coverage.get("missing_obligations") or []),
+        })
     hook = _hook_text(state)
     if hook:
         if narrates_failure(hook):
@@ -119,7 +125,7 @@ def content_readiness(state: dict[str, Any]) -> dict[str, Any]:
     sufficiency = report.get("answer_sufficiency") if isinstance(report.get("answer_sufficiency"), dict) else {}
     research_required = (bool(sufficiency.get("research_required")) and any(
         item["code"] == "information_gain_answer_insufficient" for item in blocking
-    )) or any(item["code"] == "research_insufficient" for item in blocking) or bool(
+    )) or any(item["code"] in {"research_insufficient", "research_contract_insufficient"} for item in blocking) or bool(
         quality.get("research_insufficient") and blocking
     )
     if not blocking:
@@ -129,6 +135,7 @@ def content_readiness(state: dict[str, Any]) -> dict[str, Any]:
     else:
         status = "blocked"
     return {
+        "language": (state.get("intent") or {}).get("language", "en"),
         "ready": not blocking,
         "status": status,
         "research_required": research_required,
@@ -137,9 +144,8 @@ def content_readiness(state: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def not_ready_message(readiness: dict[str, Any]) -> str:
-    """User-facing reason (no narration of it ever reaches the video)."""
-    if readiness.get("research_required"):
-        return "The research does not explain the question yet, so no video was produced. Retry to research again."
-    first = (readiness.get("blocking") or [{}])[0]
-    return f"The script is not ready to produce: {first.get('message') or first.get('code') or 'quality gate failed'}"[:480]
+def not_ready_message(readiness: dict[str, Any], language: str | None = None) -> str:
+    """Localized user failure; technical reasons stay in readiness.blocking."""
+    if str(language or readiness.get("language") or "en").startswith("de"):
+        return "ClipForge konnte für diese Frage noch keine ausreichend belegte Antwort erstellen. Bitte versuche es erneut."
+    return "ClipForge couldn't create a sufficiently supported answer for this question yet. Please try again."

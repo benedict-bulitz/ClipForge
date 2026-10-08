@@ -165,3 +165,14 @@ def offline_script_story_editor(monkeypatch):
         raise script_story_rewrite.ScriptStoryProviderError("AI script editor is offline in the test suite")
 
     monkeypatch.setattr(script_story_rewrite.OpenAIScriptStoryProvider, "_parse", offline)
+
+
+@pytest.fixture(autouse=True)
+def offline_question_answer_contract(monkeypatch):
+    """QAC tests explicitly mock responses; no contract call reaches a live API."""
+    from clipforge import question_answer_contract
+
+    def offline(*_args, **_kwargs):
+        raise AssertionError("Real OpenAI contract calls are forbidden in the test suite.")
+
+    monkeypatch.setattr(question_answer_contract, "OpenAI", offline)

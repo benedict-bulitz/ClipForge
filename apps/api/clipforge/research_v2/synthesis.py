@@ -137,6 +137,9 @@ def deterministic_sub_questions(question: str, query: str, language: str, *, foc
     """core (+ mechanism for why/how questions) - the smallest useful decomposition."""
     lang = "de" if str(language).startswith("de") else "en"
     core_query = topic_query(query)[:160]
+    if focus and focus not in {"broaden", "strengthen", "capability", "mechanism"}:
+        # Semantic QAC obligations must reach discovery, not only diagnostics.
+        core_query = f"{core_query} {focus}"
     if focus == "broaden":
         # The first pass found no direct answer: search the subject words only.
         content = [word for word in re.findall(r"[\wÄÖÜäöüß-]+", topic_query(question)) if len(word) > 3]

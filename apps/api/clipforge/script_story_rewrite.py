@@ -11,7 +11,7 @@ is available it works like a strong human editor:
    and the payoff, and may use any supported research fact.
 3. **Verifier** - independently checks hard requirements (grounding, numbers,
    reveal contract, answered question, payoff) and objective quality.  At most
-   one bounded repair attempt follows a failed verification.
+   one contract repair and one fresh regeneration follow a failed verification.
 
 Only *intent* is protected: the hook keeps its curiosity promise without
 spending the protected answer, the reveal never moves earlier than its
@@ -58,6 +58,7 @@ from .verbal_hook import _numbers, _rounded_from, information_gain, proposition_
 REWRITE_VERSION = 2
 # One holistic rewrite plus one bounded repair; never an open-ended loop.
 MAX_REWRITE_ATTEMPTS = 2
+MAX_CONTRACT_ATTEMPTS = 3
 # A payoff that adds less than this share of new propositions beyond the
 # answer beat says the same thing twice (language independent: it compares
 # meaning tokens, not wording).
@@ -122,6 +123,7 @@ class ContractObligationEvaluation(BaseModel):
     id: str
     status: Literal["satisfied", "partially_satisfied", "missing", "circular", "unsupported", "insufficient_depth"]
     is_primary: bool = False
+    is_required: bool = True
     reasoning: str
 
 class VerifierResponse(BaseModel):
@@ -130,7 +132,7 @@ class VerifierResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     contract_evaluations: list[ContractObligationEvaluation] = Field(default_factory=list)
-    contract_sufficient: bool = Field(description="True if all REQUIRED obligations are satisfied and deep enough")
+    contract_sufficient: bool = Field(default=True, description="True if all REQUIRED obligations are satisfied and deep enough")
 
     grounded: bool
     answers_question: bool
@@ -209,12 +211,20 @@ REWRITE_INSTRUCTIONS = (
     "research_insufficiency instead of guessing. reveal_beat_index and payoff_beat_index are 1-based "
     "positions in your beats; hook_intent_preserved says whether your hook keeps hook_intent; rationale names "
     "your main editorial decisions in 1-3 sentences. On a repair attempt (attempt 2) fix every hard and major "
-    "finding in verifier_findings and keep what worked in previous_rewrite. Return only the structured output."
+    "finding in verifier_findings and keep what worked in previous_rewrite. "
+    "For mode contract_repair, resolve every failed_obligations entry holistically using its exact "
+    "supporting_fact_ids and supporting_facts; do not append a patch sentence. "
+    "For mode fresh_regeneration, create a completely new script from the contract, required_supported_fact_ids, "
+    "full research, hook intent, reveal constraints, language and word budget. No failed draft wording is supplied. "
+    "Return only the structured output."
 )
 
 VERIFIER_INSTRUCTIONS = (
     "You are the independent verifier of ClipForge's short-form script desk. Check candidate.beats against "
-    "the research dossier, the story contract, and the QuestionAnswerContract. You must evaluate every contract obligation (satisfied, partially_satisfied, missing, circular, unsupported). You did not write it; be strict on hard requirements and "
+    "the research dossier, the story contract, and the QuestionAnswerContract. Evaluate every obligation "
+    "(satisfied, partially_satisfied, missing, circular, unsupported, insufficient_depth) and copy its "
+    "is_primary and is_required flags. Only required obligations block when not fully satisfied. "
+    "Structured evaluations override a generic answers_question=true. You did not write it; be strict on hard requirements and "
     "tolerant of style. "
     + SHARED_RULES
     + "Hard requirements: grounded (every factual statement is supported by usable research facts, nothing "
@@ -379,10 +389,11 @@ def build_brief(blocks: list[dict[str, Any]], context: dict[str, Any], assessmen
         },
         "language": _language(context),
         "research": {
+            "usable_dossier": [copy.deepcopy(fact) for fact in usable.values()],
             "facts": [
                 {
                     "id": str(fact.get("id")),
-                    "claim": str(fact.get("claim") or "")[:600],
+                    "claim": str(fact.get("claim") or ""),
                     "usable": str(fact.get("id")) in usable,
                     "research_role": fact.get("research_role") or units.get(str(fact.get("id")), {}).get("role"),
                     "priority": fact.get("priority"),
@@ -625,27 +636,71 @@ def _candidate_blocks(response: RewriteResponse) -> list[dict[str, Any]]:
     ]
 
 
+def _contract_obligations(context: dict[str, Any]) -> list[dict[str, Any]]:
+    contract = context.get("question_answer_contract") or {}
+    return [item for item in [contract.get("primary_answer_obligation"),
+                             *(contract.get("required_supporting_obligations") or [])] if item]
+
+
+def _checked_verdict(verdict: VerifierResponse, context: dict[str, Any]) -> VerifierResponse:
+    """Contract flags and completeness cannot be overridden by the verifier."""
+    obligations = _contract_obligations(context)
+    if not obligations:
+        return verdict
+    by_id = {item.id: item for item in verdict.contract_evaluations}
+    evaluations = []
+    for obligation in obligations:
+        evaluation = by_id.get(obligation["id"]) or ContractObligationEvaluation(
+            id=obligation["id"], status="missing", reasoning="Verifier omitted this obligation.",
+        )
+        evaluations.append(evaluation.model_copy(update={
+            "is_primary": obligation["is_primary"], "is_required": obligation["is_required"],
+        }))
+    return verdict.model_copy(update={"contract_evaluations": evaluations})
+
+
+def _supported_obligations(context: dict[str, Any]) -> list[dict[str, Any]]:
+    usable = _usable_facts(context)
+    coverage = {
+        item["obligation_id"]: item for item in (context.get("research_coverage") or {}).get("coverage", [])
+    }
+    supported = []
+    for obligation in _contract_obligations(context):
+        item = coverage.get(obligation["id"], {})
+        ids = [identifier for identifier in item.get("supporting_fact_ids", []) if identifier in usable]
+        if item.get("status") == "satisfied" and ids:
+            supported.append({
+                "id": obligation["id"], "description": obligation["description"],
+                "is_primary": obligation["is_primary"], "is_required": obligation["is_required"],
+                "supporting_fact_ids": ids,
+                "supporting_facts": [{"id": identifier, "claim": usable[identifier]["claim"]} for identifier in ids],
+            })
+    return supported
+
+
 def _verifier_findings(verdict: VerifierResponse) -> list[dict[str, Any]]:
     found = [
         _finding(item.code, item.severity, item.message, item.beat_index, source="verifier")
         for item in verdict.findings
     ]
 
-    if not getattr(verdict, "contract_sufficient", True):
-        found.append(_finding("contract_insufficient", "hard", "Rewrite failed QuestionAnswerContract (missing required obligation, circular, or insufficiently deep)", source="verifier"))
-    for eval in getattr(verdict, "contract_evaluations", []):
-        if eval.status in ("missing", "circular", "unsupported", "insufficient_depth"):
-            if eval.status == "missing":
-                if eval.is_primary:
-                    found.append(_finding("primary_answer_missing", "hard", f"Primary answer missing: {eval.id}", source="verifier"))
-                else:
-                    found.append(_finding("required_obligation_missing", "hard", f"Required obligation missing: {eval.id}", source="verifier"))
-            elif eval.status == "circular":
-                found.append(_finding("answer_circular", "hard", f"Answer is circular for: {eval.id}", source="verifier"))
-            elif eval.status == "unsupported":
-                found.append(_finding("unsupported_required_answer", "hard", f"Unsupported required answer: {eval.id}", source="verifier"))
-            elif eval.status == "insufficient_depth":
-                found.append(_finding("insufficient_causal_depth", "hard", f"Insufficient causal depth for: {eval.id}", source="verifier"))
+    evaluations = verdict.contract_evaluations
+    required_failures = [item for item in evaluations if item.is_required and item.status != "satisfied"]
+    # Structured evaluations are authoritative, including optional omissions.
+    if required_failures or (not evaluations and not verdict.contract_sufficient):
+        found.append(_finding("contract_insufficient", "hard", "Required answer contract not satisfied.", source="verifier"))
+    for evaluation in required_failures:
+        if evaluation.status in {"missing", "partially_satisfied"}:
+            code = "primary_answer_missing" if evaluation.is_primary else "required_obligation_missing"
+        else:
+            code = {
+                "circular": "answer_circular",
+                "unsupported": "unsupported_required_answer",
+                "insufficient_depth": "insufficient_causal_depth",
+            }[evaluation.status]
+        found.append(_finding(
+            code, "hard", f"{evaluation.id}: {evaluation.reasoning}", source="verifier",
+        ))
 
     checks = (
         (not verdict.grounded, "ungrounded", "hard", "The verifier found statements the research does not support."),
@@ -782,7 +837,7 @@ def run_script_story_quality(
     critic_hard = [item for item in critic.findings if item.severity == "hard"]
     critic_major = [item for item in critic.findings if item.severity == "major"]
     draft_clean = bool(fallback_report["gate"]["ready"]) and not critic_hard
-    if critic.verdict == "strong" and draft_clean and not critic_major:
+    if critic.verdict == "strong" and draft_clean and not critic_major and not _contract_obligations(context):
         holistic["status"] = "skipped_already_strong"
         return fallback_blocks, _with_holistic(fallback_report, holistic, "deterministic")
 
@@ -798,20 +853,57 @@ def run_script_story_quality(
     research_need = ""
     previous: list[dict[str, Any]] | None = None
     repair_findings: list[dict[str, Any]] = []
-    for number in range(1, MAX_REWRITE_ATTEMPTS + 1):
+    supported = _supported_obligations(context)
+    failed_obligations: list[dict[str, Any]] = []
+    contract_failed = False
+    limit = MAX_CONTRACT_ATTEMPTS if _contract_obligations(context) else MAX_REWRITE_ATTEMPTS
+    for number in range(1, limit + 1):
+        if number == 3 and not failed_obligations:
+            break
+        mode = "normal_rewrite" if number == 1 else "contract_repair" if failed_obligations else "quality_repair"
+        if number == 3:
+            mode = "fresh_regeneration"
+
         request = {
             **brief,
             "critic": critic_payload,
+            "mode": mode,
+            "failed_obligations": failed_obligations,
             "attempt": number,
             "previous_rewrite": _beats(previous) if previous else None,
             "verifier_findings": repair_findings or None,
         }
+        if number == 3:
+            # Remove all failed prose and draft critiques; keep only generation constraints.
+            request = {key: value for key, value in brief.items() if key not in {
+                "draft", "deterministic_findings", "information_gain",
+            }}
+            request.update(
+                mode=mode, attempt=number,
+                required_supported_fact_ids=sorted({
+                    identifier for item in supported if item["is_required"]
+                    for identifier in item["supporting_fact_ids"]
+                }),
+            )
         response, error = _guard(lambda request=request: provider.rewrite(request))
         if error is not None:
             attempts.append({"attempt": number, "status": "provider_error", "error": error})
             break
         if response.status == "needs_research":
-            research_need = response.research_insufficiency or critic.research_need or "The research cannot support a complete answer."
+            reason = response.research_insufficiency or critic.research_need or "The research cannot support a complete answer."
+            required = [item for item in _contract_obligations(context) if item["is_required"]]
+            supported_ids = {item["id"] for item in supported}
+            if required and all(item["id"] in supported_ids for item in required):
+                failed_obligations = [
+                    {**item, "verifier_reason": reason, "status": "missing"}
+                    for item in supported if item["is_required"]
+                ]
+                contract_failed = True
+                holistic["failure_type"] = "SUPPORTED_BUT_OMITTED"
+                attempts.append({"attempt": number, "mode": mode, "status": "supported_answer_omitted", "reason": reason})
+                continue
+            research_need = reason
+            holistic["failure_type"] = "RESEARCH_MISSING"
             attempts.append({"attempt": number, "status": "needs_research", "research_need": research_need})
             break
         candidate = _candidate_blocks(response)
@@ -827,14 +919,32 @@ def run_script_story_quality(
         verifier_error: str | None = None
         if not _severity(findings, "hard"):
             verify_brief = {
-                **brief,
+                **(request if number == 3 else brief),
                 "candidate": {"beats": _beats(candidate)},
                 "deterministic_findings": [item for item in findings if item["severity"] != "minor"],
             }
             verdict, verifier_error = _guard(lambda verify_brief=verify_brief: provider.verify(verify_brief))
         audit = None
         if verdict is not None:
+            verdict = _checked_verdict(verdict, context)
             findings.extend(_verifier_findings(verdict))
+            failures = [item for item in verdict.contract_evaluations if item.is_required and item.status != "satisfied"]
+            contract_failed = contract_failed or bool(failures)
+            by_id = {item["id"]: item for item in supported}
+            failed_obligations = [
+                {**by_id[item.id], "verifier_reason": item.reasoning, "status": item.status}
+                for item in failures if item.id in by_id
+            ] or failed_obligations
+            missing_research = [item for item in failures if item.id not in by_id]
+            if missing_research:
+                research_need = " | ".join(
+                    f"Missing required answer: {item['description']}"
+                    for item in _contract_obligations(context)
+                    if item["id"] in {failure.id for failure in missing_research}
+                )
+            if failures:
+                holistic["failure_type"] = "RESEARCH_MISSING" if missing_research else "SUPPORTED_BUT_OMITTED"
+
             audit = {
                 "sentences": [item.model_dump(mode="json") for item in verdict.explanation_audit],
                 "answer_sufficiency": verdict.answer_sufficiency.model_dump(mode="json"),
@@ -843,6 +953,9 @@ def run_script_story_quality(
             }
         if not _severity(findings, "hard"):
             findings.extend(_content_blockers(candidate, {**context, "explanation_audit": audit} if audit else context))
+        if verdict is None and _contract_obligations(context):
+            findings.append(_finding("unverified_contract", "hard", "Independent contract verification unavailable."))
+            contract_failed = True
         if verdict is None and verifier_error is not None and not _severity(findings, "hard"):
             # Without an independent AI verification the deterministic V1 gate governs.
             gate = assess_script_story_quality(candidate, context)["gate"]
@@ -853,6 +966,9 @@ def run_script_story_quality(
                 ))
         attempt = {
             "attempt": number,
+            "mode": mode,
+            "failed_obligations": copy.deepcopy(failed_obligations),
+            "contract_evaluations": [item.model_dump() for item in verdict.contract_evaluations] if verdict else [],
             "status": "verified" if verdict is not None else "deterministic_only",
             "blocks": candidate,
             "hook_changed": bool(
@@ -873,7 +989,7 @@ def run_script_story_quality(
             "minor": _severity(findings, "minor"),
         }
         attempts.append(attempt)
-        if not attempt["hard"] and not attempt["major"]:
+        if research_need or (not attempt["hard"] and not attempt["major"]):
             break
         previous = candidate
         repair_findings = [*attempt["hard"], *attempt["major"]]
@@ -884,7 +1000,7 @@ def run_script_story_quality(
     passing = [item for item in attempts if "blocks" in item and not item["hard"]]
     if passing:
         best = min(passing, key=lambda item: (len(item["major"]), -item["attempt"]))
-        if best["better_than_draft"] is False and draft_clean:
+        if best["better_than_draft"] is False and draft_clean and not contract_failed:
             holistic.update(status="kept_draft_rewrite_not_better", selected_attempt=None)
             return fallback_blocks, _with_holistic(fallback_report, holistic, "deterministic")
         final = copy.deepcopy(best["blocks"])
@@ -914,15 +1030,17 @@ def run_script_story_quality(
         holistic.update(status="needs_research", research_need=research_need)
         report = _block_report(fallback_report, "needs_research", research_need, research=True)
         return fallback_blocks, _with_holistic(report, holistic, "deterministic")
-    if not any("blocks" in item for item in attempts):
+    if not any("blocks" in item for item in attempts) and not contract_failed:
         # The rewriter itself was unreachable: the deterministic pass stands.
         holistic.update(status="provider_unavailable", error=next((item.get("error") for item in attempts), None))
         return fallback_blocks, _with_holistic(fallback_report, holistic, "deterministic")
-    if draft_clean:
+    if draft_clean and not contract_failed and not _contract_obligations(context):
         holistic["status"] = "rewrite_rejected_kept_draft"
         return fallback_blocks, _with_holistic(fallback_report, holistic, "deterministic")
-    last = next(item for item in reversed(attempts) if "blocks" in item)
-    reason = "The rewrite failed hard requirements twice: " + "; ".join(item["message"] for item in last["hard"][:3])
+    last = next((item for item in reversed(attempts) if "blocks" in item), {})
+    reason = "Bounded script recovery exhausted: " + "; ".join(item["message"] for item in last.get("hard", [])[:3])
+    if not last:
+        reason += str(attempts[-1].get("reason") or attempts[-1].get("error") or "No supported answer generated.")
     holistic["status"] = "needs_fix"
     report = _block_report(fallback_report, "rewrite_hard_failure", reason, research=False)
     return fallback_blocks, _with_holistic(report, holistic, "deterministic")

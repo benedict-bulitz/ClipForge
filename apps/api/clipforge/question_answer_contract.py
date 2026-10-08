@@ -5,6 +5,7 @@ from openai import OpenAI
 from pydantic import BaseModel, Field
 
 from clipforge.config import Settings
+from clipforge.novelty import fact_is_supported
 
 logger = logging.getLogger("clipforge.contract")
 
@@ -43,8 +44,8 @@ def generate_contract(question: str, language: str, settings: Settings) -> Quest
         "A video script will be rejected if it does not satisfy the 'primary_answer_obligation' and all 'required_supporting_obligations'. "
         "Secondary facts must NEVER compensate for a missing primary answer.\n\n"
         "Guidelines:\n"
-        "- For historical 'why' questions (e.g., 'Why was the Berlin Wall built?'): The immediate purpose/motive is MANDATORY. Broad political context alone is insufficient. Specify 'historical_motive' as the type.\n"
-        "- For scientific 'why' questions (e.g., 'Why is Mars red?'): Focus on the direct cause/mechanism. Avoid circular answers (e.g., 'because of red dust' without explaining why the dust is red). Set 'minimum_answer_depth' to the level that genuinely resolves the curiosity.\n"
+        "- For historical 'why' questions: The immediate purpose/motive is MANDATORY. Broad political context alone is insufficient. Specify 'historical_motive' as the type.\n"
+        "- For scientific 'why' questions: Focus on the direct cause/mechanism. Avoid circular answers (restating the observed property instead of explaining its cause). Set 'minimum_answer_depth' to the level that genuinely resolves the curiosity.\n"
         "- Do not require maximum depth if a shorter explanation resolves the question.\n"
         "- Do not blindly treat every question as causal. Only require a causal chain if the question warrants it.\n"
     )
@@ -83,6 +84,7 @@ def evaluate_research_coverage(contract: QuestionAnswerContract, facts: list[dic
         "- Set 'is_sufficient' to true only if ALL REQUIRED obligations are satisfied.\n"
     )
     
+    facts = [fact for fact in facts if fact_is_supported(fact)]
     facts_text = "\n".join([f"Fact ID {f.get('id')}: {f.get('claim')}" for f in facts])
     
     response = client.beta.chat.completions.parse(
@@ -94,4 +96,34 @@ def evaluate_research_coverage(contract: QuestionAnswerContract, facts: list[dic
         response_format=ResearchCoverageReport,
         temperature=0.0,
     )
-    return response.choices[0].message.parsed
+    return checked_coverage(contract, response.choices[0].message.parsed, facts)
+
+
+def answer_obligations(contract: QuestionAnswerContract) -> list[AnswerObligation]:
+    return [contract.primary_answer_obligation, *contract.required_supporting_obligations]
+
+
+def checked_coverage(
+    contract: QuestionAnswerContract, report: ResearchCoverageReport, facts: list[dict],
+) -> ResearchCoverageReport:
+    """Structured coverage and usable evidence IDs govern required support."""
+    usable = {str(fact.get("id")) for fact in facts if fact_is_supported(fact)}
+    by_id = {item.obligation_id: item for item in report.coverage}
+    coverage = []
+    missing = []
+    for obligation in answer_obligations(contract):
+        item = by_id.get(obligation.id) or ObligationCoverage(
+            obligation_id=obligation.id, status="missing", reasoning="Coverage evaluation absent.",
+        )
+        ids = [identifier for identifier in item.supporting_fact_ids if identifier in usable]
+        item = item.model_copy(update={"supporting_fact_ids": ids})
+        if item.status == "satisfied" and not ids:
+            item = item.model_copy(update={
+                "status": "unsupported", "reasoning": "No supporting usable fact IDs.",
+            })
+        coverage.append(item)
+        if obligation.is_required and item.status != "satisfied":
+            missing.append(obligation.id)
+    return report.model_copy(update={
+        "coverage": coverage, "missing_obligations": missing, "is_sufficient": not missing,
+    })
