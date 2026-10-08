@@ -703,4 +703,3 @@ def summarize(rows: list[tuple[Any, dict[str, Any]]]) -> dict[str, Any]:
         "rejection_reasons": reasons,
         "top": top,
     }
-
