@@ -118,10 +118,19 @@ class RewriteResponse(BaseModel):
     research_insufficiency: str = Field(default="", max_length=320)
 
 
+class ContractObligationEvaluation(BaseModel):
+    id: str
+    status: Literal["satisfied", "partially_satisfied", "missing", "circular", "unsupported", "insufficient_depth"]
+    is_primary: bool = False
+    reasoning: str
+
 class VerifierResponse(BaseModel):
     """Independent verification of one rewrite."""
 
     model_config = ConfigDict(extra="forbid")
+
+    contract_evaluations: list[ContractObligationEvaluation] = Field(default_factory=list)
+    contract_sufficient: bool = Field(description="True if all REQUIRED obligations are satisfied and deep enough")
 
     grounded: bool
     answers_question: bool
@@ -162,8 +171,8 @@ SHARED_RULES = (
 
 CRITIC_INSTRUCTIONS = (
     "You are the critic of ClipForge's short-form script desk. Judge the complete first draft (draft.beats) "
-    "against the original question, the research dossier and the story contract the way a demanding senior "
-    "editor would. Look for: weak or generic hook, shallow explanation, missing mechanism (a why/how answer "
+    "against the original question, the provided QuestionAnswerContract, the research dossier, and the story contract the way a demanding senior "
+    "editor would. You MUST evaluate the draft against the QuestionAnswerContract. Look for: missing primary answer, missing mechanism, missing motive, shallow causal depth, circular answer, too much secondary context, mandatory research facts ignored, weak or generic hook, shallow explanation, missing mechanism (a why/how answer "
     "that only names the result, e.g. 'X counters Y', instead of explaining what actually happens), "
     "redundancy, weak information progression, low specificity, repeated analogy, tautological answer, an "
     "answer and payoff that say the same thing, weak payoff, a concept mentioned but never used, filler, "
@@ -173,14 +182,14 @@ CRITIC_INSTRUCTIONS = (
     "question that is not answered; major for objectively weak writing a viewer would notice; minor for "
     "taste. beat_index is the 1-based draft beat. missed_fact_ids lists usable fact ids that would "
     "materially improve the explanation. verdict: strong only if you would ship the draft unchanged; "
-    "needs_research only if the research cannot support a complete answer (say what is missing in "
+    "needs_research only if the research cannot support a REQUIRED obligation from the contract (say what is missing in "
     "research_need); otherwise rewrite. deterministic_findings are lexical hints and may be wrong. Return only "
     "the structured output."
 )
 
 REWRITE_INSTRUCTIONS = (
     "You are the senior editor of ClipForge's short-form script desk. Write the BEST possible spoken script "
-    "for a vertical short video that answers the original question. You have full creative freedom: rewrite "
+    "for a vertical short video that answers the original question. You have full creative freedom but MUST satisfy every required answer obligation from the QuestionAnswerContract using supported research: rewrite "
     "every sentence, write new hook wording, reorder, merge, split, add or drop beats, change the answer "
     "structure, rewrite the payoff completely, choose a better analogy or none, compress or expand. Use ANY "
     "usable research fact, including facts the draft ignored, and choose the strongest subset. Quality beats "
@@ -205,7 +214,7 @@ REWRITE_INSTRUCTIONS = (
 
 VERIFIER_INSTRUCTIONS = (
     "You are the independent verifier of ClipForge's short-form script desk. Check candidate.beats against "
-    "the research dossier and the story contract. You did not write it; be strict on hard requirements and "
+    "the research dossier, the story contract, and the QuestionAnswerContract. You must evaluate every contract obligation (satisfied, partially_satisfied, missing, circular, unsupported). You did not write it; be strict on hard requirements and "
     "tolerant of style. "
     + SHARED_RULES
     + "Hard requirements: grounded (every factual statement is supported by usable research facts, nothing "
@@ -353,6 +362,8 @@ def build_brief(blocks: list[dict[str, Any]], context: dict[str, Any], assessmen
     script = context.get("script") if isinstance(context.get("script"), dict) else {}
     gain = assessment.get("information_gain") if isinstance(assessment.get("information_gain"), dict) else {}
     return {
+        "question_answer_contract": context.get("question_answer_contract"),
+        "research_coverage": context.get("research_coverage"),
         "version": REWRITE_VERSION,
         "question": {
             "original": str(context.get("prompt") or ""),

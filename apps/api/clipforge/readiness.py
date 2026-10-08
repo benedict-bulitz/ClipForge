@@ -31,6 +31,12 @@ CONTENT_BLOCKERS = {
 # holistic rewrite, the lexical V1 findings are advisory and only hard
 # grounding/reveal failures can appear in its gate.
 QUALITY_CONTENT_BLOCKERS = {
+    "primary_answer_missing",
+    "required_obligation_missing",
+    "answer_circular",
+    "insufficient_causal_depth",
+    "unsupported_required_answer",
+    "contract_insufficient",
     "analogy_repetition",
     "artificial_lengthening",
     "filler",

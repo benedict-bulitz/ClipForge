@@ -1313,6 +1313,9 @@ def _build_initial_state(
     # agency, intention, contrast); the planner call confirms or corrects it.
     intent["question_intent"] = interpret_question(prompt, intent["language"])
     resolved_options = options.model_copy(update={"language": intent["language"]})
+
+    question_answer_contract = generate_contract(prompt, intent["language"], settings)
+    contract_coverage = None
     sources: list[dict] = []
     facts: list[dict[str, Any]] = []
     research_status = "skipped"
@@ -1365,6 +1368,7 @@ def _build_initial_state(
         )
     link_package_facts(research_package, facts)
 
+    contract_coverage = evaluate_research_coverage(question_answer_contract, facts, settings)
     novelty_plan = safe_novelty_plan(intent, facts)
     report_progress(progress, "script", "Writing the narration", phase="start")
     ai_result = plan_with_openai(
@@ -1569,6 +1573,8 @@ def _build_initial_state(
         "prompt": prompt,
         "intent": intent,
         "facts": facts,
+        "question_answer_contract": getattr(question_answer_contract, "model_dump", lambda: None)(),
+        "research_coverage": getattr(contract_coverage, "model_dump", lambda: None)(),
         "story_arc": story_arc,
         "payoff_plan": payoff_plan,
         "format_plan": format_plan,
@@ -1673,6 +1679,8 @@ def _build_initial_state(
             **({"retry": research_retry} if research_retry else {}),
         },
         "facts": facts,
+        "contract": getattr(question_answer_contract, "model_dump", lambda: None)() if question_answer_contract else None,
+        "contract_coverage": getattr(contract_coverage, "model_dump", lambda: None)() if contract_coverage else None,
         "information_plan": {
             "must_know": [fact["id"] for fact in facts if fact["priority"] == "MUST_KNOW"],
             "answer_skeleton": [block["role"].upper() for block in blocks],
