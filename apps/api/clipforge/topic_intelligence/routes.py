@@ -1,5 +1,6 @@
-"""HTTP surface of Topic Intelligence.  Proposes topics; never generates or publishes."""
 from __future__ import annotations
+
+"""HTTP surface of Topic Intelligence.  Proposes topics; never generates or publishes."""
 
 from typing import Annotated
 

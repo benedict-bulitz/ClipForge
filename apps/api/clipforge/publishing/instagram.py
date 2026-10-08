@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """Instagram HTTP boundary: Instagram API with Facebook Login for Business.
 
 ClipForge uploads the *local* final MP4 directly to Meta, which Meta supports
@@ -27,7 +29,6 @@ Official endpoints (Graph API, version from settings):
 Tokens travel only in headers or form bodies (never in a logged URL) and no
 error message carries one.
 """
-from __future__ import annotations
 
 from collections.abc import Iterator
 from dataclasses import dataclass

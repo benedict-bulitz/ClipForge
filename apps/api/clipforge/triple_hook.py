@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """Triple Hook V2: the opening as one coordinated verbal / visual / on-screen unit.
 
 Extends the existing hook path (``script.triple_hook`` is the one persisted
@@ -25,7 +27,6 @@ and its on-screen hook becomes a ``label`` overlay drawn by the renderer.
 No topic vocabulary lives here: only language grammar and structural rules
 per selected format.
 """
-from __future__ import annotations
 
 import re
 from collections.abc import Callable
@@ -668,7 +669,7 @@ def plan_triple_hook(
                 for item in legacy_verbal
             ]
     normalised = [normalise_candidate(raw, index, context, origin="ai") for index, raw in enumerate(raw_ai[:MAX_CANDIDATES])]
-    rejected_strategies = sorted({str(raw.get("strategy")) for raw, item in zip(raw_ai, normalised, strict=False) if item is None and isinstance(raw, dict)})
+    rejected_strategies = sorted({str(raw.get("strategy")) for raw, item in zip(raw_ai, normalised) if item is None and isinstance(raw, dict)})
     candidates = _distinct([item for item in normalised if item is not None])[:MAX_CANDIDATES]
     assessed = {candidate["id"]: assess_candidate(candidate, context) for candidate in candidates}
     eligible_ai = sum(1 for result in assessed.values() if not result["hard_fail"])

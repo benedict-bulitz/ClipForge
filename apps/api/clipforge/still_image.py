@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """The one static-image input authority for FFmpeg.
 
 Still scenes (Pexels / Wikimedia / Pixabay photos, generated images) and the
@@ -19,7 +21,6 @@ a real JPEG of its first frame.  A file Pillow cannot identify is left to
 FFmpeg exactly as before (it may read formats Pillow does not); an identified
 image that cannot be decoded is refused with a clear error.
 """
-from __future__ import annotations
 
 import hashlib
 from pathlib import Path

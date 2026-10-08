@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """Channel performance overview: a read-only aggregate over the one analytics store.
 
 Nothing is stored here.  Every number comes from the existing authorities:
@@ -41,7 +43,6 @@ The Hook / Retention / Engagement / Conversion diagnosis compares the cohort
 with the channel's own other videos (quartiles, ``learning._distribution``);
 there are no universal "good Shorts" thresholds.
 """
-from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field

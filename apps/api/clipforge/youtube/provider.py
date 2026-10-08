@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """Google / YouTube HTTP boundary.
 
 Everything that talks to Google lives behind ``YouTubeProvider`` so tests use
@@ -25,7 +27,6 @@ Secrets never leave this module in a log line or an error message: errors
 carry a stable ``code`` plus a user-safe message taken from Google's
 ``reason``/``message`` fields, which do not contain credentials.
 """
-from __future__ import annotations
 
 import logging
 import re

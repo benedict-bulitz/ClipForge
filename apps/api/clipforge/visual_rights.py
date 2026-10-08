@@ -1,10 +1,11 @@
+from __future__ import annotations
+
 """Small copyright reuse authority. None means unknown, never permission.
 
 This checks evidence for edited commercial video, not model/property releases.
 Provider-wide grants are explicitly identified; legacy assets are not upgraded.
 """
 
-from __future__ import annotations
 
 import html
 import re

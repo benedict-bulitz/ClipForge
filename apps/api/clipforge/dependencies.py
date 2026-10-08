@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 DEPENDENCIES: dict[str, set[str]] = {
     "research": {"facts"},
     "facts": {"script"},

@@ -1,8 +1,9 @@
+from __future__ import annotations
+
 """Bounded positive scene/story evidence shared by routing and acceptance.
 
 Exclusions, research citations and unrelated story units are not visual intent.
 """
-from __future__ import annotations
 
 import hashlib
 import re

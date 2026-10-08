@@ -1,10 +1,11 @@
+from __future__ import annotations
+
 """Compact, factuality-first viewer-reaction planning.
 
 Reaction labels explain why an existing scene earns its place.  They never add
 scenes, claims, or artificial stakes, and remain intentionally small enough to
 be useful to the current hook, visual, and pacing systems.
 """
-from __future__ import annotations
 
 import re
 from typing import Any

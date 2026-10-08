@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """Optional LLM steps: question decomposition and evidence synthesis.
 
 Both are bounded (one call each, counted in the research budget) and both
@@ -5,7 +7,6 @@ have deterministic fallbacks, so research works without an API key.  The
 synthesis step only sees compact evidence units - never raw pages - and its
 output is validated against the cited evidence (``package.validate_synthesized``).
 """
-from __future__ import annotations
 
 import json
 import re

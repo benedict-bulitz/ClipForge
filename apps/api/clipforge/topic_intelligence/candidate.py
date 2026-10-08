@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """The canonical TopicCandidate model and its signals.
 
 A *signal* is one independent piece of evidence normalized to 0..1 with an
@@ -5,7 +7,6 @@ explicit confidence.  Missing evidence is ``Signal.unavailable()`` - never a
 zero - so a channel without analytics (or a failed source) does not make a
 candidate look bad; the scoring authority treats it as neutral.
 """
-from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass, field

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """Transparent source classification: what kind of source is this?
 
 There is no opaque trust score.  A source gets one ``source_type`` from a
@@ -9,7 +11,6 @@ two documented exceptions - Wikipedia (the existing free research provider)
 and a short list of user-generated platforms that must never be mistaken for
 authority.
 """
-from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
@@ -109,7 +110,7 @@ class SourceClass:
 
 def host_of(url: str) -> str:
     host = (urlsplit(str(url or "")).hostname or "").casefold()
-    return host[4:] if host.startswith("www.") else host
+    return host.removeprefix("www.")
 
 
 def registrable_domain(url_or_host: str) -> str:

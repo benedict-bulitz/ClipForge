@@ -1,10 +1,11 @@
+from __future__ import annotations
+
 """Pure signal math: trend, outlier-relative-to-channel and competition.
 
 Every function returns a ``Signal`` with its sample size and method in the
 evidence, so the rationale can always be traced back.  No causal claims: an
 outlier says a video beat its own channel's normal level, not why.
 """
-from __future__ import annotations
 
 import math
 import statistics

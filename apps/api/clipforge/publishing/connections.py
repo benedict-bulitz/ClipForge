@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """TikTok and Instagram sign-in, per-account credentials and access tokens.
 
 Each account's long-lived credential is stored only in its own keyring entry
@@ -6,7 +8,6 @@ access tokens are cached in memory per account.  ``access_token`` always
 resolves the credential of exactly the account it was asked for, so one
 account's token can never be used for another account's post.
 """
-from __future__ import annotations
 
 import time
 from datetime import UTC, datetime, timedelta

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """The one project-deletion lifecycle authority (upload-aware).
 
 * Never successfully uploaded -> everything is deleted (project rows, local
@@ -13,7 +15,6 @@
 
 The YouTube video itself is never touched.
 """
-from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """Evidence units: compact, attributable sentences that answer a sub-question.
 
 A unit is one complete sentence (plus the preceding sentence when it starts
@@ -8,7 +10,6 @@ short excerpt for traceability.  Relevance is a gate: a sentence that does
 not talk about the question's subject is never evidence, however
 authoritative its page.
 """
-from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field

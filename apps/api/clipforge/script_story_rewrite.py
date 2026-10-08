@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """Script & Story Quality V2: critic -> holistic creative rewrite -> verifier.
 
 The first draft is an input, not something to preserve.  When an AI provider
@@ -10,23 +12,22 @@ is available it works like a strong human editor:
    sentence, the hook wording, the beat count and order, the answer structure
    and the payoff, and may use any supported research fact.
 3. **Verifier** - independently checks hard requirements (grounding, numbers,
-   reveal contract, answered question, payoff) and objective quality.  At most
+   reveal contract, answered question, payoff) and objective quality.  At mos
    one bounded repair attempt follows a failed verification.
 
-Only *intent* is protected: the hook keeps its curiosity promise without
+Only *intent* is protected: the hook keeps its curiosity promise withou
 spending the protected answer, the reveal never moves earlier than its
 dependencies, and the payoff answers the question.  Exact wording is never
 protected.
 
 Hard rules stay deterministic where they can be (cited fact IDs exist and are
-usable, every number is in the research, protected reveal order by fact
+usable, every number is in the research, protected reveal order by fac
 identity, duration budget, language) and are re-checked by the AI verifier
 for meaning (no invented or contradicting claims).
 
 Without a provider, or when it is unavailable, the deterministic Script &
 Story Quality V1 pass is the fallback and its gate stays authoritative.
 """
-from __future__ import annotations
 
 import copy
 import json
@@ -57,7 +58,7 @@ from .verbal_hook import _numbers, _rounded_from, information_gain, proposition_
 
 REWRITE_VERSION = 2
 # One holistic rewrite plus one bounded repair; never an open-ended loop.
-MAX_REWRITE_ATTEMPTS = 2
+MAX_REWRITE_ATTEMPTS = 3
 # A payoff that adds less than this share of new propositions beyond the
 # answer beat says the same thing twice (language independent: it compares
 # meaning tokens, not wording).
@@ -122,6 +123,7 @@ class ContractObligationEvaluation(BaseModel):
     id: str
     status: Literal["satisfied", "partially_satisfied", "missing", "circular", "unsupported", "insufficient_depth"]
     is_primary: bool = False
+    is_required: bool = False
     reasoning: str
 
 class VerifierResponse(BaseModel):
@@ -194,6 +196,7 @@ REWRITE_INSTRUCTIONS = (
     "structure, rewrite the payoff completely, choose a better analogy or none, compress or expand. Use ANY "
     "usable research fact, including facts the draft ignored, and choose the strongest subset. Quality beats "
     "preserving the draft; do not patch critic findings one by one - optimise the whole script. "
+    "If the research contains a mandatory fact but the draft missed it, you MUST use it. "
     + SHARED_RULES
     + "Story contract: the first beat has role hook and keeps hook_intent (its curiosity promise and intended "
     "viewer reaction) in new or old words, without spending the protected answer. The payoff must answer the "
@@ -324,7 +327,7 @@ def _protected_ids(context: dict[str, Any]) -> set[str]:
 
 def _usable_facts(context: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return {
-        str(fact.get("id")): fact
+        str(fact.get("id")): fac
         for fact in context.get("facts") or []
         if isinstance(fact, dict) and fact.get("id") and fact_is_supported(fact)
     }
@@ -631,21 +634,31 @@ def _verifier_findings(verdict: VerifierResponse) -> list[dict[str, Any]]:
         for item in verdict.findings
     ]
 
-    if not getattr(verdict, "contract_sufficient", True):
-        found.append(_finding("contract_insufficient", "hard", "Rewrite failed QuestionAnswerContract (missing required obligation, circular, or insufficiently deep)", source="verifier"))
-    for eval in getattr(verdict, "contract_evaluations", []):
-        if eval.status in ("missing", "circular", "unsupported", "insufficient_depth"):
-            if eval.status == "missing":
-                if eval.is_primary:
-                    found.append(_finding("primary_answer_missing", "hard", f"Primary answer missing: {eval.id}", source="verifier"))
-                else:
-                    found.append(_finding("required_obligation_missing", "hard", f"Required obligation missing: {eval.id}", source="verifier"))
-            elif eval.status == "circular":
+    contract_sufficient = getattr(verdict, "contract_sufficient", True)
+    evaluations = getattr(verdict, "contract_evaluations", [])
+
+    has_required_failure = False
+    for eval in evaluations:
+        is_req = getattr(eval, "is_required", False) or getattr(eval, "is_primary", False)
+        if is_req and eval.status in ("missing", "circular", "unsupported", "insufficient_depth", "partially_satisfied"):
+            has_required_failure = True
+            is_prim = getattr(eval, "is_primary", False)
+            if is_prim and eval.status in ("missing", "partially_satisfied"):
+                found.append(_finding("primary_answer_missing", "hard", f"Primary answer missing or partial: {eval.id}", source="verifier"))
+            elif not is_prim and eval.status in ("missing", "partially_satisfied"):
+                found.append(_finding("required_obligation_missing", "hard", f"Required obligation missing or partial: {eval.id}", source="verifier"))
+
+            if eval.status == "circular":
                 found.append(_finding("answer_circular", "hard", f"Answer is circular for: {eval.id}", source="verifier"))
             elif eval.status == "unsupported":
                 found.append(_finding("unsupported_required_answer", "hard", f"Unsupported required answer: {eval.id}", source="verifier"))
             elif eval.status == "insufficient_depth":
                 found.append(_finding("insufficient_causal_depth", "hard", f"Insufficient causal depth for: {eval.id}", source="verifier"))
+
+    if not contract_sufficient:
+        has_optional_failure = any(not (getattr(e, "is_required", False) or getattr(e, "is_primary", False)) and e.status != "satisfied" for e in evaluations)
+        if has_required_failure or not evaluations or not has_optional_failure:
+            found.append(_finding("contract_insufficient", "hard", "Rewrite failed QuestionAnswerContract (missing required obligation)", source="verifier"))
 
     checks = (
         (not verdict.grounded, "ungrounded", "hard", "The verifier found statements the research does not support."),
@@ -684,7 +697,7 @@ def _with_holistic(report: dict[str, Any], holistic: dict[str, Any], mode: str) 
         "error": holistic.get("error"),
         "issues": [],
     }
-    return report
+    return repor
 
 
 def _block_report(report: dict[str, Any], code: str, reason: str, *, research: bool) -> dict[str, Any]:
@@ -696,7 +709,7 @@ def _block_report(report: dict[str, Any], code: str, reason: str, *, research: b
     blocking = sorted({*report["gate"].get("blocking", []), code})
     report["gate"] = {"ready": False, "status": "blocked", "blocking": blocking}
     report["research_insufficient"] = bool(report.get("research_insufficient") or research)
-    return report
+    return repor
 
 
 def _accepted_report(
@@ -704,7 +717,7 @@ def _accepted_report(
     attempt: dict[str, Any], fallback_report: dict[str, Any],
 ) -> dict[str, Any]:
     audit = attempt.get("explanation_audit")
-    audited = {**context, "explanation_audit": audit} if audit else context
+    audited = {**context, "explanation_audit": audit} if audit else contex
     report = assess_script_story_quality(final, audited)
     issues = []
     for issue in report["issues"]:
@@ -740,7 +753,7 @@ def _accepted_report(
             "segments_rewritten": [[str(block.get("id") or "") for block in final]],
         },
     })
-    return report
+    return repor
 
 
 def run_script_story_quality(
@@ -751,7 +764,7 @@ def run_script_story_quality(
     """Critic -> holistic rewrite -> verifier, with a bounded repair and a deterministic fallback.
 
     Returns production blocks and the report persisted as
-    ``script.script_story_quality_v1``.  ``report["rewrite"]`` is present
+    ``script.script_story_quality_v1``.  ``report["rewrite"]`` is presen
     only when an AI rewrite was accepted; its hook may differ from the
     selected Triple Hook wording (the caller adopts it).
     """
@@ -799,13 +812,20 @@ def run_script_story_quality(
     previous: list[dict[str, Any]] | None = None
     repair_findings: list[dict[str, Any]] = []
     for number in range(1, MAX_REWRITE_ATTEMPTS + 1):
+        is_fresh = number == 3
+
         request = {
             **brief,
             "critic": critic_payload,
             "attempt": number,
-            "previous_rewrite": _beats(previous) if previous else None,
+            "previous_rewrite": _beats(previous) if previous and not is_fresh else None,
             "verifier_findings": repair_findings or None,
         }
+
+        if is_fresh:
+            request["draft"] = {"beats": []}
+            request["verifier_findings"] = [{"code": "fresh_regeneration", "severity": "hard", "message": "Previous repair failed QuestionAnswerContract. This is a FINAL FRESH REGENERATION. Start from scratch. Drop the old wording."}] + (repair_findings or [])
+
         response, error = _guard(lambda request=request: provider.rewrite(request))
         if error is not None:
             attempts.append({"attempt": number, "status": "provider_error", "error": error})

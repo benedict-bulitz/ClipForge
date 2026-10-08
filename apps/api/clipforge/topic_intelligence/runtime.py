@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """Bounded discovery runtime: single-flight ownership, the current stage, hard time limits.
 
 Real Mac (d86d9b3): Home showed "Themenvorschläge werden gesucht…" for good while the
@@ -11,7 +13,6 @@ own (client default: 600 s per attempt, 2 retries).  Nothing here may wait forev
   the flight is free again, so "Neue Vorschläge" can retry;
 * the current stage, its provider and elapsed time are visible in the status endpoint.
 """
-from __future__ import annotations
 
 import threading
 import time

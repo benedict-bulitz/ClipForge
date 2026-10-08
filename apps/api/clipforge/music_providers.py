@@ -1,6 +1,7 @@
+from __future__ import annotations
+
 """Free, reusable-license music metadata providers."""
 
-from __future__ import annotations
 
 import re
 from dataclasses import dataclass

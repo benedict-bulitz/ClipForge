@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """Overlay copy: the smallest useful visual relationship of a fact, and its check.
 
 An informational overlay must teach something on its own.  Copy is built from
@@ -16,14 +18,19 @@ planned) and by the Final Video Critic (on what was actually drawn).
 Only language grammar is listed here (articles, conjunctions, hedges,
 reporting verbs, copulas, causal verbs) — no topic vocabulary.
 """
-from __future__ import annotations
 
 import hashlib
 import json
 import re
 from collections import OrderedDict
 from collections.abc import Callable
-from itertools import pairwise
+from itertools import tee
+
+
+def pairwise(iterable):
+    a, b = tee(iterable)
+    next(b, None)
+    return zip(a, b)
 from typing import Any
 
 from openai import OpenAI, OpenAIError

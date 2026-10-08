@@ -1,5 +1,6 @@
-"""Classified, secret-free provider failures shared by the TikTok and Instagram boundaries."""
 from __future__ import annotations
+
+"""Classified, secret-free provider failures shared by the TikTok and Instagram boundaries."""
 
 import logging
 import re

@@ -1,10 +1,11 @@
+from __future__ import annotations
+
 """Platform-specific, persisted social hashtag suggestions.
 
 This module deliberately has no trend provider.  It produces content-relevant
 metadata only; a future provider can add a trend signal to each platform entry.
 """
 
-from __future__ import annotations
 
 import json
 import re

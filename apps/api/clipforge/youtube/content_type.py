@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """YouTube's creator content type in one canonical form.
 
 The YouTube Analytics ``creatorContentType`` dimension is documented with
@@ -10,7 +12,6 @@ before this canonical form (lower/camel case) need no migration.
 The type is only ever YouTube's own answer: nothing here classifies a video
 as a Short because ClipForge rendered it vertically.
 """
-from __future__ import annotations
 
 import re
 

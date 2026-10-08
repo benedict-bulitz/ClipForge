@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """Queue Overview: the current generation queue, one compact row per job.
 
 ClipForge persists no batch identifier, so the *current queue* is derived from
@@ -20,7 +22,6 @@ jobs, so it leaves the overview as well.
 
 Everything here is read-only and local: no YouTube call, no render, no mix.
 """
-from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import Any

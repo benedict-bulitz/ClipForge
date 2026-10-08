@@ -1,7 +1,9 @@
+from __future__ import annotations
+
 import re
 import sys
 from contextlib import asynccontextmanager
-from typing import Annotated
+from typing import Annotated, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.encoders import jsonable_encoder
@@ -381,7 +383,7 @@ def generation_queue_overview_route(db: DbSession, config: SettingsDep) -> dict:
     return queue_overview(db, config)
 
 
-@app.get("/api/generation-jobs/active", response_model=GenerationJobRead | None)
+@app.get("/api/generation-jobs/active", response_model=Optional[GenerationJobRead])
 def active_generation_job_route(db: DbSession) -> dict | None:
     job = active_generation_job(db)
     return serialize_generation_job(job) if job is not None else None

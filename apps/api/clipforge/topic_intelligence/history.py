@@ -1,10 +1,11 @@
+from __future__ import annotations
+
 """What ClipForge already made: novelty memory and the optional own-performance prior.
 
 Reads the existing stores only (projects, queued requests, YouTube uploads,
 the retained Learning Archive and analytics snapshots) - it never keeps a
 second copy of analytics.
 """
-from __future__ import annotations
 
 import math
 import statistics

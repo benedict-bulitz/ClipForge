@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import logging
 from typing import Literal
 
@@ -28,7 +30,7 @@ class QuestionAnswerContract(BaseModel):
     core_question: str
     primary_answer_obligation: AnswerObligation
     required_supporting_obligations: list[AnswerObligation]
-    optional_context: list[str]
+    optional_context: list[str] = Field(default_factory=list)
     causal_mechanistic_chain: list[CausalChainStep] = Field(default_factory=list)
     historical_motive: str | None = None
     required_mechanism_concepts: list[str] = Field(default_factory=list)

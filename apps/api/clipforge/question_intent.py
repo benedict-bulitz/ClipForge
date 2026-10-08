@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """Question intent: what the user actually asks, before anything is researched.
 
 One canonical contract, stored as ``intent["question_intent"]`` and carried
@@ -17,7 +19,6 @@ the corrected interpretation.
 human behaviour; "Warum öffnet *sich* TikTok, obwohl ich nichts angeklickt
 habe?" asks about the app.  They never resolve to the same intent.
 """
-from __future__ import annotations
 
 import re
 from typing import Any

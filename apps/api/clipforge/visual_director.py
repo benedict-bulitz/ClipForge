@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """Visual Director V2: per-scene visual strategy and bounded, quality-gated fallbacks.
 
 The director sits on top of the existing media pipeline; it never replaces it.
@@ -18,7 +20,6 @@ consider, in the scene's own fallback order:
 * leaving the scene missing once permitted fallbacks are exhausted (rendering
   refuses missing sources; synthetic text cards remain disabled).
 """
-from __future__ import annotations
 
 import hashlib
 import json

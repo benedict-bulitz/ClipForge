@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """HTTP API for multi-platform publishing (accounts, Instagram/TikTok posts, scheduler).
 
 YouTube keeps its own mature endpoints (``/api/youtube/...``); this router
@@ -6,7 +8,6 @@ YouTube connect/disconnect to ``youtube.connection``.  No response ever
 contains a credential: developer-app secrets are reported as configured or
 not, account tokens never leave the keyring.
 """
-from __future__ import annotations
 
 import logging
 from threading import Thread

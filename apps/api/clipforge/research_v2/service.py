@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """Research Pipeline V2 orchestration.
 
 QUESTION -> DECOMPOSITION -> DISCOVERY -> (cheap prefilter) -> RETRIEVAL ->
@@ -7,7 +9,6 @@ CONTRADICTIONS -> CLAIM SELECTION (+ validated synthesis) -> RESEARCH PACKAGE
 Every step is bounded by ``ResearchBudget`` and a wall-clock deadline; every
 external failure becomes a diagnostic record, never an exception.
 """
-from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field

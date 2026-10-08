@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """Caption timing for the canonical narration script.
 
 The narration script is the only source of visible caption text. Audio
@@ -14,7 +16,6 @@ Authority order:
 4. phrase timing estimated from the canonical script.
 """
 
-from __future__ import annotations
 
 import hashlib
 import importlib.util

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """Story / information arc: what the viewer learns, when, and in which role.
 
 The arc is the shared semantic backbone for payoff, hook, script, scene,
@@ -13,10 +15,15 @@ error yields a safe generic ordering.
 Timing is not decided here.  The arc says WHAT must exist and in which order;
 real TTS durations still decide how long it takes.
 """
-from __future__ import annotations
 
 import re
-from itertools import pairwise
+from itertools import tee
+
+
+def pairwise(iterable):
+    a, b = tee(iterable)
+    next(b, None)
+    return zip(a, b)
 from typing import Any
 
 from .media import _NON_SIDE_TARGET_KEYS, visual_target_key

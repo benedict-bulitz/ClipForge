@@ -3,7 +3,6 @@ from unittest.mock import patch
 import pytest
 
 from clipforge.config import Settings
-from clipforge.models import AdvancedOptions
 from clipforge.pipeline import _build_initial_state
 from clipforge.question_answer_contract import (
     AnswerObligation,
@@ -11,6 +10,7 @@ from clipforge.question_answer_contract import (
     ResearchCoverageReport,
     generate_contract,
 )
+from clipforge.schemas import AdvancedOptions
 from clipforge.script_story_rewrite import (
     ContractObligationEvaluation,
     VerifierResponse,
@@ -37,7 +37,7 @@ def test_1_contract_missing_overrides_generic_answers_question_true():
         contract_sufficient=False,
         contract_evaluations=[
             ContractObligationEvaluation(
-                id="req1", status="missing", reasoning="Missing", is_primary=False
+                id="req1", status="missing", reasoning="Missing", is_primary=False, is_required=True
             )
         ]
     )
@@ -68,7 +68,7 @@ def test_3_required_obligation_insufficient_depth_blocks():
         answer_sufficiency={"verdict": "answered", "one_sentence_answer": "ok", "missing": ""}, explanation_audit=[],
         contract_sufficient=False,
         contract_evaluations=[
-            ContractObligationEvaluation(id="req1", status="insufficient_depth", reasoning="Shallow", is_primary=False)
+            ContractObligationEvaluation(id="req1", status="insufficient_depth", reasoning="Shallow", is_primary=False, is_required=True)
         ]
     )
     findings = _verifier_findings(response)
@@ -244,6 +244,59 @@ def test_16_no_network_access():
     with pytest.raises(AssertionError, match="Real OpenAI contract generation is forbidden"):
         generate_contract("Test?", "en", Settings(openai_api_key="sk-test"))
 
-def test_13_check():
-    # Update test 13
-    pass
+
+def test_optional_obligation_missing_does_not_block():
+    response = VerifierResponse(
+        grounded=True, answers_question=True, payoff_fulfilled=True,
+        premature_reveal=False, hook_promise_kept=True, answer_payoff_duplicate=False, better_than_draft=True, findings=[],
+        answer_sufficiency={"verdict": "answered", "one_sentence_answer": "ok", "missing": ""}, explanation_audit=[],
+        contract_sufficient=True,
+        contract_evaluations=[
+            ContractObligationEvaluation(id="req1", status="missing", reasoning="Missing optional", is_primary=False, is_required=False),
+            ContractObligationEvaluation(id="req2", status="satisfied", reasoning="Satisfied req", is_primary=True, is_required=True)
+        ]
+    )
+    findings = _verifier_findings(response)
+    assert not any(f["severity"] == "hard" for f in findings)
+
+def test_required_obligation_partially_satisfied_blocks():
+    response = VerifierResponse(
+        grounded=True, answers_question=True, payoff_fulfilled=True,
+        premature_reveal=False, hook_promise_kept=True, answer_payoff_duplicate=False, better_than_draft=True, findings=[],
+        answer_sufficiency={"verdict": "answered", "one_sentence_answer": "ok", "missing": ""}, explanation_audit=[],
+        contract_sufficient=False,
+        contract_evaluations=[
+            ContractObligationEvaluation(id="req1", status="partially_satisfied", reasoning="Partial", is_primary=False, is_required=True)
+        ]
+    )
+    findings = _verifier_findings(response)
+    codes = [f["code"] for f in findings if f["severity"] == "hard"]
+    assert "required_obligation_missing" in codes
+
+def test_primary_required_partially_satisfied_blocks():
+    response = VerifierResponse(
+        grounded=True, answers_question=True, payoff_fulfilled=True,
+        premature_reveal=False, hook_promise_kept=True, answer_payoff_duplicate=False, better_than_draft=True, findings=[],
+        answer_sufficiency={"verdict": "answered", "one_sentence_answer": "ok", "missing": ""}, explanation_audit=[],
+        contract_sufficient=False,
+        contract_evaluations=[
+            ContractObligationEvaluation(id="req1", status="partially_satisfied", reasoning="Partial", is_primary=True, is_required=True)
+        ]
+    )
+    findings = _verifier_findings(response)
+    codes = [f["code"] for f in findings if f["severity"] == "hard"]
+    assert "primary_answer_missing" in codes
+
+def test_required_satisfied_optional_missing_passes():
+    response = VerifierResponse(
+        grounded=True, answers_question=True, payoff_fulfilled=True,
+        premature_reveal=False, hook_promise_kept=True, answer_payoff_duplicate=False, better_than_draft=True, findings=[],
+        answer_sufficiency={"verdict": "answered", "one_sentence_answer": "ok", "missing": ""}, explanation_audit=[],
+        contract_sufficient=True,
+        contract_evaluations=[
+            ContractObligationEvaluation(id="opt1", status="missing", reasoning="Missing", is_primary=False, is_required=False),
+            ContractObligationEvaluation(id="req1", status="satisfied", reasoning="Satisfied", is_primary=True, is_required=True)
+        ]
+    )
+    findings = _verifier_findings(response)
+    assert not any(f["severity"] == "hard" for f in findings)

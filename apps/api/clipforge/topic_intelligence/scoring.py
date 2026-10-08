@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """THE Topic Intelligence scoring authority.
 
 Nothing else ranks candidates: routes, the UI and the future learning loop
@@ -100,7 +102,6 @@ and 56 % of the weight coming from one curator answer counted five times:
 Unchanged from v1: low-confidence evidence is shrunk towards neutral for quality
 signals; trend decays with evidence age; hard rejections are separate from the score.
 """
-from __future__ import annotations
 
 import hashlib
 import json

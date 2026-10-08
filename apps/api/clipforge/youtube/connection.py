@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """YouTube connections: any number of channels, each its own account.
 
 Owns the OAuth flow (browser + PKCE + local callback), the channel identities
@@ -13,7 +15,6 @@ The pre-multi-account installation had one ``youtube_connections`` row
 row and ``_refresh_token`` copies the global token to the adopted account's
 own entry the first time it is needed (non-destructive, see the report).
 """
-from __future__ import annotations
 
 import base64
 import hashlib

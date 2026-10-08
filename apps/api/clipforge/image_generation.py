@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """Bounded, optional OpenAI image generation for scene-level visual fallbacks.
 
 Generation is a paid fallback: callers decide *whether* to generate (budget,
@@ -5,7 +7,6 @@ policy, story constraints); this module only performs one request and reports
 what happened.  Credentials come from the resolved ClipForge settings and are
 never logged, persisted or included in error messages.
 """
-from __future__ import annotations
 
 import base64
 import binascii

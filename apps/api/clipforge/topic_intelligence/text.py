@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """German text helpers: normalization, light semantic similarity, niches, question checks.
 
 The similarity is deliberately small and dependency-free (no vector store):
@@ -5,7 +7,6 @@ German-aware normalization, stop words, light suffix stemming and a soft token
 match that understands compounds ("Autofahren" ~ "Auto") and near spellings
 (character trigrams).  It is used for novelty and pool de-duplication only.
 """
-from __future__ import annotations
 
 import re
 import unicodedata

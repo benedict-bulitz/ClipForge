@@ -1,5 +1,6 @@
-"""Shared research records and the per-run request budget."""
 from __future__ import annotations
+
+"""Shared research records and the per-run request budget."""
 
 import threading
 from dataclasses import dataclass, field

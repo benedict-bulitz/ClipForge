@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """Video Library: the global, project-independent view of uploaded videos.
 
 A read model only.  Everything shown here comes from the existing authorities:
@@ -18,7 +20,6 @@ after its project's heavy media was deleted.  A video the user removed from
 the library (``library_removed_at``, see ``library_removal``) is left out of
 the index and the detail page but stays in analytics and learning.
 """
-from __future__ import annotations
 
 import io
 import logging

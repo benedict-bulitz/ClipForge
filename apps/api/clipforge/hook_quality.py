@@ -22,7 +22,6 @@ Gates are grammar families (German and English), never topic vocabulary.  A
 gate only rejects when it is confident (a setup formula, an empty teaser, a
 restated question with nothing added); weaker signals only lower scores.
 """
-from __future__ import annotations
 
 import re
 from typing import Any

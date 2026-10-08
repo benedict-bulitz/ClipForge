@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """The one slot-selection algorithm (Smart Slot Planner V1).
 
 Pure and deterministic: no database, no Google.  Inputs are the channel's
@@ -11,13 +13,18 @@ tz-database, DST-safe implementation every manual schedule goes through - so
 a slot that falls into a DST gap (nonexistent) or overlap (ambiguous) is
 never suggested; it is reported as unavailable on that day instead.
 """
-from __future__ import annotations
 
 import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
-from itertools import pairwise
+from itertools import tee
+
+
+def pairwise(iterable):
+    a, b = tee(iterable)
+    next(b, None)
+    return zip(a, b)
 from zoneinfo import ZoneInfo
 
 from .publishing import MIN_SCHEDULE_LEAD, ScheduleChoice, resolve_schedule
@@ -57,7 +64,7 @@ def _utc(value: datetime) -> datetime:
 class Occupant:
     """Something already on the channel's calendar."""
 
-    at: datetime  # UTC instant
+    at: datetime  # timezone.utc instant
     kind: str  # published | scheduled | reserved
     video_id: str | None = None
     source: str = "youtube"  # youtube | clipforge_reservation

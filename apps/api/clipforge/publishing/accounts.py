@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """The one connection authority for every publishing platform.
 
 Any number of accounts per platform; ``(platform, external_account_id)`` is
@@ -6,7 +8,6 @@ unique, so connecting the same channel/account again updates the existing row
 the identity row (``status="disconnected"``) because uploads, schedules and
 analytics refer to it; only the account's keyring entry is deleted.
 """
-from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime

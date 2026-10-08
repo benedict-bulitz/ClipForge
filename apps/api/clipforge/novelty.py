@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """Content-level novelty and information gain: the one authority for "does
 this video tell the viewer something?".
 
@@ -17,7 +19,6 @@ current project.  It deliberately makes no claim about global internet-wide
 originality, never performs additional research and never writes new text:
 repairs only remove, merge or trim what the writer already said.
 """
-from __future__ import annotations
 
 import hashlib
 import json

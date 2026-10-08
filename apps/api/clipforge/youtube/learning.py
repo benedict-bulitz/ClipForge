@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """Derived, read-only learning signals from stored raw analytics.
 
 Nothing here writes to ClipForge's generation rules: hooks, Story Arc, Visual
@@ -9,7 +11,6 @@ Precision rules: retention is read at YouTube's own buckets (the nearest
 ``elapsedVideoTimeRatio`` point, 1/100 of the video) - never interpolated -
 and every comparison states its sample size.  Language is associative only.
 """
-from __future__ import annotations
 
 import statistics
 from collections.abc import Callable, Iterable

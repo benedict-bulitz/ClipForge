@@ -6,7 +6,6 @@ TTS/render).  A script is ready only if the original question is actually
 answered, no internal diagnostic is narrated and the hook asserts nothing
 the research does not support.  Everything else stays a warning.
 """
-from __future__ import annotations
 
 from typing import Any
 
@@ -94,7 +93,12 @@ def content_readiness(state: dict[str, Any]) -> dict[str, Any]:
     # Research Pipeline V2: no direct answer was found in any retrieved source.
     research = state.get("research") if isinstance(state.get("research"), dict) else {}
     package = research.get("package") if isinstance(research.get("package"), dict) else None
-    if research.get("required") and package is not None and package.get("status") in {"insufficient", "missing_mechanism"}:
+    if research.get("status") == "needs_research":
+        blocking.append({
+            "code": "research_insufficient",
+            "message": research.get("error") or "Research cannot support required QuestionAnswerContract obligations."
+        })
+    elif research.get("required") and package is not None and package.get("status") in {"insufficient", "missing_mechanism"}:
         blocking.append({
             "code": "research_insufficient",
             "message": (

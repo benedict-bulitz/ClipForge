@@ -5,7 +5,6 @@ not prescribe universal shot lengths or rewrite narration: a dense explanation
 can earn a long scene, while a short sequence can still be too frantic for its
 meaning.
 """
-from __future__ import annotations
 
 import re
 from typing import Any

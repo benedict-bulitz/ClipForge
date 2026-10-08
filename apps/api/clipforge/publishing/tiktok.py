@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """TikTok HTTP boundary: Login Kit OAuth v2 and the Content Posting API (Direct Post).
 
 Everything that talks to TikTok lives behind ``TikTokApi`` so tests use fakes.
@@ -26,7 +28,6 @@ never silently downgrades a requested public post.
 
 No token, code or upload URL ever appears in a log line or an error message.
 """
-from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass, field

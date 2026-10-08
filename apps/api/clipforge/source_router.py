@@ -1,6 +1,5 @@
 """Broad source suitability, never a relevance or rights authority."""
 
-from __future__ import annotations
 
 import re
 from dataclasses import dataclass

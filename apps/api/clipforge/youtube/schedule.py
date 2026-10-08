@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """The one publishing-schedule authority (Smart Slot Planner V1).
 
 * **Cadence** - ``YouTubePublishingSchedule`` + ``YouTubeScheduleSlot``: videos
@@ -15,7 +17,6 @@
 
 The slot selection itself lives in ``slots`` (the one algorithm).
 """
-from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
@@ -109,11 +110,11 @@ def get_schedule(db: Session, channel_id: str) -> YouTubePublishingSchedule | No
 
 
 def _default_timezone(db: Session, hint: str | None) -> str:
-    """Browser zone when the schedule is first created; else saved defaults; else UTC."""
+    """Browser zone when the schedule is first created; else saved defaults; else timezone.utc."""
     if hint and valid_timezone(hint):
         return hint
     saved = load_defaults(db).timezone
-    return saved if saved and valid_timezone(saved) else "UTC"
+    return saved if saved and valid_timezone(saved) else "timezone.utc"
 
 
 def ensure_schedule(db: Session, channel_id: str, *, timezone_hint: str | None = None) -> YouTubePublishingSchedule:

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """YouTube Analytics snapshots: raw metrics with provenance and raw retention.
 
 The only analytics store.  Each fetch appends a snapshot; nothing is
@@ -8,7 +10,6 @@ else.  ``views`` and ``engagedViews`` are separate metrics: since 31 March
 2025 Shorts ``views`` count every start/replay, while ``engagedViews`` keeps
 the previous, stricter counting.
 """
-from __future__ import annotations
 
 import math
 from datetime import UTC, date, datetime, timedelta
@@ -150,7 +151,7 @@ def due_bucket(
 
 
 def bucket_end_date(published_at: datetime | None, bucket: str | None) -> date | None:
-    """The calendar day (UTC) on which the video reaches ``bucket``'s age; None for manual."""
+    """The calendar day (timezone.utc) on which the video reaches ``bucket``'s age; None for manual."""
     hours = BUCKET_HOURS.get(bucket or "")
     if hours is None or published_at is None:
         return None
@@ -161,9 +162,9 @@ def report_window(published_at: datetime, now: datetime, bucket: str | None = No
     """The Analytics API date range: plain DATEs (no time of day, no zone).
 
     YouTube Analytics reports by calendar day.  Starting the day before the
-    UTC publication date keeps the publication day inside the range in every
-    zone west of UTC (a video published late in the evening there is already
-    "tomorrow" in UTC).  A day YouTube has not processed yet simply
+    timezone.utc publication date keeps the publication day inside the range in every
+    zone west of timezone.utc (a video published late in the evening there is already
+    "tomorrow" in timezone.utc).  A day YouTube has not processed yet simply
     contributes no rows.
 
     For an age-bucket capture (1h ... 7d) the end is the day the video reaches

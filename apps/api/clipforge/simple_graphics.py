@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """Small deterministic explanatory graphics for Visual Director V2.
 
 Three layouts only: a large number/statistic, an A-vs-B comparison and a short
@@ -5,7 +7,6 @@ process chain.  Text comes from the scene's own spec (never invented here);
 layouts keep the lower quarter free for captions and the top band free for
 attention callouts.  No topic-specific templates.
 """
-from __future__ import annotations
 
 from pathlib import Path
 from typing import Any

@@ -1,5 +1,6 @@
-"""One-time OAuth sign-in state (CSRF ``state`` + PKCE verifier), in memory only."""
 from __future__ import annotations
+
+"""One-time OAuth sign-in state (CSRF ``state`` + PKCE verifier), in memory only."""
 
 import secrets
 import time

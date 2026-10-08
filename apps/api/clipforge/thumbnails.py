@@ -3,7 +3,13 @@ from __future__ import annotations
 import re
 import subprocess
 import tempfile
-from itertools import pairwise
+from itertools import tee
+
+
+def pairwise(iterable):
+    a, b = tee(iterable)
+    next(b, None)
+    return zip(a, b)
 from pathlib import Path
 from typing import Any
 

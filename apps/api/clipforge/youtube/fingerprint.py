@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """Compact, immutable production fingerprint of one uploaded render.
 
 Built from the persisted state of the exact render revision that produced the
@@ -5,7 +7,6 @@ uploaded MP4 (measured timeline, Triple Hook, Story Arc, Visual Director,
 Final Critic).  Only IDs and compact values are copied, never media blobs, so
 analytics can later be joined to the decisions that made the video.
 """
-from __future__ import annotations
 
 from typing import Any
 

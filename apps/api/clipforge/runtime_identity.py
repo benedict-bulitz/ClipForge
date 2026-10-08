@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """Which code is this backend process actually running?
 
 The identity is detected ONCE per process (``runtime_identity`` is cached) from
@@ -14,7 +16,6 @@ binary needed; dirty state is then unknown), then a build-time identity from
 only: it is never part of creative content or content hashes.
 """
 
-from __future__ import annotations
 
 import copy
 import os

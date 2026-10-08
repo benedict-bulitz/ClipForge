@@ -23,7 +23,6 @@ Rules (enforced in ``apply_evidence``):
   TOPIC_SCORE_WEIGHTS) and is confidence-scaled like every other signal, so thin
   analytics cannot dominate - and their absence never lowers a candidate's confidence.
 """
-from __future__ import annotations
 
 from typing import Protocol
 

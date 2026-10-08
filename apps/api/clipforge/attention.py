@@ -1,5 +1,6 @@
-"""Deterministic, bounded visual attention planning."""
 from __future__ import annotations
+
+"""Deterministic, bounded visual attention planning."""
 
 import re
 from typing import Any

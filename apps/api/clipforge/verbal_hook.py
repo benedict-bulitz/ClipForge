@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """Verbal hook authority: the documented Hook Strategy framework, applied to research.
 
 The spoken hook is derived only from the documented strategy families (DAS
@@ -20,7 +22,6 @@ decides.  Repeating the user's question is an emergency fallback only.
 No topic vocabulary lives here: only grammar (stop words, negation,
 contrast, hedges, address) and Story Arc structure.
 """
-from __future__ import annotations
 
 import re
 from typing import Any

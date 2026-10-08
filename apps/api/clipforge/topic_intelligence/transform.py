@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """Topic -> compelling, truth-seeking German question (bounded, validated).
 
 Raw trends ("Schlafträgheit", a video title, a headline) are rarely good video
@@ -11,7 +13,6 @@ prompts.  Two paths feed the same candidate model:
 Every question is validated deterministically either way: natural German, a
 real question, no embedded answer, no clickbait, no number the evidence lacks.
 """
-from __future__ import annotations
 
 import re
 from collections.abc import Callable

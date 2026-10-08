@@ -1,6 +1,7 @@
+from __future__ import annotations
+
 """Curated, local, license-safe background music selection."""
 
-from __future__ import annotations
 
 import hashlib
 import json

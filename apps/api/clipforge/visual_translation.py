@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """Translate a scene's information into one photographable background visual.
 
 The image model must be told what the viewer can *see*, not what the
@@ -7,7 +9,6 @@ module asks the configured worker model, with the full Story Arc fact, for a
 concrete subject/action/setting.  It is only used on the paid-generation path
 (an OpenAI key is present there anyway); results are cached per statement.
 """
-from __future__ import annotations
 
 import hashlib
 import json

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """Instagram/TikTok publications: render-bound records and their execution.
 
 A publication is bound to the exact video the user selected: project,
@@ -21,7 +23,6 @@ Execution is exclusive (``lease_until`` claim) and idempotent:
 a publication of that render on that account is scheduled, running or
 published, and a published/failed row is never executed again.
 """
-from __future__ import annotations
 
 import hashlib
 import logging

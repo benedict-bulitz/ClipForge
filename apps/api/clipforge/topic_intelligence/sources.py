@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """Discovery source providers behind one small interface.
 
 Each source fetches through ``cache.get_or_fetch`` (normalized payload, TTL,
@@ -10,7 +12,6 @@ Official APIs only:
 * YouTube Data API v3 (via ``youtube.provider``; quota-metered).
 * Brave Search News API (the research key ClipForge already uses).
 """
-from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """Script & Story Quality V1: deterministic critic, fallback editor and gate.
 
 It composes the existing information-gain, Story Arc and payoff authorities;
@@ -9,7 +11,6 @@ available: it can only remove weak material, restore Story Arc ordering, or
 replace a vague line with the exact text of a cited supported fact.  It is
 deliberately not a creative writer.
 """
-from __future__ import annotations
 
 import copy
 import hashlib

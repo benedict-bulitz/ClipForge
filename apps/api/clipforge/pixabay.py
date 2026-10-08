@@ -1,10 +1,11 @@
+from __future__ import annotations
+
 """Optional free Pixabay provider (photos and videos) for the real-media pipeline.
 
 Enabled only when ``PIXABAY_API_KEY`` is configured.  The key is sent as the
 API's query parameter, so request errors are re-raised without their original
 exception (whose URL would contain it).
 """
-from __future__ import annotations
 
 from pathlib import Path
 from typing import Any

@@ -1,6 +1,7 @@
+from __future__ import annotations
+
 """Provider pooling and bounded widening using the existing scene authorities."""
 
-from __future__ import annotations
 
 from typing import Any
 

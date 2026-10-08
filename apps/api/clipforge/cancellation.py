@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """Cooperative cancellation of the ONE running generation job.
 
 The durable truth is ``generation_jobs.status``: the cancel request moves a
@@ -18,7 +20,6 @@ ends it as ``cancelled``.  This module is the in-process side of that state:
 No thread is ever killed: a provider call that cannot be interrupted simply
 returns (or times out) and the next checkpoint stops the job.
 """
-from __future__ import annotations
 
 import subprocess
 import threading

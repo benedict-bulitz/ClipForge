@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """Revision-safe, resumable YouTube uploads (the one uploader).
 
 Uploads read ClipForge's canonical final render directly - no export or
@@ -6,7 +8,6 @@ the connected ``channel_id``, ``project_id``, the render revision and the
 SHA-256 of the exact uploaded MP4.  ``idempotency_key`` makes a second upload of the
 same render impossible without an explicit, safe user action.
 """
-from __future__ import annotations
 
 import copy
 import hashlib
@@ -82,7 +83,7 @@ def _utc(value: datetime | None) -> datetime | None:
 
 
 def aware(value: datetime | None) -> datetime | None:
-    """SQLite returns naive datetimes; everything ClipForge stores here is UTC."""
+    """SQLite returns naive datetimes; everything ClipForge stores here is timezone.utc."""
     return _utc(value)
 
 

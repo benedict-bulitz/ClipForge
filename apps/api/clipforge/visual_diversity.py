@@ -1,10 +1,11 @@
+from __future__ import annotations
+
 """Cheap, bounded tie preferences; never an admission or semantic authority.
 
 Only captions/structured direction describe a concept. Provider identity,
 search provenance and result rank are deliberately excluded.
 """
 
-from __future__ import annotations
 
 import re
 from collections.abc import Callable

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """Semantic topic curation (semantic-curator-v2): question creation + validation in ONE call.
 
 Deterministic rules verify a question's FORM; they cannot judge meaning, and
@@ -17,7 +19,6 @@ reject stays in ``scoring``.  Results are cached per topic evidence + curator
 version + model, so the same topic is never paid for twice.  Nothing here runs
 during video generation.
 """
-from __future__ import annotations
 
 import hashlib
 import json

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """The one YouTube upload-settings authority.
 
 Every control the publishing UI shows is listed in ``SETTINGS_CATALOG`` with
@@ -8,7 +10,6 @@ control.  Compliance answers (made for kids, altered/synthetic content) are
 never pre-filled: they come from the user, per video or from a default the
 user saved themselves.
 """
-from __future__ import annotations
 
 import hashlib
 import io
@@ -251,7 +252,7 @@ def suggest_schedule(time_of_day: str | None, timezone: str | None, *, now: date
     """Next valid future date for a preferred local time; None if not safely inferable."""
     if not time_of_day or not timezone or not _TIME.match(time_of_day) or not valid_timezone(timezone):
         return None
-    now = now or datetime.now(UTC)
+    now = now or datetime.now(timezone.utc)
     today = now.astimezone(ZoneInfo(timezone)).date()
     for offset in range(3):
         candidate = ScheduleChoice(date=(today + timedelta(days=offset)).isoformat(), time=time_of_day, timezone=timezone)
@@ -303,7 +304,7 @@ class ScheduleResolution:
 def _offset(value: timedelta | None) -> str:
     minutes = int((value or timedelta()).total_seconds() // 60)
     sign = "+" if minutes >= 0 else "-"
-    return f"UTC{sign}{abs(minutes) // 60:02d}:{abs(minutes) % 60:02d}"
+    return f"timezone.utc{sign}{abs(minutes) // 60:02d}:{abs(minutes) % 60:02d}"
 
 
 def resolve_schedule(choice: ScheduleChoice, *, now: datetime | None = None) -> ScheduleResolution:

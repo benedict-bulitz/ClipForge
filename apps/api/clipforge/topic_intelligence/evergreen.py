@@ -16,7 +16,6 @@ widening pass), one pageview request each, cached for a day; after
 ``MAX_CONSECUTIVE_FAILURES`` failed requests the fetch stops.  Without network the
 subjects are still offered - honestly, with no demand evidence.
 """
-from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """Corroboration, source independence, contradictions and freshness.
 
 * Independence: sources are grouped into provenance clusters by registrable
@@ -14,7 +16,6 @@
 * Freshness: time-sensitive claims need a recent, dated source; evergreen
   claims are never penalised for an old page.
 """
-from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
@@ -35,7 +36,7 @@ TIME_WORD_MAX_AGE_DAYS = 3 * 365
 
 def _shingles(text: str, size: int = 5) -> set[tuple[str, ...]]:
     tokens = re.findall(r"\w+", text.casefold())
-    return {tuple(tokens[index:index + size]) for index in range(0, max(0, len(tokens) - size + 1))}
+    return {tuple(tokens[index:index + size]) for index in range(max(0, len(tokens) - size + 1))}
 
 
 class _UnionFind:

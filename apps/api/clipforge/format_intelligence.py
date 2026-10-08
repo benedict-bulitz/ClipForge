@@ -1,10 +1,11 @@
+from __future__ import annotations
+
 """Small, factuality-first format planning for short-form videos.
 
 Format is guidance for the existing payoff, hook, reaction, pacing, and scene
 paths.  It is deliberately deterministic so a failed optional planner cannot
 block generation or add another provider call.
 """
-from __future__ import annotations
 
 import re
 from typing import Any

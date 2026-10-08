@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """Topic Intelligence orchestration: discovery pool, proposals and the handoff.
 
 * ``next_topic``: reuse the fresh candidate pool (``topic_pool_ttl_minutes``)
@@ -12,7 +14,6 @@
   generation.  A confirmed topic goes through the existing
   ``POST /api/generation-jobs`` like a typed question, with provenance attached.
 """
-from __future__ import annotations
 
 import logging
 import threading

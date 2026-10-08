@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """The one current-status authority for uploaded videos.
 
 Two kinds of facts are kept strictly apart:
@@ -24,7 +26,6 @@ treated as the publication time while YouTube reports the video as public.
 ``published_at`` is the effective time analytics use: the snippet time while
 public, otherwise the first observation.
 """
-from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from typing import Any

@@ -1,10 +1,11 @@
+from __future__ import annotations
+
 """Bounded provider boundary and catalog, shared by acquisition and browsing.
 
 Adapters normalize API payloads into MediaCandidate inside search. Exceptions
 are isolated only at this external boundary, never around retrieval logic.
 """
 
-from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field

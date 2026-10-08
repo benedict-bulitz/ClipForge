@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """What each platform (and each connected account) can do.
 
 The UI renders only the controls a provider supports; nothing is forced into
@@ -6,7 +8,6 @@ YouTube semantics.  Static platform facts live here; account-specific limits
 permissions) come from the account's ``restrictions`` and, for TikTok, from
 ``creator_info`` at publish time (the authority for privacy/interaction options).
 """
-from __future__ import annotations
 
 from typing import Any
 

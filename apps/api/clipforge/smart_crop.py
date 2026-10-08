@@ -1,5 +1,6 @@
-"""Small, bounded subject-aware crop analysis for vertical rendering."""
 from __future__ import annotations
+
+"""Small, bounded subject-aware crop analysis for vertical rendering."""
 
 import hashlib
 from collections import OrderedDict

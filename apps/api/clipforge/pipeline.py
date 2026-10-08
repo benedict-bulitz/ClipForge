@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import copy
 import re
 from datetime import UTC, datetime
@@ -1286,9 +1288,9 @@ def research_request(
 ) -> tuple[str, dict[str, Any]]:
     """The query and context generation researches with (shared with the read-only audit script)."""
     query = research_query or intent_research_query(intent["question_intent"], intent["language"]) or prompt
-    context = {"question": prompt, "content_type": intent["content_type"], "focus": research_focus if research_query else None}
+    context = {"question": prompt, "content_type": intent["content_type"], "focus": research_focus}
 
-    if not research_focus and contract:
+    if not context["focus"] and contract:
         focus_parts = []
         if getattr(contract, "primary_answer_obligation", None):
             focus_parts.append(f"Primary goal: {contract.primary_answer_obligation.description}")
@@ -1362,8 +1364,17 @@ def _build_initial_state(
 
             if contract_coverage and not contract_coverage.is_sufficient:
                 # One targeted research strengthening attempt for the missing answer obligation(s)
-                missing_obligations_str = ", ".join(contract_coverage.missing_obligations)
-                retry_focus = f"Missing answer obligations: {missing_obligations_str}. Diagnostic: {contract_coverage.diagnostic_reason}"
+                missing_descriptions = []
+                all_obs = [question_answer_contract.primary_answer_obligation] + question_answer_contract.required_supporting_obligations
+                for obs_id in contract_coverage.missing_obligations:
+                    for obs in all_obs:
+                        if obs.id == obs_id:
+                            missing_descriptions.append(obs.description)
+                            break
+                    else:
+                        missing_descriptions.append(obs_id)
+                missing_str = " | ".join(missing_descriptions)
+                retry_focus = f"Missing required answers: {missing_str}. Diagnostic: {contract_coverage.diagnostic_reason}"
                 query2, context2 = research_request(prompt, intent, question_answer_contract, research_query, retry_focus)
                 result2 = research_topic(query2, intent["language"], settings, context=context2)
 

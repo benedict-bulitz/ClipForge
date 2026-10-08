@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """Canonical caption text: immutable display tokens and their spoken form.
 
 The final narration script is the only source of visible caption text. This
@@ -10,7 +12,6 @@ normaliser runs over that evidence, so both sides are compared in one spoken
 form while the display tokens stay untouched.
 """
 
-from __future__ import annotations
 
 import re
 import unicodedata

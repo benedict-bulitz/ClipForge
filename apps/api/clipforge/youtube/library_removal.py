@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """Removing one video from the Video Library (the Videos tab).
 
 A library entry is not a file of its own: it is a publication record
@@ -22,7 +24,6 @@ therefore:
 It is idempotent: a repeated request answers ``already_removed`` and retries
 any media cleanup a previous attempt could not finish.
 """
-from __future__ import annotations
 
 import logging
 import re

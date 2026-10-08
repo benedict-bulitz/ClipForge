@@ -1,10 +1,11 @@
+from __future__ import annotations
+
 """Open-media adapters. Verified contracts and limits: docs/visual-sources-v2.md.
 
 Only still images are exposed: these APIs' videos/documents do not all provide
 the bounded file/duration contract needed by ClipForge. No provider-name grant.
 """
 
-from __future__ import annotations
 
 import copy
 import html

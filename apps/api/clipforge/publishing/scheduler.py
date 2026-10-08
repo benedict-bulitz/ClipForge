@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """The persistent publication scheduler (ClipForge-owned schedules).
 
 Instagram and TikTok offer no future-publish timestamp, so ClipForge owns the
@@ -19,7 +21,6 @@ Recovery policy (documented in the UI):
 * A post whose bytes fully reached the provider is never uploaded again: it
   goes back to **processing** and the provider's status decides.
 """
-from __future__ import annotations
 
 import logging
 import threading
@@ -62,7 +63,7 @@ def mark_missed(db: Session, settings: Settings, *, now: datetime) -> list[str]:
             row.lease_until = None
             row.last_error_code = "missed_schedule"
             row.last_error_message = (
-                f"ClipForge was not running at {due.strftime('%Y-%m-%d %H:%M')} UTC, so this post was not published. "
+                f"ClipForge was not running at {due.strftime('%Y-%m-%d %H:%M')} timezone.utc, so this post was not published. "
                 "Publish it now, reschedule it or cancel it."
             )
             _event(row, "missed", "due while ClipForge was not running", now=now)

@@ -1,5 +1,6 @@
-"""Lazy, optional local OpenCLIP verification for media candidates."""
 from __future__ import annotations
+
+"""Lazy, optional local OpenCLIP verification for media candidates."""
 
 import importlib.util
 import io

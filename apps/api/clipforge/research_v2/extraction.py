@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """Main-content extraction: the useful part of a page, never the whole page.
 
 Metadata (title, dates, author/organisation, schema.org types, scholarly
@@ -8,7 +10,6 @@ fallback below - Scrapling is an improvement, never a single point of
 failure.  Navigation, cookie banners, related links, comments, footers and
 image credits are dropped before anything reaches downstream reasoning.
 """
-from __future__ import annotations
 
 import json
 import re

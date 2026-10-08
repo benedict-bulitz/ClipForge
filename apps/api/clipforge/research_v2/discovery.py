@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """Discovery: find promising URLs.  A hit is a lead, never evidence.
 
 Providers (all already part of ClipForge, no paid additions):
@@ -11,7 +13,6 @@ Providers (all already part of ClipForge, no paid additions):
 
 Search ranking is recorded but is not authority: selection happens later.
 """
-from __future__ import annotations
 
 import re
 from typing import Any
@@ -29,7 +30,7 @@ _MIRROR = re.compile(r"(?i)(?:^|\.)(?:web\.archive\.org|archive\.(?:today|ph|is)
 _KEYWORD_STOP = {
     "warum", "wieso", "weshalb", "was", "wie", "wann", "wo", "wer", "welche", "welcher", "welches", "why", "what", "how",
     "when", "where", "who", "which", "der", "die", "das", "dem", "den", "des", "ein", "eine", "the", "and", "does", "do",
-    "is", "are", "was", "were", "ist", "sind", "bleibt", "wird", "wurde", "hat", "haben", "kann", "können",
+    "is", "are", "were", "ist", "sind", "bleibt", "wird", "wurde", "hat", "haben", "kann", "können",
     "ursache", "erklärung", "funktioniert", "cause", "explanation", "works", "work",
 }
 

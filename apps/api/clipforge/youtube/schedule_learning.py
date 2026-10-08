@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """Posting-time learning: derived, read-only, never applied automatically.
 
 Everything is recomputed from what already exists - the upload mapping
@@ -17,10 +19,8 @@ A learned schedule is only *proposed*: it needs at least
 user applies it explicitly; nothing here changes the channel's schedule.
 Statements are associations, not causal claims.
 """
-from __future__ import annotations
 
 import statistics
-from datetime import UTC
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -69,7 +69,7 @@ def publication_rows(
     for upload in learning.eligible_uploads(db, channel_id) if uploads is None else uploads:
         if not content_types.is_short(upload.content_type) or upload.published_at is None:
             continue
-        published = upload.published_at.replace(tzinfo=UTC) if upload.published_at.tzinfo is None else upload.published_at
+        published = upload.published_at.replace(tzinfo=timezone.utc) if upload.published_at.tzinfo is None else upload.published_at
         local = published.astimezone(zone)
         snapshots = learning.api_snapshots(db, upload.id)
         fingerprint = learning.fingerprint_for(db, upload)

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -41,10 +43,10 @@ class Project(Base):
         DateTime(timezone=True), default=utc_now, onupdate=utc_now
     )
 
-    revisions: Mapped[list["ProjectRevision"]] = relationship(
+    revisions: Mapped[list[ProjectRevision]] = relationship(
         back_populates="project", cascade="all, delete-orphan", order_by="ProjectRevision.number"
     )
-    chat_messages: Mapped[list["ProjectChatMessage"]] = relationship(
+    chat_messages: Mapped[list[ProjectChatMessage]] = relationship(
         back_populates="project", cascade="all, delete-orphan", order_by="ProjectChatMessage.created_at"
     )
 
@@ -310,10 +312,10 @@ class YouTubeAnalyticsSnapshot(Base):
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
 
-    metrics: Mapped[list["YouTubeMetricValue"]] = relationship(
+    metrics: Mapped[list[YouTubeMetricValue]] = relationship(
         cascade="all, delete-orphan", order_by="YouTubeMetricValue.name"
     )
-    retention_points: Mapped[list["YouTubeRetentionPoint"]] = relationship(
+    retention_points: Mapped[list[YouTubeRetentionPoint]] = relationship(
         cascade="all, delete-orphan", order_by="YouTubeRetentionPoint.elapsed_video_ratio"
     )
 
@@ -428,7 +430,7 @@ class YouTubePublishingSchedule(Base):
     __tablename__ = "youtube_publishing_schedules"
 
     channel_id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    timezone: Mapped[str] = mapped_column(String(64), nullable=False, default="UTC")
+    timezone: Mapped[str] = mapped_column(String(64), nullable=False, default="timezone.utc")
     videos_per_day: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     # seed (starter preset) | manual (user-edited) | learned (user-approved proposal)
     mode: Mapped[str] = mapped_column(String(16), nullable=False, default="seed")
@@ -506,7 +508,7 @@ class YouTubeScheduleEntry(Base):
 class YouTubeSlotReservation(Base):
     """A ClipForge upload's claim on a slot until YouTube confirms (or refuses) it.
 
-    ``active_key`` ("<channel>:<UTC instant>") is unique while an automatic
+    ``active_key`` ("<channel>:<timezone.utc instant>") is unique while an automatic
     reservation is reserved/confirmed, so two uploads cannot both claim it;
     it is cleared on release.
     """

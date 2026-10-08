@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """Compact payoff and coordinated-hook planning for short-form scripts.
 
 The plan is deliberately descriptive rather than a second script writer.  The
@@ -5,7 +7,6 @@ body remains the source of truth; this module records the question it is
 building toward and gives the existing hook/media paths enough constraints to
 avoid spoiling that answer in the opening.
 """
-from __future__ import annotations
 
 import re
 from typing import Any

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """Source routing: which kinds of sources should answer this kind of question?
 
 A small generic suitability layer.  The question is assigned one research
@@ -6,7 +8,6 @@ domain orders the *source types* of ``quality.py`` - never websites.  The
 order is a preference among relevant sources: relevance is decided first,
 elsewhere, so an authoritative but irrelevant page never wins.
 """
-from __future__ import annotations
 
 import re
 from dataclasses import dataclass

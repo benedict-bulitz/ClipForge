@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """Canonical verbal hook strategies and deterministic truthfulness checks.
 
 The strategy taxonomy is the documented Hook Strategy framework (DAS
@@ -6,7 +8,6 @@ Document family IDs are aliases of these canonical strategies; nothing else
 is a valid verbal hook strategy.  Selection itself lives in ``verbal_hook``
 (the one verbal-hook authority); this module only validates.
 """
-from __future__ import annotations
 
 import re
 from dataclasses import dataclass

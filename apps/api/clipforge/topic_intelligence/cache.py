@@ -1,10 +1,11 @@
+from __future__ import annotations
+
 """Provider-specific TTL cache of normalized discovery results (quota protection).
 
 Only compact, normalized items are stored - never raw API responses - and
 entries expire.  A repeated "Generate Next Video" within the TTL therefore
 costs no external call at all.
 """
-from __future__ import annotations
 
 import threading
 from collections.abc import Callable

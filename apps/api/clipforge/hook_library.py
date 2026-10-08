@@ -1,5 +1,6 @@
-"""Validated, cached access to the editable hook strategy library."""
 from __future__ import annotations
+
+"""Validated, cached access to the editable hook strategy library."""
 
 import json
 from dataclasses import dataclass

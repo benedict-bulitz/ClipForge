@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """Final Video Critic V1: review what the viewer actually sees, repair narrowly, stop.
 
 Runs after ``render_video``.  Every scene of the finished MP4 is sampled with
@@ -18,7 +20,6 @@ User-locked visuals are never replaced.  At most ``max_repair_passes`` (default
 1, hard limit 2) repair renders run, each followed by one validation review;
 whatever remains is reported, never retried.
 """
-from __future__ import annotations
 
 import copy
 import re

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """The unified read model over every publication (no provider calls).
 
 YouTube publications stay in ``youtube_uploads`` (their mature authority:
@@ -7,7 +9,6 @@ the Queue Overview and the publishing sheet can show one list.  The same
 project can have several publications (e.g. YouTube channel A, Instagram
 account A, TikTok account B); each stays its own entry.
 """
-from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import Any

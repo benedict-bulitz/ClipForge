@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """Question-relative answer grounding: does a sentence answer *this* question?
 
 Lexical relevance only says a sentence is about the same topic.  A core answer
@@ -17,7 +19,6 @@ Deterministic and topic-free: German nouns are capitalised, so the
 question's entities come from grammar; other languages fall back to content
 words with a coverage quota.
 """
-from __future__ import annotations
 
 import math
 import re

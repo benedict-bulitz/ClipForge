@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """The research package: compact, structured, traceable input for generation.
 
 Every claim in the package is either a verbatim evidence sentence or a
@@ -6,7 +8,6 @@ synthesised sentence that passed validation against the evidence it cites
 the cited text, a causal claim only from causal evidence).  Anything else is
 listed under ``rejected_claims`` and never reaches the script writer.
 """
-from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field

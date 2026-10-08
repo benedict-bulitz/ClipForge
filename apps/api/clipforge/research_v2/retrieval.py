@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """Retrieval: obtain page contents reliably, politely and in isolation.
 
 Fallback order per URL:
@@ -14,7 +16,6 @@ Fallback order per URL:
 stops the host for the rest of the run.  Every failure is an outcome record,
 never an exception: one bad site cannot break research.
 """
-from __future__ import annotations
 
 import hashlib
 import json
@@ -135,7 +136,9 @@ class RobotsPolicy:
 
 def _scrapling_dynamic(url: str, timeout_seconds: float) -> str | None:
     """Render a JS-only page with Scrapling's plain (non-stealth) browser fetcher."""
-    from scrapling.fetchers import DynamicFetcher  # optional extra: scrapling[fetchers] + playwright
+    from scrapling.fetchers import (
+        DynamicFetcher,  # optional extra: scrapling[fetchers] + playwright
+    )
 
     response = DynamicFetcher.fetch(
         url, headless=True, network_idle=True, disable_resources=True, timeout=int(timeout_seconds * 1000)

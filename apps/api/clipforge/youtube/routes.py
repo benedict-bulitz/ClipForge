@@ -1,5 +1,6 @@
-"""HTTP API for the YouTube Learning Loop (connection, uploads, analytics)."""
 from __future__ import annotations
+
+"""HTTP API for the YouTube Learning Loop (connection, uploads, analytics)."""
 
 import base64
 import binascii
