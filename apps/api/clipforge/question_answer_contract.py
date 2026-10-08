@@ -1,7 +1,9 @@
 import logging
 from typing import Literal
-from pydantic import BaseModel, Field
+
 from openai import OpenAI
+from pydantic import BaseModel, Field
+
 from clipforge.config import Settings
 
 logger = logging.getLogger("clipforge.contract")
@@ -59,7 +61,7 @@ def generate_contract(question: str, language: str, settings: Settings) -> Quest
 
 class ObligationCoverage(BaseModel):
     obligation_id: str
-    status: Literal["satisfied", "missing", "unsupported", "circular"]
+    status: Literal["satisfied", "partially_satisfied", "missing", "circular", "unsupported", "insufficient_depth"]
     supporting_fact_ids: list[str] = Field(default_factory=list)
     reasoning: str
 

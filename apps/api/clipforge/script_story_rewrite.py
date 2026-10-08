@@ -630,6 +630,23 @@ def _verifier_findings(verdict: VerifierResponse) -> list[dict[str, Any]]:
         _finding(item.code, item.severity, item.message, item.beat_index, source="verifier")
         for item in verdict.findings
     ]
+
+    if not getattr(verdict, "contract_sufficient", True):
+        found.append(_finding("contract_insufficient", "hard", "Rewrite failed QuestionAnswerContract (missing required obligation, circular, or insufficiently deep)", source="verifier"))
+    for eval in getattr(verdict, "contract_evaluations", []):
+        if eval.status in ("missing", "circular", "unsupported", "insufficient_depth"):
+            if eval.status == "missing":
+                if eval.is_primary:
+                    found.append(_finding("primary_answer_missing", "hard", f"Primary answer missing: {eval.id}", source="verifier"))
+                else:
+                    found.append(_finding("required_obligation_missing", "hard", f"Required obligation missing: {eval.id}", source="verifier"))
+            elif eval.status == "circular":
+                found.append(_finding("answer_circular", "hard", f"Answer is circular for: {eval.id}", source="verifier"))
+            elif eval.status == "unsupported":
+                found.append(_finding("unsupported_required_answer", "hard", f"Unsupported required answer: {eval.id}", source="verifier"))
+            elif eval.status == "insufficient_depth":
+                found.append(_finding("insufficient_causal_depth", "hard", f"Insufficient causal depth for: {eval.id}", source="verifier"))
+
     checks = (
         (not verdict.grounded, "ungrounded", "hard", "The verifier found statements the research does not support."),
         (verdict.premature_reveal, "premature_reveal", "hard", "The verifier found the protected answer revealed too early."),

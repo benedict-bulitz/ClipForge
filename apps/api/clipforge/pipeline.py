@@ -5,6 +5,8 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from clipforge.question_answer_contract import evaluate_research_coverage, generate_contract
+
 from .ai import (
     ai_plan_to_dict,
     generate_hook_candidates_with_openai,
@@ -1280,11 +1282,20 @@ def build_initial_state(
 
 
 def research_request(
-    prompt: str, intent: dict[str, Any], research_query: str | None = None, research_focus: str | None = None
+    prompt: str, intent: dict[str, Any], contract: Any = None, research_query: str | None = None, research_focus: str | None = None
 ) -> tuple[str, dict[str, Any]]:
     """The query and context generation researches with (shared with the read-only audit script)."""
     query = research_query or intent_research_query(intent["question_intent"], intent["language"]) or prompt
     context = {"question": prompt, "content_type": intent["content_type"], "focus": research_focus if research_query else None}
+
+    if not research_focus and contract:
+        focus_parts = []
+        if getattr(contract, "primary_answer_obligation", None):
+            focus_parts.append(f"Primary goal: {contract.primary_answer_obligation.description}")
+        for obs in getattr(contract, "required_supporting_obligations", []):
+            focus_parts.append(f"Required detail: {obs.description}")
+        if focus_parts:
+            context["focus"] = " | ".join(focus_parts)
     return query, context
 
 
@@ -1314,8 +1325,18 @@ def _build_initial_state(
     intent["question_intent"] = interpret_question(prompt, intent["language"])
     resolved_options = options.model_copy(update={"language": intent["language"]})
 
-    question_answer_contract = generate_contract(prompt, intent["language"], settings)
+    question_answer_contract = None
     contract_coverage = None
+    contract_diagnostic = "unavailable"
+    if intent["research_required"] and settings.openai_api_key:
+        try:
+            question_answer_contract = generate_contract(prompt, intent["language"], settings)
+            contract_diagnostic = "ai_contract"
+        except Exception:
+            contract_diagnostic = "error"
+    elif intent["research_required"]:
+        contract_diagnostic = "deterministic_fallback"
+
     sources: list[dict] = []
     facts: list[dict[str, Any]] = []
     research_status = "skipped"
@@ -1324,18 +1345,60 @@ def _build_initial_state(
     research_package: dict[str, Any] | None = None
     research_diagnostics: dict[str, Any] | None = None
     research_retry: dict[str, Any] | None = None
+
     if intent["research_required"]:
         report_progress(progress, "research", "Researching the topic", phase="start")
-        query, context = research_request(prompt, intent, research_query, research_focus)
+        query, context = research_request(prompt, intent, question_answer_contract, research_query, research_focus)
+
+        # First research pass without the internal weak-core retry to allow contract-driven retry
         if research_query is None:
-            # First pass: a valid but weak core answer (snippet-only, unknown/low authority)
-            # spends the run's one research retry now, before any script cost.
-            result, retry_report = research_with_strengthening(
-                query, intent["language"], settings, context=context, research=research_topic,
-            )
-            research_retry = retry_report if retry_report["attempted"] else None
+            result = research_topic(query, intent["language"], settings, context=context)
+            # Check contract coverage
+            if question_answer_contract:
+                try:
+                    contract_coverage = evaluate_research_coverage(question_answer_contract, result.facts, settings)
+                except Exception:
+                    contract_coverage = None
+
+            if contract_coverage and not contract_coverage.is_sufficient:
+                # One targeted research strengthening attempt for the missing answer obligation(s)
+                missing_obligations_str = ", ".join(contract_coverage.missing_obligations)
+                retry_focus = f"Missing answer obligations: {missing_obligations_str}. Diagnostic: {contract_coverage.diagnostic_reason}"
+                query2, context2 = research_request(prompt, intent, question_answer_contract, research_query, retry_focus)
+                result2 = research_topic(query2, intent["language"], settings, context=context2)
+
+                # Combine facts
+                result.facts.extend(result2.facts)
+                result.sources.extend(result2.sources)
+
+                # Re-evaluate
+                try:
+                    contract_coverage = evaluate_research_coverage(question_answer_contract, result.facts, settings)
+                except Exception:
+                    contract_coverage = None
+
+                research_retry = {"attempted": True, "reason": "contract_insufficient", "focus": retry_focus}
+            else:
+                # Standard weak-core retry if contract was sufficient (or not used)
+                result, retry_report = research_with_strengthening(
+                    query, intent["language"], settings, context=context, research=research_topic,
+                )
+                research_retry = retry_report if retry_report.get("attempted") else None
+
+                # Re-evaluate coverage if facts changed
+                if question_answer_contract and research_retry:
+                    try:
+                        contract_coverage = evaluate_research_coverage(question_answer_contract, result.facts, settings)
+                    except Exception:
+                        pass
         else:
             result = research_topic(query, intent["language"], settings, context=context)
+            if question_answer_contract:
+                try:
+                    contract_coverage = evaluate_research_coverage(question_answer_contract, result.facts, settings)
+                except Exception:
+                    pass
+
         research_status = result.status
         research_provider = result.provider
         research_error = result.error
@@ -1343,6 +1406,11 @@ def _build_initial_state(
         facts = result.facts
         research_package = getattr(result, "package", None)
         research_diagnostics = getattr(result, "diagnostics", None)
+
+        if contract_coverage and not contract_coverage.is_sufficient:
+            research_status = "needs_research"
+            research_error = "Research cannot support required QuestionAnswerContract obligations: " + ", ".join(contract_coverage.missing_obligations)
+
         report_progress(progress, "research", "Researching the topic", phase="complete")
     else:
         report_progress(progress, "research", "Researching the topic", phase="skipped")
@@ -1368,7 +1436,7 @@ def _build_initial_state(
         )
     link_package_facts(research_package, facts)
 
-    contract_coverage = evaluate_research_coverage(question_answer_contract, facts, settings)
+
     novelty_plan = safe_novelty_plan(intent, facts)
     report_progress(progress, "script", "Writing the narration", phase="start")
     ai_result = plan_with_openai(
@@ -1658,7 +1726,7 @@ def _build_initial_state(
         total_units=len(scenes),
     )
     width, height = _dimensions(options.aspect_ratio)
-    factual_ready = not intent["research_required"] or bool(facts and sources)
+    factual_ready = (not intent["research_required"] or bool(facts and sources)) and research_status != "needs_research"
     now = datetime.now(UTC).isoformat()
     state: dict[str, Any] = {
         "version": 1,
@@ -1673,6 +1741,7 @@ def _build_initial_state(
             "status": research_status,
             "provider": research_provider,
             "error": research_error,
+            "contract_diagnostic": contract_diagnostic if 'contract_diagnostic' in locals() else None,
             "sources": sources,
             **({"package": research_package} if research_package else {}),
             **({"diagnostics": research_diagnostics} if research_diagnostics else {}),
