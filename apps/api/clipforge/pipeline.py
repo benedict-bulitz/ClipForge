@@ -21,6 +21,7 @@ from .ai import (
 from .alignment import phrase_fallback_items
 from .attention import replan_attention, resolve_attention_preferences
 from .config import Settings
+from .contract_diagnostics import ContractGenerationFailure, sanitized
 from .dependencies import resolve_edit_scope
 from .format_intelligence import plan_format
 from .hashing import attach_hashes
@@ -1376,13 +1377,16 @@ def _build_initial_state(
     contract_coverage = None
     contract_diagnostic = "unavailable"
     contract_error = None
+    contract_failure_diagnostics = None
     if intent["research_required"] and settings.openai_api_key:
         try:
             question_answer_contract = generate_contract(prompt, intent["language"], settings)
             contract_diagnostic = "ai_contract"
         except Exception as exc:  # noqa: BLE001 - fail closed below
             contract_diagnostic = "error"
-            contract_error = f"{type(exc).__name__}: {exc}"
+            contract_error = sanitized(f"{type(exc).__name__}: {exc}", (settings.openai_api_key,))
+            if isinstance(exc, ContractGenerationFailure):
+                contract_failure_diagnostics = exc.diagnostics
     elif intent["research_required"]:
         contract_diagnostic = "deterministic_fallback"
 
@@ -1435,6 +1439,7 @@ def _build_initial_state(
             research_diagnostics = {
                 **(research_diagnostics or {}), "failure_type": "CONTRACT_UNAVAILABLE",
                 "contract_failure_reason": contract_error,
+                **({"contract_failure": contract_failure_diagnostics} if contract_failure_diagnostics else {}),
             }
 
         report_progress(progress, "research", "Researching the topic", phase="complete")

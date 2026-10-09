@@ -5,6 +5,11 @@ from openai import OpenAI
 from pydantic import BaseModel, Field, PrivateAttr, model_validator
 
 from clipforge.config import Settings
+from clipforge.contract_diagnostics import (
+    ContractGenerationFailure,
+    parse_contract_output,
+    violation,
+)
 from clipforge.novelty import fact_is_supported
 
 logger = logging.getLogger("clipforge.contract")
@@ -49,7 +54,12 @@ class QuestionAnswerContract(BaseModel):
     unresolved_research_gaps: list[str] = Field(default_factory=list)
 
 def generate_contract(question: str, language: str, settings: Settings) -> QuestionAnswerContract:
-    client = OpenAI(api_key=settings.openai_api_key)
+    try:
+        client = OpenAI(api_key=settings.openai_api_key)
+    except Exception as exc:  # noqa: BLE001 - fail closed with internal diagnostics
+        raise ContractGenerationFailure(str(exc), stage="contract_planner", code="PROVIDER_INITIALIZATION_FAILED",
+                                        violations=[violation("PROVIDER_INITIALIZATION_FAILED", "OpenAI client must initialize.", kind="provider")],
+                                        settings=settings, extra={"exception_type": type(exc).__name__}) from None
     system_prompt = (
         "You are the ClipForge Contract Planner. "
         "Your task is to define the STRICT MINIMUM semantic answer obligations for a given question. "
@@ -73,17 +83,10 @@ def generate_contract(question: str, language: str, settings: Settings) -> Quest
         "Do not impose a universal depth cap: genuinely multi-step questions still require all necessary steps.\n"
         "- Do not blindly treat every question as causal. Only require a causal chain if the question warrants it.\n"
     )
-    response = client.beta.chat.completions.parse(
-        model=settings.openai_director_model,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": f"Question: {question}\nLanguage: {language}"},
-        ],
-        response_format=QuestionAnswerContract,
-    )
-    parsed = response.choices[0].message.parsed
-    if not isinstance(parsed, QuestionAnswerContract):
-        raise TypeError("Contract planner returned no valid contract")
+    parsed = parse_contract_output(client, settings, "contract_planner", QuestionAnswerContract, [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": f"Question: {question}\nLanguage: {language}"},
+    ])
     from clipforge.contract_minimality import guard_contract
 
     return guard_contract(question, language, parsed, client, settings)
