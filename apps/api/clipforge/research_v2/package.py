@@ -16,6 +16,7 @@ from .answer_relation import (
     QuestionFrame,
     answer_fit,
     core_issues,
+    covers_predicate,
     entity_coverage,
     mechanism_issues,
     resolves_pronoun,
@@ -190,10 +191,15 @@ def _answering_units(
     return [unit for unit in ordered if not core_issues(frame, unit.text, _antecedent(unit, sources))]
 
 
-def _answer_text(unit: EvidenceUnit, frame: QuestionFrame) -> str:
+def _answer_text(unit: EvidenceUnit, frame: QuestionFrame, sources: dict[str, dict[str, Any]]) -> str:
     """The answer as handed downstream: a pronoun answer keeps the sentence that names its referent."""
-    if unit.antecedent and resolves_pronoun(frame, unit.text, unit.antecedent):
-        return f"{unit.antecedent} {unit.text}"
+    antecedent = _antecedent(unit, sources)
+    if antecedent and (resolves_pronoun(frame, unit.text, antecedent) or (
+        not covers_predicate(frame, unit.text) and covers_predicate(frame, unit.text, antecedent)
+    )):
+        if not unit.antecedent:
+            antecedent = antecedent.rstrip(".?!") + "."
+        return f"{antecedent} {unit.text}"
     return unit.text
 
 
@@ -219,7 +225,8 @@ def select_claims(
     eligible.sort(key=lambda group: _group_rank(group, sources, route))
     # Low-quality / user-generated evidence needs more caution: it is used only
     # when nothing better was found (the package then reports the gap).
-    if any(_group_rank(group, sources, route)[2] <= TIER_RANK["medium"] for group in eligible):
+    if any(_group_rank(group, sources, route)[2] <= TIER_RANK["medium"]
+           and _answering_unit(group, frame, sources, route) is not None for group in eligible):
         eligible = [group for group in eligible if _group_rank(group, sources, route)[2] < TIER_RANK["low"]]
     chosen: list[PackageClaim] = []
     used: set[str] = set()
@@ -272,7 +279,7 @@ def select_claims(
         group, unit = answering[0]
         accepted_units = _answering_units(group, frame, sources, route)
         claim = _claim_from_units(group, "core_answer", accepted_units, sources, route)
-        claim.text, claim.kinds = _answer_text(unit, frame), list(unit.kinds)
+        claim.text, claim.kinds = _answer_text(unit, frame, sources), list(unit.kinds)
         used.add(group.key)
         chosen.append(claim)
     if explanatory:
@@ -281,6 +288,9 @@ def select_claims(
             if lead(group).kind == "mechanism" and not mechanism_issues(frame, lead(group).text, context(lead(group)))
         ], "mechanism", 3)
     on_topic = [group for group in eligible if topical(group)]
+    # Asked-property observations/support must survive before entity-only
+    # background, even when the background source has greater authority.
+    on_topic.sort(key=lambda group: (-answer_fit(frame, lead(group).text), _group_rank(group, sources, route)))
     take([group for group in on_topic if lead(group).kind in {"observation", "definition"}], "observation", 1)
     take([group for group in on_topic if {"number", "date"} & set(lead(group).kinds)], "number", 2)
     take([group for group in on_topic if "misconception" in lead(group).kinds], "misconception", 1)
@@ -387,7 +397,7 @@ def sufficiency(claims: list[PackageClaim], *, frame: QuestionFrame) -> dict[str
     """
     explanatory = frame.qtype in {"why", "how"}
     roles = {claim.role for claim in claims}
-    core = next((claim for claim in claims if claim.role == "core_answer"), None)
+    core = next((claim for claim in claims if claim.role == "core_answer" and not core_issues(frame, claim.text)), None)
     mechanism = ([core] if core is not None and explanatory else []) + [claim for claim in claims if claim.role == "mechanism"]
     checks = {
         "direct_answer": core is not None,
@@ -443,6 +453,9 @@ def build_package(
     synthesis_mode: str,
     takeaway: str = "",
 ) -> dict[str, Any]:
+    # Re-check at the package boundary as well as selection/synthesis: a role
+    # label and high authority cannot certify an off-question core answer.
+    claims = [claim for claim in claims if claim.role != "core_answer" or not core_issues(frame, claim.text)]
     by_role: dict[str, list[dict[str, Any]]] = {}
     for claim in claims:
         by_role.setdefault(claim.role, []).append(claim.ref())

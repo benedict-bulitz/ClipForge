@@ -59,6 +59,17 @@ def generate_contract(question: str, language: str, settings: Settings) -> Quest
         "- For scientific 'why' questions: Focus on the direct cause/mechanism. Avoid circular answers (restating the observed property instead of explaining its cause). Set 'minimum_answer_depth' to the level that genuinely resolves the curiosity.\n"
         "- Write obligation descriptions in the requested target language.\n"
         "- Do not require maximum depth if a shorter explanation resolves the question.\n"
+        "- Stop at the first non-circular causal mechanism that explains the actual phenomenon. "
+        "Ordinary short knowledge questions generally need the shortest causal chain that resolves them.\n"
+        "- Do not require a generic underlying physics or perception layer when the direct material/process cause "
+        "already resolves the question. For example, if process Y forms a reddish compound X that is widespread, "
+        "that can resolve an appearance question: photon-level reflection/scattering is optional unless the user "
+        "specifically asks why the material/color itself has that optical property.\n"
+        "- Keep the primary obligation atomic enough to verify. Each required supporting obligation must be "
+        "independently necessary to resolve the user's question, not merely nice deeper detail. "
+        "Use optional_context for useful extensions beyond the minimum answer.\n"
+        "- minimum_answer_depth represents necessary causal depth, not maximum possible depth. "
+        "Do not impose a universal depth cap: genuinely multi-step questions still require all necessary steps.\n"
         "- Do not blindly treat every question as causal. Only require a causal chain if the question warrants it.\n"
     )
     response = client.beta.chat.completions.parse(

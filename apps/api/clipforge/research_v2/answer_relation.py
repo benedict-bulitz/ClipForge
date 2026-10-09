@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 
 from ..question_intent import answer_mode
 from ..story_arc import is_explanatory_question
-from .evidence import KIND_PATTERNS, words
+from .evidence import KIND_PATTERNS, PROCESS_PATTERN, words
 
 _TOKEN = re.compile(r"[A-Za-zÄÖÜäöüß0-9][\wÄÖÜäöüß-]*")
 _LEAD = {
@@ -133,7 +133,7 @@ def inflects(term: str, word: str) -> bool:
         return True
     if len(a) >= 4 and b.startswith(a):
         return True
-    return any(b == a + suffix for suffix in _ADJ_SUFFIX)
+    return any(b == a + suffix + ending for suffix in _ADJ_SUFFIX for ending in ("", "e", "en", "er", "es", "em"))
 
 
 @dataclass(frozen=True)
@@ -252,8 +252,14 @@ def question_frame(question: str, language: str = "de") -> QuestionFrame:
         predicate = {word for word in predicate if _fold(word) not in absorbed}
     else:
         content = [token for token in tokens if token.casefold() not in _FILLER and token.casefold() not in _LEAD and len(token) >= 3]
+        # In a copular property question the final pre-condition word is the
+        # asked state, rather than another subject entity.
+        property_clause = re.match(r"(?i)^\s*why\s+(?:is|are)\s+(.+?)(?:\s+(?:when|while|if|during)\b|[?]|$)", text)
+        if property_clause:
+            state = _TOKEN.findall(property_clause.group(1))[-1].casefold()
+            predicate.add(state)
+            content = [token for token in content if token.casefold() != state]
         entities = [Entity(token, token, frozenset()) for token in content]
-        predicate = set()
     terms = frozenset(words(text))
     condition_terms: set[str] = set()
     for match in _CONDITION_CLAUSE.finditer(text):
@@ -416,6 +422,28 @@ def resolves_pronoun(frame: QuestionFrame, text: str, antecedent: str) -> bool:
     )
 
 
+_PROPERTY_REFERENCE = re.compile(
+    r"(?i)\b(?:seine?\w*|ihre?\w*|diese\w*|its|their|this|that)\s+"
+    r"(?:eigenschaft|zustand|erscheinung|farbe|färbung|property|state|appearance|colou?r|coloration)\b"
+)
+
+
+
+def covers_predicate(frame: QuestionFrame, text: str, antecedent: str = "") -> bool:
+    """A causal core explains the asked state, rather than any effect on its entity.
+
+    A property reference may inherit the state from its actual preceding
+    sentence; entity co-occurrence alone never supplies the missing predicate.
+    Existing spatial contrasts retain their distinguishing-condition semantics.
+    """
+    if not frame.predicate or relation_hits(frame, text):
+        return True
+    if distinguishing_entity(frame) is not None and _POSITION_EQUIVALENT.search(text) and covers_distinguishing(frame, text):
+        return True
+    return bool(antecedent and _PROPERTY_REFERENCE.search(text) and relation_hits(frame, antecedent)
+                and entity_coverage(frame, antecedent)[0] >= frame.required_entities)
+
+
 def core_issues(frame: QuestionFrame, text: str, antecedent: str = "") -> list[str]:
     """Why ``text`` cannot be the core answer to ``frame`` (empty: it can).
 
@@ -432,6 +460,8 @@ def core_issues(frame: QuestionFrame, text: str, antecedent: str = "") -> list[s
     if "entity_mismatch" not in issues and not covers_conditions(frame, f"{text} {resolved}"):
         issues.append("misses_question_condition")
     if frame.qtype in {"why", "how"}:
+        if frame.relation != "purpose" and not covers_predicate(frame, text, antecedent):
+            issues.append("predicate_mismatch")
         if not _CAUSAL.search(text) and not (frame.relation == "purpose" and _PURPOSE.search(text)):
             issues.append("no_cause_or_mechanism")
         if _NAMING.search(text) and not frame.asks_naming:
@@ -484,6 +514,10 @@ def mechanism_issues(frame: QuestionFrame, text: str, context: str = "") -> list
     """A mechanism step must be causal, on the asked entities (with its paragraph), not advice/naming,
     and state the requested relation (a purpose for an intentional action, not its result)."""
     issues = topical_issues(frame, text, context)
+    if frame.relation != "purpose" and not covers_predicate(frame, text) and not (
+        PROCESS_PATTERN.search(text) and covers_predicate(frame, context)
+    ):
+        issues.append("predicate_mismatch")
     if "entity_mismatch" not in issues and (
         not covers_distinguishing(frame, text) or not covers_conditions(frame, text)
     ):
