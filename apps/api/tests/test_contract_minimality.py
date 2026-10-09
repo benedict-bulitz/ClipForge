@@ -85,9 +85,11 @@ def response(parsed, refusal=None):
 def minimum_for(model, audit):
     return QuestionMinimum(
         question_intent=model.core_question, minimal_answer=audit.minimal_answer,
-        necessary_components=list({c.id: MinimumAnswerComponent(id=c.id, description=c.description, necessity_reason=c.reason)
+        necessary_components=list({c.id: MinimumAnswerComponent(id=c.id, description=c.description, necessity_reason=c.reason,
+                                                                   answer_without_component=c.answer_without_component,
+                                                                   omission_still_answers_question=False, omission_failure="unanswered")
                                    for c in audit.components if c.strictly_necessary}.values()),
-        explicit_constraints=[], optional_extensions=[c.description for c in audit.components if not c.strictly_necessary],
+        explicit_constraints=[], explanatory_context=[], optional_extensions=[c.description for c in audit.components if not c.strictly_necessary],
         minimum_necessary_depth=audit.minimum_necessary_depth,
         preserves_question_semantics=True, preserves_explicit_constraints=True,
     )

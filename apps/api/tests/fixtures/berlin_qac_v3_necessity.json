@@ -1,0 +1,715 @@
+{
+  "question": "Warum wurde die Berliner Mauer gebaut?",
+  "language": "de",
+  "status": "FAIL",
+  "openai_calls": 5,
+  "runtime_head": "7f7a30cea19003ae1e2d90b8c6d1b5354b017157",
+  "model": "gpt-5.6-terra",
+  "error": {
+    "exception_type": "ContractGenerationFailure",
+    "message": "Contract repair failed independent necessity verification",
+    "request_parameter": null,
+    "provider_code": null,
+    "diagnostics": {
+      "failure_stage": "repair_check",
+      "failure_code": "REPAIR_CHECK_REJECTED",
+      "failure_kind": "semantic",
+      "failed_invariants": [
+        {
+          "code": "NECESSARY_COMPONENT_NOT_PRESERVED",
+          "invariant": "correctly_required_or_optional must be true for every component.",
+          "component_ids": [
+            "N1"
+          ],
+          "kind": "semantic"
+        },
+        {
+          "code": "NECESSARY_COMPONENT_NOT_PRESERVED",
+          "invariant": "correctly_required_or_optional must be true for every component.",
+          "component_ids": [
+            "N2"
+          ],
+          "kind": "semantic"
+        },
+        {
+          "code": "NECESSARY_COMPONENT_NOT_PRESERVED",
+          "invariant": "correctly_required_or_optional must be true for every component.",
+          "component_ids": [
+            "N4"
+          ],
+          "kind": "semantic"
+        },
+        {
+          "code": "CHECK_MINIMALLY_SUFFICIENT",
+          "invariant": "minimally_sufficient must be true.",
+          "component_ids": [],
+          "kind": "semantic"
+        }
+      ],
+      "verification_flags": {
+        "minimally_sufficient": false,
+        "preserves_question_semantics": true,
+        "preserves_explicit_constraints": true,
+        "preserves_primary_cause_or_motive": true,
+        "preserves_necessary_chain": true
+      },
+      "reviewer_explanations": {
+        "overall": "Der reparierte Vertrag bewahrt die unmittelbare Antwort und verlangt keine unnötige Kausalkette. Er ist jedoch nicht minimal ausreichend, weil er die DDR-Führung, die Jahreszahl 1961 und West-Berlin als Fluchtweg weiterhin als verpflichtende Stützpflichten festlegt. Unabhängig geprüft genügt als Mindestantwort, dass die Mauer gebaut wurde, um die Flucht von DDR-Bürgern zu stoppen; Akteur, Zeitpunkt und genauer Fluchtweg sind optionale Präzisierungen. Insbesondere darf West-Berlin daher auch nicht indirekt über required_mechanism_concepts verpflichtend sein.",
+        "components": [
+          {
+            "component_id": "N1",
+            "correctly_required_or_optional": false,
+            "reason": "Die Nennung der DDR-Führung ist historisch sinnvoll, aber für die minimale Beantwortung der Warum-Frage nicht zwingend: Der Zweck, Flucht zu stoppen, beantwortet sie bereits."
+          },
+          {
+            "component_id": "N2",
+            "correctly_required_or_optional": false,
+            "reason": "Die Jahreszahl 1961 identifiziert und kontextualisiert das Ereignis, ist aber keine notwendige Bedingung für die minimale Erklärung seines Motivs."
+          },
+          {
+            "component_id": "N3",
+            "correctly_required_or_optional": true,
+            "reason": "Das Stoppen beziehungsweise Verhindern der Flucht von DDR-Bürgern ist der unmittelbare Zweck und die unverzichtbare Antwort auf die Warum-Frage."
+          },
+          {
+            "component_id": "N4",
+            "correctly_required_or_optional": false,
+            "reason": "West-Berlin als genauer Fluchtweg ist eine nützliche historische Präzisierung, aber nicht erforderlich, um das grundlegende Motiv des Mauerbaus korrekt zu erklären."
+          },
+          {
+            "component_id": "O1",
+            "correctly_required_or_optional": true,
+            "reason": "Die Teilung und der zuvor zugängliche Übergang sind Hintergrundbedingungen und bleiben im reparierten Vertrag optional."
+          },
+          {
+            "component_id": "O2",
+            "correctly_required_or_optional": true,
+            "reason": "Die Charakterisierung als Massenflucht ist zusätzlicher Kontext und wird nicht verlangt."
+          },
+          {
+            "component_id": "O3",
+            "correctly_required_or_optional": true,
+            "reason": "Die frühere Offenheit beziehungsweise Zugänglichkeit der Grenze wird nur als optionaler Kontext geführt."
+          },
+          {
+            "component_id": "O4",
+            "correctly_required_or_optional": true,
+            "reason": "Der Bevölkerungsverlust ist eine weitergehende Folge beziehungsweise Begründung und optional."
+          },
+          {
+            "component_id": "O5",
+            "correctly_required_or_optional": true,
+            "reason": "Der Verlust qualifizierter oder junger Arbeitskräfte ist eine vertiefende wirtschaftliche Einordnung und optional."
+          },
+          {
+            "component_id": "O6",
+            "correctly_required_or_optional": true,
+            "reason": "Die wirtschaftliche Schwächung der DDR ist nicht für die direkte Motivantwort erforderlich und bleibt optional."
+          },
+          {
+            "component_id": "O7",
+            "correctly_required_or_optional": true,
+            "reason": "Die Stabilisierung der SED-Herrschaft ist ein weitergehendes strategisches Ziel und wird korrekt als optionaler Kontext behandelt."
+          },
+          {
+            "component_id": "O8",
+            "correctly_required_or_optional": true,
+            "reason": "Das politische Überleben des Regimes geht über die minimale unmittelbare Motivangabe hinaus und bleibt optional."
+          },
+          {
+            "component_id": "O9",
+            "correctly_required_or_optional": true,
+            "reason": "Das Schließen der Grenze als Umsetzungsschritt wird nicht als eigenständige Pflicht verlangt."
+          },
+          {
+            "component_id": "O10",
+            "correctly_required_or_optional": true,
+            "reason": "Die beabsichtigte Dauerhaftigkeit der Fluchtverhinderung ist optionaler Zusatzkontext."
+          },
+          {
+            "component_id": "O11",
+            "correctly_required_or_optional": true,
+            "reason": "Der reparierte Vertrag verlangt nur Erklärungstiefe 1; eine dreistufige Kausalkette ist nicht erforderlich."
+          }
+        ]
+      },
+      "expected_component_ids": [
+        "N1",
+        "N2",
+        "N3",
+        "N4",
+        "O1",
+        "O2",
+        "O3",
+        "O4",
+        "O5",
+        "O6",
+        "O7",
+        "O8",
+        "O9",
+        "O10",
+        "O11"
+      ],
+      "actual_component_ids": [
+        "N1",
+        "N2",
+        "N3",
+        "N4",
+        "O1",
+        "O2",
+        "O3",
+        "O4",
+        "O5",
+        "O6",
+        "O7",
+        "O8",
+        "O9",
+        "O10",
+        "O11"
+      ],
+      "necessary_components": {
+        "N1": true,
+        "N2": true,
+        "N3": true,
+        "N4": true,
+        "O1": false,
+        "O2": false,
+        "O3": false,
+        "O4": false,
+        "O5": false,
+        "O6": false,
+        "O7": false,
+        "O8": false,
+        "O9": false,
+        "O10": false,
+        "O11": false
+      },
+      "missing_component_ids": [],
+      "unexpected_component_ids": [],
+      "duplicate_component_ids": []
+    }
+  },
+  "research_coverage": "NOT_RUN",
+  "source": "/tmp/berlin-qac-v3-smoke.json",
+  "calls": [
+    {
+      "stage": "contract_planner",
+      "schema": "QuestionAnswerContract",
+      "status": "returned",
+      "response": {
+        "question_type": "historical_motive",
+        "core_question": "Warum wurde die Berliner Mauer gebaut?",
+        "primary_answer_obligation": {
+          "id": "primary_motive",
+          "description": "Den unmittelbaren Zweck benennen: Die DDR-Führung ließ die Berliner Mauer bauen, um die massenhafte Flucht von DDR-Bürgern über West-Berlin in den Westen zu stoppen.",
+          "is_primary": true,
+          "is_required": true,
+          "fact_ids": []
+        },
+        "required_supporting_obligations": [
+          {
+            "id": "migration_pressure",
+            "description": "Erklären, dass die offene Grenze in Berlin bis 1961 der wichtigste Fluchtweg war und der DDR dadurch viele Menschen, darunter häufig junge und qualifizierte Arbeitskräfte, verlorengingen.",
+            "is_primary": false,
+            "is_required": true,
+            "fact_ids": []
+          },
+          {
+            "id": "political_regime_security",
+            "description": "Einordnen, dass das Stoppen der Flucht zugleich die politische und wirtschaftliche Stabilität bzw. das Überleben des SED-Regimes sichern sollte.",
+            "is_primary": false,
+            "is_required": true,
+            "fact_ids": []
+          }
+        ],
+        "optional_context": [
+          "Das Datum des Mauerbaus: Beginn am 13. August 1961.",
+          "Die offizielle DDR-Bezeichnung „antifaschistischer Schutzwall“ und warum sie von Historikern als Propaganda bewertet wird.",
+          "Die Rolle der Sowjetunion und der Kalte Krieg als Rahmenbedingungen.",
+          "Folgen für getrennte Familien sowie Tote und Verletzte an der Grenze."
+        ],
+        "causal_mechanistic_chain": [
+          {
+            "id": "step_1",
+            "description": "Die Teilung Deutschlands und Berlins ließ in Berlin zunächst einen vergleichsweise zugänglichen Übergang von Ost nach West bestehen.",
+            "depth_level": 1
+          },
+          {
+            "id": "step_2",
+            "description": "Sehr viele DDR-Bürger nutzten diesen Weg zur Flucht in die Bundesrepublik bzw. nach West-Berlin.",
+            "depth_level": 2
+          },
+          {
+            "id": "step_3",
+            "description": "Die Abwanderung schwächte die DDR wirtschaftlich und untergrub die Autorität sowie die Stabilität der SED-Herrschaft.",
+            "depth_level": 3
+          },
+          {
+            "id": "step_4",
+            "description": "Die DDR-Führung schloss deshalb die Grenze und errichtete die Mauer, um die Flucht dauerhaft zu verhindern.",
+            "depth_level": 4
+          }
+        ],
+        "historical_motive": "Die unmittelbare Absicht war, die Massenflucht aus der DDR über West-Berlin zu unterbinden und damit das SED-Regime zu stabilisieren.",
+        "required_mechanism_concepts": [
+          "Massenflucht bzw. Republikflucht",
+          "West-Berlin als Fluchtweg",
+          "Arbeitskräfte- und Bevölkerungsverlust",
+          "Sicherung der SED-Herrschaft"
+        ],
+        "minimum_answer_depth": 3,
+        "unresolved_research_gaps": []
+      },
+      "refusal": null
+    },
+    {
+      "stage": "question_minimum",
+      "schema": "QuestionMinimum",
+      "status": "returned",
+      "response": {
+        "question_intent": "Die unmittelbare historische Absicht der DDR-Führung beim Bau der Berliner Mauer erklären.",
+        "minimal_answer": "Die Berliner Mauer wurde 1961 von der DDR gebaut, um die Flucht von DDR-Bürgern über West-Berlin in die Bundesrepublik zu stoppen.",
+        "necessary_components": [
+          {
+            "id": "C1",
+            "description": "Die DDR-Führung als handelnder Akteur nennen.",
+            "necessity_reason": "Ohne den Akteur bleibt unklar, wer die Maßnahme veranlasste."
+          },
+          {
+            "id": "C2",
+            "description": "Den Bau der Mauer zeitlich als Maßnahme von 1961 einordnen.",
+            "necessity_reason": "Dies identifiziert das gemeinte historische Ereignis; für die bloße Warum-Frage wäre das Jahr allein jedoch nicht ausreichend."
+          },
+          {
+            "id": "C3",
+            "description": "Als Zweck das Stoppen bzw. Verhindern der Flucht von DDR-Bürgern nennen.",
+            "necessity_reason": "Das beantwortet unmittelbar, was mit dem Mauerbau erreicht werden sollte. Ohne diesen Zweck wäre die Warum-Frage unbeantwortet."
+          },
+          {
+            "id": "C4",
+            "description": "West-Berlin als den besonders wichtigen Fluchtweg in die Bundesrepublik benennen.",
+            "necessity_reason": "Ohne diesen Bezug wäre die Erklärung ungenau, weil die Mauer gerade die zuvor vergleichsweise offene Grenze in Berlin abschottete."
+          }
+        ],
+        "explicit_constraints": [
+          ":"
+        ],
+        "optional_extensions": [
+          "Die große Zahl der Übersiedler, darunter viele Fachkräfte, als Hintergrund der Fluchtbewegung erläutern.",
+          "Die offizielle DDR-Bezeichnung „antifaschistischer Schutzwall“ der tatsächlichen Funktion gegenüberstellen.",
+          "Den Kalten Krieg und die deutsche Teilung als weiteren historischen Kontext nennen.",
+          "Erwähnen, dass die Mauer nicht nur West-Berlin, sondern das Grenzsystem in und um Berlin prägte."
+        ],
+        "minimum_necessary_depth": 1,
+        "preserves_question_semantics": true,
+        "preserves_explicit_constraints": true
+      },
+      "refusal": null
+    },
+    {
+      "stage": "necessity_audit",
+      "schema": "NecessityAudit",
+      "status": "returned",
+      "response": {
+        "minimally_sufficient": false,
+        "minimal_answer": "Die DDR-Führung baute die Berliner Mauer 1961, um die Flucht von DDR-Bürgern über West-Berlin in die Bundesrepublik zu stoppen.",
+        "components": [
+          {
+            "id": "N1",
+            "source_requirement_ids": [
+              "obligation:primary_motive"
+            ],
+            "description": "Die DDR-Führung als veranlassenden Akteur nennen.",
+            "strictly_necessary": true,
+            "semantic_role": "necessary_bridge",
+            "atomic": true,
+            "minimum_answer_component_ids": [
+              "C1"
+            ],
+            "answer_without_component": "Die Berliner Mauer wurde 1961 gebaut, um die Flucht von DDR-Bürgern über West-Berlin in die Bundesrepublik zu stoppen.",
+            "omission_still_answers_question": false,
+            "reason": "Ohne den handelnden Akteur ist nicht klar, wer den Mauerbau als Maßnahme veranlasste."
+          },
+          {
+            "id": "N2",
+            "source_requirement_ids": [
+              "obligation:migration_pressure"
+            ],
+            "description": "Den Mauerbau zeitlich als Ereignis von 1961 einordnen.",
+            "strictly_necessary": true,
+            "semantic_role": "necessary_bridge",
+            "atomic": true,
+            "minimum_answer_component_ids": [
+              "C2"
+            ],
+            "answer_without_component": "Die DDR-Führung baute die Berliner Mauer, um die Flucht von DDR-Bürgern über West-Berlin in die Bundesrepublik zu stoppen.",
+            "omission_still_answers_question": false,
+            "reason": "Die Jahresangabe identifiziert das gemeinte historische Ereignis in der vom Frage-Minimum verlangten Weise."
+          },
+          {
+            "id": "N3",
+            "source_requirement_ids": [
+              "obligation:primary_motive",
+              "chain:step_4",
+              "concept:0",
+              "historical_motive"
+            ],
+            "description": "Als unmittelbaren Zweck das Stoppen der Flucht von DDR-Bürgern nennen.",
+            "strictly_necessary": true,
+            "semantic_role": "primary_cause_or_motive",
+            "atomic": true,
+            "minimum_answer_component_ids": [
+              "C3"
+            ],
+            "answer_without_component": "Die DDR-Führung baute die Berliner Mauer 1961.",
+            "omission_still_answers_question": false,
+            "reason": "Dies ist die direkte Antwort auf die Warum-Frage; ohne den Zweck bleibt sie unbeantwortet."
+          },
+          {
+            "id": "N4",
+            "source_requirement_ids": [
+              "obligation:primary_motive",
+              "obligation:migration_pressure",
+              "chain:step_4",
+              "concept:1",
+              "historical_motive"
+            ],
+            "description": "West-Berlin als den maßgeblichen Fluchtweg in die Bundesrepublik benennen.",
+            "strictly_necessary": true,
+            "semantic_role": "necessary_bridge",
+            "atomic": true,
+            "minimum_answer_component_ids": [
+              "C4"
+            ],
+            "answer_without_component": "Die DDR-Führung baute die Berliner Mauer 1961, um die Flucht von DDR-Bürgern zu stoppen.",
+            "omission_still_answers_question": false,
+            "reason": "Ohne den Bezug zu West-Berlin fehlt die für diese Maßnahme charakteristische und vom Frage-Minimum geforderte Präzisierung des Fluchtwegs."
+          },
+          {
+            "id": "O1",
+            "source_requirement_ids": [
+              "chain:step_1"
+            ],
+            "description": "Die Teilung Deutschlands und Berlins als Ursache dafür erläutern, dass ein vergleichsweise zugänglicher Übergang bestand.",
+            "strictly_necessary": false,
+            "semantic_role": "background",
+            "atomic": true,
+            "minimum_answer_component_ids": [],
+            "answer_without_component": "Die DDR-Führung baute die Berliner Mauer 1961, um die Flucht von DDR-Bürgern über West-Berlin in die Bundesrepublik zu stoppen.",
+            "omission_still_answers_question": true,
+            "reason": "Die Aussage erklärt einen weiter zurückliegenden historischen Rahmen, nicht die unmittelbare Absicht des Mauerbaus."
+          },
+          {
+            "id": "O2",
+            "source_requirement_ids": [
+              "chain:step_2",
+              "obligation:migration_pressure",
+              "obligation:primary_motive",
+              "historical_motive"
+            ],
+            "description": "Die Fluchtbewegung als besonders umfangreich oder als Massenflucht charakterisieren.",
+            "strictly_necessary": false,
+            "semantic_role": "background",
+            "atomic": true,
+            "minimum_answer_component_ids": [],
+            "answer_without_component": "Die DDR-Führung baute die Berliner Mauer 1961, um die Flucht von DDR-Bürgern über West-Berlin in die Bundesrepublik zu stoppen.",
+            "omission_still_answers_question": true,
+            "reason": "Für die unmittelbare Absicht genügt, dass die Flucht gestoppt werden sollte; ihr quantitatives Ausmaß ist ein erklärender Hintergrund."
+          },
+          {
+            "id": "O3",
+            "source_requirement_ids": [
+              "obligation:migration_pressure"
+            ],
+            "description": "Erläutern, dass die Berliner Grenze bis 1961 offen war.",
+            "strictly_necessary": false,
+            "semantic_role": "background",
+            "atomic": true,
+            "minimum_answer_component_ids": [],
+            "answer_without_component": "Die DDR-Führung baute die Berliner Mauer 1961, um die Flucht von DDR-Bürgern über West-Berlin in die Bundesrepublik zu stoppen.",
+            "omission_still_answers_question": true,
+            "reason": "Die Benennung West-Berlins als Fluchtweg reicht für die minimale Erklärung; die nähere Beschaffenheit der früheren Grenze ist zusätzlicher Kontext."
+          },
+          {
+            "id": "O4",
+            "source_requirement_ids": [
+              "chain:step_3",
+              "obligation:migration_pressure",
+              "concept:2"
+            ],
+            "description": "Den durch die Abwanderung verursachten allgemeinen Bevölkerungsverlust der DDR erläutern.",
+            "strictly_necessary": false,
+            "semantic_role": "consequence",
+            "atomic": true,
+            "minimum_answer_component_ids": [],
+            "answer_without_component": "Die DDR-Führung baute die Berliner Mauer 1961, um die Flucht von DDR-Bürgern über West-Berlin in die Bundesrepublik zu stoppen.",
+            "omission_still_answers_question": true,
+            "reason": "Der Bevölkerungsverlust erklärt, warum die Flucht problematisch war, ist aber nicht erforderlich, um den unmittelbaren Bauzweck korrekt zu nennen."
+          },
+          {
+            "id": "O5",
+            "source_requirement_ids": [
+              "chain:step_3",
+              "obligation:migration_pressure",
+              "concept:2"
+            ],
+            "description": "Den Verlust junger oder qualifizierter Arbeitskräfte erläutern.",
+            "strictly_necessary": false,
+            "semantic_role": "consequence",
+            "atomic": true,
+            "minimum_answer_component_ids": [],
+            "answer_without_component": "Die DDR-Führung baute die Berliner Mauer 1961, um die Flucht von DDR-Bürgern über West-Berlin in die Bundesrepublik zu stoppen.",
+            "omission_still_answers_question": true,
+            "reason": "Die Zusammensetzung der Auswandernden ist eine vertiefende wirtschaftliche Erklärung und kein notwendiger Teil der unmittelbaren Antwort."
+          },
+          {
+            "id": "O6",
+            "source_requirement_ids": [
+              "chain:step_3",
+              "obligation:political_regime_security"
+            ],
+            "description": "Die wirtschaftliche Schwächung der DDR durch die Abwanderung erläutern.",
+            "strictly_necessary": false,
+            "semantic_role": "consequence",
+            "atomic": true,
+            "minimum_answer_component_ids": [],
+            "answer_without_component": "Die DDR-Führung baute die Berliner Mauer 1961, um die Flucht von DDR-Bürgern über West-Berlin in die Bundesrepublik zu stoppen.",
+            "omission_still_answers_question": true,
+            "reason": "Dies ist eine weitergehende Begründung der Fluchtbekämpfung, nicht der unmittelbar erforderliche Zweck."
+          },
+          {
+            "id": "O7",
+            "source_requirement_ids": [
+              "chain:step_3",
+              "obligation:political_regime_security",
+              "concept:3",
+              "historical_motive"
+            ],
+            "description": "Die Sicherung oder Stabilisierung der SED-Herrschaft als weitergehendes Ziel nennen.",
+            "strictly_necessary": false,
+            "semantic_role": "broader_objective",
+            "atomic": true,
+            "minimum_answer_component_ids": [],
+            "answer_without_component": "Die DDR-Führung baute die Berliner Mauer 1961, um die Flucht von DDR-Bürgern über West-Berlin in die Bundesrepublik zu stoppen.",
+            "omission_still_answers_question": true,
+            "reason": "Regimestabilisierung ist ein strategisches Ziel beziehungsweise eine Folge der Fluchtverhinderung. Das unabhängige Frage-Minimum verlangt die unmittelbare Absicht, nicht dieses weitergehende Ziel."
+          },
+          {
+            "id": "O8",
+            "source_requirement_ids": [
+              "obligation:political_regime_security"
+            ],
+            "description": "Das politische Überleben des SED-Regimes als Ziel nennen.",
+            "strictly_necessary": false,
+            "semantic_role": "broader_objective",
+            "atomic": true,
+            "minimum_answer_component_ids": [],
+            "answer_without_component": "Die DDR-Führung baute die Berliner Mauer 1961, um die Flucht von DDR-Bürgern über West-Berlin in die Bundesrepublik zu stoppen.",
+            "omission_still_answers_question": true,
+            "reason": "Das politische Überleben des Regimes geht über den minimal nötigen unmittelbaren Zweck hinaus und ist zudem nicht nötig, um die Fluchtverhinderung zu verstehen."
+          },
+          {
+            "id": "O9",
+            "source_requirement_ids": [
+              "chain:step_4"
+            ],
+            "description": "Das Schließen der Grenze als einzelnen Umsetzungsschritt beschreiben.",
+            "strictly_necessary": false,
+            "semantic_role": "implementation",
+            "atomic": true,
+            "minimum_answer_component_ids": [],
+            "answer_without_component": "Die DDR-Führung baute die Berliner Mauer 1961, um die Flucht von DDR-Bürgern über West-Berlin in die Bundesrepublik zu stoppen.",
+            "omission_still_answers_question": true,
+            "reason": "Die Frage betrifft das Motiv für den Mauerbau; eine gesonderte Beschreibung des Grenzschlusses ergänzt lediglich die Umsetzung."
+          },
+          {
+            "id": "O10",
+            "source_requirement_ids": [
+              "chain:step_4"
+            ],
+            "description": "Die Fluchtverhinderung als dauerhaftes Ziel charakterisieren.",
+            "strictly_necessary": false,
+            "semantic_role": "extension",
+            "atomic": true,
+            "minimum_answer_component_ids": [],
+            "answer_without_component": "Die DDR-Führung baute die Berliner Mauer 1961, um die Flucht von DDR-Bürgern über West-Berlin in die Bundesrepublik zu stoppen.",
+            "omission_still_answers_question": true,
+            "reason": "Die zeitliche Dauer des beabsichtigten Grenzregimes ist für die unmittelbare Antwort nicht erforderlich."
+          },
+          {
+            "id": "O11",
+            "source_requirement_ids": [
+              "minimum_answer_depth"
+            ],
+            "description": "Eine kausale Erklärungstiefe von drei Stufen verlangen.",
+            "strictly_necessary": false,
+            "semantic_role": "depth",
+            "atomic": true,
+            "minimum_answer_component_ids": [],
+            "answer_without_component": "Die DDR-Führung baute die Berliner Mauer 1961, um die Flucht von DDR-Bürgern über West-Berlin in die Bundesrepublik zu stoppen.",
+            "omission_still_answers_question": true,
+            "reason": "Das Frage-Minimum verlangt nur eine direkte Erklärung der Absicht und bestimmt eine notwendige Erklärungstiefe von 1, nicht von 3."
+          }
+        ],
+        "primary_contains_unnecessary_conjunction": true,
+        "correction_required": true,
+        "minimum_necessary_depth": 1,
+        "preserves_question_semantics": true,
+        "preserves_explicit_constraints": true
+      },
+      "refusal": null
+    },
+    {
+      "stage": "contract_repair",
+      "schema": "QuestionAnswerContract",
+      "status": "returned",
+      "response": {
+        "question_type": "historical_motive",
+        "core_question": "Warum wurde die Berliner Mauer gebaut?",
+        "primary_answer_obligation": {
+          "id": "primary_motive",
+          "description": "Als unmittelbaren Zweck nennen, dass die Flucht von DDR-Bürgern verhindert beziehungsweise gestoppt werden sollte.",
+          "is_primary": true,
+          "is_required": true,
+          "fact_ids": []
+        },
+        "required_supporting_obligations": [
+          {
+            "id": "ddr_akteur",
+            "description": "Die DDR-Führung als veranlassenden Akteur des Mauerbaus nennen.",
+            "is_primary": false,
+            "is_required": true,
+            "fact_ids": []
+          },
+          {
+            "id": "zeitliche_einordnung_1961",
+            "description": "Den Mauerbau als Ereignis von 1961 einordnen.",
+            "is_primary": false,
+            "is_required": true,
+            "fact_ids": []
+          },
+          {
+            "id": "west_berlin_fluchtweg",
+            "description": "West-Berlin als maßgeblichen Fluchtweg in die Bundesrepublik benennen.",
+            "is_primary": false,
+            "is_required": true,
+            "fact_ids": []
+          }
+        ],
+        "optional_context": [
+          "Die Fluchtbewegung als Massenflucht oder besonders umfangreich charakterisieren.",
+          "Erläutern, dass die Berliner Grenze bis 1961 vergleichsweise zugänglich beziehungsweise offen war und dies mit der Teilung Deutschlands und Berlins zusammenhing.",
+          "Den allgemeinen Bevölkerungsverlust der DDR durch Abwanderung erläutern.",
+          "Den Verlust junger oder qualifizierter Arbeitskräfte erläutern.",
+          "Die wirtschaftliche Schwächung der DDR durch Abwanderung erläutern.",
+          "Die Sicherung, Stabilisierung oder das politische Überleben der SED-Herrschaft als weitergehendes Ziel einordnen.",
+          "Das Schließen der Grenze als Umsetzungsschritt und die beabsichtigte Dauerhaftigkeit der Fluchtverhinderung beschreiben.",
+          "Die offizielle DDR-Bezeichnung „antifaschistischer Schutzwall“ und ihre Bewertung als Propaganda erläutern.",
+          "Die Rolle der Sowjetunion, des Kalten Krieges und der deutschen Teilung als Rahmenbedingungen nennen.",
+          "Folgen für getrennte Familien sowie Tote und Verletzte an der Grenze erläutern.",
+          "Erwähnen, dass die Mauer das Grenzsystem in und um Berlin prägte."
+        ],
+        "causal_mechanistic_chain": [],
+        "historical_motive": "Die DDR-Führung baute die Berliner Mauer 1961, um die Flucht von DDR-Bürgern über West-Berlin in die Bundesrepublik zu stoppen.",
+        "required_mechanism_concepts": [
+          "Flucht von DDR-Bürgern",
+          "West-Berlin als Fluchtweg in die Bundesrepublik"
+        ],
+        "minimum_answer_depth": 1,
+        "unresolved_research_gaps": []
+      },
+      "refusal": null
+    },
+    {
+      "stage": "repair_check",
+      "schema": "RepairCheck",
+      "status": "returned",
+      "response": {
+        "minimally_sufficient": false,
+        "preserves_question_semantics": true,
+        "preserves_explicit_constraints": true,
+        "preserves_primary_cause_or_motive": true,
+        "preserves_necessary_chain": true,
+        "components": [
+          {
+            "component_id": "N1",
+            "correctly_required_or_optional": false,
+            "reason": "Die Nennung der DDR-Führung ist historisch sinnvoll, aber für die minimale Beantwortung der Warum-Frage nicht zwingend: Der Zweck, Flucht zu stoppen, beantwortet sie bereits."
+          },
+          {
+            "component_id": "N2",
+            "correctly_required_or_optional": false,
+            "reason": "Die Jahreszahl 1961 identifiziert und kontextualisiert das Ereignis, ist aber keine notwendige Bedingung für die minimale Erklärung seines Motivs."
+          },
+          {
+            "component_id": "N3",
+            "correctly_required_or_optional": true,
+            "reason": "Das Stoppen beziehungsweise Verhindern der Flucht von DDR-Bürgern ist der unmittelbare Zweck und die unverzichtbare Antwort auf die Warum-Frage."
+          },
+          {
+            "component_id": "N4",
+            "correctly_required_or_optional": false,
+            "reason": "West-Berlin als genauer Fluchtweg ist eine nützliche historische Präzisierung, aber nicht erforderlich, um das grundlegende Motiv des Mauerbaus korrekt zu erklären."
+          },
+          {
+            "component_id": "O1",
+            "correctly_required_or_optional": true,
+            "reason": "Die Teilung und der zuvor zugängliche Übergang sind Hintergrundbedingungen und bleiben im reparierten Vertrag optional."
+          },
+          {
+            "component_id": "O2",
+            "correctly_required_or_optional": true,
+            "reason": "Die Charakterisierung als Massenflucht ist zusätzlicher Kontext und wird nicht verlangt."
+          },
+          {
+            "component_id": "O3",
+            "correctly_required_or_optional": true,
+            "reason": "Die frühere Offenheit beziehungsweise Zugänglichkeit der Grenze wird nur als optionaler Kontext geführt."
+          },
+          {
+            "component_id": "O4",
+            "correctly_required_or_optional": true,
+            "reason": "Der Bevölkerungsverlust ist eine weitergehende Folge beziehungsweise Begründung und optional."
+          },
+          {
+            "component_id": "O5",
+            "correctly_required_or_optional": true,
+            "reason": "Der Verlust qualifizierter oder junger Arbeitskräfte ist eine vertiefende wirtschaftliche Einordnung und optional."
+          },
+          {
+            "component_id": "O6",
+            "correctly_required_or_optional": true,
+            "reason": "Die wirtschaftliche Schwächung der DDR ist nicht für die direkte Motivantwort erforderlich und bleibt optional."
+          },
+          {
+            "component_id": "O7",
+            "correctly_required_or_optional": true,
+            "reason": "Die Stabilisierung der SED-Herrschaft ist ein weitergehendes strategisches Ziel und wird korrekt als optionaler Kontext behandelt."
+          },
+          {
+            "component_id": "O8",
+            "correctly_required_or_optional": true,
+            "reason": "Das politische Überleben des Regimes geht über die minimale unmittelbare Motivangabe hinaus und bleibt optional."
+          },
+          {
+            "component_id": "O9",
+            "correctly_required_or_optional": true,
+            "reason": "Das Schließen der Grenze als Umsetzungsschritt wird nicht als eigenständige Pflicht verlangt."
+          },
+          {
+            "component_id": "O10",
+            "correctly_required_or_optional": true,
+            "reason": "Die beabsichtigte Dauerhaftigkeit der Fluchtverhinderung ist optionaler Zusatzkontext."
+          },
+          {
+            "component_id": "O11",
+            "correctly_required_or_optional": true,
+            "reason": "Der reparierte Vertrag verlangt nur Erklärungstiefe 1; eine dreistufige Kausalkette ist nicht erforderlich."
+          }
+        ],
+        "reason": "Der reparierte Vertrag bewahrt die unmittelbare Antwort und verlangt keine unnötige Kausalkette. Er ist jedoch nicht minimal ausreichend, weil er die DDR-Führung, die Jahreszahl 1961 und West-Berlin als Fluchtweg weiterhin als verpflichtende Stützpflichten festlegt. Unabhängig geprüft genügt als Mindestantwort, dass die Mauer gebaut wurde, um die Flucht von DDR-Bürgern zu stoppen; Akteur, Zeitpunkt und genauer Fluchtweg sind optionale Präzisierungen. Insbesondere darf West-Berlin daher auch nicht indirekt über required_mechanism_concepts verpflichtend sein."
+      },
+      "refusal": null
+    }
+  ]
+}

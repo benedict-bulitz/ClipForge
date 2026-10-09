@@ -38,8 +38,10 @@ def berlin_review():
         question_intent='Unmittelbare Absicht des Mauerbaus, nicht die dahinterliegenden politischen Ziele.',
         minimal_answer=CORE, necessary_components=[MinimumAnswerComponent(
             id='immediate_motive', description=CORE,
-            necessity_reason='Ohne die Absicht, Abwanderung zu stoppen, bleibt der Baugrund unbeantwortet.')],
-        explicit_constraints=[], optional_extensions=['Herrschaftssicherung', 'Fortbestand des Staates', 'Fluchtweggeographie'],
+            necessity_reason='Ohne die Absicht, Abwanderung zu stoppen, bleibt der Baugrund unbeantwortet.',
+            answer_without_component='Die Mauer wurde gebaut.', omission_still_answers_question=False,
+            omission_failure='unanswered')],
+        explicit_constraints=[], explanatory_context=[], optional_extensions=['Herrschaftssicherung', 'Fortbestand des Staates', 'Fluchtweggeographie'],
         minimum_necessary_depth=1, preserves_question_semantics=True, preserves_explicit_constraints=True,
     )
     # Retain the saved audit's requirement coverage, but classify each conjunct

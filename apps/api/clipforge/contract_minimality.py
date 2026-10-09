@@ -15,14 +15,18 @@ from clipforge.question_answer_contract import QuestionAnswerContract, answer_ob
 class MinimumAnswerComponent(BaseModel):
     id: str = Field(min_length=1)
     description: str = Field(min_length=1)
-    necessity_reason: str = Field(min_length=1)
+    necessity_reason: str = Field(min_length=1, description="Why omission fails the original question, not why the detail improves context")
+    answer_without_component: str = Field(min_length=1, description="Remove only this detail; keep the remaining essential answer")
+    omission_still_answers_question: bool
+    omission_failure: Literal["none", "unanswered", "incorrect", "materially_ambiguous", "circular"]
 
 
 class QuestionMinimum(BaseModel):
     question_intent: str = Field(min_length=1)
     minimal_answer: str = Field(min_length=1)
-    necessary_components: list[MinimumAnswerComponent] = Field(min_length=1)
+    necessary_components: list[MinimumAnswerComponent] = Field(min_length=1, description="Atomic details indispensable to the requested answer")
     explicit_constraints: list[str]
+    explanatory_context: list[str] = Field(description="Useful for a good explanation but not mandatory to resolve the question")
     optional_extensions: list[str]
     minimum_necessary_depth: int = Field(ge=1)
     preserves_question_semantics: bool
@@ -123,7 +127,19 @@ def guard_contract(question, language, proposed, client, settings):
     # from the user's question before asking another reviewer to classify it.
     minimum = parse(
         "Independently define the strict minimum answer to the ORIGINAL question, without a proposed contract or evidence. "
-        "List atomic necessary components, explicit user constraints, and useful optional extensions. "
+        "Separate A: independently essential answer components, B: useful explanatory_context, and C: optional_extensions. "
+        "Only A belongs in necessary_components; B and C are optional, not forbidden, and may enrich a grounded script. "
+        "Write minimal_answer from A only; decompose each candidate into atomic details before testing omission. "
+        "First identify the dimension the user actually asks about. Do not answer unasked who/when/where questions "
+        "as mandatory parts of a why answer. The referent named by the question already identifies the subject/event: "
+        "repeating its actor, date or location is not automatically necessary identification. These details are required "
+        "when explicitly asked or when omission makes the ORIGINAL answer genuinely incorrect, materially ambiguous, "
+        "unanswered or circular; missing precision, completeness or historical context alone is not material ambiguity. "
+        "For EACH candidate necessary component, remove only that detail, write answer_without_component, then judge "
+        "whether that remaining answer correctly resolves the ORIGINAL question. Do not judge whether the removed detail "
+        "alone would answer it: that is sufficiency, not necessity. If omission_still_answers_question is true or "
+        "omission_failure is none, move the detail to B or C instead of necessary_components. Otherwise identify the "
+        "specific failure of the requested answer. List explicit_constraints only if actually present; use [] when none. "
         "For a general historical-purpose question the immediate intent behind the action resolves WHY it was taken. "
         "Do not automatically expand this into why that intent served a broader objective, why the actor wanted that "
         "objective, or why a particular implementation/location was chosen. Those are separate questions unless "
@@ -140,18 +156,29 @@ def guard_contract(question, language, proposed, client, settings):
     failures = []
     if len(minimum_ids) != len(set(minimum_ids)):
         failures.append(violation("DUPLICATE_MINIMUM_COMPONENT_IDS", "Question minimum IDs must be unique.", minimum_ids))
+    for component in minimum.necessary_components:
+        if component.omission_still_answers_question or component.omission_failure == "none":
+            failures.append(violation(
+                "MINIMUM_COUNTERFACTUAL_NOT_NECESSARY",
+                "A minimum component must be indispensable after its omission counterfactual.", [component.id], "semantic",
+            ))
     for name in ("preserves_question_semantics", "preserves_explicit_constraints"):
         if not getattr(minimum, name):
             failures.append(violation(name.upper(), f"Question minimum {name} must be true.", kind="semantic"))
     if failures:
         raise ContractGenerationFailure("Invalid independent question minimum", stage="question_minimum",
-                                        code="QUESTION_MINIMUM_REJECTED", violations=failures, settings=settings)
+                                        code="QUESTION_MINIMUM_REJECTED", violations=failures, settings=settings,
+                                        extra={"question_minimum": minimum.model_dump()})
     payload["question_minimum"] = minimum.model_dump()
 
     audit = parse(
         "You are an independent Contract Minimality Reviewer, not the planner. "
         "Identify the minimal independently necessary, accurate, non-circular answer to the ORIGINAL question. "
         "The question_minimum was derived independently without seeing the proposed contract; use it as the scope reference. "
+        "Its necessary components passed an omission test; explanatory_context and optional_extensions are not requirements. "
+        "Re-evaluate each remaining answer against the ORIGINAL requested dimension, not completeness of an ideal lesson. "
+        "If it still resolves the question, the omitted detail is optional. Do not manufacture necessity by asking who, "
+        "when or where instead, or by demanding identifiers already supplied by the question. Optional is not forbidden. "
         "Do not accept a requirement merely because the planner called it a motive or because it explains a related question. "
         "Distinguish immediate intent from broader strategic objectives, background, consequences and implementation/location. "
         "These extensions are optional unless the actual question or a necessary explanatory bridge requires them. "
