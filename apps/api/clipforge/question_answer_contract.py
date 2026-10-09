@@ -68,7 +68,6 @@ def generate_contract(question: str, language: str, settings: Settings) -> Quest
             {"role": "user", "content": f"Question: {question}\nLanguage: {language}"},
         ],
         response_format=QuestionAnswerContract,
-        temperature=0.0,
     )
     parsed = response.choices[0].message.parsed
     if not isinstance(parsed, QuestionAnswerContract):
@@ -109,7 +108,6 @@ def evaluate_research_coverage(contract: QuestionAnswerContract, facts: list[dic
             {"role": "user", "content": f"Contract:\n{contract.model_dump_json(indent=2)}\n\nFacts:\n{facts_text}"},
         ],
         response_format=ResearchCoverageReport,
-        temperature=0.0,
     )
     return checked_coverage(contract, response.choices[0].message.parsed, facts)
 
