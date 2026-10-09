@@ -36,7 +36,7 @@ _STOP = {
 }
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+(?=[A-ZÄÖÜ0-9\"„“(])")
 _ANAPHOR = re.compile(
-    r"^(?:dies\w*|das|diese[rsmn]?|er|sie|es|dabei|dadurch|deshalb|daher|damit|dafür|darum|dazu|so|hierbei|this|that|these|those|it|they|he|she|"
+    r"^(?:(?:die|der|das)\s+(?:dabei|dadurch)|dies\w*|das|diese[rsmn]?|er|sie|es|dabei|dadurch|deshalb|daher|damit|dafür|darum|dazu|so|hierbei|this|that|these|those|it|they|he|she|"
     r"thus|hence|as a result|im gegensatz dazu|demgegenüber|dagegen|in contrast|by contrast|(?:trotz|wegen|aufgrund|neben|bei|mit|nach|despite|because of|with) (?:dies\w*|dessen|deren|this|that|these))\b",
     re.IGNORECASE,
 )
@@ -50,7 +50,12 @@ PROCESS_PATTERN = re.compile(
     r"(?:ist|sind) (?:auf [^.;]{1,80} zurückzuführen|zurückzuführen auf)|liegt an|liegen an|"
     r"(?:farbe|färbung|eigenschaft|zustand)\b[^.;]{0,50}\bhat\b[^.;]{1,80}\bvon|"
     r"absorb\w*|scatter\w*|reflect\w*|convert\w*|transfer\w*|absorbier\w*|streu\w*|reflektier\w*|"
-    r"umgewandelt|wandelt|überträgt|übertragen|erwärm\w*|erhitz\w*|entsteh\w*)\b",
+    r"umgewandelt|wandelt|überträgt|übertragen|erwärm\w*|erhitz\w*|entsteh\w*|"
+    r"bind\w*|lagern?\b[^.;]{0,60}\bein|abbrechen|zer(?:setzt|setzen|fallen)|"
+    r"überlager\w*|auslösch\w*|verstärk\w*|veränder\w*|beeinfluss\w*|lösen\b[^.;]{0,60}\baus|"
+    r"bewegt|bewegen|erzeug\w*|bestimm\w*|detektier\w*|erkenn\w*|"
+    r"decompos\w*|degrad\w*|trap\w*|bind\w*|cancel\w*|interfer\w*|"
+    r"chang\w*|generat\w*|trigger\w*|determin\w*|detect\w*|measur\w*)\b",
     re.IGNORECASE,
 )
 KIND_PATTERNS: dict[str, re.Pattern[str]] = {
@@ -66,7 +71,9 @@ KIND_PATTERNS: dict[str, re.Pattern[str]] = {
         r"weil|denn|dadurch|deshalb|daher|darum|deswegen|sodass|so dass|führt zu|führen zu|verursach\w*|bewirk\w*|"
         r"entsteh\w*|indem|wodurch|aufgrund|wegen|absorbier\w*|streu\w*|reflektier\w*|umgewandelt|wandelt|"
         r"überträgt|übertragen|erwärm\w*|erhitz\w*|damit|um\b[^.,;]{1,80}\bzu\s+\w+|ziel war|grund dafür|"
-        r"aus angst|reason\w*|motiv\w*|fear of|to (?:stop|prevent|keep))\b|" + PROCESS_PATTERN.pattern
+        r"aus angst|reason\w*|motiv\w*|fear of|to (?:stop|prevent|keep)|"
+        r"da\s+(?:sie|er|es|die|der|das)\b|(?:ursache|grund)\b[^.;]{0,100}\b(?:ist|sind)|"
+        r"liegt daran|durch\b[^.;]{1,80}\b(?:druck|unterschied|änderung)\w*)\b|" + PROCESS_PATTERN.pattern
     ),
     "number": re.compile(r"(?i)\b\d[\d.,]*\s*(?:%|prozent|percent|°c|grad|kelvin|k\b|km|m\b|cm|mm|nm|kg|g\b|"
                          r"ghz|mhz|hz|watt|w\b|kw|millionen|milliarden|million|billion|tausend|thousand|mal\b|times\b)|"
@@ -186,6 +193,9 @@ class EvidenceUnit:
     # pronoun in this sentence may refer to.
     antecedent: str = ""
     paragraph_initial: bool = False
+    # The source's opening subject paragraph, when it names the asked entity.
+    # Resolves component references across paragraphs; never supplies a cause.
+    subject_context: str = ""
 
     @property
     def kind(self) -> str:
@@ -200,6 +210,7 @@ class EvidenceUnit:
             "id": self.id,
             "text": self.text[:400],
             "excerpt": self.excerpt[:400],
+            "subject_context": self.subject_context[:400],
             "source_id": self.source_id,
             "sub_question": self.sub_question,
             "kind": self.kind,
@@ -247,6 +258,7 @@ def units_from_paragraphs(
     # Local import: answer_relation shares the kind patterns defined in this module.
     from .answer_relation import (
         core_issues,
+        entity_coverage,
         mechanism_issues,
         question_frame,
         relation_hits,
@@ -259,6 +271,11 @@ def units_from_paragraphs(
         german = re.match(r"(?i)^\s*(?:warum|wie|wieso|weshalb|weswegen|wodurch|was|wann|wo|wer|welche\w*|kann|können|ist|sind)\b", question)
         frame = question_frame(question, "de" if german else "en")
     sub_terms = {sub.id: words(sub.question) | words(sub.query) for sub in sub_questions}
+    subject_context = ""
+    if frame is not None and frame.entities and paragraphs:
+        opening = paragraphs[0][:400]
+        if not opening.rstrip().endswith("?") and frame.entities[0].name in entity_coverage(frame, opening)[1]:
+            subject_context = opening
     # A "why" question is not answered by advice ("Wer umrührt, ...").
     explanation_only = answer_mode(sub_questions[0].question) == "explanation" if sub_questions else False
     candidates: list[tuple[float, EvidenceUnit]] = []
@@ -321,9 +338,10 @@ def units_from_paragraphs(
                 time_sensitive=is_time_sensitive(text),
                 antecedent=antecedent,
                 paragraph_initial=index == 0,
+                subject_context=subject_context,
             )
             # Prefer explanatory and specific sentences within a source.
-            direct = frame is not None and not core_issues(frame, text, antecedent or (title if index == 0 else ""))
+            direct = frame is not None and not core_issues(frame, text, antecedent or (title if index == 0 else ""), context=f"{paragraph} {subject_context}")
             process = frame is not None and "mechanism" in kinds and not mechanism_issues(frame, text, paragraph)
             property_support = frame is not None and relation_hits(frame, text) and not topical_issues(frame, text, paragraph)
             weight = (2 if direct else 1 if process or property_support else 0) + score + (0.2 if "mechanism" in kinds else 0) + (0.1 if {"number", "misconception"} & set(kinds) else 0)

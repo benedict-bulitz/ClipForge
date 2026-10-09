@@ -47,6 +47,7 @@ _FILLER = {
     "nach", "vor", "mit", "bei", "von", "und", "oder", "zu", "so", "noch", "schon", "dabei", "even", "really", "actually",
     "always", "only", "just", "the", "a", "an", "of", "on", "to", "and", "or", "it", "its", "at", "after", "before",
     "wurde", "wurden", "wird", "werden", "war", "waren", "ist", "sind", "hat", "haben", "hatte", "kann", "können", "lässt",
+    "vom", "zum", "zur", "auch", "obwohl", "sie", "sein", "seine", "ihre", "durch", "aus",
 }
 _ADJ_SUFFIX = ("lich", "isch", "ig", "en", "er", "es", "em", "e", "n", "s", "ish")
 _ADVICE = re.compile(
@@ -96,7 +97,7 @@ _NAMING = re.compile(
     r"spitzname|beiname|is (?:often |also )?(?:called|known as|nicknamed)|are (?:often |also )?(?:called|known as)|nickname)\b"
 )
 _OBSERVER = re.compile(
-    r"(?i)\b(?:erkenn\w*|analysier\w*|analyse\w*|mess\w*|misst|detektier\w*|überwach\w*|auswert\w*|interpretier\w*|"
+    r"(?i)\b(?:merk(?:t|en|te|ten|e)?|erkenn\w*|analysier\w*|analyse\w*|mess\w*|misst|detektier\w*|überwach\w*|auswert\w*|interpretier\w*|"
     r"registrier\w*|identifizier\w*|aufspür\w*|find\w* heraus|detect\w*|analy[sz]\w*|measur\w*|monitor\w*|recogni[sz]\w*|"
     r"identif\w*|track\w*|find\w* out|search\w*|such\w*)\b"
 )
@@ -110,6 +111,30 @@ _CONDITION_CLAUSE = re.compile(
     r"(?i)\b(?:when|while|if|under|during|after|before|wenn|falls|während|unter|bei|nach|vor)\b"
     r"([^?;,:]{1,100})"
 )
+# Grammatical how-questions, excluding requests for a quantity or attribute.
+# This is deliberately local to research; downstream script heuristics are separate.
+_HOW = re.compile(r"(?i)^\s*(?:wie(?!\s+(?:viel\w*|oft|alt|lang\w*|groß|weit|hoch|schwer)\b)|how(?!\s+(?:much|many|often|old|long|far|high)\b))\b")
+_OPERATION = re.compile(r"(?i)\b(?:funktionier\w*|arbeit\w*|works?|operat\w*)\b")
+_DETECTION = re.compile(r"(?i)\b(?:merk(?:t|en|te|ten|e)?|erkenn\w*|bestimm\w*|detektier\w*|mess\w*|misst|detect\w*|determin\w*|measur\w*|recogni[sz]\w*)\b")
+# These equivalences describe changes/actions, never particular subject matter.
+_PREDICATE_EQUIVALENTS = (
+    re.compile(r"(?i)\b(?:verlieren|verliert|nachlass\w*|abnehm\w*|nimmt\b[^.;]{0,30}\bab|verringer\w*|sink\w*|decreas\w*|declin\w*|loses?|lose)\b"),
+    _DETECTION,
+    re.compile(r"(?i)\b(?:beats?|puls\w*|schlägt|schlagen|takt\w*)\b"),
+)
+_PERIPHERAL = re.compile(
+    r"(?i)\b(?:untersucht\w*|untersuchen|erforscht\w*|erforschen|forschungs\w*|studie\w*|study|studies|researchers?|"
+    r"investigat\w*|specifications?|\w*hersteller\w*|manufacturers?)\b"
+)
+_REPORTED_CAUSE = re.compile(r"(?i)\b(?:heraus|found|discovered|zeigten|zeigen|showed|show)\b[^.;]{0,30}\b(?:dass|that)\b(.*)")
+_CAUSE_SUBJECT = re.compile(r"(?i)^\s*(?:(?:die|der|the)\s+)?(?:ursache|grund|cause|reason)\b")
+_LOCAL_REFERENCE = re.compile(r"(?i)^\s*(?:(?:die|der|das)\s+(?:dabei|dadurch)|(?:da\s+)?(?:sie|er|es|diese\w*|deren|seine\w*|ihre\w*|dadurch|dabei|damit|it|its|they|their|this|these))\b")
+# Opposing grammatical scope modifiers must not be supplied by a page title.
+# These pairs apply to any process/device, not to a particular question/topic.
+_OPPOSING_MODIFIERS = (
+    (r"aktiv\w*|active", r"passiv\w*|passive"),
+    (r"automatisch\w*|automatic", r"manuell\w*|manual"),
+)
 
 
 def _fold(word: str) -> str:
@@ -120,7 +145,7 @@ def _verb_stem(word: str) -> str:
     word = _fold(word)
     if word.startswith("ge") and len(word) > 5:
         word = word[2:]
-    for suffix in ("ungen", "ung", "est", "et", "en", "st", "er", "t", "e", "n", "s", "ing", "ed"):
+    for suffix in ("ungen", "ation", "ung", "est", "et", "en", "st", "er", "t", "e", "n", "s", "ing", "ed"):
         if len(word) - len(suffix) >= 3 and word.endswith(suffix):
             return word[: -len(suffix)]
     return word
@@ -130,6 +155,9 @@ def inflects(term: str, word: str) -> bool:
     """Same word in another form or as the head of a longer word ("Mikrowelle" ~ "Mikrowellen", "rot" ~ "rötlich")."""
     a, b = _fold(term), _fold(word)
     if a == b or _verb_stem(a) == _verb_stem(b):
+        return True
+    # A case ending may follow an already plural/agent form ("-er-n").
+    if any(a == b + ending or b == a + ending for ending in ("n", "en", "e", "s", "es")):
         return True
     if len(a) >= 4 and b.startswith(a):
         return True
@@ -157,7 +185,11 @@ class Entity:
                 modifier = folded[: -len(head)].rstrip("s-")
                 if any(inflects(other, modifier) for other in others if _fold(other) != head):
                     return True
-        return False
+        # A compound can be expressed as separate words in its local context.
+        # Both parts must be present; its unqualified head alone never suffices.
+        parts = [part for token in tokens for part in token.split("-") if len(part) >= 3]
+        return any(inflects(self.head, first + second) for first in parts if _fold(self.head).startswith(_fold(first))
+                   for second in parts if first != second and len(second) >= 4)
 
 
 @dataclass(frozen=True)
@@ -210,7 +242,7 @@ def _acronyms(tokens: list[str]) -> set[str]:
 def question_frame(question: str, language: str = "de") -> QuestionFrame:
     text = str(question or "").strip()
     lang = "de" if str(language).startswith("de") else "en"
-    explanatory = is_explanatory_question(text)
+    explanatory = is_explanatory_question(text) or bool(_HOW.search(text))
     qtype = "other"
     if explanatory:
         qtype = "how" if re.match(r"(?i)^\s*(?:wie|how)\b", text) else "why"
@@ -236,7 +268,10 @@ def question_frame(question: str, language: str = "de") -> QuestionFrame:
                     phrase.append(tokens[index])
                 modifier = tokens[index - len(phrase)] if index - len(phrase) >= 0 else ""
                 forms = {_fold(word) for word in phrase[:-1]}
-                if modifier and modifier[:1].islower() and modifier.casefold() not in _FILLER and len(modifier) > 3 \
+                # The initial -en word in a German question is a finite verb,
+                # not an adjective naming the following subject ("verlieren X").
+                if modifier and (index - len(phrase) > 0 or not modifier.endswith("en")) \
+                        and modifier[:1].islower() and modifier.casefold() not in _FILLER and len(modifier) > 3 \
                         and modifier.casefold() not in _LEAD and re.search(r"(?:e|en|er|es)$", modifier):
                     # "künstliche Intelligenz": the adjective is part of the name (acronym "KI").
                     forms.add(_fold(modifier[0] + phrase[-1][0]))
@@ -259,6 +294,14 @@ def question_frame(question: str, language: str = "de") -> QuestionFrame:
             state = _TOKEN.findall(property_clause.group(1))[-1].casefold()
             predicate.add(state)
             content = [token for token in content if token.casefold() != state]
+        elif qtype in {"why", "how"}:
+            # Action words are the requested event, not extra entities. Keep
+            # their relation in non-copular English questions as in German.
+            actions = {token.casefold() for token in content if PROCESS_PATTERN.fullmatch(token)
+                       or _OPERATION.fullmatch(token)
+                       or any(pattern.fullmatch(token) for pattern in _PREDICATE_EQUIVALENTS)}
+            predicate.update(actions)
+            content = [token for token in content if token.casefold() not in actions]
         entities = [Entity(token, token, frozenset()) for token in content]
     terms = frozenset(words(text))
     condition_terms: set[str] = set()
@@ -284,7 +327,7 @@ def question_frame(question: str, language: str = "de") -> QuestionFrame:
         predicate=frozenset(predicate),
         terms=terms,
         explanation_asked=explanatory or answer_mode(text) == "explanation" and qtype in {"why", "how"},
-        asks_observation=bool(_OBSERVER.search(text)),
+        asks_observation=bool(_OBSERVER.search(text) or _DETECTION.search(text)),
         asks_naming=bool(_NAMING.search(text)) or bool(re.search(r"(?i)\b(?:heißt|genannt|called|named)\b", text)),
         relation=_relation(qtype, text),
         extra={"condition_terms": sorted(condition_terms)},
@@ -371,8 +414,17 @@ def _shared_shape_issues(frame: QuestionFrame, text: str) -> list[str]:
         issues.append("advice_not_explanation")
     if _AUTHOR_PURPOSE.search(text):
         issues.append("author_or_article_purpose")  # why the page was written, not why the phenomenon happens
-    if _OBSERVER.search(text) and not frame.asks_observation:
+    reported = _REPORTED_CAUSE.search(text)
+    explains_finding = bool(reported and PROCESS_PATTERN.search(reported.group(1)))
+    if _PERIPHERAL.search(text) and not explains_finding and not _PERIPHERAL.search(frame.question):
+        issues.append("announcement_or_specification_not_explanation")
+    if _OBSERVER.search(text) and not frame.asks_observation and not explains_finding:
         issues.append("observer_relation")  # X detects / analyses Y - not X doing Y
+    for first, second in _OPPOSING_MODIFIERS:
+        for asked, opposite in ((first, second), (second, first)):
+            if re.search(rf"(?i)\b(?:{asked})\b", frame.question) and re.search(rf"(?i)\b(?:{opposite})\b", text) \
+                    and not re.search(rf"(?i)\b(?:{asked})\b", text):
+                issues.append("scope_modifier_mismatch")
     return issues
 
 
@@ -438,19 +490,28 @@ def covers_predicate(frame: QuestionFrame, text: str, antecedent: str = "") -> b
     """
     if not frame.predicate or relation_hits(frame, text):
         return True
+    if any(pattern.search(frame.question) and pattern.search(text) for pattern in _PREDICATE_EQUIVALENTS):
+        return True
+    if frame.qtype == "how" and _OPERATION.search(frame.question) and PROCESS_PATTERN.search(text):
+        return True
     if distinguishing_entity(frame) is not None and _POSITION_EQUIVALENT.search(text) and covers_distinguishing(frame, text):
         return True
     return bool(antecedent and _PROPERTY_REFERENCE.search(text) and relation_hits(frame, antecedent)
                 and entity_coverage(frame, antecedent)[0] >= frame.required_entities)
 
 
-def core_issues(frame: QuestionFrame, text: str, antecedent: str = "") -> list[str]:
+def core_issues(frame: QuestionFrame, text: str, antecedent: str = "", *, context: str = "") -> list[str]:
     """Why ``text`` cannot be the core answer to ``frame`` (empty: it can).
 
     ``antecedent`` is what a pronoun in ``text`` may refer to (see ``resolves_pronoun``).
     """
     issues = _shared_shape_issues(frame, text)
     resolved = antecedent if resolves_pronoun(frame, text, antecedent) else ""
+    # Local source context may resolve a reference or a nominal cause of an
+    # already-named property. Mere co-occurrence on a page does not suffice.
+    if context and (_LOCAL_REFERENCE.search(text) or _CAUSE_SUBJECT.search(text)) \
+            and _context_linked(frame, text, context) and covers_predicate(frame, text):
+        resolved = f"{resolved} {context}"
     covered, _names = entity_coverage(frame, f"{text} {resolved}")
     if frame.entities and covered < frame.required_entities:
         issues.append("entity_mismatch")
@@ -460,6 +521,8 @@ def core_issues(frame: QuestionFrame, text: str, antecedent: str = "") -> list[s
     if "entity_mismatch" not in issues and not covers_conditions(frame, f"{text} {resolved}"):
         issues.append("misses_question_condition")
     if frame.qtype in {"why", "how"}:
+        if frame.qtype == "how" and _OPERATION.search(frame.question) and not PROCESS_PATTERN.search(text):
+            issues.append("no_operational_process")
         if frame.relation != "purpose" and not covers_predicate(frame, text, antecedent):
             issues.append("predicate_mismatch")
         if not _CAUSAL.search(text) and not (frame.relation == "purpose" and _PURPOSE.search(text)):
@@ -501,6 +564,23 @@ def relation_hits(frame: QuestionFrame, text: str) -> int:
     return sum(1 for term in frame.predicate if any(inflects(term, token) or inflects(token, term) for token in tokens))
 
 
+def _context_linked(frame: QuestionFrame, text: str, context: str) -> bool:
+    """A reference or shared process participant, not an unrelated sentence near the topic."""
+    if not context or not PROCESS_PATTERN.search(text) and not _CAUSAL.search(text):
+        return False
+    if _LOCAL_REFERENCE.search(text) or _CAUSE_SUBJECT.search(text):
+        return True
+    # A nominalized process with a component/result in the local explanation.
+    if re.match(r"(?i)^\s*\w+(?:ation|tion|ung)\b", text) and PROCESS_PATTERN.search(text):
+        return True
+    # A component can explain the named whole without repeating it. It must
+    # occur elsewhere in the local evidence too, independently of this sentence.
+    outside = context.replace(text, " ")
+    participants = [word for word in _TOKEN.findall(text)
+                    if word[:1].isupper() and word.casefold() not in _DETERMINER]
+    return any(inflects(word, other) for word in participants for other in _TOKEN.findall(outside))
+
+
 def topical_issues(frame: QuestionFrame, text: str, context: str = "") -> list[str]:
     """Why ``text`` (read with its paragraph) cannot support this question at all."""
     issues = _shared_shape_issues(frame, text)
@@ -513,7 +593,8 @@ def topical_issues(frame: QuestionFrame, text: str, context: str = "") -> list[s
 def mechanism_issues(frame: QuestionFrame, text: str, context: str = "") -> list[str]:
     """A mechanism step must be causal, on the asked entities (with its paragraph), not advice/naming,
     and state the requested relation (a purpose for an intentional action, not its result)."""
-    issues = topical_issues(frame, text, context)
+    linked = context if _context_linked(frame, text, context) else ""
+    issues = topical_issues(frame, text, linked)
     if frame.relation != "purpose" and not covers_predicate(frame, text) and not (
         PROCESS_PATTERN.search(text) and covers_predicate(frame, context)
     ):
