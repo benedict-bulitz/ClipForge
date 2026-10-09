@@ -19,6 +19,7 @@ from clipforge.media import (
     MIN_USABLE_SHORT_SIDE,
     MediaProviderError,
     _cache_candidate,
+    asset_metadata,
     commons_delivered_size,
     delivered_photo,
     parse_photo_results,
@@ -35,9 +36,11 @@ from clipforge.visual_providers import (
 )
 from clipforge.visual_rights import (
     MediaRights,
+    accepted_rights,
     commons_rights,
     evaluate_rights,
     provider_terms_rights,
+    usage_restrictions,
 )
 
 BASE = "https://upload.wikimedia.org/wikipedia/commons/a/ab"
@@ -398,7 +401,8 @@ def rights(**values):
     (lic(License="cc-by-4.0", LicenseUrl="https://creativecommons.org/licenses/by/4.0/deed.en/extra", Artist="Ann"), "unknown", "commercial_use_unknown"),
     # Unknown or conflicting evidence stays blocked.
     (lic(License="cc0", LicenseUrl="https://creativecommons.org/licenses/by/4.0/deed.en"), "unknown", "ambiguous_license_evidence"),
-    (lic(License="cc0", LicenseUrl=CC0_DEED, Copyrighted="True"), "unknown", "ambiguous_license_evidence"),
+    # Copyrighted=True next to an exact CC0 dedication is the normal Commons state (confirmed live).
+    (lic(License="cc0", LicenseUrl=CC0_DEED, Copyrighted="True"), "usable", "established_reuse_rights"),
     (lic(License="cc0", LicenseUrl=CC0_DEED, Restrictions="trademarked"), "unknown", "ambiguous_license_evidence"),
     (lic(License="cc-by-sa-4.0", LicenseUrl="https://creativecommons.org/licenses/by/4.0/deed.en", Artist="Ann"), "unknown", "ambiguous_license_evidence"),
     (lic(License="cc-by-4.0", LicenseUrl="https://creativecommons.org/licenses/by/4.0/deed.en"), "unknown", "attribution_missing"),
@@ -428,3 +432,123 @@ def test_live_cc0_commons_page_is_admitted_end_to_end():
     [item] = search(cc0_page)
     assert evaluate_rights(item.rights).status == "usable" and item.rights.public_domain is True
     assert CandidateLedger().admit(item)
+
+
+# --- Copyrighted=True with an exactly established CC0 dedication (confirmed live: page 167721831) ---------
+
+# The verified Commons metadata of the Amsterdam CC0 photograph that was wrongly "ambiguous".
+LIVE_CC0 = {
+    "License": "cc0", "LicenseShortName": "CC0", "LicenseUrl": CC0_DEED,
+    "Copyrighted": "True", "Restrictions": "", "AttributionRequired": "false",
+}
+
+
+def blocked_candidate(values):
+    return replace(cand("1", "q", "t", kind="photo", provider="wikimedia"), rights=rights(**values))
+
+
+def test_confirmed_live_cc0_metadata_is_usable_and_audited():
+    r = rights(**LIVE_CC0)
+    assert evaluate_rights(r).status == "usable"
+    assert (r.license_id, r.public_domain, r.commercial_use_allowed, r.modifications_allowed, r.attribution_required) == (
+        "cc0", True, True, True, False)
+    assert r.evidence["Copyrighted"] == "True" and r.evidence["rights_notes"] == ["copyrighted_flag_accepted_for_cc0_dedication"]
+    assert "conflicting_license_metadata" not in r.evidence and "conflict_reasons" not in r.evidence
+    candidate = blocked_candidate(LIVE_CC0)
+    metadata = asset_metadata(candidate)
+    assert metadata["license"]["status"] == "usable" and metadata["usage_restrictions"] == []
+    assert usage_restrictions(r) == []
+    assert accepted_rights(r)["evidence"]["rights_notes"]  # the exception stays visible in persisted evidence
+    assert CandidateLedger().admit(candidate)
+
+
+def test_live_cc0_page_with_copyrighted_flag_is_admitted_end_to_end():
+    page = {"pageid": 167721831, "index": 9, "title": "File:Amsterdam_construction.tif", "imageinfo": [{
+        "url": f"{BASE}/Amsterdam_construction.tif", "descriptionurl": "https://commons.wikimedia.org/wiki/File:Amsterdam_construction.tif",
+        "width": 4112, "height": 3088, "mime": "image/tiff",
+        "thumburl": "https://thumb.wikimedia.org/wikipedia/commons/thumb/a/ab/Amsterdam_construction.tif/lossy-page1-1600px-Amsterdam_construction.tif.jpg",
+        "thumbwidth": 1600, "thumbheight": 1202, "extmetadata": ext(**LIVE_CC0),
+    }]}
+    [item] = search(page)
+    assert (item.width, item.height) == (1600, 1202)
+    assert evaluate_rights(item.rights).status == "usable" and CandidateLedger().admit(item)
+
+
+@pytest.mark.parametrize("values,reasons", [
+    # Public domain mark / generic PD are NOT exempt from the Copyrighted contradiction.
+    (lic(License="pd", Copyrighted="True"), ["copyrighted_flag_with_public_domain"]),
+    (lic(License="pd", LicenseShortName="Public domain", Copyrighted="true"), ["copyrighted_flag_with_public_domain"]),
+    (lic(License="pd", LicenseUrl="https://creativecommons.org/publicdomain/mark/1.0/", Copyrighted="True"),
+     ["copyrighted_flag_with_public_domain"]),
+    (lic(License="pd", LicenseUrl=CC0_DEED, Copyrighted="True"), ["copyrighted_flag_with_public_domain"]),
+    (lic(LicenseUrl="https://creativecommons.org/publicdomain/mark/1.0/", Copyrighted="1"), ["copyrighted_flag_with_public_domain"]),
+    (lic(LicenseUrl="https://creativecommons.org/publicdomain/zero/1.0/", Copyrighted="yes"), ["copyrighted_flag_with_public_domain"]),
+    # CC0 with a missing license URL stays conservative when the work is flagged copyrighted.
+    (lic(License="cc0", Copyrighted="True"), ["copyrighted_flag_with_public_domain"]),
+    (lic(License="cc-zero", LicenseShortName="CC0", Copyrighted="True"), ["copyrighted_flag_with_public_domain"]),
+    # Mismatched URLs: other license, other version, other CC tool, PD mark.
+    (lic(License="cc0", LicenseUrl="https://creativecommons.org/licenses/by/4.0/deed.en", Copyrighted="True"),
+     ["license_url_mismatch", "license_identifier_mismatch", "copyrighted_flag_with_public_domain"]),
+    (lic(License="cc0", LicenseUrl="https://creativecommons.org/publicdomain/zero/2.0/deed.en", Copyrighted="True"),
+     ["license_url_mismatch", "copyrighted_flag_with_public_domain"]),
+    (lic(License="cc0", LicenseUrl="https://creativecommons.org/publicdomain/mark/1.0/", Copyrighted="True"),
+     ["license_url_mismatch", "copyrighted_flag_with_public_domain"]),
+    (lic(License="cc0", LicenseUrl="https://creativecommons.org/publicdomain/zero/1.0/legalcode", Copyrighted="True"),
+     ["license_url_mismatch", "copyrighted_flag_with_public_domain"]),
+    (lic(License="cc0", LicenseUrl="https://creativecommons.org/licenses/by/4.0/deed.en"),
+     ["license_url_mismatch", "license_identifier_mismatch"]),
+    # Fake Creative Commons hosts stay blocked, flagged or not.
+    (lic(License="cc0", LicenseUrl="https://evil.test/publicdomain/zero/1.0/deed.en", Copyrighted="True"),
+     ["license_url_mismatch", "copyrighted_flag_with_public_domain"]),
+    (lic(License="cc0", LicenseUrl="https://creativecommons.org.evil.test/publicdomain/zero/1.0/deed.en", Copyrighted="True"),
+     ["license_url_mismatch", "copyrighted_flag_with_public_domain"]),
+    (lic(License="cc0", LicenseUrl="https://creativecommons.org@evil.test/publicdomain/zero/1.0/", Copyrighted="True"),
+     ["license_url_mismatch", "copyrighted_flag_with_public_domain"]),
+    (lic(License="cc0", LicenseUrl="https://evil.test/publicdomain/zero/1.0/deed.en"), ["license_url_mismatch"]),
+    # A deed suffix is only valid in its exact form.
+    (lic(License="cc0", LicenseUrl="https://creativecommons.org/publicdomain/zero/1.0/deedx", Copyrighted="True"),
+     ["license_url_mismatch", "copyrighted_flag_with_public_domain"]),
+    (lic(License="cc0", LicenseUrl="https://creativecommons.org/publicdomain/zero/1.0/deed.en/extra", Copyrighted="True"),
+     ["license_url_mismatch", "copyrighted_flag_with_public_domain"]),
+])
+def test_copyrighted_flag_exception_is_limited_to_an_exact_cc0_dedication(values, reasons):
+    candidate = blocked_candidate(values)
+    decision = evaluate_rights(candidate.rights)
+    assert (decision.status, decision.reason) == ("unknown", "ambiguous_license_evidence")
+    assert candidate.rights.evidence["conflict_reasons"] == reasons  # diagnostics name the cause
+    metadata = asset_metadata(candidate)
+    assert metadata["license"]["status"] != "usable"
+    assert metadata["usage_restrictions"][0] == "not_cleared:ambiguous_license_evidence"
+    assert {f"conflict:{reason}" for reason in reasons} <= set(metadata["usage_restrictions"])
+    assert not CandidateLedger().admit(candidate)  # no uncleared asset becomes reusable
+
+
+@pytest.mark.parametrize("copyrighted", ["True", "False", ""])
+@pytest.mark.parametrize("restrictions", ["trademarked", "personality|trademarked"])
+def test_cc0_with_restrictions_stays_blocked_whatever_the_copyrighted_flag(copyrighted, restrictions):
+    values = LIVE_CC0 | {"Restrictions": restrictions, "Copyrighted": copyrighted}
+    candidate = blocked_candidate(values)
+    assert evaluate_rights(candidate.rights).status == "unknown"
+    assert candidate.rights.evidence["unresolved_restrictions"] is True and candidate.rights.commercial_use_allowed is None
+    assert "asset_specific_restrictions" in usage_restrictions(candidate.rights)
+    assert not CandidateLedger().admit(candidate)
+
+
+@pytest.mark.parametrize("values,status", [
+    # Commons marks ordinary CC BY files copyrighted: unchanged (no public-domain claim to contradict).
+    (lic(License="cc-by-4.0", LicenseUrl="https://creativecommons.org/licenses/by/4.0/deed.en", Artist="Ann", Copyrighted="True", AttributionRequired="true"), "usable"),
+    (lic(License="cc-by-sa-4.0", LicenseUrl="https://creativecommons.org/licenses/by-sa/4.0/deed.en", Artist="Ann", Copyrighted="True"), "unusable"),
+    (lic(License="cc-by-nc-4.0", LicenseUrl="https://creativecommons.org/licenses/by-nc/4.0/deed.en", Artist="Ann", Copyrighted="True"), "unusable"),
+])
+def test_cc_by_and_by_sa_behavior_is_unchanged(values, status):
+    assert evaluate_rights(rights(**values)).status == status
+
+
+def test_exact_cc0_dedication_still_honours_every_other_contradiction():
+    base = LIVE_CC0 | {"Copyrighted": "True"}
+    assert evaluate_rights(rights(**base)).status == "usable"
+    # Attribution flagged as required without a creator/credit cannot be satisfied.
+    assert evaluate_rights(rights(**base | {"AttributionRequired": "true"})).reason == "attribution_missing"
+    # A different license identifier next to the CC0 URL is a contradiction, not a dedication.
+    assert evaluate_rights(rights(**base | {"License": "cc-by-4.0"})).status != "usable"
+    assert evaluate_rights(rights(**base | {"License": "pd"})).reason == "ambiguous_license_evidence"

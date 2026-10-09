@@ -101,6 +101,9 @@ def usage_restrictions(value: object) -> list[str]:
     found = [] if decision.status == "usable" else [f"not_cleared:{decision.reason}"]
     if rights.evidence.get("unresolved_restrictions"):
         found.append("asset_specific_restrictions")
+    reasons = rights.evidence.get("conflict_reasons")
+    if isinstance(reasons, list):
+        found.extend(f"conflict:{reason}" for reason in reasons if isinstance(reason, str))
     raw = rights.evidence.get("Restrictions")
     if isinstance(raw, str):
         found.extend(
@@ -207,18 +210,31 @@ def commons_rights(metadata: dict[str, Any], *, source_url: str, creator: str) -
         or identifier in {"pd", "cc-zero", "cc0"}
         else None
     )
+    # Named reasons for every conflict, so a blocked asset says why (diagnostics only).
+    conflicts: list[str] = []
     if identifier in {"cc-zero", "cc0"} and url and cc_path != "publicdomain/zero/1.0":
         # The identifier alone never outweighs a license URL that says otherwise
         # (spoofed host, other license, other version).
-        raw["conflicting_license_metadata"] = True
+        conflicts.append("license_url_mismatch")
     cc_by = bool(re.fullmatch(r"licenses/by/(1\.0|2\.0|2\.5|3\.0|4\.0)", cc_path))
     cc_license = re.fullmatch(
         r"licenses/(by(?:-(?:nc|nd|sa)){0,3})/(1\.0|2\.0|2\.5|3\.0|4\.0)", cc_path
     )
     if cc_license and identifier and identifier != f"cc-{cc_license[1]}-{cc_license[2]}":
-        raw["conflicting_license_metadata"] = True
+        conflicts.append("license_identifier_mismatch")
+    # CC0 1.0 is the holder's own dedication of a work that is still under copyright, so
+    # Commons reports Copyrighted=True for it. That flag contradicts a public-domain claim
+    # (PD mark, generic PD) but not a CC0 dedication whose identifier AND official CC0 URL
+    # agree exactly; a missing or different URL gets no exemption.
+    cc0_dedication = identifier in {"cc-zero", "cc0"} and cc_path == "publicdomain/zero/1.0"
     if public_domain is True and get("Copyrighted").lower() in {"true", "1", "yes"}:
+        if cc0_dedication:
+            raw["rights_notes"] = ["copyrighted_flag_accepted_for_cc0_dedication"]
+        else:
+            conflicts.append("copyrighted_flag_with_public_domain")
+    if conflicts:
         raw["conflicting_license_metadata"] = True
+        raw["conflict_reasons"] = conflicts
     if cc_license:
         identifier = f"cc-{cc_license[1]}-{cc_license[2]}"
     if public_domain is True:
