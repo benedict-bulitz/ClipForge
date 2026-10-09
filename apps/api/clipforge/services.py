@@ -955,12 +955,12 @@ def _render_state(
     result = render_video(
         state, project_id, revision_number, settings, progress=progress
     )
-    _apply_render_result(state, result, revision_number)
+    _apply_render_result(state, result, revision_number, settings)
     _final_quality_review(state, project_id, revision_number, settings, progress=progress)
     return attach_hashes(state)
 
 
-def _apply_render_result(state: dict, result: RenderResult, revision_number: int) -> None:
+def _apply_render_result(state: dict, result: RenderResult, revision_number: int, settings: Settings) -> None:
     """Persist a finished render: measured timing, render metadata and QC."""
     state["duration"]["actual_seconds"] = result.actual_seconds
     state["voice"]["provider"] = result.voice_provider
@@ -996,6 +996,18 @@ def _apply_render_result(state: dict, result: RenderResult, revision_number: int
         "layout": [dict(item) for item in result.layout],
     }
     state["qc"].update({"status": "passed", "round": 1, "issues": []})
+
+    # Export QA (Report-only)
+    from .export_quality import run_export_quality_checks
+    relative_path = result.url.replace("/media/", "", 1)
+    render_path = settings.render_root / relative_path
+
+    issues = run_export_quality_checks(state, render_path)
+    state["export_qc"] = {
+        "status": "issues_found" if any(i["severity"] == "error" for i in issues) else "ok",
+        "issues": issues,
+    }
+
     for stage in state["pipeline"]:
         if stage["status"] != "blocked":
             stage["status"] = "complete"
@@ -1025,7 +1037,7 @@ def _final_quality_review(
 
     def rerender(repair_state: dict) -> None:
         repaired = render_video(repair_state, project_id, revision_number, settings)
-        _apply_render_result(repair_state, repaired, revision_number)
+        _apply_render_result(repair_state, repaired, revision_number, settings)
 
     try:
         run_final_quality_review(

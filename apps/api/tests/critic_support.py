@@ -236,8 +236,9 @@ def media_pass(state, tmp_path, provider, *, verifier=None, generator=None, sett
 
 
 def render(state, tmp_path, *, revision: int = 2, settings=None):
-    result = render_video(state, "project", revision, settings or critic_settings(tmp_path))
-    _apply_render_result(state, result, revision)
+    settings = settings or critic_settings(tmp_path)
+    result = render_video(state, "project", revision, settings)
+    _apply_render_result(state, result, revision, settings)
     return result
 
 
