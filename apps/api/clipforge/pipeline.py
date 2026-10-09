@@ -1,5 +1,4 @@
 import copy
-import logging
 import re
 from datetime import UTC, datetime
 from typing import Any
@@ -8,7 +7,6 @@ from pydantic import ValidationError
 
 from clipforge.question_answer_contract import (
     answer_obligations,
-    checked_coverage,
     evaluate_research_coverage,
     generate_contract,
 )
@@ -50,6 +48,7 @@ from .payoff import (
     trim_post_payoff_fluff,
 )
 from .progress import ProgressCallback, report_progress
+from .question_answer_research import run_contract_research
 from .question_intent import interpret_question, merge_planner_intent
 from .question_intent import research_query as intent_research_query
 from .reactions import plan_viewer_reactions, reaction_arc
@@ -1266,6 +1265,8 @@ def build_initial_state(
             state["script"]["readiness"]["retry_exhausted"] = True
     for _retry in range(MAX_RESEARCH_RETRIES - (1 if state["research"].get("retry") else 0)):
         readiness = state["script"]["readiness"]
+        if state.get("contract") or state["research"].get("contract_diagnostic") == "error":
+            break
         if readiness["ready"] or not readiness["research_required"] or not state["intent"].get("research_required"):
             break
         quality = (state.get("script") or {}).get("script_story_quality_v1") or {}
@@ -1283,7 +1284,8 @@ def build_initial_state(
             state = retried
         else:
             state["script"]["readiness"]["retry_exhausted"] = True
-    state["research"]["attempts"] = attempts
+    calls = (state["research"].get("diagnostics") or {}).get("research_calls")
+    state["research"]["attempts"] = calls or attempts
     if len(attempts) > 1:
         # A saved audit must never claim a retry without accounting for it.
         research = state["research"]
@@ -1296,26 +1298,6 @@ def build_initial_state(
     return attach_hashes(state)
 
 
-def _normalize_contract_facts(facts: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Stable final IDs before coverage; no snippet fragments become evidence."""
-    normalized = []
-    for original in facts:
-        fact = dict(original)
-        claim = clean_research_claim(fact.get("claim"))
-        if not claim:
-            continue
-        fact.update(raw_claim=fact.get("raw_claim") or str(fact.get("claim") or ""), claim=claim)
-        fact["id"] = f"fact_{len(normalized) + 1:02d}"
-        if "sources" not in fact:
-            label, url = fact.pop("source_label", None), fact.pop("source_url", None)
-            fact["sources"] = [{"label": label, "url": url}] if label and url else []
-        fact["verification"] = fact.get("verification") or (
-            "source_attributed" if fact["sources"] else "unverified_model_synthesis"
-        )
-        normalized.append(fact)
-    return normalized
-
-
 def research_request(
     prompt: str, intent: dict[str, Any], contract: Any = None, research_query: str | None = None, research_focus: str | None = None
 ) -> tuple[str, dict[str, Any]]:
@@ -1323,16 +1305,12 @@ def research_request(
     query = research_query or intent_research_query(intent["question_intent"], intent["language"]) or prompt
     context = {"question": prompt, "content_type": intent["content_type"], "focus": research_focus}
 
+    if research_focus and research_focus not in {"broaden", "strengthen", "capability", "mechanism"}:
+        context["search_intents"] = research_focus.split(" | ")
     if research_focus is None and contract:
-        focus_parts = []
-        if getattr(contract, "primary_answer_obligation", None):
-            focus_parts.append(f"Primary goal: {contract.primary_answer_obligation.description}")
-        for obs in getattr(contract, "required_supporting_obligations", []):
-            if not obs.is_required:
-                continue
-            focus_parts.append(f"Required detail: {obs.description}")
-        if focus_parts:
-            context["focus"] = " | ".join(focus_parts)
+        obligations = [item for item in answer_obligations(contract) if item.is_required]
+        context["focus"] = " | ".join(item.description for item in obligations)
+        context["search_intents"] = [item.description for item in obligations]
     return query, context
 
 
@@ -1365,12 +1343,14 @@ def _build_initial_state(
     question_answer_contract = None
     contract_coverage = None
     contract_diagnostic = "unavailable"
+    contract_error = None
     if intent["research_required"] and settings.openai_api_key:
         try:
             question_answer_contract = generate_contract(prompt, intent["language"], settings)
             contract_diagnostic = "ai_contract"
-        except Exception:  # noqa: BLE001 - contract provider is optional
+        except Exception as exc:  # noqa: BLE001 - fail closed below
             contract_diagnostic = "error"
+            contract_error = f"{type(exc).__name__}: {exc}"
     elif intent["research_required"]:
         contract_diagnostic = "deterministic_fallback"
 
@@ -1388,47 +1368,16 @@ def _build_initial_state(
         query, context = research_request(prompt, intent, question_answer_contract, research_query, research_focus)
 
         if question_answer_contract:
-            # Coverage sees the same normalized, sourced IDs as the script editor.
-            result = research_topic(query, intent["language"], settings, context=context)
-            result.facts[:] = _normalize_contract_facts(result.facts)
-            link_package_facts(getattr(result, "package", None), result.facts)
-            try:
-                contract_coverage = checked_coverage(
-                    question_answer_contract,
-                    evaluate_research_coverage(question_answer_contract, result.facts, settings),
-                    result.facts,
-                )
-            except Exception:  # noqa: BLE001 - preserve deterministic gates on provider outage
-                contract_coverage = None
-            if contract_coverage and not contract_coverage.is_sufficient:
-                missing = set(contract_coverage.missing_obligations)
-                retry_focus = " | ".join(
-                    f"Missing required answer: {obligation.description}"
-                    for obligation in answer_obligations(question_answer_contract)
-                    if obligation.is_required and obligation.id in missing
-                )
-                query2, context2 = research_request(
-                    prompt, intent, question_answer_contract, research_query, retry_focus,
-                )
-                retry = research_topic(query2, intent["language"], settings, context=context2)
-                # Use the retry's native package, with its own evidence/source namespace.
-                # Earlier usable facts retain their provenance in the combined dossier.
-                retry.facts[:] = _normalize_contract_facts([*result.facts, *retry.facts])
-                retry.sources[:] = [*result.sources, *retry.sources]
-                result = retry
-                link_package_facts(getattr(result, "package", None), result.facts)
-                try:
-                    contract_coverage = checked_coverage(
-                        question_answer_contract,
-                        evaluate_research_coverage(question_answer_contract, result.facts, settings),
-                        result.facts,
-                    )
-                except Exception:
-                    logging.getLogger("clipforge.contract").exception("Retry coverage evaluation failed")
-                research_retry = {
-                    "attempted": True, "reason": "contract_insufficient",
-                    "failure_type": "RESEARCH_MISSING", "focus": retry_focus,
+            def retry_request(query, context, focus, descriptions, reason):
+                return query, {
+                    **context, "focus": focus, "search_intents": descriptions,
+                    "strengthening": "strengthen" if reason == "weak_core_source" else "mechanism",
                 }
+
+            result, contract_coverage, research_retry, research_diagnostics = run_contract_research(
+                query, intent["language"], settings, context=context, contract=question_answer_contract,
+                research=research_topic, evaluate=evaluate_research_coverage, request=retry_request,
+            )
         elif research_query is None:
             result, retry_report = research_with_strengthening(
                 query, intent["language"], settings, context=context, research=research_topic,
@@ -1443,16 +1392,18 @@ def _build_initial_state(
         sources = result.sources
         facts = result.facts
         research_package = getattr(result, "package", None)
-        research_diagnostics = getattr(result, "diagnostics", None)
+        research_diagnostics = research_diagnostics or getattr(result, "diagnostics", None)
 
-        if contract_coverage and not contract_coverage.is_sufficient:
-            research_status = "needs_research"
-            technical_reason = "Research cannot support required QuestionAnswerContract obligations: " + ", ".join(contract_coverage.missing_obligations)
-            research_diagnostics = {
-                **(research_diagnostics or {}), "failure_type": "RESEARCH_MISSING",
-                "contract_failure_reason": technical_reason,
-            }
+        if question_answer_contract and (contract_coverage is None or not contract_coverage.is_sufficient):
+            research_status = "coverage_unavailable" if contract_coverage is None else "needs_research"
             research_error = not_ready_message({}, intent["language"])
+        if contract_diagnostic == "error":
+            research_status = "contract_unavailable"
+            research_error = not_ready_message({}, intent["language"])
+            research_diagnostics = {
+                **(research_diagnostics or {}), "failure_type": "CONTRACT_UNAVAILABLE",
+                "contract_failure_reason": contract_error,
+            }
 
         report_progress(progress, "research", "Researching the topic", phase="complete")
     else:
@@ -1461,8 +1412,9 @@ def _build_initial_state(
     # The research boundary: a snippet with nothing complete left (page chrome,
     # a cut-off sentence) is no evidence; the rest keeps its own sources.
     for fact in facts:
-        fact["raw_claim"] = str(fact.get("claim") or "")
-        fact["claim"] = clean_research_claim(fact.get("claim"))
+        fact.setdefault("raw_claim", str(fact.get("claim") or ""))
+        if not fact.get("qac_normalized"):
+            fact["claim"] = clean_research_claim(fact.get("claim"))
     facts = [fact for fact in facts if fact["claim"]]
     for index, fact in enumerate(facts, 1):
         fact["id"] = f"fact_{index:02d}"
@@ -1769,7 +1721,7 @@ def _build_initial_state(
         total_units=len(scenes),
     )
     width, height = _dimensions(options.aspect_ratio)
-    factual_ready = (not intent["research_required"] or bool(facts and sources)) and research_status != "needs_research"
+    factual_ready = (not intent["research_required"] or bool(facts and sources)) and research_status not in {"needs_research", "coverage_unavailable", "contract_unavailable"}
     now = datetime.now(UTC).isoformat()
     state: dict[str, Any] = {
         "version": 1,

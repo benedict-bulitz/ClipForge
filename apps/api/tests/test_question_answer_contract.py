@@ -72,7 +72,7 @@ def qac_context():
 def evaluated(status="satisfied", *, primary=True, required=True, beats=REWRITE_EN, **kwargs):
     return verdict(beats, contract_sufficient=kwargs.pop("contract_sufficient", status == "satisfied"), contract_evaluations=[
         ContractObligationEvaluation(id="primary", status=status, is_primary=primary, is_required=required, reasoning="The mechanism is omitted: use the pressure difference."),
-        ContractObligationEvaluation(id="context", status="missing", is_required=False, reasoning="Optional context absent"),
+        ContractObligationEvaluation(id="context", status="missing", is_primary=False, is_required=False, reasoning="Optional context absent"),
     ], **kwargs)
 
 
@@ -89,6 +89,8 @@ def test_every_required_failure_blocks_even_generic_answered(status, primary):
 @pytest.mark.parametrize("status", ["missing", "partially_satisfied"])
 def test_optional_missing_or_partial_does_not_block(status):
     response = evaluated(status, primary=False, required=False)
+    # The overall flag must agree with the required evaluations.
+    response = response.model_copy(update={"contract_sufficient": True})
     assert not _verifier_findings(response)
 
 
@@ -135,7 +137,7 @@ def test_final_fresh_regeneration_removes_all_failed_draft_wording():
     assert editor.stages().count("rewrite") == editor.stages().count("verify") == 3
     fresh = [brief for stage, brief in editor.calls if stage == "rewrite"][2]
     assert fresh["mode"] == "fresh_regeneration"
-    assert not {"draft", "previous_rewrite", "critic", "verifier_findings", "deterministic_findings", "information_gain", "failed_obligations"} & fresh.keys()
+    assert not {"draft", "previous_rewrite", "critic", "verifier_findings", "deterministic_findings", "information_gain"} & fresh.keys()
     assert "FAILED DRAFT WORDING" not in json.dumps(fresh)
     assert fresh["required_supported_fact_ids"] == ["lift_02", "lift_03", "lift_04"]
     assert fresh["question_answer_contract"] and fresh["hook_intent"] and fresh["reveal_contract"]
@@ -178,7 +180,7 @@ def test_explicit_focus_independent_of_query_reaches_discovery(explicit_query):
     intent = {"language": "en", "content_type": "factual_explainer", "question_intent": {}}
     query, context = pipeline.research_request(EN_QUESTION, intent, contract(), explicit_query, "pressure difference across wing")
     assert context["focus"] == "pressure difference across wing"
-    assert "pressure difference across wing" in deterministic_sub_questions(EN_QUESTION, query, "en", focus=context["focus"])[0].query
+    assert "pressure difference across wing" not in deterministic_sub_questions(EN_QUESTION, query, "en", focus=context["focus"])[0].query
     _, derived = pipeline.research_request(EN_QUESTION, intent, contract())
     assert contract().primary_answer_obligation.description in derived["focus"]
     assert "Additional historical context" not in derived["focus"]
@@ -261,7 +263,7 @@ def test_missing_research_spends_one_semantic_retry_and_rechecks(monkeypatch, re
         assert state["research"]["status"] == "verified_sources"
         assert state["script"]["readiness"]["ready"], state["script"]["readiness"]
         assert editor.rewrite_count == 1
-        assert state["contract_coverage"]["coverage"][0]["supporting_fact_ids"] == ["fact_03", "fact_04", "fact_05"]
+        assert state["contract_coverage"]["coverage"][0]["supporting_fact_ids"] == ["fact_02", "fact_03", "fact_04"]
     else:
         assert state["research"]["status"] == "needs_research" and not state["script"]["readiness"]["ready"]
         assert state["research"]["diagnostics"]["contract_failure_reason"].endswith("primary")

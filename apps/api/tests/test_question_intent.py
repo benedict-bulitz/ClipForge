@@ -313,6 +313,7 @@ def _deeplink_writer(_request):
     return DEEPLINK_BLOCKS
 
 
+@pytest.mark.usefixtures("legacy_without_qac")
 def test_behavioural_tiktok_with_only_deeplink_evidence_is_research_required(db, monkeypatch, tmp_path):
     calls = Calls()
     _wire(monkeypatch, calls, research_for=lambda _query: DEEPLINK_FACTS, writer_for=_deeplink_writer, hook=DEEPLINK_HOOK)
@@ -329,6 +330,7 @@ def test_behavioural_tiktok_with_only_deeplink_evidence_is_research_required(db,
     assert project.status == "needs_attention" and calls.render == calls.voice == calls.media == 0
 
 
+@pytest.mark.usefixtures("legacy_without_qac")
 def test_behavioural_tiktok_with_behavioural_evidence_renders(db, monkeypatch, tmp_path):
     calls = Calls()
 
@@ -346,6 +348,7 @@ def test_behavioural_tiktok_with_behavioural_evidence_renders(db, monkeypatch, t
     assert state["script"]["readiness"]["ready"]
 
 
+@pytest.mark.usefixtures("legacy_without_qac")
 def test_technical_question_with_deeplink_evidence_renders(db, monkeypatch, tmp_path):
     calls = Calls()
     _wire(monkeypatch, calls, research_for=lambda _query: DEEPLINK_FACTS, writer_for=_deeplink_writer, hook=DEEPLINK_HOOK)

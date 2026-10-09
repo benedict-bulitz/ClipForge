@@ -103,7 +103,13 @@ def content_readiness(state: dict[str, Any]) -> dict[str, Any]:
                 else "The retrieved sources do not contain a direct answer to the question."
             ),
         })
+    if research.get("contract_diagnostic") == "error":
+        blocking.append({"code": "contract_unavailable", "message": "Question answer contract generation unavailable."})
     contract_coverage = state.get("contract_coverage") or {}
+    if state.get("contract") and not contract_coverage:
+        blocking.append({"code": "coverage_unavailable", "message": "Independent research coverage unavailable."})
+    if state.get("contract") and (quality.get("rewrite") or {}).get("verified_by") != "ai_verifier":
+        blocking.append({"code": "contract_unverified", "message": "No independently verified contract script."})
     if state.get("contract") and contract_coverage.get("is_sufficient") is False:
         blocking.append({
             "code": "research_contract_insufficient",

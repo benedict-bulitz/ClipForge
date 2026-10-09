@@ -2,7 +2,7 @@ import logging
 from typing import Literal
 
 from openai import OpenAI
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from clipforge.config import Settings
 from clipforge.novelty import fact_is_supported
@@ -14,6 +14,11 @@ class AnswerObligation(BaseModel):
     description: str = Field(description="What exactly must be answered or explained")
     is_primary: bool = Field(description="True if this is the core primary answer")
     is_required: bool = Field(description="True if the video must fail without this")
+    @model_validator(mode="after")
+    def primary_is_required(self):
+        self.is_required = self.is_primary or self.is_required
+        return self
+
     fact_ids: list[str] = Field(default_factory=list, description="Fact IDs from research that support this")
 
 class CausalChainStep(BaseModel):
@@ -22,6 +27,12 @@ class CausalChainStep(BaseModel):
     depth_level: int
 
 class QuestionAnswerContract(BaseModel):
+    @model_validator(mode="after")
+    def primary_slot_is_required(self):
+        self.primary_answer_obligation.is_primary = True
+        self.primary_answer_obligation.is_required = True
+        return self
+
     question_type: Literal[
         "causal", "mechanistic", "historical_motive", "definition",
         "comparison", "quantity", "timeline", "consequence", "explanation", "mixed"
@@ -46,6 +57,7 @@ def generate_contract(question: str, language: str, settings: Settings) -> Quest
         "Guidelines:\n"
         "- For historical 'why' questions: The immediate purpose/motive is MANDATORY. Broad political context alone is insufficient. Specify 'historical_motive' as the type.\n"
         "- For scientific 'why' questions: Focus on the direct cause/mechanism. Avoid circular answers (restating the observed property instead of explaining its cause). Set 'minimum_answer_depth' to the level that genuinely resolves the curiosity.\n"
+        "- Write obligation descriptions in the requested target language.\n"
         "- Do not require maximum depth if a shorter explanation resolves the question.\n"
         "- Do not blindly treat every question as causal. Only require a causal chain if the question warrants it.\n"
     )
@@ -58,7 +70,10 @@ def generate_contract(question: str, language: str, settings: Settings) -> Quest
         response_format=QuestionAnswerContract,
         temperature=0.0,
     )
-    return response.choices[0].message.parsed
+    parsed = response.choices[0].message.parsed
+    if not isinstance(parsed, QuestionAnswerContract):
+        raise TypeError("Contract planner returned no valid contract")
+    return parsed
 
 class ObligationCoverage(BaseModel):
     obligation_id: str
@@ -100,7 +115,11 @@ def evaluate_research_coverage(contract: QuestionAnswerContract, facts: list[dic
 
 
 def answer_obligations(contract: QuestionAnswerContract) -> list[AnswerObligation]:
-    return [contract.primary_answer_obligation, *contract.required_supporting_obligations]
+    primary = contract.primary_answer_obligation.model_copy(update={"is_primary": True, "is_required": True})
+    return [primary, *[
+        item.model_copy(update={"is_required": item.is_primary or item.is_required})
+        for item in contract.required_supporting_obligations
+    ]]
 
 
 def checked_coverage(

@@ -122,8 +122,8 @@ class RewriteResponse(BaseModel):
 class ContractObligationEvaluation(BaseModel):
     id: str
     status: Literal["satisfied", "partially_satisfied", "missing", "circular", "unsupported", "insufficient_depth"]
-    is_primary: bool = False
-    is_required: bool = True
+    is_primary: bool
+    is_required: bool
     reasoning: str
 
 class VerifierResponse(BaseModel):
@@ -131,8 +131,8 @@ class VerifierResponse(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    contract_evaluations: list[ContractObligationEvaluation] = Field(default_factory=list)
-    contract_sufficient: bool = Field(default=True, description="True if all REQUIRED obligations are satisfied and deep enough")
+    contract_evaluations: list[ContractObligationEvaluation]
+    contract_sufficient: bool = Field(description="True if all REQUIRED obligations are satisfied and deep enough")
 
     grounded: bool
     answers_question: bool
@@ -638,8 +638,9 @@ def _candidate_blocks(response: RewriteResponse) -> list[dict[str, Any]]:
 
 def _contract_obligations(context: dict[str, Any]) -> list[dict[str, Any]]:
     contract = context.get("question_answer_contract") or {}
-    return [item for item in [contract.get("primary_answer_obligation"),
-                             *(contract.get("required_supporting_obligations") or [])] if item]
+    primary = contract.get("primary_answer_obligation")
+    obligations = ([{**primary, "is_primary": True}] if primary else []) + (contract.get("required_supporting_obligations") or [])
+    return [{**item, "is_required": bool(item.get("is_primary") or item.get("is_required"))} for item in obligations]
 
 
 def _checked_verdict(verdict: VerifierResponse, context: dict[str, Any]) -> VerifierResponse:
@@ -651,7 +652,8 @@ def _checked_verdict(verdict: VerifierResponse, context: dict[str, Any]) -> Veri
     evaluations = []
     for obligation in obligations:
         evaluation = by_id.get(obligation["id"]) or ContractObligationEvaluation(
-            id=obligation["id"], status="missing", reasoning="Verifier omitted this obligation.",
+            id=obligation["id"], status="missing", is_primary=obligation["is_primary"],
+            is_required=obligation["is_required"], reasoning="Verifier omitted this obligation.",
         )
         evaluations.append(evaluation.model_copy(update={
             "is_primary": obligation["is_primary"], "is_required": obligation["is_required"],
@@ -685,9 +687,9 @@ def _verifier_findings(verdict: VerifierResponse) -> list[dict[str, Any]]:
     ]
 
     evaluations = verdict.contract_evaluations
-    required_failures = [item for item in evaluations if item.is_required and item.status != "satisfied"]
+    required_failures = [item for item in evaluations if (item.is_primary or item.is_required) and item.status != "satisfied"]
     # Structured evaluations are authoritative, including optional omissions.
-    if required_failures or (not evaluations and not verdict.contract_sufficient):
+    if required_failures or not verdict.contract_sufficient:
         found.append(_finding("contract_insufficient", "hard", "Required answer contract not satisfied.", source="verifier"))
     for evaluation in required_failures:
         if evaluation.status in {"missing", "partially_satisfied"}:
@@ -820,11 +822,19 @@ def run_script_story_quality(
         "critic": None,
         "attempts": [],
     }
+    if _contract_obligations(context) and not context.get("research_coverage"):
+        holistic.update(status="coverage_unavailable", failure_type="COVERAGE_UNAVAILABLE")
+        blocked = _block_report(fallback_report, "rewrite_hard_failure", "Independent research coverage unavailable.", research=False)
+        return fallback_blocks, _with_holistic(blocked, holistic, "deterministic")
     if provider is None:
+        if _contract_obligations(context):
+            fallback_report = _block_report(fallback_report, "rewrite_hard_failure", "Contract editor unavailable.", research=False)
         return fallback_blocks, _with_holistic(fallback_report, holistic, "deterministic")
     if any(_role(block) == "status" for block in original) or not _usable_facts(context):
         holistic["status"] = "not_applicable"
         holistic["reason"] = "status_script" if any(_role(block) == "status" for block in original) else "no_supported_research"
+        if _contract_obligations(context):
+            fallback_report = _block_report(fallback_report, "rewrite_hard_failure", holistic["reason"], research=False)
         return fallback_blocks, _with_holistic(fallback_report, holistic, "deterministic")
 
     draft_assessment = assess_script_story_quality(original, context)
@@ -832,6 +842,8 @@ def run_script_story_quality(
     critic, error = _guard(lambda: provider.critique(brief))
     if error is not None:
         holistic.update(status="provider_unavailable", error=error)
+        if _contract_obligations(context):
+            fallback_report = _block_report(fallback_report, "rewrite_hard_failure", error, research=False)
         return fallback_blocks, _with_holistic(fallback_report, holistic, "deterministic")
     holistic["critic"] = critic.model_dump(mode="json")
     critic_hard = [item for item in critic.findings if item.severity == "hard"]
@@ -858,8 +870,6 @@ def run_script_story_quality(
     contract_failed = False
     limit = MAX_CONTRACT_ATTEMPTS if _contract_obligations(context) else MAX_REWRITE_ATTEMPTS
     for number in range(1, limit + 1):
-        if number == 3 and not failed_obligations:
-            break
         mode = "normal_rewrite" if number == 1 else "contract_repair" if failed_obligations else "quality_repair"
         if number == 3:
             mode = "fresh_regeneration"
@@ -879,7 +889,7 @@ def run_script_story_quality(
                 "draft", "deterministic_findings", "information_gain",
             }}
             request.update(
-                mode=mode, attempt=number,
+                mode=mode, attempt=number, failed_obligations=copy.deepcopy(failed_obligations),
                 required_supported_fact_ids=sorted({
                     identifier for item in supported if item["is_required"]
                     for identifier in item["supporting_fact_ids"]
@@ -934,8 +944,9 @@ def run_script_story_quality(
             failed_obligations = [
                 {**by_id[item.id], "verifier_reason": item.reasoning, "status": item.status}
                 for item in failures if item.id in by_id
-            ] or failed_obligations
-            missing_research = [item for item in failures if item.id not in by_id]
+            ]
+            coverage_known = bool(context.get("research_coverage"))
+            missing_research = [item for item in failures if item.id not in by_id] if coverage_known else []
             if missing_research:
                 research_need = " | ".join(
                     f"Missing required answer: {item['description']}"
@@ -943,7 +954,7 @@ def run_script_story_quality(
                     if item["id"] in {failure.id for failure in missing_research}
                 )
             if failures:
-                holistic["failure_type"] = "RESEARCH_MISSING" if missing_research else "SUPPORTED_BUT_OMITTED"
+                holistic["failure_type"] = ("COVERAGE_UNAVAILABLE" if not coverage_known else "RESEARCH_MISSING" if missing_research else "SUPPORTED_BUT_OMITTED")
 
             audit = {
                 "sentences": [item.model_dump(mode="json") for item in verdict.explanation_audit],
@@ -1000,7 +1011,7 @@ def run_script_story_quality(
     passing = [item for item in attempts if "blocks" in item and not item["hard"]]
     if passing:
         best = min(passing, key=lambda item: (len(item["major"]), -item["attempt"]))
-        if best["better_than_draft"] is False and draft_clean and not contract_failed:
+        if best["better_than_draft"] is False and draft_clean and not contract_failed and not _contract_obligations(context):
             holistic.update(status="kept_draft_rewrite_not_better", selected_attempt=None)
             return fallback_blocks, _with_holistic(fallback_report, holistic, "deterministic")
         final = copy.deepcopy(best["blocks"])
@@ -1030,7 +1041,7 @@ def run_script_story_quality(
         holistic.update(status="needs_research", research_need=research_need)
         report = _block_report(fallback_report, "needs_research", research_need, research=True)
         return fallback_blocks, _with_holistic(report, holistic, "deterministic")
-    if not any("blocks" in item for item in attempts) and not contract_failed:
+    if not any("blocks" in item for item in attempts) and not contract_failed and not _contract_obligations(context):
         # The rewriter itself was unreachable: the deterministic pass stands.
         holistic.update(status="provider_unavailable", error=next((item.get("error") for item in attempts), None))
         return fallback_blocks, _with_holistic(fallback_report, holistic, "deterministic")

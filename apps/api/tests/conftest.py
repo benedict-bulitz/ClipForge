@@ -168,11 +168,21 @@ def offline_script_story_editor(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def offline_question_answer_contract(monkeypatch):
-    """QAC tests explicitly mock responses; no contract call reaches a live API."""
-    from clipforge import question_answer_contract
+def forbid_paid_openai_transport(monkeypatch):
+    """Block only live OpenAI HTTP traffic; leave QAC planning and mocked parsing intact."""
+    import httpx
 
-    def offline(*_args, **_kwargs):
-        raise AssertionError("Real OpenAI contract calls are forbidden in the test suite.")
+    send = httpx.Client.send
 
-    monkeypatch.setattr(question_answer_contract, "OpenAI", offline)
+    def offline(client, request, *args, **kwargs):
+        if request.url.host == "api.openai.com" and isinstance(client._transport, httpx.HTTPTransport):
+            raise AssertionError("Live OpenAI HTTP traffic is forbidden in backend tests")
+        return send(client, request, *args, **kwargs)
+
+    monkeypatch.setattr(httpx.Client, "send", offline)
+
+
+@pytest.fixture()
+def legacy_without_qac(monkeypatch):
+    """Explicit opt-in for pre-QAC regression cases; never used by contract integration tests."""
+    monkeypatch.setattr("clipforge.pipeline.generate_contract", lambda *_a: None)

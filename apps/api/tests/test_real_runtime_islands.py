@@ -145,6 +145,7 @@ def assert_hook_everywhere(state: dict, hook: str) -> None:
 # End to end: the real research, a truncated provider answer, the fallback
 # ---------------------------------------------------------------------------
 
+@pytest.mark.usefixtures("legacy_without_qac")
 def test_real_runtime_trace_end_to_end(monkeypatch, tmp_path):
     provider = Provider([TRUNCATED])
     production(monkeypatch, provider)

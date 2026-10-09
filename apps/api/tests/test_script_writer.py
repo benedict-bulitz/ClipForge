@@ -417,6 +417,7 @@ def test_fresh_generation_uses_v2_body_and_preserves_legacy_hook(monkeypatch) ->
         ),
     ],
 )
+@pytest.mark.usefixtures("legacy_without_qac")
 def test_production_pipeline_uses_shared_post_body_hook_for_narration_tts_and_captions(
     monkeypatch, tmp_path, prompt, body, provider_hook, strategy, provider_hook_wins
 ) -> None:

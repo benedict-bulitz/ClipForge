@@ -336,6 +336,7 @@ SETTINGS = {"clipforge_ai_mode": "openai", "openai_api_key": "test-key"}
 
 
 @pytest.mark.parametrize("name", ["tiktok", "time"])
+@pytest.mark.usefixtures("legacy_without_qac")
 def test_generation_job_stops_before_tts_and_render(db, monkeypatch, tmp_path, name):
     calls = Calls()
     _wire(monkeypatch, name, calls)
@@ -374,6 +375,7 @@ def test_render_state_refuses_a_blocked_script(monkeypatch, tmp_path):
     assert gate["ready"] is False and "information_gain_answer_insufficient" in gate["blocking_issues"]
 
 
+@pytest.mark.usefixtures("legacy_without_qac")
 def test_a_successful_research_retry_produces_a_ready_script(monkeypatch, tmp_path):
     calls = Calls()
     mechanism = fact(4, "Mit dem Alter gibt es weniger neue Erlebnisse, deshalb bleiben weniger Erinnerungen hängen und Jahre wirken kürzer.")

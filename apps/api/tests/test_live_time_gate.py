@@ -313,6 +313,7 @@ def _run_job(db, tmp_path, question: str) -> tuple[GenerationJob, Project]:
     return db.get(GenerationJob, job.id), db.get(Project, job.project_id)
 
 
+@pytest.mark.usefixtures("legacy_without_qac")
 def test_the_live_time_run_fails_research_required_with_no_tts_or_render(db, monkeypatch, tmp_path):
     calls = Calls()
     _wire(monkeypatch, "time", calls)
@@ -327,6 +328,7 @@ def test_the_live_time_run_fails_research_required_with_no_tts_or_render(db, mon
 
 
 @pytest.mark.parametrize("name", ["deeplink", "photo"])
+@pytest.mark.usefixtures("legacy_without_qac")
 def test_the_passing_live_scripts_render(db, monkeypatch, tmp_path, name):
     calls = Calls()
     _wire(monkeypatch, name, calls)
@@ -335,6 +337,7 @@ def test_the_passing_live_scripts_render(db, monkeypatch, tmp_path, name):
     assert calls.render == 1 and len(calls.queries) == 1  # no retry needed
 
 
+@pytest.mark.usefixtures("legacy_without_qac")
 def test_the_render_gate_rechecks_the_final_live_script(monkeypatch, tmp_path):
     calls = Calls()
     _wire(monkeypatch, "photo", calls)

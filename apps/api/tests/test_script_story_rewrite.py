@@ -181,6 +181,7 @@ def critic(verdict: str = "rewrite", findings: list[EditorFinding] | None = None
 
 def verdict(beats=None, **overrides) -> VerifierResponse:
     values = {
+        "contract_sufficient": True, "contract_evaluations": [],
         "grounded": True, "answers_question": True, "payoff_fulfilled": True, "premature_reveal": False,
         "hook_promise_kept": True, "answer_payoff_duplicate": False, "better_than_draft": True, "findings": [],
         "answer_sufficiency": ScriptReviewSufficiency(verdict="answered", one_sentence_answer="Wings push air down and lift balances weight."),
@@ -589,10 +590,28 @@ class BriefEditor:
 
     def verify(self, brief):
         self.stages.append("verify")
-        return verdict(self.beats(brief))
+        from clipforge.script_story_rewrite import ContractObligationEvaluation
+        return verdict(self.beats(brief), contract_evaluations=[ContractObligationEvaluation(
+            id="primary", status="satisfied", is_primary=True, is_required=True, reasoning="Lift mechanism explained.",
+        )] if brief.get("question_answer_contract") else [])
 
 
 def test_pipeline_adopts_the_verified_rewrite_and_its_hook(monkeypatch):
+    from clipforge.question_answer_contract import (
+        AnswerObligation,
+        ObligationCoverage,
+        QuestionAnswerContract,
+        ResearchCoverageReport,
+    )
+    contract = QuestionAnswerContract(
+        question_type="causal", core_question=DE_QUESTION,
+        primary_answer_obligation=AnswerObligation(id="primary", description="Erkläre den Auftrieb durch Luftdruck und Luftablenkung.", is_primary=True, is_required=True),
+        required_supporting_obligations=[], optional_context=[],
+    )
+    monkeypatch.setattr(pipeline, "generate_contract", lambda *_a: contract)
+    monkeypatch.setattr(pipeline, "evaluate_research_coverage", lambda *_a: ResearchCoverageReport(
+        is_sufficient=True, coverage=[ObligationCoverage(obligation_id="primary", status="satisfied", supporting_fact_ids=["fact_02", "fact_03", "fact_04"], reasoning="Supported mechanism")],
+    ))
     research = [{key: value for key, value in item.items() if key != "id"} for item in DE_FACTS]
     monkeypatch.setattr(
         "clipforge.pipeline.research_topic",
