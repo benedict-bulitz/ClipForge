@@ -206,7 +206,12 @@ REWRITE_INSTRUCTIONS = (
     "term) only if the script uses it. Every beat must give the viewer something new; no filler, no "
     "throat-clearing, no generic outro, no repeated analogy; end right after the payoff. Short, concrete, "
     "natural spoken sentences, one idea each. Stay within style.word_budget words in total. Every beat after "
-    "the hook cites the fact ids it relies on. "
+    "the hook cites the fact ids it relies on. Factual claims or premises in the hook ALSO cite their "
+    "actual supporting research fact IDs, even when phrased as a question. A purely nonfactual rhetorical "
+    "hook may have no citations. Never invent IDs or attach a related fact that does not support the claim. "
+    "required_answer_evidence supplies each mandatory cause or motive and its supported claims. Preserve "
+    "the actual explanatory relationship through compression and in the payoff; a related precursor "
+    "cannot substitute for the direct cause. "
     "If the research cannot support a complete answer, return status needs_research with "
     "research_insufficiency instead of guessing. reveal_beat_index and payoff_beat_index are 1-based "
     "positions in your beats; hook_intent_preserved says whether your hook keeps hook_intent; rationale names "
@@ -374,6 +379,12 @@ def build_brief(blocks: list[dict[str, Any]], context: dict[str, Any], assessmen
     return {
         "question_answer_contract": context.get("question_answer_contract"),
         "research_coverage": context.get("research_coverage"),
+        "required_answer_evidence": [item for item in _supported_obligations(context) if item["is_required"]],
+        "grounding_policy": {
+            "factual_hook_requires_supporting_fact_ids": True,
+            "nonfactual_rhetorical_hook_may_be_uncited": True,
+            "citations_must_support_the_actual_claim": True,
+        },
         "version": REWRITE_VERSION,
         "question": {
             "original": str(context.get("prompt") or ""),
@@ -1056,6 +1067,10 @@ def run_script_story_quality(
             "research_insufficiency": response.research_insufficiency,
             "better_than_draft": verdict.better_than_draft if verdict is not None else None,
             "verifier_error": verifier_error,
+            "verification_passed": verdict is not None and not _severity(findings, "hard"),
+            "verification_flags": {name: getattr(verdict, name) for name in (
+                "grounded", "answers_question", "payoff_fulfilled", "hook_promise_kept", "premature_reveal",
+            )} if verdict else None,
             "explanation_audit": audit,
             "hard": _severity(findings, "hard"),
             "major": _severity(findings, "major"),
@@ -1117,5 +1132,18 @@ def run_script_story_quality(
     if not last:
         reason += str(attempts[-1].get("reason") or attempts[-1].get("error") or "No supported answer generated.")
     holistic["status"] = "needs_fix"
+    # Keep an answer marked satisfied by the verifier for editing when only the hook failed.
+    # This is a rejected candidate, never an approval or a verification signature.
+    required_ids = {item["id"] for item in _contract_obligations(context) if item["is_required"]}
+    for item in reversed(attempts):
+        satisfied = {evaluation["id"] for evaluation in item.get("contract_evaluations", []) if evaluation["status"] == "satisfied"}
+        hard = item.get("hard", [])
+        if (required_ids and required_ids <= satisfied and item.get("blocks") and hard
+                and any(finding.get("beat_index") == 1 for finding in hard)
+                and all(finding.get("beat_index") == 1 or finding["code"] == "ungrounded" for finding in hard)):
+            fallback_blocks = item["blocks"]
+            fallback_report = assess_script_story_quality(fallback_blocks, context)
+            holistic["rejected_candidate_preserved"] = {"attempt": item["attempt"], "reason": "Required answer retained; hook remains rejected."}
+            break
     report = _block_report(fallback_report, "rewrite_hard_failure", reason, research=False)
     return fallback_blocks, _with_holistic(report, holistic, "deterministic")

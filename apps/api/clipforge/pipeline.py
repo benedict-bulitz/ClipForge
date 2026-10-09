@@ -68,6 +68,7 @@ from .script_story_quality import current_script_story_quality, script_quality_s
 from .script_story_rewrite import (
     OpenAIScriptStoryProvider,
     ScriptStoryProvider,
+    _supported_obligations,
     run_script_story_quality,
     verify_current_script,
 )
@@ -436,6 +437,8 @@ def _generate_body_with_v2_or_fallback(
     provider: ScriptWriterProvider | None = None,
     review_provider: ScriptReviewProvider | None = None,
     story_arc: dict[str, Any] | None = None,
+    question_answer_contract: dict[str, Any] | None = None,
+    research_coverage: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     diagnostics: dict[str, Any] = {
         "attempted": False,
@@ -460,6 +463,20 @@ def _generate_body_with_v2_or_fallback(
         diagnostics["reason"] = "no_normalized_facts"
         return legacy_blocks, diagnostics
 
+    answer_evidence = [item for item in _supported_obligations({
+        "facts": facts, "question_answer_contract": question_answer_contract, "research_coverage": research_coverage,
+    }) if item["is_required"]]
+    required_ids = {identifier for item in answer_evidence if item["is_required"] for identifier in item["supporting_fact_ids"]}
+    if not required_ids <= {fact.id for fact in normalized_facts}:
+        diagnostics["reason"] = "required_answer_evidence_unavailable"
+        return legacy_blocks, diagnostics
+    if len(required_ids) > 10:
+        diagnostics["reason"] = "required_answer_exceeds_writer_budget"
+        return legacy_blocks, diagnostics
+    essential = essential_fact_ids(story_arc or {})
+    normalized_facts.sort(key=lambda fact: (fact.id not in required_ids, fact.id not in essential, fact.priority != "MUST_KNOW"))
+    normalized_facts = normalized_facts[:10]
+    diagnostics["selected_fact_ids"] = [fact.id for fact in normalized_facts]
     diagnostics["attempted"] = True
     try:
         request = ScriptWriterRequest(
@@ -482,6 +499,7 @@ def _generate_body_with_v2_or_fallback(
             format_plan=format_plan,
             novelty_plan=novelty_plan,
             story_arc=story_brief(story_arc) or None,
+            required_answer_evidence=answer_evidence,
         )
     except ValidationError as exc:
         diagnostics["reason"] = "request_validation_failed"
@@ -769,8 +787,8 @@ def _apply_selected_hook(
     existing = next((block for block in blocks if _is_hook_block(block)), None)
     remaining = [block for block in blocks if not _is_hook_block(block)]
     hook: dict[str, Any] = {"role": "hook", "text": hook_text}
-    if existing is not None and existing.get("fact_ids"):
-        hook["fact_ids"] = list(existing["fact_ids"])  # keep the hook's story identity
+    if existing is not None and existing.get("text") == hook_text and existing.get("fact_ids"):
+        hook["fact_ids"] = list(existing["fact_ids"])
     return [hook, *remaining]
 
 
@@ -1574,6 +1592,8 @@ def _build_initial_state(
         provider=script_writer_provider,
         review_provider=script_review_provider,
         story_arc=story_arc,
+        question_answer_contract=question_answer_contract.model_dump() if question_answer_contract else None,
+        research_coverage=contract_coverage.model_dump() if contract_coverage else None,
     )
     raw_blocks, trimmed_post_payoff_fluff = trim_post_payoff_fluff(raw_blocks)
     payoff_plan = _safe_payoff_plan(
