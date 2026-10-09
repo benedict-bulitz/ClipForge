@@ -33,6 +33,7 @@ from .pacing import analyze_pacing
 from .pipeline import (
     _build_scenes,
     _refresh_script_derivatives,
+    _reverify_current_contract,
     apply_edit,
     build_initial_state,
     enforce_selected_hook,
@@ -50,6 +51,7 @@ from .schemas import (
     SocialMetadataGenerate,
     SocialMetadataUpdate,
 )
+from .script_story_quality import script_quality_signature
 from .social_metadata import generate_social_metadata, normalize_hashtags
 from .story_arc import annotate_story_roles
 from .thumbnails import build_project_thumbnails
@@ -922,7 +924,7 @@ def _render_state(
     progress: ProgressCallback | None = None,
 ) -> dict:
     state = copy.deepcopy(previous_state)
-    _refresh_script_derivatives(state, old_scenes=state.get("scenes", []))
+    _refresh_script_derivatives(state, old_scenes=state.get("scenes", []), settings=settings)
     # A script that fails the success contract is refused before any media,
     # review, TTS or render work starts (the gate below re-checks it last).
     _require_ready(state)
@@ -934,6 +936,7 @@ def _render_state(
         _ensure_music_recommendations(state, available_music_tracks(), settings)
     prepare_project_media(state, project_id, settings, progress=progress)
     script_before_review = state["script"]["text"]
+    signature_before_review = script_quality_signature(state["script"]["blocks"])
     report_progress(progress, "review", "Reviewing content quality", phase="start")
     run_ai_review(state, settings)
     analyze_pacing(state)
@@ -944,7 +947,9 @@ def _render_state(
     blocks_before_hook = copy.deepcopy(state.get("script", {}).get("blocks", []))
     enforce_selected_hook(state)
     if state["script"]["blocks"] != blocks_before_hook:
-        _refresh_script_derivatives(state, old_scenes=state.get("scenes", []))
+        _refresh_script_derivatives(state, old_scenes=state.get("scenes", []), settings=settings)
+    elif script_quality_signature(state["script"]["blocks"]) != signature_before_review:
+        _reverify_current_contract(state, settings)
     if state["script"]["text"] != script_before_review:
         prepare_project_media(state, project_id, settings)
     gate = pre_render_quality_gate(state)

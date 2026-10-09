@@ -489,7 +489,7 @@ class EditorToolbox:
             else:
                 raise ValueError("A clearer rewrite needs replacement_text.")
             blocks[:] = _normalise_blocks(blocks, int(state["duration"]["max_seconds"]), story_arc=state.get("story_arc"))
-            _refresh_script_derivatives(state, old_scenes=old_scenes)
+            _refresh_script_derivatives(state, old_scenes=old_scenes, settings=self.settings)
             _invalidate_scene_media(state)
             return args.action.replace("_", " ")
 
@@ -531,7 +531,7 @@ class EditorToolbox:
                 remaining, int(state["duration"]["max_seconds"]),
                 story_arc=state.get("story_arc"),
             )
-            _refresh_script_derivatives(state, old_scenes=old_scenes)
+            _refresh_script_derivatives(state, old_scenes=old_scenes, settings=self.settings)
             _invalidate_scene_media(state)
             return "deleted exact text from canonical narration"
 
@@ -559,7 +559,7 @@ class EditorToolbox:
             if args.narration_text:
                 block = next(item for item in state["script"]["blocks"] if item["id"] == block_id)
                 block["text"] = args.narration_text
-                _refresh_script_derivatives(state, old_scenes=old_scenes)
+                _refresh_script_derivatives(state, old_scenes=old_scenes, settings=self.settings)
             target = next(item for item in state["scenes"] if item["block_id"] == block_id)
             if args.visual_direction:
                 target["visual_goal"] = args.visual_direction
@@ -683,18 +683,18 @@ class EditorToolbox:
                 state.setdefault("options", {})["max_duration"] = args.max_seconds
                 blocks = _normalise_blocks(state["script"]["blocks"], args.max_seconds, story_arc=state.get("story_arc"))
                 state["script"]["blocks"] = blocks
-                _refresh_script_derivatives(state, old_scenes=old_scenes)
+                _refresh_script_derivatives(state, old_scenes=old_scenes, settings=self.settings)
                 _invalidate_scene_media(state)
                 roots.append(f"{args.max_seconds} second maximum")
             if args.pacing:
                 pace = {"faster": "fast", "slower": "slow", "balanced": "balanced"}[args.pacing]
                 state["timeline"]["cut_pace"] = pace
                 state.setdefault("options", {})["pacing"] = pace
-                _refresh_script_derivatives(state, old_scenes=old_scenes)
+                _refresh_script_derivatives(state, old_scenes=old_scenes, settings=self.settings)
                 _invalidate_scene_media(state)
                 roots.append(f"{args.pacing} pacing")
             if args.min_seconds is not None and args.max_seconds is None:
-                _refresh_script_derivatives(state, old_scenes=old_scenes)
+                _refresh_script_derivatives(state, old_scenes=old_scenes, settings=self.settings)
             return " and ".join(roots)
 
         changed_roots = {"script"} if args.max_seconds is not None or args.min_seconds is not None else {"timeline"}
@@ -743,7 +743,7 @@ class EditorToolbox:
                 remaining_blocks, int(state["duration"]["max_seconds"]),
                 story_arc=state.get("story_arc"),
             )
-            _refresh_script_derivatives(state, old_scenes=[])
+            _refresh_script_derivatives(state, old_scenes=[], settings=self.settings)
             _invalidate_scene_media(state)
             return f"removed {args.start_seconds:g}–{end:g} seconds and resynchronized the timeline"
 
@@ -770,7 +770,7 @@ class EditorToolbox:
                 blocks, int(state["duration"]["max_seconds"]),
                 story_arc=state.get("story_arc"),
             )
-            _refresh_script_derivatives(state, old_scenes=[])
+            _refresh_script_derivatives(state, old_scenes=[], settings=self.settings)
             _invalidate_scene_media(state)
             return f"removed scene {args.scene_number}"
 

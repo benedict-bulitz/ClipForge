@@ -800,6 +800,63 @@ def _accepted_report(
     return report
 
 
+def verify_current_script(
+    blocks: list[dict[str, Any]], context: dict[str, Any],
+    provider: ScriptStoryProvider | None,
+) -> dict[str, Any]:
+    """One independent verification of the exact current script; never rewrite it."""
+    report = assess_script_story_quality(blocks, context)
+    signature = script_quality_signature(blocks)
+    report.update(final_signature=signature, rewrite={
+        "verified_by": None, "verified_script_signature": None,
+        "status": "CONTRACT_VERIFICATION_STALE",
+    })
+    if provider is None:
+        report["verification_diagnostics"] = {"status": "CONTRACT_VERIFICATION_STALE", "error": "AI verifier unavailable.", "attempts": 0}
+        return report
+    findings = deterministic_findings(blocks, context, draft_has_hook=any(_role(block) == "hook" for block in blocks))
+    brief = build_brief(blocks, context, report)
+    verdict, error = _guard(lambda: provider.verify({
+        **brief, "mode": "verify_current_script", "candidate": {"beats": _beats(blocks)},
+        "deterministic_findings": findings,
+    }))
+    audit = None
+    if verdict is not None:
+        verdict = _checked_verdict(verdict, context)
+        findings.extend(_verifier_findings(verdict))
+        audit = {
+            "sentences": [item.model_dump(mode="json") for item in verdict.explanation_audit],
+            "answer_sufficiency": verdict.answer_sufficiency.model_dump(mode="json"),
+            "source": VERIFIED_AUDIT_SOURCE,
+            "verified_script": verified_script_key([str(block.get("text") or "") for block in blocks]),
+        }
+        findings.extend(_content_blockers(blocks, {**context, "explanation_audit": audit}))
+    failures = _severity(findings, "hard")
+    # A re-verification must also keep the current hook's promise.
+    if verdict is not None and not verdict.hook_promise_kept:
+        failures.append(_finding("hook_promise_broken", "hard", "The current hook promise is not kept."))
+    if verdict is None or failures:
+        report = _block_report(report, "rewrite_hard_failure", "Current script contract verification failed.", research=False)
+        report["rewrite"]["status"] = "CONTRACT_REVERIFY_FAILED"
+    else:
+        report = _accepted_report(blocks, blocks, context, {
+            "attempt": 1, "major": _severity(findings, "major"), "minor": _severity(findings, "minor"),
+            "explanation_audit": audit, "rationale": "Verify current script without changing wording.",
+        }, report)
+        report["actions"] = []
+        report["changes"] = {key: [] for key in report["changes"]}
+        report["rewrite"] = {
+            "verified_by": "ai_verifier", "verified_script_signature": signature, "status": "verified",
+        }
+    report["rewrite"]["contract_evaluations"] = [item.model_dump() for item in verdict.contract_evaluations] if verdict else []
+    report["holistic"] = {"explanation_audit": audit}
+    report["verification_diagnostics"] = {
+        "status": report["rewrite"]["status"], "error": error,
+        "findings": findings, "attempts": 1,
+    }
+    return report
+
+
 def run_script_story_quality(
     blocks: list[dict[str, Any]],
     context: dict[str, Any],
@@ -889,7 +946,12 @@ def run_script_story_quality(
                 "draft", "deterministic_findings", "information_gain",
             }}
             request.update(
-                mode=mode, attempt=number, failed_obligations=copy.deepcopy(failed_obligations),
+                mode=mode, attempt=number, failed_obligations=[
+                    {key: copy.deepcopy(value) for key, value in item.items() if key in {
+                        "id", "description", "is_primary", "is_required", "status",
+                        "supporting_fact_ids", "supporting_facts",
+                    }} for item in failed_obligations
+                ],
                 required_supported_fact_ids=sorted({
                     identifier for item in supported if item["is_required"]
                     for identifier in item["supporting_fact_ids"]
@@ -1034,6 +1096,8 @@ def run_script_story_quality(
             "research_insufficiency": best["research_insufficiency"],
             "beats": _beats(final),
             "verified_by": "ai_verifier" if best["status"] == "verified" else "deterministic_gate",
+            "verified_script_signature": script_quality_signature(final) if best["status"] == "verified" else None,
+            "contract_evaluations": best["contract_evaluations"],
         }
         return final, _with_holistic(report, holistic, "holistic_ai")
 

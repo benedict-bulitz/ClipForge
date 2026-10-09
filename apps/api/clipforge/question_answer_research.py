@@ -34,6 +34,7 @@ def normalize_facts(facts: list[dict[str, Any]]) -> list[dict[str, Any]]:
             continue
         fact.setdefault("raw_claim", str(fact.get("claim") or ""))
         fact.update(claim=claim, qac_normalized=True)
+        fact["confidence"] = float(fact.get("confidence") if fact.get("confidence") is not None else 0.5)
         if "sources" not in fact:
             label, url = fact.pop("source_label", None), fact.pop("source_url", None)
             fact["sources"] = [{"label": label, "url": url}] if label and url else []
@@ -51,7 +52,7 @@ def normalize_facts(facts: list[dict[str, Any]]) -> list[dict[str, Any]]:
             if (
                 fact_is_supported(fact) and not fact_is_supported(existing)
                 or fact_is_supported(fact) == fact_is_supported(existing)
-                and float(fact.get("confidence") or 0.5) > float(existing.get("confidence") or 0.5)
+                and fact["confidence"] > existing["confidence"]
             ):
                 existing["confidence"] = fact["confidence"]
                 existing["verification"] = fact["verification"]
@@ -68,7 +69,7 @@ def normalize_facts(facts: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def merge_results(first: ResearchResult, retry: ResearchResult, question: str, language: str) -> ResearchResult:
-    """Re-run native claim selection over both evidence sets in isolated namespaces."""
+    """Enrich the complete fact union from native evidence in isolated namespaces."""
     units: list[EvidenceUnit] = []
     sources: dict[str, dict[str, Any]] = {}
     facts: list[dict[str, Any]] = []
@@ -94,13 +95,20 @@ def merge_results(first: ResearchResult, retry: ResearchResult, question: str, l
         for original in result.facts:
             fact = copy.deepcopy(original)
             fact["research_key"] = prefix + str(fact.get("research_key") or fact.get("id") or len(facts))
-            fact["research_keys"] = [fact["research_key"]]
+            fact["research_keys"] = list(dict.fromkeys([
+                fact["research_key"], *[prefix + str(key) for key in original.get("research_keys", [])],
+            ]))
             fact["evidence_ids"] = [prefix + identifier for identifier in fact.get("evidence_ids", [])]
             for source in fact.get("sources", []):
                 if source.get("source_id"):
                     source["source_id"] = prefix + str(source["source_id"])
             facts.append(fact)
-        legacy_sources.extend(copy.deepcopy(result.sources))
+        for original in result.sources:
+            source = copy.deepcopy(original)
+            for name in ("id", "source_id"):
+                if source.get(name):
+                    source[name] = prefix + str(source[name])
+            legacy_sources.append(source)
         runs.append({"run": index, "status": result.status, "provider": result.provider,
                      "error": result.error, "diagnostics": copy.deepcopy(getattr(result, "diagnostics", None)),
                      "package": copy.deepcopy(package)})
@@ -120,8 +128,9 @@ def merge_results(first: ResearchResult, retry: ResearchResult, question: str, l
             contradictions=find_contradictions(groups, sources, frame.terms), rejected=rejected,
             frame=frame, synthesis_mode="combined_evidence",
         )
-        # Keep the selected native claims and their evidence, never unvalidated synthesis.
-        facts = legacy_facts(claims, sources, clusters)
+        # Native claims lead so package keys survive duplicate normalization.
+        # Package reconstruction must never erase usable V1 or validated summary facts.
+        facts = [*legacy_facts(claims, sources, clusters), *facts]
         bundle = {"sources": list(sources.values()), "evidence": [
             {field.name: getattr(unit, field.name) for field in fields(EvidenceUnit)} for unit in units
         ]}
@@ -150,6 +159,7 @@ def run_contract_research(query, language, settings, *, context, contract, resea
 
     calls.append({"query": query, "focus": context.get("focus")})
     coverage, error = assess(result)
+    first_sufficient = bool(coverage and coverage.is_sufficient)
     reason = None
     if coverage is not None:
         package = getattr(result, "package", None) or {}
@@ -175,8 +185,10 @@ def run_contract_research(query, language, settings, *, context, contract, resea
         "retry_attempted": len(calls) == 2, "retry_budget": {"maximum": 1, "used": len(calls) - 1},
         "coverage_status": "COVERAGE_UNAVAILABLE" if coverage is None else "SUFFICIENT" if coverage.is_sufficient else "RESEARCH_MISSING",
     }
+    merge_regression = first_sufficient and coverage is not None and not coverage.is_sufficient
     if error:
         diagnostic.update(failure_type="COVERAGE_UNAVAILABLE", contract_failure_reason=error)
     elif coverage and not coverage.is_sufficient:
-        diagnostic.update(failure_type="RESEARCH_MISSING", contract_failure_reason="Required research obligations unsupported: " + ", ".join(coverage.missing_obligations))
+        failure = "MERGE_REGRESSION" if merge_regression else "RESEARCH_MISSING"
+        diagnostic.update(coverage_status=failure, failure_type=failure, contract_failure_reason="Required research obligations unsupported after merge: " + ", ".join(coverage.missing_obligations))
     return result, coverage, retry_report, diagnostic

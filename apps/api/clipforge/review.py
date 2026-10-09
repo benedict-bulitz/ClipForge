@@ -632,7 +632,7 @@ def run_ai_review(
                 for block in state["script"]["blocks"]:
                     if str(block.get("role") or "").casefold() == "hook":
                         block["role"] = "setup"
-            _refresh_script_derivatives(state, old_scenes=old_scenes)
+            _refresh_script_derivatives(state, old_scenes=old_scenes, settings=settings)
             corrections.append(
                 "Rewrote the narration for language, directness, brevity, and clean spoken text."
             )

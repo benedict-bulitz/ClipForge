@@ -68,6 +68,7 @@ from .script_story_rewrite import (
     OpenAIScriptStoryProvider,
     ScriptStoryProvider,
     run_script_story_quality,
+    verify_current_script,
 )
 from .script_writer import (
     OpenAIScriptWriterProvider,
@@ -1129,8 +1130,34 @@ def _refit_hook(state: dict[str, Any], blocks: list[dict[str, Any]], max_words: 
     return fitted
 
 
+def _reverify_current_contract(
+    state: dict[str, Any], settings: Settings, provider: ScriptStoryProvider | None = None,
+) -> None:
+    """Bind one verifier verdict to the final current blocks, without rewriting."""
+    if not state.get("contract"):
+        return
+    script = state["script"]
+    blocks = script.get("blocks") or []
+    rewrite = (script.get("script_story_quality_v1") or {}).get("rewrite") or {}
+    if rewrite.get("verified_by") == "ai_verifier" and rewrite.get("verified_script_signature") == script_quality_signature(blocks):
+        return
+    if provider is None and settings.openai_api_key:
+        provider = OpenAIScriptStoryProvider(settings)
+    context = {
+        **state, "question_answer_contract": state["contract"],
+        "research_coverage": state.get("contract_coverage"), "explanation_audit": None,
+        "word_budget": max(12, int(state["duration"]["max_seconds"] * SPEAKING_RATE_WPM * float(state.get("voice", {}).get("speed") or 1.0) / 60)),
+    }
+    script["script_story_quality_v1"] = verify_current_script(blocks, context, provider)
+    audit = (script["script_story_quality_v1"].get("holistic") or {}).get("explanation_audit")
+    state["explanation_audit"] = audit
+    readiness = content_readiness(state)
+    script["readiness"] = {**readiness, "message": None if readiness["ready"] else not_ready_message(readiness)}
+
+
 def _refresh_script_derivatives(
-    state: dict[str, Any], *, old_scenes: list[dict] | None = None
+    state: dict[str, Any], *, old_scenes: list[dict] | None = None,
+    settings: Settings | None = None, script_quality_provider: ScriptStoryProvider | None = None,
 ) -> None:
     max_duration = int(state["duration"]["max_seconds"])
     voice_speed = max(0.7, min(1.4, float(state.get("voice", {}).get("speed") or 1.0)))
@@ -1190,6 +1217,11 @@ def _refresh_script_derivatives(
     annotate_story_roles(state)
     analyze_pacing(state)
     plan_viewer_reactions(state)
+    if state.get("contract"):
+        if settings is None:
+            from .config import get_settings
+            settings = get_settings()
+        _reverify_current_contract(state, settings, script_quality_provider)
 
 
 # One tighter research pass when the first script cannot answer its why/how
@@ -1906,12 +1938,14 @@ def _build_initial_state(
         "edit_history": [],
     }
     if hook_transition["action"] == "no_safe_reorder" and ensure_hook_advances(state) == "hook_reselected":
-        _refresh_script_derivatives(state, old_scenes=state["scenes"])
+        _refresh_script_derivatives(state, old_scenes=state["scenes"], settings=settings, script_quality_provider=script_quality_provider)
     replan_attention(state)
     annotate_story_roles(state)
     analyze_pacing(state)
     plan_viewer_reactions(state, planned_reaction_arc)
     # The success contract, before anything is voiced or rendered.
+    if (state["script"]["script_story_quality_v1"].get("rewrite") or {}).get("verified_by") == "ai_verifier":
+        _reverify_current_contract(state, settings, script_quality_provider)
     readiness = content_readiness(state)
     state["script"]["readiness"] = {**readiness, "message": None if readiness["ready"] else not_ready_message(readiness, intent["language"])}
     if not readiness["ready"]:
@@ -2127,7 +2161,7 @@ def apply_edit(
         applied.append("researched fact")
 
     if script_changed:
-        _refresh_script_derivatives(state, old_scenes=old_scenes)
+        _refresh_script_derivatives(state, old_scenes=old_scenes, settings=settings)
         for item in state["scenes"]:
             item.pop("media", None)
             item["asset_status"] = "search_required"
@@ -2182,7 +2216,7 @@ def apply_edit(
         state.setdefault("options", {})["max_duration"] = maximum
         blocks[:] = _normalise_blocks(blocks, maximum, story_arc=state.get("story_arc"))
         script_changed = True
-        _refresh_script_derivatives(state, old_scenes=old_scenes)
+        _refresh_script_derivatives(state, old_scenes=old_scenes, settings=settings)
         for item in state["scenes"]:
             item.pop("media", None)
             item["asset_status"] = "search_required"

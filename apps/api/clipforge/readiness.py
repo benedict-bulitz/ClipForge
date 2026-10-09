@@ -12,7 +12,7 @@ from typing import Any
 
 from .novelty import current_information_gain
 from .renderer import RenderUnavailable
-from .script_story_quality import current_script_story_quality
+from .script_story_quality import current_script_story_quality, script_quality_signature
 from .triple_hook import state_context
 from .verbal_hook import narrates_failure, ungrounded_cause
 
@@ -108,8 +108,13 @@ def content_readiness(state: dict[str, Any]) -> dict[str, Any]:
     contract_coverage = state.get("contract_coverage") or {}
     if state.get("contract") and not contract_coverage:
         blocking.append({"code": "coverage_unavailable", "message": "Independent research coverage unavailable."})
-    if state.get("contract") and (quality.get("rewrite") or {}).get("verified_by") != "ai_verifier":
-        blocking.append({"code": "contract_unverified", "message": "No independently verified contract script."})
+    if state.get("contract"):
+        script = state.get("script") or {}
+        rewrite = (script.get("script_story_quality_v1") or {}).get("rewrite") or {}
+        signature = script_quality_signature(script.get("blocks") or [])
+        if rewrite.get("verified_by") != "ai_verifier" or rewrite.get("verified_script_signature") != signature:
+            code = "contract_reverify_failed" if rewrite.get("status") == "CONTRACT_REVERIFY_FAILED" else "contract_verification_stale"
+            blocking.append({"code": code, "message": "No independent contract verification for the current script."})
     if state.get("contract") and contract_coverage.get("is_sufficient") is False:
         blocking.append({
             "code": "research_contract_insufficient",
