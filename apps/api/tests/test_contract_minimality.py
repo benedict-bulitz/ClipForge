@@ -12,8 +12,10 @@ from clipforge import question_answer_contract as qac
 from clipforge.config import Settings
 from clipforge.contract_minimality import (
     ComponentPreservation,
+    MinimumAnswerComponent,
     NecessityAudit,
     NecessityComponent,
+    QuestionMinimum,
     RepairCheck,
     requirement_ids,
 )
@@ -35,7 +37,10 @@ def approved_audit(model):
         components=[NecessityComponent(
             id=f"component_{index}", source_requirement_ids=[identifier],
             description=model.primary_answer_obligation.description,
-            strictly_necessary=True, reason="Omitting this essential component leaves the question unresolved.",
+            strictly_necessary=True, semantic_role="primary_cause_or_motive", atomic=True,
+            minimum_answer_component_ids=[f"component_{index}"],
+            answer_without_component="The remaining observation does not explain the cause.",
+            omission_still_answers_question=False, reason="Omitting this essential component leaves the question unresolved.",
         ) for index, identifier in enumerate(sorted(requirement_ids(model)))],
         primary_contains_unnecessary_conjunction=False, correction_required=False,
         minimum_necessary_depth=model.minimum_answer_depth,
@@ -53,7 +58,8 @@ def mars_repair():
     primary.description = SURFACE
     audit.components.append(NecessityComponent(
         id="optional_atmosphere", source_requirement_ids=["obligation:primary"],
-        description=ATMOSPHERE, strictly_necessary=False,
+        description=ATMOSPHERE, strictly_necessary=False, semantic_role="extension", atomic=True,
+        minimum_answer_component_ids=[], answer_without_component=SURFACE, omission_still_answers_question=True,
         reason="Ohne atmosphärische Verteilung beantwortet der Oberflächenstaub die ursprüngliche Frage bereits.",
     ))
     repaired = contract(MARS_QUESTION, SURFACE)
@@ -76,7 +82,30 @@ def response(parsed, refusal=None):
     return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(parsed=parsed, refusal=refusal))])
 
 
+def minimum_for(model, audit):
+    return QuestionMinimum(
+        question_intent=model.core_question, minimal_answer=audit.minimal_answer,
+        necessary_components=list({c.id: MinimumAnswerComponent(id=c.id, description=c.description, necessity_reason=c.reason)
+                                   for c in audit.components if c.strictly_necessary}.values()),
+        explicit_constraints=[], optional_extensions=[c.description for c in audit.components if not c.strictly_necessary],
+        minimum_necessary_depth=audit.minimum_necessary_depth,
+        preserves_question_semantics=True, preserves_explicit_constraints=True,
+    )
+
+
 def install_parser(monkeypatch, outputs):
+    # Legacy fixtures describe planner/audit/repair/check; add the new independent
+    # scope explicitly to their recorded sequence and account for its call below.
+    model = outputs[0] if isinstance(outputs[0], qac.QuestionAnswerContract) else contract()
+    audit = copy.deepcopy(outputs[1]) if isinstance(outputs[1], NecessityAudit) else approved_audit(model)
+    for c in audit.components:
+        c.minimum_answer_component_ids = [c.id] if c.strictly_necessary else []
+        c.omission_still_answers_question = not c.strictly_necessary
+    minimum = minimum_for(model, audit)
+    # Preserve intentionally missing/contradictory output fixtures as written.
+    if isinstance(outputs[1], NecessityAudit):
+        outputs = [outputs[0], audit, *outputs[2:]]
+    outputs = [outputs[0], minimum, *outputs[1:]]
     parse = Mock(side_effect=[item if isinstance(item, Exception) else response(item) for item in outputs])
     client = SimpleNamespace(beta=SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(parse=parse))))
     monkeypatch.setattr(qac, "OpenAI", lambda **_kwargs: client)
@@ -97,7 +126,7 @@ def test_live_surface_facts_satisfy_repaired_contract_without_atmospheric_distri
     assert SURFACE in payload and "fact_03" in payload
     assert "weit verbreitet" not in json.dumps([f["claim"] for f in LIVE_FACTS])
     assert result._minimality_review["repair_check"]["preserves_primary_cause_or_motive"]
-    assert parse.call_count == 5  # bounded four contract calls, then unchanged coverage call
+    assert parse.call_count == 6  # bounded five contract calls, then unchanged coverage call
 
 
 @pytest.mark.parametrize("question,description,language", [
@@ -116,7 +145,7 @@ def test_explicit_constraints_and_historical_motives_remain_required(monkeypatch
     result = qac.generate_contract(question, language, SETTINGS)
     assert result.primary_answer_obligation.description == description
     assert result.primary_answer_obligation.is_required
-    assert parse.call_count == 2
+    assert parse.call_count == 3
     payload = json.loads(parse.call_args.kwargs["messages"][1]["content"])
     assert payload["original_question"] == question
     assert payload["target_language"] == language
@@ -142,7 +171,7 @@ def test_genuinely_necessary_multistep_chain_has_no_global_depth_cap(monkeypatch
     assert result.minimum_answer_depth == 4
     assert len(result.causal_mechanistic_chain) == 4
     assert result.required_supporting_obligations[0].is_required
-    assert parse.call_count == 2
+    assert parse.call_count == 3
 
 
 @pytest.mark.parametrize("language", ["de", "en"])
@@ -153,14 +182,16 @@ def test_compound_primary_repair_retains_cause_and_demotes_extension(monkeypatch
     audit.correction_required = True
     audit.primary_contains_unnecessary_conjunction = True
     audit.components.append(NecessityComponent(id="extension", source_requirement_ids=["obligation:primary"],
-                                              description="Blue casing", strictly_necessary=False,
+                                              description="Blue casing", strictly_necessary=False, semantic_role="extension", atomic=True,
+                                              minimum_answer_component_ids=[], answer_without_component="Overheating triggers shutdown.",
+                                              omission_still_answers_question=True,
                                               reason="Omitting casing color does not alter the shutdown explanation."))
     repaired = contract(model.core_question, "Overheating triggers protective shutdown.")
     repaired.optional_context = ["The casing is blue."]
     parse = install_parser(monkeypatch, [model, audit, repaired, passed_check(audit)])
     result = qac.generate_contract(model.core_question, language, SETTINGS)
     assert result.primary_answer_obligation.description == repaired.primary_answer_obligation.description
-    assert result.primary_answer_obligation.is_required and parse.call_count == 4
+    assert result.primary_answer_obligation.is_required and parse.call_count == 5
     assert result.optional_context == repaired.optional_context
 
 
@@ -170,7 +201,7 @@ def test_missing_actual_essential_cause_still_blocks(monkeypatch):
     result = qac.generate_contract(MARS_QUESTION, "de", SETTINGS)
     report = qac.evaluate_research_coverage(result, [fact("context", "Mars is cold.")], SETTINGS)
     assert not report.is_sufficient and report.missing_obligations == ["primary"]
-    assert parse.call_count == 5
+    assert parse.call_count == 6
 
 
 @pytest.mark.parametrize("bad", [None, {"minimally_sufficient": True}, RuntimeError("reviewer unavailable")])
@@ -179,13 +210,13 @@ def test_missing_malformed_or_unavailable_reviewer_fails_closed(monkeypatch, bad
     parse = install_parser(monkeypatch, [model, bad])
     with pytest.raises((ValueError, RuntimeError)):
         qac.generate_contract(model.core_question, "en", SETTINGS)
-    assert parse.call_count == 2
+    assert parse.call_count == 3
 
 
 def test_refused_reviewer_fails_even_with_parsed_output(monkeypatch):
     model = contract()
     parse = install_parser(monkeypatch, [model, approved_audit(model)])
-    parse.side_effect = [response(model), response(approved_audit(model), refusal="rejected")]
+    parse.side_effect = [response(model), response(minimum_for(model, approved_audit(model))), response(approved_audit(model), refusal="rejected")]
     with pytest.raises(ValueError):
         qac.generate_contract(model.core_question, "en", SETTINGS)
 
@@ -216,7 +247,7 @@ def test_incomplete_or_contradictory_audits_never_pass(monkeypatch, failure):
     parse = install_parser(monkeypatch, [model, audit])
     with pytest.raises(ValueError):
         qac.generate_contract(model.core_question, "en", SETTINGS)
-    assert parse.call_count == 2
+    assert parse.call_count == 3
 
 
 @pytest.mark.parametrize("failure", ["dropped_cause", "still_required_extension", "missing_component", "duplicate_component",
@@ -243,7 +274,7 @@ def test_repair_rejection_stops_without_another_attempt(monkeypatch, failure):
     parse = install_parser(monkeypatch, [proposed, audit, repaired, check])
     with pytest.raises((ValueError, RuntimeError)):
         qac.generate_contract(MARS_QUESTION, "de", SETTINGS)
-    assert parse.call_count <= 4
+    assert parse.call_count <= 5
 
 
 def test_review_prompt_enforces_counterfactual_and_full_component_audit(monkeypatch):
@@ -280,7 +311,7 @@ def test_repair_updates_support_chain_concepts_and_depth_consistently(monkeypatc
     assert not result.causal_mechanistic_chain and not result.required_mechanism_concepts
     assert not any(item.is_required for item in result.required_supporting_obligations)
     assert result.primary_answer_obligation.is_required
-    assert parse.call_count == 4
+    assert parse.call_count == 5
 
 
 @pytest.mark.parametrize("failed_stage", ["review", "repair", "repair_check"])
@@ -308,6 +339,6 @@ def test_guard_failure_reaches_existing_sanitized_render_block(monkeypatch, fail
     assert "PRIVATE" in state["research"]["diagnostics"]["contract_failure_reason"]
     assert not state["script"]["readiness"]["ready"]
     assert "PRIVATE" not in state["script"]["readiness"]["message"]
-    assert parse.call_count == index + 1
+    assert parse.call_count == index + 2
     # No unreviewed contract is ever passed into research.
     assert all("question_answer_contract" not in context for context in calls)

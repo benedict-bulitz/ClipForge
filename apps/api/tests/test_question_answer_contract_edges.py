@@ -276,11 +276,12 @@ def test_combined_native_evidence_unblocks_full_pipeline_after_narrow_retry(monk
 
 
 def test_pipeline_runs_actual_mocked_planner_and_coverage_parser(monkeypatch):
-    from test_contract_minimality import approved_audit
+    from test_contract_minimality import approved_audit, minimum_for
 
     model = contract()
     parse = Mock(side_effect=[
         SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(parsed=model))]),
+        SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(parsed=minimum_for(model, approved_audit(model))))]),
         SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(parsed=approved_audit(model)))]),
         SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(parsed=coverage(["fact_02", "fact_03", "fact_04"])))]),
     ])
@@ -292,7 +293,7 @@ def test_pipeline_runs_actual_mocked_planner_and_coverage_parser(monkeypatch):
     monkeypatch.setattr(pipeline, "research_topic", researcher)
     state = pipeline.build_initial_state(EN_QUESTION, AdvancedOptions(language="en", research="on"),
                                          Settings(clipforge_ai_mode="local", openai_api_key="test-key"), script_quality_provider=PipelineEditor())
-    assert parse.call_count == 3 and researcher.call_count == 1
+    assert parse.call_count == 4 and researcher.call_count == 1
     assert state["contract"] and state["script"]["readiness"]["ready"]
     assert state["research"]["contract_minimality"]["repaired"] is False
     assert parse.call_args_list[0].kwargs["response_format"] is type(model)

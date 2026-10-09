@@ -25,7 +25,7 @@ def reject_check(monkeypatch, mutate):
     parse = install_parser(monkeypatch, [proposed, audit, repaired, check])
     with pytest.raises(ContractGenerationFailure) as caught:
         qac.generate_contract(proposed.core_question, "de", SETTINGS)
-    assert parse.call_count == 4
+    assert parse.call_count == 5
     diagnostic = caught.value.diagnostics
     assert diagnostic["failure_stage"] == "repair_check"
     assert diagnostic["failure_code"] == "REPAIR_CHECK_REJECTED"
@@ -101,7 +101,7 @@ def test_inconsistent_audit_approval_diagnostics(monkeypatch):
     assert details["failure_code"] == "INCONSISTENT_AUDIT_APPROVAL"
     assert details["failed_invariants"][0]["code"] == "APPROVED_UNNECESSARY_CONJUNCTION"
     assert details["verification_flags"]["primary_contains_unnecessary_conjunction"]
-    assert parse.call_count == 2
+    assert parse.call_count == 3
 
 
 @pytest.mark.parametrize("stage", ["proposed_contract", "contract_repair"])
@@ -118,11 +118,11 @@ def test_invalid_contract_structure_is_identified_without_more_calls(monkeypatch
     assert details["failure_stage"] == stage
     assert details["failure_code"] == "INVALID_CONTRACT_STRUCTURE"
     assert {item["code"] for item in details["failed_invariants"]} == {"EMPTY_PRIMARY", "INVALID_DEPTH", "DUPLICATE_OBLIGATION_IDS"}
-    assert parse.call_count == (1 if stage == "proposed_contract" else 3)
+    assert parse.call_count == (1 if stage == "proposed_contract" else 4)
 
 
 @pytest.mark.parametrize("repair", [False, True])
-def test_success_uses_original_call_budget(monkeypatch, repair):
+def test_success_uses_bounded_question_first_call_budget(monkeypatch, repair):
     if repair:
         model, audit, repaired = mars_repair()
         outputs = [model, audit, repaired, passed_check(audit)]
@@ -133,7 +133,7 @@ def test_success_uses_original_call_budget(monkeypatch, repair):
     result = qac.generate_contract(model.core_question, "de", SETTINGS)
     assert result.primary_answer_obligation.is_required
     assert result._minimality_review["repaired"] is repair
-    assert parse.call_count == (4 if repair else 2)
+    assert parse.call_count == (5 if repair else 3)
 
 
 @pytest.mark.parametrize("stage,index", [("contract_planner", 0), ("necessity_audit", 1), ("contract_repair", 2), ("repair_check", 3)])
@@ -148,7 +148,7 @@ def test_provider_failures_have_stage_and_redacted_message(monkeypatch, stage, i
     assert caught.value.diagnostics["failure_code"] == "PROVIDER_CALL_FAILED"
     assert caught.value.diagnostics["failure_kind"] == "provider"
     assert not any(secret in str(caught.value) for secret in ["SECRET_TOKEN", "fixture", "sk-live-secret-token"])
-    assert parse.call_count == index + 1
+    assert parse.call_count == index + 1 + (index > 0)
 
 
 def test_rejected_check_diagnostics_persist_without_final_contract(monkeypatch):
@@ -176,7 +176,7 @@ def test_rejected_check_diagnostics_persist_without_final_contract(monkeypatch):
     assert not any(secret in persisted for secret in ["sk-reliability-secret", "secret-token", "sk-live-secret-token"])
     assert "Optional component still mandatory" in persisted
     assert "Optional component still mandatory" not in state["script"]["readiness"]["message"]
-    assert parse.call_count == 4
+    assert parse.call_count == 5
 
 
 def test_sanitizer_redacts_headers_keys_and_nested_component_ids():
@@ -197,7 +197,7 @@ def test_missing_structured_output_keeps_failure_stage(monkeypatch, stage, index
     assert caught.value.diagnostics["failure_stage"] == stage
     assert caught.value.diagnostics["failure_code"] == "INVALID_STRUCTURED_OUTPUT"
     assert caught.value.diagnostics["failure_kind"] == "structural"
-    assert parse.call_count == index + 1
+    assert parse.call_count == index + 1 + (index > 0)
 
 
 def test_json_parse_failure_is_structural_and_redacted(monkeypatch):

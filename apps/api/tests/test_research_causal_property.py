@@ -193,10 +193,10 @@ def test_synthesis_cannot_promote_temperature_to_color_answer():
 
 
 def test_contract_planner_receives_minimum_depth_instructions(monkeypatch):
-    from test_contract_minimality import approved_audit, response
+    from test_contract_minimality import approved_audit, minimum_for, response
     from test_question_answer_contract import contract
     model = contract()
-    parse = Mock(side_effect=[response(model), response(approved_audit(model))])
+    parse = Mock(side_effect=[response(model), response(minimum_for(model, approved_audit(model))), response(approved_audit(model))])
     monkeypatch.setattr(qac, "OpenAI", lambda **_kwargs: SimpleNamespace(beta=SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(parse=parse)))))
     qac.generate_contract(QUESTION, "de", Settings(openai_api_key="fixture"))
     prompt = parse.call_args_list[0].kwargs["messages"][0]["content"]
