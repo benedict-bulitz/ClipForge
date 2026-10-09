@@ -1770,6 +1770,8 @@ def _build_initial_state(
             "error": research_error,
             "contract_diagnostic": contract_diagnostic if 'contract_diagnostic' in locals() else None,
             "sources": sources,
+            **({"contract_minimality": question_answer_contract._minimality_review}
+               if question_answer_contract and question_answer_contract._minimality_review else {}),
             **({"package": research_package} if research_package else {}),
             **({"diagnostics": research_diagnostics} if research_diagnostics else {}),
             **({"retry": research_retry} if research_retry else {}),

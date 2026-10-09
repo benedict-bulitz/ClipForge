@@ -2,7 +2,7 @@ import logging
 from typing import Literal
 
 from openai import OpenAI
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, PrivateAttr, model_validator
 
 from clipforge.config import Settings
 from clipforge.novelty import fact_is_supported
@@ -27,6 +27,7 @@ class CausalChainStep(BaseModel):
     depth_level: int
 
 class QuestionAnswerContract(BaseModel):
+    _minimality_review: dict = PrivateAttr(default_factory=dict)
     @model_validator(mode="after")
     def primary_slot_is_required(self):
         self.primary_answer_obligation.is_primary = True
@@ -83,7 +84,9 @@ def generate_contract(question: str, language: str, settings: Settings) -> Quest
     parsed = response.choices[0].message.parsed
     if not isinstance(parsed, QuestionAnswerContract):
         raise TypeError("Contract planner returned no valid contract")
-    return parsed
+    from clipforge.contract_minimality import guard_contract
+
+    return guard_contract(question, language, parsed, client, settings)
 
 class ObligationCoverage(BaseModel):
     obligation_id: str

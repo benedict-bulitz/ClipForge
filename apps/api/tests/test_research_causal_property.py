@@ -193,11 +193,13 @@ def test_synthesis_cannot_promote_temperature_to_color_answer():
 
 
 def test_contract_planner_receives_minimum_depth_instructions(monkeypatch):
+    from test_contract_minimality import approved_audit, response
     from test_question_answer_contract import contract
-    parse = Mock(return_value=SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(parsed=contract()))]))
+    model = contract()
+    parse = Mock(side_effect=[response(model), response(approved_audit(model))])
     monkeypatch.setattr(qac, "OpenAI", lambda **_kwargs: SimpleNamespace(beta=SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(parse=parse)))))
     qac.generate_contract(QUESTION, "de", Settings(openai_api_key="fixture"))
-    prompt = parse.call_args.kwargs["messages"][0]["content"]
+    prompt = parse.call_args_list[0].kwargs["messages"][0]["content"]
     for instruction in ["STRICT MINIMUM", "first non-circular causal mechanism", "generic underlying physics or perception layer",
                         "photon-level reflection/scattering is optional", "independently necessary", "atomic enough to verify",
                         "necessary causal depth, not maximum possible depth", "Do not impose a universal depth cap"]:
