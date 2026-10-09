@@ -269,48 +269,79 @@ def test_nasa_item_and_commons_mirror_are_one_asset():
     assert "origin:NASA:PIA24546" in asset_keys(candidate_evidence(mirror))
 
 
-def test_routed_space_scene_dedupes_mirror_and_records_normalized_rights():
-    nasa_id = "PIA24546"
+NASA_ID = "PIA24546"
 
+
+def space_registry(nasa_metadata=None):
     def nasa_api(request):
         if request.url.path == "/search":
-            body = {"collection": {"items": [nasa_row(nasa_id=nasa_id) | {"_metadata": {}}]}}
+            body = {"collection": {"items": [nasa_row(nasa_id=NASA_ID) | {"_metadata": {}}]}}
             body["collection"]["items"][0].pop("_metadata")
         elif request.url.path.startswith("/metadata/"):
-            body = {"location": f"https://images-assets.nasa.gov/image/{nasa_id}/metadata.json"}
+            body = {"location": f"https://images-assets.nasa.gov/image/{NASA_ID}/metadata.json"}
         elif request.url.path.endswith("metadata.json"):
-            body = {"XMP:Marked": False, "AVAIL:NASAID": nasa_id, "File:ImageWidth": 3000, "File:ImageHeight": 2000}
+            body = nasa_metadata or {"XMP:Marked": False, "AVAIL:NASAID": NASA_ID, "File:ImageWidth": 3000, "File:ImageHeight": 2000}
         else:
-            body = {"collection": {"items": [{"href": f"https://images-assets.nasa.gov/image/{nasa_id}/{nasa_id}~orig.jpg"}]}}
+            body = {"collection": {"items": [{"href": f"https://images-assets.nasa.gov/image/{NASA_ID}/{NASA_ID}~orig.jpg"}]}}
         return httpx.Response(200, json=body, request=request)
 
     commons = CommonsAPI(commons_payload(
-        commons_page(7, 1, f"{nasa_id}_Mars_rover_on_the_surface.jpg"),
+        commons_page(7, 1, f"{NASA_ID}_Mars_rover_on_the_surface.jpg"),
         commons_page(8, 2, "Mars_rover_tracks.jpg", metadata=ext(Artist="Ann")),  # no license
     ))
-    registry = ProviderRegistry([
+    return ProviderRegistry([
         NASAProvider(client=httpx.Client(transport=httpx.MockTransport(nasa_api))),
         ProviderAdapter("wikimedia", commons_client(commons)),
     ])
-    query = "mars rover surface"
-    state = project({
+
+
+def space_state():
+    return project({
         "narration": "The rover crosses the planet surface.", "visual_goal": "mars rover on the planet surface",
-        "search_queries": [query], "preferred_media": "photo",
+        "search_queries": ["mars rover surface"], "preferred_media": "photo",
     })
-    result = routed(state, registry, verifier=Verifier())
+
+
+def widened(registry):
+    from clipforge import media
+    from clipforge.routed_search import run_routed_scene_search
+
+    state = space_state()
+    scene = state["scenes"][0]
+    return run_routed_scene_search(
+        scene["search_queries"], scene, state, media.build_visual_query_plan(scene, state), registry=registry,
+        preferred_kind="photo", portrait=True, scene_duration=4, used=set(), verifier=Verifier(),
+        query_budget=1, widen_fully=True,
+    )
+
+
+def test_routed_space_scene_dedupes_mirror_and_records_normalized_rights():
+    # Widening forced so the NASA fallback tier runs after Commons admitted the mirror first.
+    result = widened(space_registry())
     stage = result.provenance["stages"][0]
-    assert [row["provider"] for row in stage["routed_providers"][:2]] == ["nasa", "wikimedia"]
+    assert [(row["provider"], row["tier"]) for row in stage["routed_providers"][:2]] == [("wikimedia", 0), ("nasa", 1)]
     stats = {row["provider"]: row for row in stage["providers"]}
-    assert stats["nasa"]["returned"] == 1
-    assert stats["wikimedia"]["returned"] == 2
-    assert stats["wikimedia"]["dedupe_rejects"] == 1  # the NASA mirror
+    assert stats["wikimedia"]["returned"] == 2 and stats["nasa"]["returned"] == 1
     assert stats["wikimedia"]["rights_rejects"] == 1  # unknown license never admitted
+    assert stats["wikimedia"]["dedupe_rejects"] == 0 and stats["nasa"]["dedupe_rejects"] == 1  # NASA copy of the mirror
     evidence = {row["identity"]: row for row in stage["candidate_evidence"]}
     unlicensed = evidence["wikimedia:photo:8"]
     assert unlicensed["rights_status"] == "unknown" and unlicensed["license_id"] is None
     assert unlicensed["usage_restrictions"] == ["not_cleared:missing_license_evidence"]
-    assert evidence[f"nasa:photo:{nasa_id}"]["dimensions"] == [3000, 2000]
-    assert all(candidate.identity != "wikimedia:photo:7" for candidate, _ in result.ranked)
+    assert evidence[f"nasa:photo:{NASA_ID}"]["dimensions"] == [3000, 2000]
+    assert {candidate.identity for candidate in result.candidates} == {"wikimedia:photo:7"}
+
+
+def test_routed_space_scene_without_widening_leads_with_wikimedia_and_spares_nasa_requests():
+    registry = space_registry()
+    result = routed(space_state(), registry, verifier=Verifier())
+    stage = result.provenance["stages"][0]
+    assert [(row["provider"], row["tier"]) for row in stage["routed_providers"][:2]] == [("wikimedia", 0), ("nasa", 1)]
+    nasa_requests = sum(row["requests"] for row in stage["providers"] if row["provider"] == "nasa")
+    if not stage["widening_reasons"]:
+        assert nasa_requests == 0  # strong first-tier coverage: the 7-9 NASA metadata requests are not spent
+    else:
+        assert nasa_requests > 0
 
 
 # --- Normalized candidate metadata -----------------------------------------

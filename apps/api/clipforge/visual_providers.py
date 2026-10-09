@@ -259,7 +259,9 @@ def canonical_source(url: str) -> str | None:
         path = path.replace(" ", "_")
     # Commons originals and thumbnails share a filename; dimensions/rehosting
     # must not create independent assets. This is exact origin evidence only.
-    if host == "upload.wikimedia.org" and path.startswith("wikipedia/commons/"):
+    # Both Wikimedia media hosts serve the same path layout (the thumbnail host
+    # is what the API returns for standard-width thumbnails).
+    if host in {"upload.wikimedia.org", "thumb.wikimedia.org"} and path.startswith("wikipedia/commons/"):
         parts = path.split("/")
         filename = parts[-2] if "thumb" in parts else parts[-1]
         return f"commons.wikimedia.org/wiki/File:{filename.replace(' ', '_')}"

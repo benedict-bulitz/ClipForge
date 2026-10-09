@@ -7,10 +7,10 @@ import re
 import time
 import unicodedata
 from collections.abc import Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlsplit
 
 import httpx
 
@@ -287,11 +287,13 @@ class WikimediaMediaClient:
             mime = str(info.get("mime") or "")
             if mime and not mime.startswith("image/"):
                 continue
-            # The scaled thumbnail is what gets downloaded and rendered; never
-            # report the (larger) original's size for it.
+            # The delivered file is what gets downloaded and rendered. The API's
+            # thumbwidth/thumbheight are NOT trusted for it (live: an unscaled
+            # original or a standard 1920px thumbnail is served instead of the
+            # requested 1600px): derive the size from the original's metadata
+            # and the actual URL, conservatively.
             thumb = info.get("thumburl")
-            width = _dimension(info.get("thumbwidth") if thumb else info.get("width"))
-            height = _dimension(info.get("thumbheight") if thumb else info.get("height"))
+            width, height, size_source = commons_delivered_size(info)
             download_url = thumb or info.get("url")
             if not download_url or width < 640 or height < 640:
                 continue
@@ -309,6 +311,10 @@ class WikimediaMediaClient:
                 "original_media_url": str(info.get("url") or ""),
                 "original_width": _dimension(info.get("width")),
                 "original_height": _dimension(info.get("height")),
+                # API-reported thumbnail size, kept for diagnostics only.
+                "api_thumb_width": _dimension(info.get("thumbwidth")),
+                "api_thumb_height": _dimension(info.get("thumbheight")),
+                "dimension_source": size_source,
                 "mime": mime or None,
                 "search_mode": mode,
             }
@@ -999,6 +1005,49 @@ def _dimension(value: Any) -> int:
         return max(0, int(value or 0))
     except (ValueError, TypeError, OverflowError):
         return 0
+
+
+COMMONS_MEDIA_HOSTS = {"upload.wikimedia.org", "thumb.wikimedia.org"}
+# Standard Wikimedia thumbnail file name: ``<N>px-<original>`` (optionally with the
+# lossy/lossless and ``pageN-`` prefixes used for multi-page/raster-converted files).
+_COMMONS_THUMB_NAME = re.compile(r"/(?:(?:lossy|lossless|qlossless)-)?(?:page\d+-)?(\d{2,5})px-[^/]+$")
+
+
+def commons_delivered_size(info: dict[str, Any]) -> tuple[int, int, str]:
+    """(width, height, source) of the file ``thumburl or url`` actually delivers.
+
+    ``source`` is one of ``original`` (no thumbnail requested), ``original_unscaled``
+    (the original is smaller than the requested width and is served as is),
+    ``thumb_url`` (``<N>px-`` in a standard thumbnail URL, height scaled from the
+    original), ``thumb_url_capped`` (never upscaled past the original),
+    ``api_thumb_capped`` (unrecognised URL: the API's thumbnail size, capped at the
+    original, is the most that can be assumed) or ``original_unknown`` (0x0: the
+    original's size is not validated, so nothing is assumed).
+    """
+    original_width, original_height = _dimension(info.get("width")), _dimension(info.get("height"))
+    if original_width <= 0 or original_height <= 0:
+        return 0, 0, "original_unknown"
+    thumb = str(info.get("thumburl") or "")
+    if not thumb:
+        return original_width, original_height, "original"
+    parts = urlsplit(thumb)
+    if parts.scheme == "https" and parts.hostname in COMMONS_MEDIA_HOSTS:
+        if "/thumb/" not in parts.path:
+            # ``...?utm_content=thumbnail_unscaled`` on the original's own path.
+            if parts.path == urlsplit(str(info.get("url") or "")).path:
+                return original_width, original_height, "original_unscaled"
+        else:
+            match = _COMMONS_THUMB_NAME.search(parts.path)
+            if match:
+                requested = int(match[1])
+                if requested >= original_width:
+                    return original_width, original_height, "thumb_url_capped"
+                return requested, max(1, round(original_height * requested / original_width)), "thumb_url"
+    # Unexpected URL shape: trust nothing beyond the original's own bounds.
+    api_width = _dimension(info.get("thumbwidth")) or original_width
+    if api_width >= original_width:
+        return original_width, original_height, "api_thumb_capped"
+    return api_width, max(1, round(original_height * api_width / original_width)), "api_thumb_capped"
 
 
 _NASA_DETAILS = re.compile(r"images\.nasa\.gov/details[/-]([A-Za-z0-9][A-Za-z0-9_.-]*?)(?:\.html?)?(?=[\"'\s<>?#]|$)")
@@ -2082,6 +2131,29 @@ def normalize_cached_photo(path: Path) -> Path:
         raise MediaProviderError("provider_error", f"The provider returned a file that is not a usable image ({exc}).") from exc
 
 
+def delivered_photo(candidate: MediaCandidate, downloaded: Path) -> tuple[MediaCandidate, dict[str, Any] | None]:
+    """The candidate with the DECODED size of its cached file as the authoritative one.
+
+    Provider metadata (API thumbnails, originals) only estimates the delivered
+    file. The second value records the provider-reported size next to the decoded
+    one (``None`` when the file cannot be identified: FFmpeg may still read it, so
+    the provider size stands). An image below the shared quality floor is removed
+    and refused so the next candidate is used.
+    """
+    size = still_image.decoded_size(downloaded)
+    if size is None:
+        return candidate, None
+    width, height = size
+    if min(width, height) < MIN_USABLE_SHORT_SIDE:
+        downloaded.unlink(missing_ok=True)
+        raise MediaProviderError(
+            "undersized_media",
+            f"The downloaded image is too small ({width}x{height}, minimum short side {MIN_USABLE_SHORT_SIDE}px).",
+        )
+    delivered = {"width": width, "height": height, "source": "decoded", "reported": [candidate.width, candidate.height]}
+    return replace(candidate, width=width, height=height), delivered
+
+
 def asset_filename_id(identifier: str) -> str:
     """Keep canonical external IDs in evidence, never in unsafe file paths."""
     return identifier if re.fullmatch(r"[\w-]{1,100}", identifier) else hashlib.sha256(identifier.encode()).hexdigest()[:32]
@@ -2108,10 +2180,15 @@ def _cache_candidate(
         if acquisition_budget is not None and not acquisition_budget.claim("downloads"):
             raise MediaProviderError("budget_exhausted", "Visual acquisition download budget exhausted.")
         downloaded = provider_call(lambda: downloader.download(candidate, destination))
+    delivered = None
     if candidate.kind == "photo":
         normalize_cached_photo(downloaded)
+        candidate, delivered = delivered_photo(candidate, downloaded)
     relative = downloaded.relative_to(render_root.resolve()).as_posix()
-    return candidate_evidence(candidate) | {"cache_path": relative, "relevance": relevance}
+    evidence = candidate_evidence(candidate) | {"cache_path": relative, "relevance": relevance}
+    if delivered:
+        evidence["delivered_dimensions"] = delivered
+    return evidence
 
 
 def asset_metadata(candidate: MediaCandidate) -> dict[str, Any]:

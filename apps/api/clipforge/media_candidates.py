@@ -18,6 +18,7 @@ from .media import (
     build_visual_query_plan,
     candidate_evidence,
     candidate_reveals_protected,
+    delivered_photo,
     derive_search_queries,
     destination_asset_allowed,
     excluded_asset_keys,
@@ -253,6 +254,10 @@ def apply_scene_media_candidate(
             raise MediaProviderError("provider_error", "The selected media could not be cached.")
         if candidate.kind == "photo":
             normalize_cached_photo(downloaded)
+            # Decoded size is authoritative; an undersized file is refused.
+            sized, delivered = delivered_photo(candidate, downloaded)
+            if delivered:
+                metadata = candidate_evidence(sized) | candidate_set.evidence.get(candidate.identity, {}) | {"delivered_dimensions": delivered}
     except (MediaProviderError, OSError) as exc:
         raise CandidateError(str(exc)) from exc
     finally:

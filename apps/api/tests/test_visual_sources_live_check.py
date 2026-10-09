@@ -123,8 +123,9 @@ def test_full_canned_run_passes_every_check_and_writes_json(live, tmp_path):
     assert sections["commons_zero_hit"]["searches"][1] == "filetype:bitmap rust OR colored OR dust OR lifting OR dry OR ground"
     assert sections["commons_zero_hit_tight_budget"]["api_requests"] == 1
     assert sections["nasa_direct"]["candidates"][2]["license"]["status"] == "unknown"
-    mars = sections["routed_mars_scene"]["stages"][0]["providers"]
-    assert {row["provider"]: row["dedupe_rejects"] for row in mars}["wikimedia"] == 1  # NASA mirror
+    mars = sections["routed_mars_scene"]["stages"][0]
+    assert [(r["provider"], r["tier"]) for r in mars["routed_providers"]] == [("wikimedia", 0), ("nasa", 1)]
+    assert {row["provider"]: row["dedupe_rejects"] for row in mars["providers"]}["nasa"] == 1  # NASA copy of the Commons mirror
     assert "routed_mars_nasa_timeout" in sections and report["code_under_test"].endswith("clipforge")
     assert "Bob" not in json.dumps(report["requests"])  # request log keeps no response bodies
 
@@ -227,3 +228,142 @@ def test_report_write_is_atomic(live, tmp_path):
     live.write_report(target, {"ok": False})
     assert json.loads(target.read_text()) == {"ok": False}
     assert [path.name for path in target.parent.iterdir()] == ["report.json"]  # no temp leftovers
+
+
+# --- delivered-size verdicts, NASA coverage and demotion checks ---------------------------
+
+
+@pytest.mark.parametrize("reported,actual,verdict", [
+    ([1600, 900], [1600, 900], "exact"),
+    ([1600, 900], [1600, 899], "rounding"),
+    ([1600, 900], [1599, 901], "rounding"),
+    ([1600, 1772], [1287, 1425], "overstated"),  # the live defect: 1600px claimed, 1287px delivered
+    ([1600, 900], [1600, 897], "overstated"),  # 3px over: beyond harmless rounding
+    ([1000, 700], [1280, 900], "understated"),
+    ([1000, 2000], [2000, 1000], "swapped"),
+    ([0, 0], [1920, 1080], "unknown_reported"),
+    ([1600, 900], "probe_http_403", "probe_error"),
+    ([1600, 900], "probe_failed:ReadTimeout", "probe_error"),
+    ([1600, 900], None, "unreadable"),
+])
+def test_dimension_classification(live, reported, actual, verdict):
+    assert live.classify_dimensions(reported, actual) == verdict
+
+
+def new_run(live):
+    return live.LiveRun(transport_factory=lambda: httpx.MockTransport(canned), sleep=lambda _s: None)
+
+
+def verdicts(run_, label):
+    return {c["check"]: c["status"] for c in run_.checks if c["check"].startswith(label)}
+
+
+def test_probe_failures_are_reported_separately_and_never_pass_as_matches(live):
+    run_ = new_run(live)
+    run_.dimension_check("probe", [
+        {"identity": "a", "reported": [1600, 900], "actual": "probe_http_403"},
+        {"identity": "b", "reported": [1600, 900], "actual": None},
+    ])
+    status = verdicts(run_, "probe")
+    assert status["probe: dimension probe failures (not size results)"] == "INFO"
+    # Nothing was measured: neither a mismatch (FAIL) nor a match (PASS).
+    assert status["probe: reported size never exceeds delivered size (+-1px)"] == "INFO"
+    assert run_.counts()["FAIL"] == 0
+
+
+def test_overstated_sizes_fail_but_rounding_and_conservative_differences_do_not(live):
+    ok = new_run(live)
+    ok.dimension_check("ok", [
+        {"identity": "a", "reported": [1920, 1080], "actual": [1920, 1080]},
+        {"identity": "b", "reported": [1600, 1067], "actual": [1600, 1066]},  # harmless 1px rounding
+        {"identity": "c", "reported": [1000, 700], "actual": [1280, 900]},  # conservative
+    ])
+    assert ok.counts()["FAIL"] == 0
+    assert verdicts(ok, "ok")["ok: delivered size differs but is not overstated"] == "INFO"
+    bad = new_run(live)
+    bad.dimension_check("bad", [{"identity": "a", "reported": [1600, 1772], "actual": [1287, 1425]}])
+    assert verdicts(bad, "bad")["bad: reported size never exceeds delivered size (+-1px)"] == "FAIL"
+    assert bad.counts()["FAIL"] == 1
+
+
+def test_run_fails_when_the_delivered_image_is_smaller_than_reported(live, tmp_path):
+    def shrunk(request):
+        if request.url.host == "upload.wikimedia.org":
+            return httpx.Response(200, content=jpeg(700, 500), request=request)
+        return canned(request)
+
+    code, report = run(live, tmp_path, handler=shrunk)
+    assert code == 1
+    assert any("reported size never exceeds delivered size" in name for name in statuses(report, "FAIL"))
+    assert all(c["detail"] for c in report["checks"] if c["status"] == "FAIL")
+
+
+def test_unreachable_image_host_is_a_probe_note_not_a_size_failure(live, tmp_path):
+    def forbidden(request):
+        if request.url.host == "upload.wikimedia.org":
+            return httpx.Response(403, request=request)
+        return canned(request)
+
+    code, report = run(live, tmp_path, handler=forbidden)
+    assert code == 0, statuses(report, "FAIL")
+    notes = [c for c in report["checks"] if c["check"].endswith("dimension probe failures (not size results)")]
+    assert notes and all(c["status"] == "INFO" for c in notes)
+    assert any(p["actual"] == "probe_http_403" for s in report["sections"].values() for p in s.get("dimension_probes", []))
+
+
+def unestablished_rights(request):
+    """Live behavior: NASA item metadata with only the NASA ID and no rights statement."""
+    if request.url.host == "images-assets.nasa.gov" and request.url.path.endswith("metadata.json"):
+        return httpx.Response(200, json={"AVAIL:NASAID": request.url.path.split("/")[2]}, request=request)
+    return canned(request)
+
+
+def test_unestablished_nasa_rights_are_reported_as_coverage_not_failure(live, tmp_path):
+    code, report = run(live, tmp_path, handler=unestablished_rights)
+    assert code == 0, statuses(report, "FAIL")
+    coverage = report["sections"]["nasa_direct"]["coverage"]
+    assert coverage["rights_status"] == {"unknown": 3} and coverage["metadata_enrichment"] == {"fetched": 3}
+    assert coverage["rights_fields_present"] == {"AVAIL:NASAID": 3}
+    assert coverage["rights_fields_missing"]["XMP:Marked"] == 3
+    info = next(c for c in report["checks"] if c["check"].startswith("nasa_direct: rights-usable coverage"))
+    assert info["status"] == "INFO"
+    assert "nasa_direct: no uncleared asset admitted or reported reusable" in [c["check"] for c in report["checks"] if c["status"] == "PASS"]
+    # Every unclear NASA item stays excluded from the routed pool.
+    assert "routed_mars_scene: no uncleared candidate admitted to the pool" in [c["check"] for c in report["checks"] if c["status"] == "PASS"]
+
+
+def test_missing_nasa_diagnostics_fail_the_run(live, tmp_path, monkeypatch):
+    original = live.NASAProvider.search
+
+    def stripped(self, *args, **kwargs):
+        from dataclasses import replace
+
+        results = original(self, *args, **kwargs)
+        return [replace(r, rights=replace(r.rights, evidence={k: v for k, v in r.rights.evidence.items() if k != "enrichment"})) for r in results]
+
+    monkeypatch.setattr(live.NASAProvider, "search", stripped)
+    code, report = run(live, tmp_path)
+    assert code == 1 and "nasa_direct: every candidate carries enrichment diagnostics" in statuses(report, "FAIL")
+
+
+def test_routing_checks_require_nasa_to_trail_wikimedia(live, tmp_path):
+    code, report = run(live, tmp_path)
+    assert code == 0
+    names = statuses(report, "PASS")
+    assert "routed_mars_scene: NASA is routed after Wikimedia (fallback tier)" in names
+    assert "routed_mars_nasa_timeout: NASA is routed after Wikimedia (fallback tier)" in names
+    run_ = new_run(live)
+    ahead = [{"routed_providers": [{"provider": "nasa", "tier": 0}, {"provider": "wikimedia", "tier": 0}],
+              "providers": [{"provider": "nasa", "requests": 7}], "widening_reasons": []}]
+    run_.nasa_demotion_checks("legacy", ahead)
+    failed = [c["check"] for c in run_.checks if c["status"] == "FAIL"]
+    assert "legacy: NASA is routed after Wikimedia (fallback tier)" in failed
+    assert "legacy: no NASA request while the first tier gave strong coverage" in failed
+
+
+def test_timeout_scenario_forces_the_nasa_fallback_tier(live, tmp_path):
+    _, report = run(live, tmp_path)
+    stage = report["sections"]["routed_mars_nasa_timeout"]["stages"][0]
+    by_provider = {row["provider"]: row for row in stage["providers"]}
+    assert by_provider["nasa"]["failure"] == "timeout" and by_provider["wikimedia"]["requests"] == 1
+    assert "fallback: NASA timeout recorded and Commons still searched" in statuses(report, "PASS")

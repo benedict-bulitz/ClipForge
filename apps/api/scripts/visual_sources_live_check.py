@@ -47,6 +47,7 @@ from clipforge.media import (
     asset_metadata,
 )
 from clipforge.open_media import NASAProvider, clear_search_cache
+from clipforge.routed_search import run_routed_scene_search
 from clipforge.visual_providers import (
     AcquisitionBudget,
     CandidateLedger,
@@ -62,6 +63,9 @@ PROBE_BYTES = 512 * 1024
 LOGGED_PARAMS = {"gsrsearch", "q", "gsrlimit", "media_type", "page_size"}
 KEYRING_FAIL_BACKEND = "keyring.backends.fail.Keyring"
 SKIPPED = {"skipped_after_429", "skipped_request_cap"}
+COMMONS_MIN_SIDE = 640  # WikimediaMediaClient's quality floor on the delivered size
+DIMENSION_TOLERANCE = 1  # px; harmless rounding when a thumbnail height is scaled
+PROBE_FAILURES = {"probe_error", "unreadable"}
 
 
 class LiveCheckLimit(httpx.TransportError):
@@ -125,6 +129,34 @@ class Recorder(httpx.BaseTransport):
                 entry["commons_pages"] = [_page_summary(page) for page in pages.values() if isinstance(page, dict)]
         run.requests.append(entry)
         return response
+
+
+def classify_dimensions(reported: Any, actual: Any) -> str:
+    """How a candidate's reported [w, h] relates to the probed delivered file.
+
+    ``exact`` / ``rounding`` (within DIMENSION_TOLERANCE px) are matches;
+    ``overstated`` (reported larger than delivered) is the defect that admits
+    undersized images; ``understated`` and ``swapped`` are conservative or
+    orientation differences; ``unknown_reported`` is an unmeasured candidate.
+    ``probe_error`` (HTTP/transport failure) and ``unreadable`` (no decodable
+    header within the byte limit) say nothing about the sizes.
+    """
+    if isinstance(actual, str):
+        return "probe_error"
+    if not (isinstance(actual, (list, tuple)) and len(actual) == 2):
+        return "unreadable"
+    if not (isinstance(reported, (list, tuple)) and len(reported) == 2) or min(reported) <= 0:
+        return "unknown_reported"
+    (rw, rh), (aw, ah) = reported, actual
+    if (rw, rh) == (aw, ah):
+        return "exact"
+    if abs(rw - aw) <= DIMENSION_TOLERANCE and abs(rh - ah) <= DIMENSION_TOLERANCE:
+        return "rounding"
+    if abs(rw - ah) <= DIMENSION_TOLERANCE and abs(rh - aw) <= DIMENSION_TOLERANCE:
+        return "swapped"
+    if rw > aw + DIMENSION_TOLERANCE or rh > ah + DIMENSION_TOLERANCE:
+        return "overstated"
+    return "understated"
 
 
 def _page_summary(page: dict[str, Any]) -> dict[str, Any]:
@@ -211,6 +243,23 @@ class LiveRun:
 
     # -- checks ------------------------------------------------------------
 
+    def dimension_check(self, label: str, probes: list[dict[str, Any]]) -> None:
+        """Delivered-size verdicts. Probe failures are reported on their own and
+        never counted as a size mismatch (or as a match)."""
+        for probe in probes:
+            probe["class"] = classify_dimensions(probe["reported"], probe["actual"])
+        failed = [p for p in probes if p["class"] in PROBE_FAILURES]
+        measured = [p for p in probes if p["class"] not in PROBE_FAILURES]
+        if failed:
+            self.check(f"{label}: dimension probe failures (not size results)", None,
+                       [{"identity": p["identity"], "actual": p["actual"]} for p in failed])
+        soft = [p for p in measured if p["class"] in {"understated", "swapped", "unknown_reported"}]
+        if soft:
+            self.check(f"{label}: delivered size differs but is not overstated", None, soft)
+        overstated = [p for p in measured if p["class"] == "overstated"]
+        self.check(f"{label}: reported size never exceeds delivered size (+-{DIMENSION_TOLERANCE}px)",
+                   (not overstated) if measured else None, overstated or [p["class"] for p in measured] or "no measurable probe")
+
     @staticmethod
     def summarize(candidate: Any) -> dict[str, Any]:
         meta = asset_metadata(candidate)
@@ -280,9 +329,22 @@ class LiveRun:
             )
             self.check(f"{label}: candidates follow API search index (within orientation class)", in_order,
                        {"api_order": expected, "candidate_order": got, "portrait_class": [pid for pid in got if classes[pid]]})
-            by_id = {str(p["pageid"]): p for p in raw}
-            mismatched = [c.provider_id for c in results if by_id.get(c.provider_id, {}).get("thumb") not in ([c.width, c.height], [None, None])]
-            self.check(f"{label}: candidate dimensions == API thumbwidth/thumbheight", not mismatched, mismatched or None)
+        # API-independent invariants: the API's own thumbnail size is NOT a contract
+        # for the delivered file, but a candidate may never claim more than its original,
+        # and the quality floor applies to the size we report.
+        overstated_vs_original = [
+            c.identity for c in results
+            if c.width > c.origin.get("original_width", 0) or c.height > c.origin.get("original_height", 0)
+        ]
+        self.check(f"{label}: no candidate reports more than its original's size", not overstated_vs_original, overstated_vs_original or None)
+        below_floor = [c.identity for c in results if min(c.width, c.height) < COMMONS_MIN_SIDE]
+        self.check(f"{label}: every candidate meets the {COMMONS_MIN_SIDE}px quality floor", not below_floor, below_floor or None)
+        sources: dict[str, int] = {}
+        for c in results:
+            key = str(c.origin.get("dimension_source"))
+            sources[key] = sources.get(key, 0) + 1
+        section["dimension_sources"] = sources
+        self.check(f"{label}: dimension sources used", None, sources)
         if results:
             probe_client = self.http(timeout=httpx.Timeout(15, connect=5), follow_redirects=True, headers={"User-Agent": COMMONS_USER_AGENT})
             try:
@@ -293,7 +355,7 @@ class LiveRun:
             finally:
                 probe_client.close()
             section["dimension_probes"] = probes
-            self.check(f"{label}: downloaded image size == reported size (top 2)", all(p["actual"] == p["reported"] for p in probes), probes)
+            self.dimension_check(label, probes)
             self.rights_checks(label, results)
         if expect_relaxed:
             if sent and sent[0].get("commons_pages"):
@@ -330,7 +392,13 @@ class LiveRun:
                    len(api_calls) == budget.search_requests, [len(api_calls), budget.snapshot()])
         bad_pd = [c.identity for c in usable if not (c.rights.evidence.get("XMP:Marked") is False and c.rights.evidence.get("AVAIL:NASAID") == c.provider_id)]
         self.check("nasa_direct: every usable NASA asset has item XMP Marked=false + matching NASA ID", not bad_pd if usable else None, bad_pd or len(usable))
-        self.check("nasa_direct: at least one rights-usable NASA asset", bool(usable) if results else None, len(usable))
+        coverage = self.nasa_coverage(results)
+        self.sections["nasa_direct"]["coverage"] = coverage
+        # Unestablished rights are a coverage fact, never a failure: NASA is a fallback source.
+        self.check("nasa_direct: rights-usable coverage (informational; unestablished rights stay excluded)", None, coverage)
+        undiagnosed = [c.identity for c in results
+                       if not isinstance(c.rights.evidence.get("enrichment"), dict) or "rights_fields_present" not in c.rights.evidence]
+        self.check("nasa_direct: every candidate carries enrichment diagnostics", not undiagnosed if results else None, undiagnosed or None)
         if usable:
             probe_client = self.http(timeout=httpx.Timeout(20, connect=5), follow_redirects=True)
             try:
@@ -341,28 +409,56 @@ class LiveRun:
             finally:
                 probe_client.close()
             self.sections["nasa_direct"]["dimension_probes"] = probes
-            self.check("nasa_direct: original image size == reported size",
-                       all(p["actual"] == p["reported"] or p["reported"] == [0, 0] for p in probes), probes)
+            self.dimension_check("nasa_direct", probes)
         if results:
             self.rights_checks("nasa_direct", results)
         provider.close()
         return results
 
-    def routed_scene(self, label: str, scene: dict, registry: ProviderRegistry, *, expect_reason: str) -> dict:
+    @staticmethod
+    def nasa_coverage(candidates: list) -> dict[str, Any]:
+        """Counts only: rights status, enrichment statuses, which rights fields exist."""
+        def tally(values) -> dict[str, int]:
+            counts: dict[str, int] = {}
+            for value in values:
+                counts[str(value)] = counts.get(str(value), 0) + 1
+            return dict(sorted(counts.items()))
+
+        evidence = [c.rights.evidence for c in candidates]
+        return {
+            "candidates": len(candidates),
+            "rights_status": tally(evaluate_rights(c.rights).status for c in candidates),
+            "rights_reason": tally(evaluate_rights(c.rights).reason for c in candidates),
+            "metadata_enrichment": tally((e.get("enrichment") or {}).get("metadata") for e in evidence),
+            "asset_manifest": tally((e.get("enrichment") or {}).get("asset_manifest") for e in evidence),
+            "rights_fields_present": tally(f for e in evidence for f in e.get("rights_fields_present") or []),
+            "rights_fields_missing": tally(f for e in evidence for f in e.get("rights_fields_missing") or []),
+        }
+
+    def routed_scene(self, label: str, scene: dict, registry: ProviderRegistry, *, expect_reason: str, widen_fully: bool = False) -> dict:
         state = {"timeline": {"width": 1080, "height": 1920}, "scenes": [scene], "assets": {}}
         plan = media.build_visual_query_plan(scene, state)
         try:
-            result = media.run_staged_scene_search(
-                scene["search_queries"], scene, state, plan, pexels=None, wikimedia=registry.get("wikimedia"),
-                registry=registry, preferred_kind="photo", portrait=True, scene_duration=4, used=set(),
-                verifier=media._METADATA_ONLY_VERIFIER, budget=2, acquisition_budget=AcquisitionBudget(),
-            )
+            if widen_fully:
+                # Forces the fallback tier (e.g. NASA) even when the first tier is strong:
+                # the production routed search, with its widening switch on.
+                result = run_routed_scene_search(
+                    scene["search_queries"], scene, state, plan, registry=registry, preferred_kind="photo",
+                    portrait=True, scene_duration=4, used=set(), verifier=media._METADATA_ONLY_VERIFIER,
+                    query_budget=2, acquisition_budget=AcquisitionBudget(), widen_fully=True,
+                )
+            else:
+                result = media.run_staged_scene_search(
+                    scene["search_queries"], scene, state, plan, pexels=None, wikimedia=registry.get("wikimedia"),
+                    registry=registry, preferred_kind="photo", portrait=True, scene_duration=4, used=set(),
+                    verifier=media._METADATA_ONLY_VERIFIER, budget=2, acquisition_budget=AcquisitionBudget(),
+                )
         finally:
             registry.close()
         prov = result.provenance
         stages = [{
             "query": stage["query"], "routed_providers": stage["routed_providers"], "providers": stage["providers"],
-            "errors": stage["errors"], "coverage": stage["coverage"],
+            "errors": stage["errors"], "coverage": stage["coverage"], "widening_reasons": stage["widening_reasons"],
             "candidate_evidence": [
                 {k: e.get(k) for k in ("identity", "title", "rights_status", "rights_reason", "license_id",
                                        "usage_restrictions", "dimensions", "metadata_confidence", "metadata_score")}
@@ -385,9 +481,24 @@ class LiveRun:
         self.check(f"{label}: routing reason == {expect_reason}", expect_reason in reasons, sorted(reasons))
         admitted = [c for c in result.candidates if evaluate_rights(c.rights).status != "usable"]
         self.check(f"{label}: no uncleared candidate admitted to the pool", not admitted, [c.identity for c in admitted])
+        self.nasa_demotion_checks(label, stages)
         errors = [s for stage in stages for s in stage["providers"] if s.get("failure")]
         self.check(f"{label}: provider errors are recorded in diagnostics (not hidden)", None, [(s["provider"], s["failure"]) for s in errors] or "none")
         return prov
+
+    def nasa_demotion_checks(self, label: str, stages: list[dict[str, Any]]) -> None:
+        """NASA is a fallback tier: never ahead of Wikimedia, and only queried when widening."""
+        if not stages:
+            return
+        tiers = {r["provider"]: r["tier"] for r in stages[0]["routed_providers"]}
+        if "nasa" in tiers and "wikimedia" in tiers:
+            self.check(f"{label}: NASA is routed after Wikimedia (fallback tier)", tiers["nasa"] > tiers["wikimedia"], tiers)
+        nasa_requests = sum(st["requests"] for stage in stages for st in stage["providers"] if st["provider"] == "nasa")
+        widened = any(stage["widening_reasons"] for stage in stages)
+        if "nasa" in tiers and not widened:
+            self.check(f"{label}: no NASA request while the first tier gave strong coverage", nasa_requests == 0, nasa_requests)
+        elif "nasa" in tiers:
+            self.check(f"{label}: NASA fallback tier reached (first tier coverage not strong)", None, {"nasa_requests": nasa_requests})
 
     def error_envelope(self) -> None:
         def bad_limit(request: httpx.Request) -> httpx.Request:
@@ -446,14 +557,15 @@ class LiveRun:
             "search_queries": ["pouring water glass kitchen"],
         }, ProviderRegistry([ProviderAdapter("wikimedia", self.commons_client(), owned=True)]),
             expect_reason="everyday_action_or_general_photo")
-        # 8: real failures are reported and the other source continues
+        # 8: real failures are reported and the other source continues. NASA is a
+        # fallback tier now, so widening is forced to exercise its failure path.
         prov = self.routed_scene("routed_mars_nasa_timeout", {
             "id": "s3", "start": 0, "end": 4, "preferred_media": "photo",
             "narration": "Dust storms sweep across the planet Mars.", "visual_goal": "dust storm on the planet Mars",
             "search_queries": ["mars dust storm"],
         }, ProviderRegistry([self.nasa_provider(timeout=httpx.Timeout(0.001)),
                              ProviderAdapter("wikimedia", self.commons_client(), owned=True)]),
-            expect_reason="space_or_earth_observation")
+            expect_reason="space_or_earth_observation", widen_fully=True)
         first = prov["stages"][0]["providers"] if prov["stages"] else []
         nasa_failure = next((s.get("failure") for s in first if s["provider"] == "nasa"), None)
         commons_ran = any(s["provider"] == "wikimedia" and s["requests"] for s in first)
@@ -469,7 +581,7 @@ class LiveRun:
             key = str(row.get("status") or row.get("error"))
             statuses[key] = statuses.get(key, 0) + 1
         return {
-            "tool": "visual_sources_live_check", "version": 1,
+            "tool": "visual_sources_live_check", "version": 2,
             "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
             "python": sys.version.split()[0], "code_under_test": source,
             "limits": {"pace_seconds": self.pace, "max_requests": self.max_requests, "requests_sent": self.sent,

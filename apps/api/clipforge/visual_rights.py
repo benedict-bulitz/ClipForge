@@ -162,6 +162,10 @@ def _plain(value: str) -> str:
     return re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", " ", value))).strip()
 
 
+# ``/deed`` or ``/deed.<language>[-<region>]`` closing a Creative Commons license path.
+_DEED_SUFFIX = re.compile(r"/deed(?:\.[a-z]{2,3}(?:[-_][a-z0-9]{2,8})?)?$")
+
+
 def commons_rights(metadata: dict[str, Any], *, source_url: str, creator: str) -> MediaRights:
     def get(key: str) -> str:
         value = metadata.get(key)
@@ -194,12 +198,19 @@ def commons_rights(metadata: dict[str, Any], *, source_url: str, creator: str) -
         if parsed.hostname in {"creativecommons.org", "www.creativecommons.org"}
         else ""
     )
+    # Commons links the localized deed (``.../4.0/deed.en``): the same license,
+    # so only that exact suffix on the exact CC host is ignored.
+    cc_path = _DEED_SUFFIX.sub("", cc_path)
     public_domain = (
         True
         if cc_path in {"publicdomain/zero/1.0", "publicdomain/mark/1.0"}
-        or identifier in {"pd", "cc-zero"}
+        or identifier in {"pd", "cc-zero", "cc0"}
         else None
     )
+    if identifier in {"cc-zero", "cc0"} and url and cc_path != "publicdomain/zero/1.0":
+        # The identifier alone never outweighs a license URL that says otherwise
+        # (spoofed host, other license, other version).
+        raw["conflicting_license_metadata"] = True
     cc_by = bool(re.fullmatch(r"licenses/by/(1\.0|2\.0|2\.5|3\.0|4\.0)", cc_path))
     cc_license = re.fullmatch(
         r"licenses/(by(?:-(?:nc|nd|sa)){0,3})/(1\.0|2\.0|2\.5|3\.0|4\.0)", cc_path

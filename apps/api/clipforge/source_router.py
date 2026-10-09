@@ -38,6 +38,7 @@ def route_sources(
     named_object = any(
         re.fullmatch(r"[A-Z][\w'-]+(?: [A-Z][\w'-]+)+", str(obj).strip()) for obj in objects
     )
+    fallback_only: set[str] = set()
     atmospheric = bool(words & {"atmosphere", "atmospheric", "atmosphäre"}) and bool(
         words & {"dust", "particles", "climate", "weather", "meteorology", "staub", "staubteilchen", "partikel"}
     )
@@ -57,8 +58,13 @@ def route_sources(
         "astronomie",
         "planetary",
     }:
-        order = ("nasa", "wikimedia", "openverse", "pexels", "pixabay")
+        # NASA is a fallback until its item metadata reliably establishes rights
+        # (live: top items carried only a NASA ID, so none were cleared while
+        # each query spent ~7 shared requests). Wikimedia/Openverse lead; the
+        # staged search only reaches NASA when their coverage is not strong.
+        order = ("wikimedia", "openverse", "nasa", "pexels", "pixabay")
         reason = "space_or_earth_observation"
+        fallback_only = {"nasa"}
     elif words & HISTORICAL_WORDS or re.search(r"\b1\d{3}\b", text):
         order = ("loc", "europeana", "wikimedia", "openverse", "pexels", "pixabay")
         reason = "historical_or_archival"
@@ -104,9 +110,20 @@ def route_sources(
         kind = preferred_kind if preferred_kind in kinds else "photo" if "photo" in kinds else None
         if kind:
             selected.append(RoutedSource(adapter, kind, reason))
+    # Two providers per tier, in routed order. A fallback-only provider never
+    # joins the first tier, even when a leading provider is unavailable.
+    chunks: list[list[RoutedSource]] = []
+    for source in selected:
+        if (
+            chunks
+            and len(chunks[-1]) < 2
+            and not (source.adapter.provider in fallback_only and len(chunks) == 1)
+        ):
+            chunks[-1].append(source)
+        else:
+            chunks.append([source])
     groups = []
-    for i in range(0, len(selected), 2):
-        group = selected[i : i + 2]
+    for group in chunks:
         groups.append(group)
         # Alternate kinds remain available at that provider's priority, never
         # promote a secondary stock provider ahead of primary domain sources.

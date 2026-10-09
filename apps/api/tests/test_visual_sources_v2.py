@@ -28,7 +28,7 @@ from clipforge.visual_providers import (
     asset_keys,
     create_provider_registry,
 )
-from clipforge.visual_rights import evaluate_rights
+from clipforge.visual_rights import MediaRights, evaluate_rights
 
 CC0 = "https://creativecommons.org/publicdomain/zero/1.0/"
 BY = "https://creativecommons.org/licenses/by/4.0/"
@@ -390,14 +390,25 @@ def test_each_provider_failure_is_isolated_and_other_route_continues(kind, error
         if kind in {LOCProvider, EuropeanaProvider}
         else "everyday running action"
     )
-    healthy = ProviderAdapter(
-        "wikimedia",
-        Commons(photos={query: [cand("good", query, query, provider="wikimedia", kind="photo")]}),
-    )
-    registry = ProviderRegistry([source, healthy])
+    if kind is NASAProvider:
+        # NASA is a fallback tier: Wikimedia is searched first and finds nothing,
+        # then NASA fails while the stock source routed after it supplies coverage.
+        healthy = ProviderAdapter(
+            "pexels",
+            Provider(photos={query: [cand("good", query, query, provider="pexels", kind="photo")]}),
+        )
+        registry = ProviderRegistry([ProviderAdapter("wikimedia", Commons()), source, healthy])
+        winner = "pexels"
+    else:
+        healthy = ProviderAdapter(
+            "wikimedia",
+            Commons(photos={query: [cand("good", query, query, provider="wikimedia", kind="photo")]}),
+        )
+        registry = ProviderRegistry([source, healthy])
+        winner = "wikimedia"
     state = project({"visual_goal": query, "preferred_media": "photo", "search_queries": [query]})
     result = routed(state, registry)
-    assert result.ranked and result.ranked[0][0].provider == "wikimedia"
+    assert result.ranked and result.ranked[0][0].provider == winner
     stats = [row for stage in result.provenance["stages"] for row in stage["providers"]]
     assert any(
         row["provider"] == source.provider and row.get("failure") == category for row in stats
@@ -410,6 +421,11 @@ def test_zero_results_are_normal(kind):
     assert (
         search(adapter(kind, lambda request: httpx.Response(200, json=body, request=request))) == []
     )
+
+
+def photo_only(fake):
+    fake.capabilities = ProviderCapabilities(("photo",))
+    return fake
 
 
 def registry_all():
@@ -434,7 +450,7 @@ def registry_all():
 @pytest.mark.parametrize(
     "query,expected",
     [
-        ("astronomy spacecraft orbit", ["nasa", "wikimedia"]),
+        ("astronomy spacecraft orbit", ["wikimedia", "openverse"]),
         ("historical archival event 1910", ["loc", "europeana"]),
         ("person running everyday action", ["pexels", "pixabay"]),
         ("running everyday action", ["pexels", "pixabay"]),
@@ -449,6 +465,24 @@ def test_router_representative_scene_classes(query, expected):
     assert len(routes[0]) <= 2
 
 
+def test_nasa_is_a_fallback_tier_for_space_scenes():
+    routes = route_sources(registry_all(), {"visual_goal": "astronomy spacecraft orbit"}, {}, "astronomy spacecraft orbit", "photo")
+    assert [s.adapter.provider for s in routes[0]] == ["wikimedia", "openverse"]
+    assert routes[1][0].adapter.provider == "nasa"
+    assert {s.reason for group in routes for s in group if s.adapter.provider == "nasa"} == {"space_or_earth_observation"}
+
+
+def test_nasa_never_joins_the_first_tier_when_a_leading_source_is_missing():
+    # Openverse unavailable: NASA still waits for the second tier, ahead of stock.
+    registry = ProviderRegistry([ProviderAdapter(name, type("Client", (), {"capabilities": ProviderCapabilities(("photo",))})())
+                                 for name in ("wikimedia", "nasa", "pexels")])
+    routes = route_sources(registry, {}, {}, "astronomy spacecraft orbit", "photo")
+    assert [[s.adapter.provider for s in group] for group in routes] == [["wikimedia"], ["nasa", "pexels"]]
+    # NASA alone is still reachable (no other source exists).
+    only = ProviderRegistry([ProviderAdapter("nasa", type("Client", (), {"capabilities": ProviderCapabilities(("photo",))})())])
+    assert [[s.adapter.provider for s in group] for group in route_sources(only, {}, {}, "astronomy spacecraft", "photo")] == [["nasa"]]
+
+
 def test_router_disabled_and_capability_constraints():
     registry = ProviderRegistry([ProviderAdapter("pexels", Provider()), adapter(NASAProvider)])
     routes = route_sources(registry, {}, {}, "spacecraft orbit", "video")
@@ -459,19 +493,20 @@ def test_router_disabled_and_capability_constraints():
 def test_router_pools_primary_results_before_selection_and_skips_widening():
     query = "lunar spacecraft"
     weak = replace(
-        cand("weak", query, "Lunar spacecraft orbit", provider="nasa", kind="photo"), rank=1000
+        cand("weak", query, "Lunar spacecraft orbit", provider="openverse", kind="photo"), rank=1000
     )
     good = cand("good", query, "Lunar spacecraft orbit", provider="wikimedia", kind="photo")
-    nasa, commons, secondary = (
+    openverse, commons, nasa = (
         Commons(photos={query: [weak]}),
         Commons(photos={query: [good]}),
         Commons(),
     )
+    # Both leading providers are pooled before selection; the NASA fallback tier is never reached.
     registry = ProviderRegistry(
         [
-            ProviderAdapter("nasa", nasa),
+            ProviderAdapter("openverse", openverse),
             ProviderAdapter("wikimedia", commons),
-            ProviderAdapter("openverse", secondary),
+            ProviderAdapter("nasa", nasa),
         ]
     )
     state = project(
@@ -484,10 +519,42 @@ def test_router_pools_primary_results_before_selection_and_skips_widening():
     result = routed(
         state, registry, verifier=Verifier(scores={"weak": (0.245, 0.245), "good": (0.4, 0.4)})
     )
-    assert len(nasa.calls) == len(commons.calls) == 1 and not secondary.calls
+    assert len(openverse.calls) == len(commons.calls) == 1 and not nasa.calls
     assert result.ranked[0][0].provider == "wikimedia"
     assert result.provenance["logical_queries_executed"] == 1
     assert len(result.provenance["stages"][0]["providers"]) == 2
+
+
+def test_nasa_fallback_is_queried_only_when_first_tier_coverage_is_not_strong():
+    query = "lunar spacecraft"
+    state = project({"visual_goal": query, "search_queries": [query], "preferred_media": "photo"})
+    relevant = cand("nasa-item", query, "Lunar spacecraft orbit", provider="nasa", kind="photo")
+    # Strong first-tier coverage: no NASA request at all.
+    strong = photo_only(Commons(photos={query: [cand("good", query, "Lunar spacecraft orbit", provider="wikimedia", kind="photo")]}))
+    nasa = photo_only(Commons(photos={query: [relevant]}))
+    registry = ProviderRegistry([ProviderAdapter("wikimedia", strong), ProviderAdapter("nasa", nasa)])
+    result = routed(state, registry)
+    assert not nasa.calls and result.provenance["provider_requests_executed"] == 1
+    # Nothing relevant from the first tier: NASA is the widened fallback.
+    empty, nasa = photo_only(Commons()), photo_only(Commons(photos={query: [relevant]}))
+    registry = ProviderRegistry([ProviderAdapter("wikimedia", empty), ProviderAdapter("nasa", nasa)])
+    result = routed(state, registry)
+    assert len(empty.calls) == len(nasa.calls) == 1
+    assert result.ranked and result.ranked[0][0].provider == "nasa"
+    assert result.provenance["stages"][0]["widening_reasons"]
+
+
+def test_nasa_item_without_established_rights_stays_excluded_in_the_fallback_tier():
+    query = "lunar spacecraft"
+    state = project({"visual_goal": query, "search_queries": [query], "preferred_media": "photo"})
+    unestablished = replace(
+        cand("nasa-item", query, "Lunar spacecraft orbit", provider="nasa", kind="photo"), rights=MediaRights()
+    )
+    nasa = photo_only(Commons(photos={query: [unestablished]}))
+    registry = ProviderRegistry([ProviderAdapter("wikimedia", photo_only(Commons())), ProviderAdapter("nasa", nasa)])
+    result = routed(state, registry)
+    assert nasa.calls and not result.ranked and not result.candidates
+    assert {row["provider"]: row["rights_rejects"] for row in result.provenance["stages"][0]["providers"]}["nasa"] == 1
 
 
 def routed(state, registry, *, budget=None, verifier=None):
@@ -777,30 +844,24 @@ def test_europeana_key_validation_uses_header_and_success_field():
 
 def test_download_failure_widens_without_repeating_primary_or_new_queries(tmp_path):
     query = "lunar spacecraft"
-    row = ov_row(title="Lunar spacecraft orbit")
-    source = adapter(
-        OpenverseProvider,
-        lambda request: (
-            httpx.Response(200, json={"results": [row]}, request=request)
-            if request.url.host == "api.openverse.org"
-            else httpx.Response(200, content=image_bytes(), request=request)
-        ),
-    )
+    # The leading source (Wikimedia) wins the pool but its file cannot be downloaded.
     bad_download = Commons(
         photos={
             query: [
-                cand("unavailable", query, "Lunar spacecraft orbit", provider="nasa", kind="photo")
+                cand("unavailable", query, "Lunar spacecraft orbit", provider="wikimedia", kind="photo")
             ]
         }
     )
-    bad_download.provider = "nasa"
     bad_download.capabilities = ProviderCapabilities(("photo",))
 
     def broken_download(_candidate, _destination):
         raise media.MediaProviderError("network_error", "File unavailable")
 
     bad_download.download = broken_download
-    commons = Commons()
+    # The next tier (empty NASA fallback + stock) recovers without a new logical query.
+    recovery = Provider(photos={query: [cand("recovered", query, "Lunar spacecraft orbit", provider="pexels", kind="photo")]})
+    nasa = photo_only(Commons())
+    nasa.provider = "nasa"
     state = project(
         {
             "narration": query,
@@ -813,15 +874,15 @@ def test_download_failure_widens_without_repeating_primary_or_new_queries(tmp_pa
         state,
         "project",
         settings_for(tmp_path),
-        client=Provider(),
-        fallback_client=commons,
-        extra_clients=[bad_download, source],
+        client=recovery,
+        fallback_client=bad_download,
+        extra_clients=[nasa],
         visual_verifier=Verifier(),
     )
     scene = state["scenes"][0]
-    assert scene["media"]["provider"] == "openverse"
+    assert scene["media"]["provider"] == "pexels"
     assert scene["media_search"]["winning_source"] == "routed_download_recovery"
-    assert len(bad_download.calls) == 1
+    assert len(bad_download.calls) == 1 and len(nasa.calls) == 1
     assert scene["media_search"]["logical_queries_executed"] == 1
     assert len(scene["media_search"]["executed_queries"]) == 1
     assert scene["media_search"]["provider_requests_executed"] <= 18
@@ -1018,10 +1079,12 @@ def test_named_object_evidence_routes_to_entity_sources_without_topic_rules():
 
 def test_secondary_stock_alternate_kind_keeps_its_source_priority():
     groups = route_sources(registry_all(), {}, {}, "lunar spacecraft", "video")
-    assert [s.adapter.provider for s in groups[0]] == ["nasa", "wikimedia"]
+    assert [s.adapter.provider for s in groups[0]] == ["wikimedia", "openverse"]
     entries = [(s.adapter.provider, s.kind) for group in groups for s in group]
     assert ("pexels", "video") in entries and ("pexels", "photo") in entries
     assert entries.index(("pexels", "video")) > entries.index(("openverse", "photo"))
+    # The NASA fallback still precedes secondary stock.
+    assert entries.index(("nasa", "photo")) < entries.index(("pexels", "video"))
     assert entries.index(("pexels", "photo")) > entries.index(("pexels", "video"))
 
 
