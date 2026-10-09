@@ -13,7 +13,7 @@ from .visual_providers import (
     provider_call,
     provider_relative_ranks,
 )
-from .visual_rights import evaluate_rights
+from .visual_rights import evaluate_rights, usage_restrictions
 
 
 def run_routed_scene_search(
@@ -143,7 +143,10 @@ def run_routed_scene_search(
                             "identity": candidate.identity, "provider": candidate.provider,
                             "source_key": canonical_source(candidate.source_url),
                             "title": candidate.title[:240], "rights_status": rights.status,
-                            "rights_reason": rights.reason, "metadata_score": initial["score"],
+                            "rights_reason": rights.reason, "license_id": candidate.rights.license_id,
+                            "usage_restrictions": usage_restrictions(candidate.rights),
+                            "dimensions": [candidate.width, candidate.height],
+                            "metadata_score": initial["score"],
                             "metadata_confidence": initial["confidence"],
                             "metadata_evidence": initial["metadata_evidence"][:320],
                             "temporal_evidence": initial["temporal_evidence"],

@@ -289,6 +289,10 @@ def asset_keys(value: Any) -> set[str]:
             keys.add(f"source:{key}")
     if origin.get("canonical_id") and origin.get("provider"):
         keys.add(f"origin:{origin['provider']}:{origin['canonical_id']}")
+    # A mirror names the original it copies (e.g. a Commons file of a NASA item).
+    for alias in origin.get("same_as") or []:
+        if isinstance(alias, dict) and alias.get("provider") and alias.get("canonical_id"):
+            keys.add(f"origin:{alias['provider']}:{alias['canonical_id']}")
     return keys
 
 

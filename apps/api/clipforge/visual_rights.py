@@ -90,6 +90,38 @@ def evaluate_rights(value: object, *, modifies: bool = True) -> RightsDecision:
     return RightsDecision("usable", "established_reuse_rights")
 
 
+def usage_restrictions(value: object) -> list[str]:
+    """Restrictions/obligations evidenced by the rights record (never permissions).
+
+    Descriptive only: acceptance stays with ``evaluate_rights``. Unknown or
+    uncleared rights are listed as such instead of being omitted.
+    """
+    rights = MediaRights.read(value)
+    decision = evaluate_rights(rights)
+    found = [] if decision.status == "usable" else [f"not_cleared:{decision.reason}"]
+    if rights.evidence.get("unresolved_restrictions"):
+        found.append("asset_specific_restrictions")
+    raw = rights.evidence.get("Restrictions")
+    if isinstance(raw, str):
+        found.extend(
+            f"commons:{part.strip().casefold()}" for part in re.split(r"[|,;]", _plain(raw)) if part.strip()
+        )
+    if rights.commercial_use_allowed is False:
+        found.append("non_commercial_only")
+    if rights.modifications_allowed is False:
+        found.append("no_modifications")
+    if rights.license_id and (
+        "-sa" in rights.license_id.casefold() or "gfdl" in rights.license_id.casefold()
+    ):
+        found.append("share_alike")
+    if rights.attribution_required is True:
+        found.append("attribution_required")
+    if (rights.rights_source or "").startswith("provider_terms:"):
+        # Provider-wide grants keep their prohibited uses and third-party rights.
+        found.extend(["provider_prohibited_uses_apply", "third_party_rights_not_cleared"])
+    return list(dict.fromkeys(found))
+
+
 def accepted_rights(value: object) -> dict[str, Any]:
     rights = MediaRights.read(value).serialize()
     decision = evaluate_rights(value)

@@ -563,6 +563,8 @@ class NASAProvider(OpenMediaProvider):
                     origin={
                         "provider": "NASA",
                         "item_id": identifier,
+                        # Shared with Commons mirrors of the same library item.
+                        "canonical_id": identifier,
                         "source_url": page,
                         "media_url": image,
                         "metadata_url": f"https://images-api.nasa.gov/metadata/{quote(identifier, safe='')}",

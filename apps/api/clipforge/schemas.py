@@ -277,6 +277,7 @@ class SceneMediaCandidateRead(BaseModel):
     rights_acceptance: dict[str, Any] = Field(default_factory=dict)
     canonical_asset_key: str | None = None
     origin: dict[str, Any] = Field(default_factory=dict)
+    asset_metadata: dict[str, Any] = Field(default_factory=dict)
     # Generated alternatives (Visual Director manual generation).
     generated: bool = False
     new: bool = False
