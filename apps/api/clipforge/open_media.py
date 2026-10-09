@@ -30,6 +30,18 @@ _REQUESTS: dict[str, deque[float]] = {}
 _COOLDOWN: dict[str, float] = {}
 CACHE_TTL = 300.0
 CACHE_SIZE = 128
+NASA_ENRICHED_ITEMS = 3  # leading search results whose item metadata is fetched
+# Item-metadata fields the rights decision reads. Only their presence is
+# reported in diagnostics beyond the values already kept as rights evidence.
+NASA_RIGHTS_FIELDS = (
+    "XMP:Marked",
+    "AVAIL:NASAID",
+    "XMP:Rights",
+    "XMP:UsageTerms",
+    "XMP:WebStatement",
+    "IPTC:CopyrightNotice",
+    "Photoshop:CopyrightFlag",
+)
 
 
 def clear_search_cache() -> None:
@@ -412,42 +424,58 @@ class NASAProvider(OpenMediaProvider):
             raise TypeError("Expected NASA collection")
         # Metadata work is bounded and leaves at least two search slots for
         # secondary providers. The API search does NOT establish permissions.
-        for row in rows[:3]:
-            if not isinstance(row, dict) or budget.max_search_requests - budget.search_requests < 3:
+        # Every row records how far enrichment got (status only, never raw
+        # metadata) so a missing rights statement can be told apart from a
+        # failed or skipped lookup.
+        for index, row in enumerate(rows):
+            if not isinstance(row, dict):
+                continue
+            if index >= NASA_ENRICHED_ITEMS:
+                row["_enrichment"] = {"metadata": "not_attempted:beyond_enrichment_limit"}
+                continue
+            if budget.max_search_requests - budget.search_requests < 3:
+                row["_enrichment"] = {"metadata": "not_attempted:budget_headroom"}
                 continue
             data = (row.get("data") or [{}])[0]
             identifier = data.get("nasa_id") if isinstance(data, dict) else None
             if not identifier:
+                row["_enrichment"] = {"metadata": "not_attempted:no_nasa_id"}
                 continue
+            status = row["_enrichment"] = {"metadata": "pending", "asset_manifest": "not_needed"}
             try:
                 location = self._json(
                     f"https://images-api.nasa.gov/metadata/{quote(str(identifier), safe='')}",
                     budget,
                 ).get("location")
-                if url(location) and urlparse(location).hostname == "images-assets.nasa.gov":
-                    row["_metadata_url"] = location
-                    row["_metadata"] = self._json(location, budget)
-                    if (
-                        row["_metadata"].get("XMP:Marked") is False
-                        and budget.max_search_requests - budget.search_requests >= 3
-                    ):
-                        manifest = self._json(
-                            f"https://images-api.nasa.gov/asset/{quote(str(identifier), safe='')}",
-                            budget,
-                        )
-                        assets = manifest.get("collection", {}).get("items", [])
-                        row["_image_url"] = next(
-                            (
-                                url(a.get("href"))
-                                for a in assets
-                                if isinstance(a, dict)
-                                and "~orig" in str(a.get("href"))
-                                and urlparse(url(a.get("href")))
-                                .path.casefold()
-                                .endswith((".jpg", ".jpeg", ".png"))
-                            ),
-                            "",
-                        )
+                if not (url(location) and urlparse(location).hostname == "images-assets.nasa.gov"):
+                    status["metadata"] = "location_rejected"
+                    continue
+                row["_metadata_url"] = location
+                row["_metadata"] = self._json(location, budget)
+                status["metadata"] = "fetched"
+                if row["_metadata"].get("XMP:Marked") is False:
+                    if budget.max_search_requests - budget.search_requests < 3:
+                        status["asset_manifest"] = "not_attempted:budget_headroom"
+                        continue
+                    status["asset_manifest"] = "pending"
+                    manifest = self._json(
+                        f"https://images-api.nasa.gov/asset/{quote(str(identifier), safe='')}",
+                        budget,
+                    )
+                    assets = manifest.get("collection", {}).get("items", [])
+                    row["_image_url"] = next(
+                        (
+                            url(a.get("href"))
+                            for a in assets
+                            if isinstance(a, dict)
+                            and "~orig" in str(a.get("href"))
+                            and urlparse(url(a.get("href")))
+                            .path.casefold()
+                            .endswith((".jpg", ".jpeg", ".png"))
+                        ),
+                        "",
+                    )
+                    status["asset_manifest"] = "original_found" if row["_image_url"] else "no_original_image"
             except Exception as exc:
                 from .media import MediaProviderError
 
@@ -455,6 +483,8 @@ class NASAProvider(OpenMediaProvider):
                     exc, (MediaProviderError, httpx.HTTPError, ValueError, TypeError)
                 ):
                     raise
+                failed = "asset_manifest" if status.get("asset_manifest") == "pending" else "metadata"
+                status[failed] = "error:" + str(getattr(exc, "category", type(exc).__name__))
         return self.normalize(payload, "photo", query=query)
 
     def normalize(self, rows: object, kind: str, *, query: str = "") -> list:
@@ -510,6 +540,13 @@ class NASAProvider(OpenMediaProvider):
                 )
                 if k in metadata
             }
+            # Diagnostics only: which rights fields exist, and how far metadata
+            # enrichment got. Field names and statuses, never extra raw values.
+            evidence["rights_fields_present"] = [k for k in NASA_RIGHTS_FIELDS if k in metadata]
+            evidence["rights_fields_missing"] = [k for k in NASA_RIGHTS_FIELDS if k not in metadata]
+            evidence["enrichment"] = dict(
+                row.get("_enrichment") or {"metadata": "not_attempted:unknown"}
+            )
             # XMP Marked=false explicitly means public domain (Adobe spec).
             # Missing, string 'false', or unrelated file's XMP is not permission.
             established = (
@@ -563,6 +600,8 @@ class NASAProvider(OpenMediaProvider):
                     origin={
                         "provider": "NASA",
                         "item_id": identifier,
+                        # Shared with Commons mirrors of the same library item.
+                        "canonical_id": identifier,
                         "source_url": page,
                         "media_url": image,
                         "metadata_url": f"https://images-api.nasa.gov/metadata/{quote(identifier, safe='')}",

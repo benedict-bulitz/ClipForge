@@ -62,8 +62,10 @@ def test_primary_planetary_pool_rejects_terrestrial_stock_with_larger_rank():
 def test_primary_answer_routes_domain_source_for_non_domain_query():
     state = planetary_project(); scene = state["scenes"][0]
     routes = route_sources(registry_all(), scene, state, "mineral dust", "video")
-    assert [s.adapter.provider for s in routes[0]] == ["nasa", "wikimedia"]
-    assert routes[0][0].kind == "photo"
+    # Planetary context still selects the space route; NASA is its fallback tier.
+    assert [s.adapter.provider for s in routes[0]] == ["wikimedia", "openverse"]
+    assert routes[1][0].adapter.provider == "nasa" and routes[1][0].kind == "photo"
+    assert routes[0][0].reason == "space_or_earth_observation"
 
 
 @pytest.mark.parametrize("negative", ["archival history 1888", "spacecraft astronomy", "medical anatomy"])

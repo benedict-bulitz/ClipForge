@@ -259,7 +259,9 @@ def canonical_source(url: str) -> str | None:
         path = path.replace(" ", "_")
     # Commons originals and thumbnails share a filename; dimensions/rehosting
     # must not create independent assets. This is exact origin evidence only.
-    if host == "upload.wikimedia.org" and path.startswith("wikipedia/commons/"):
+    # Both Wikimedia media hosts serve the same path layout (the thumbnail host
+    # is what the API returns for standard-width thumbnails).
+    if host in {"upload.wikimedia.org", "thumb.wikimedia.org"} and path.startswith("wikipedia/commons/"):
         parts = path.split("/")
         filename = parts[-2] if "thumb" in parts else parts[-1]
         return f"commons.wikimedia.org/wiki/File:{filename.replace(' ', '_')}"
@@ -289,6 +291,10 @@ def asset_keys(value: Any) -> set[str]:
             keys.add(f"source:{key}")
     if origin.get("canonical_id") and origin.get("provider"):
         keys.add(f"origin:{origin['provider']}:{origin['canonical_id']}")
+    # A mirror names the original it copies (e.g. a Commons file of a NASA item).
+    for alias in origin.get("same_as") or []:
+        if isinstance(alias, dict) and alias.get("provider") and alias.get("canonical_id"):
+            keys.add(f"origin:{alias['provider']}:{alias['canonical_id']}")
     return keys
 
 

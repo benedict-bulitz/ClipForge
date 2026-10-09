@@ -45,6 +45,18 @@ def identify(path: Path) -> tuple[str, int] | None:
         return None
 
 
+def decoded_size(path: Path) -> tuple[int, int] | None:
+    """Pixel size of the image as stored (what the renderer reads), or None when
+    Pillow cannot identify the file. Orientation metadata is not applied, exactly
+    like ``renderer._source_size`` and FFmpeg's stored-size view."""
+    try:
+        with Image.open(path) as image:
+            width, height = image.size
+    except (OSError, UnidentifiedImageError, ValueError, Image.DecompressionBombError):
+        return None
+    return (int(width), int(height)) if width > 0 and height > 0 else None
+
+
 def ffmpeg_ready(path: Path) -> bool:
     """A single-frame JPEG/PNG whose name matches its content."""
     found = identify(path)

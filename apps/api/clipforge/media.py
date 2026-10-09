@@ -4,12 +4,13 @@ import hashlib
 import html
 import json
 import re
+import time
 import unicodedata
 from collections.abc import Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlsplit
 
 import httpx
 
@@ -42,6 +43,7 @@ from .visual_rights import (
     commons_rights,
     evaluate_rights,
     provider_terms_rights,
+    usage_restrictions,
 )
 from .visual_verifier import (
     SCENE_VISUAL_THRESHOLD,
@@ -53,6 +55,11 @@ from .visual_verifier import (
 
 PEXELS_API = "https://api.pexels.com/v1"
 WIKIMEDIA_API = "https://commons.wikimedia.org/w/api.php"
+COMMONS_USER_AGENT = "ClipForge/0.2 (local video editor; https://github.com/benedict-bulitz/ClipForge)"
+# Room left for the scene's other routed providers before Commons may spend
+# one any-keyword request on a zero-hit query.
+COMMONS_RELAXED_MIN_HEADROOM = 4
+COMMONS_COOLDOWN_SECONDS = 60.0
 REAL_MEDIA_PROVIDERS = ("pexels", "wikimedia", "pixabay", "openverse", "nasa", "europeana", "loc")
 # Final scene assets that are not real provider media; each carries provenance.
 GENERATED_ASSET_SOURCE = "generated_openai"
@@ -226,35 +233,132 @@ class PexelsMediaClient:
 
 
 class WikimediaMediaClient:
-    """Free still-image fallback using Wikimedia Commons' public API."""
+    """Free still-image source using Wikimedia Commons' public API.
+
+    Search order, delivered-file dimensions and rate limits follow the API's
+    own response; rights come only from each file's ``extmetadata``.
+    """
 
     provider = "wikimedia"
+    request_budget_supported = True
     capabilities = ProviderCapabilities(("photo",), page_limit=10, evidence="imageinfo.extmetadata")
 
-    __slots__ = ("_client",)
+    __slots__ = ("_client", "_cooldown_until")
 
     def __init__(self, *, client: httpx.Client | None = None):
         self._client = client or httpx.Client(
             timeout=httpx.Timeout(12.0, connect=5.0),
             follow_redirects=True,
-            headers={"User-Agent": "ClipForge/0.2 (local video editor)"},
+            # Wikimedia's User-Agent policy asks for an identifiable client with a contact URL.
+            headers={"User-Agent": COMMONS_USER_AGENT},
         )
+        self._cooldown_until = 0.0
 
     def close(self) -> None:
         self._client.close()
 
-    def search_photos(self, query: str, *, portrait: bool) -> list[MediaCandidate]:
+    def search_photos(
+        self, query: str, *, portrait: bool, request_budget: AcquisitionBudget | None = None
+    ) -> list[MediaCandidate]:
+        pages = self._search_pages(f"filetype:bitmap {query}")
+        mode = "all_keywords"
+        relaxed = commons_relaxed_query(query)
+        # CirrusSearch requires every word; long scene queries often match no
+        # file at all. One any-keyword request is allowed only while the shared
+        # acquisition budget keeps room for the scene's other routed providers.
+        if not pages and relaxed and (
+            request_budget is None
+            or request_budget.max_search_requests - request_budget.search_requests
+            >= COMMONS_RELAXED_MIN_HEADROOM
+            and request_budget.claim("search_requests")
+        ):
+            pages = self._search_pages(f"filetype:bitmap {relaxed}")
+            mode = "any_keyword"
+        ordered = sorted(
+            (page for page in pages.values() if isinstance(page, dict)),
+            # Generator results are keyed by page id; ``index`` is the search rank.
+            key=lambda page: page["index"] if isinstance(page.get("index"), int) else 10**6,
+        )
+        candidates: list[MediaCandidate] = []
+        for page in ordered:
+            info = next(iter(page.get("imageinfo") or []), None)
+            if not isinstance(info, dict):
+                continue
+            mime = str(info.get("mime") or "")
+            if mime and not mime.startswith("image/"):
+                continue
+            # The delivered file is what gets downloaded and rendered. The API's
+            # thumbwidth/thumbheight are NOT trusted for it (live: an unscaled
+            # original or a standard 1920px thumbnail is served instead of the
+            # requested 1600px): derive the size from the original's metadata
+            # and the actual URL, conservatively.
+            thumb = info.get("thumburl")
+            width, height, size_source = commons_delivered_size(info)
+            download_url = thumb or info.get("url")
+            if not download_url or width < 640 or height < 640:
+                continue
+            metadata = info.get("extmetadata") if isinstance(info.get("extmetadata"), dict) else {}
+            artist = metadata.get("Artist") if isinstance(metadata.get("Artist"), dict) else {}
+            creator = _plain_metadata(str(artist.get("value") or "Wikimedia contributor"))
+            source_url = str(info.get("descriptionurl") or "https://commons.wikimedia.org/")
+            title = _plain_metadata(str(page.get("title") or ""))
+            orientation_bonus = 20 if (height >= width) == portrait else 0
+            origin: dict[str, Any] = {
+                "provider": "Wikimedia Commons",
+                "item_id": str(page.get("pageid") or ""),
+                "source_url": source_url,
+                "media_url": str(download_url),
+                "original_media_url": str(info.get("url") or ""),
+                "original_width": _dimension(info.get("width")),
+                "original_height": _dimension(info.get("height")),
+                # API-reported thumbnail size, kept for diagnostics only.
+                "api_thumb_width": _dimension(info.get("thumbwidth")),
+                "api_thumb_height": _dimension(info.get("thumbheight")),
+                "dimension_source": size_source,
+                "mime": mime or None,
+                "search_mode": mode,
+            }
+            nasa_id = commons_nasa_identity(title, metadata)
+            if nasa_id:
+                # Commons mirrors many NASA library files: same origin, one asset.
+                origin["same_as"] = [{"provider": "NASA", "canonical_id": nasa_id}]
+            candidates.append(
+                MediaCandidate(
+                    provider_id=str(page.get("pageid") or page.get("title") or len(candidates)),
+                    kind="photo",
+                    download_url=str(download_url),
+                    source_url=source_url,
+                    creator=creator or "Wikimedia contributor",
+                    creator_url=None,
+                    width=width,
+                    height=height,
+                    duration=None,
+                    query=query,
+                    rank=60 - len(candidates) * 2 + orientation_bonus,
+                    provider="wikimedia",
+                    title=title,
+                    description=_plain_metadata(str((metadata.get("ImageDescription") or {}).get("value") or "")) if isinstance(metadata.get("ImageDescription"), dict) else "",
+                    preview_url=str(download_url),
+                    rights=commons_rights(metadata, source_url=str(info.get("descriptionurl") or ""), creator=_plain_metadata(str(artist.get("value") or ""))),
+                    origin=origin,
+                )
+            )
+        return sorted(candidates, key=lambda item: item.rank, reverse=True)
+
+    def _search_pages(self, search: str) -> dict[str, Any]:
+        if time.monotonic() < self._cooldown_until:
+            raise MediaProviderError("rate_limited", "Wikimedia is cooling down after a rate limit.")
         try:
             response = self._client.get(
                 WIKIMEDIA_API,
                 params={
                     "action": "query",
                     "generator": "search",
-                    "gsrsearch": f"filetype:bitmap {query}",
+                    "gsrsearch": search,
                     "gsrnamespace": 6,
                     "gsrlimit": 10,
                     "prop": "imageinfo",
-                    "iiprop": "url|size|extmetadata",
+                    "iiprop": "url|size|mime|extmetadata",
                     "iiurlwidth": 1600,
                     "format": "json",
                 },
@@ -262,48 +366,41 @@ class WikimediaMediaClient:
             if response.status_code in {401, 403}:
                 raise MediaProviderError("invalid_credentials", "Wikimedia rejected credentials.")
             if response.status_code == 429:
+                self._cool_down(response.headers.get("retry-after"))
                 raise MediaProviderError("rate_limited", "Wikimedia is rate limited.")
             response.raise_for_status()
-            pages = response.json().get("query", {}).get("pages", {})
+            payload = response.json()
+            if not isinstance(payload, dict):
+                raise TypeError("Unexpected Wikimedia response")
         except (httpx.HTTPError, ValueError, TypeError) as exc:
-            raise MediaProviderError(
-                "timeout" if isinstance(exc, httpx.TimeoutException) else "network_error" if isinstance(exc, httpx.RequestError) else "malformed_response", "Wikimedia media search is temporarily unavailable."
-            ) from exc
-        candidates: list[MediaCandidate] = []
-        for position, page in enumerate(pages.values() if isinstance(pages, dict) else []):
-            info = next(iter(page.get("imageinfo") or []), None)
-            if not isinstance(info, dict):
-                continue
-            width = int(info.get("width") or 0)
-            height = int(info.get("height") or 0)
-            download_url = info.get("thumburl") or info.get("url")
-            if not download_url or width < 640 or height < 640:
-                continue
-            metadata = info.get("extmetadata") if isinstance(info.get("extmetadata"), dict) else {}
-            artist = metadata.get("Artist") if isinstance(metadata.get("Artist"), dict) else {}
-            creator = _plain_metadata(str(artist.get("value") or "Wikimedia contributor"))
-            orientation_bonus = 20 if (height >= width) == portrait else 0
-            candidates.append(
-                MediaCandidate(
-                    provider_id=str(page.get("pageid") or page.get("title") or position),
-                    kind="photo",
-                    download_url=str(download_url),
-                    source_url=str(info.get("descriptionurl") or "https://commons.wikimedia.org/"),
-                    creator=creator or "Wikimedia contributor",
-                    creator_url=None,
-                    width=width,
-                    height=height,
-                    duration=None,
-                    query=query,
-                    rank=60 - position * 2 + orientation_bonus,
-                    provider="wikimedia",
-                    title=_plain_metadata(str(page.get("title") or "")),
-                    description=_plain_metadata(str((metadata.get("ImageDescription") or {}).get("value") or "")) if isinstance(metadata.get("ImageDescription"), dict) else "",
-                    preview_url=str(download_url),
-                    rights=commons_rights(metadata, source_url=str(info.get("descriptionurl") or ""), creator=_plain_metadata(str(artist.get("value") or ""))),
-                )
+            category = (
+                "timeout" if isinstance(exc, httpx.TimeoutException)
+                else "network_error" if isinstance(exc, httpx.RequestError)
+                else "provider_error" if isinstance(exc, httpx.HTTPStatusError)
+                else "malformed_response"
             )
-        return sorted(candidates, key=lambda item: item.rank, reverse=True)
+            raise MediaProviderError(category, "Wikimedia media search is temporarily unavailable.") from exc
+        error = payload.get("error")
+        if isinstance(error, dict):
+            # MediaWiki reports API errors with HTTP 200: never an empty search.
+            if error.get("code") in {"ratelimited", "maxlag"}:
+                self._cool_down(response.headers.get("retry-after"))
+                raise MediaProviderError("rate_limited", "Wikimedia is rate limited.")
+            raise MediaProviderError("provider_error", "Wikimedia rejected the search request.")
+        pages = (payload.get("query") or {}).get("pages") if isinstance(payload.get("query"), dict) else {}
+        if pages is None:
+            return {}
+        if not isinstance(pages, dict):
+            raise MediaProviderError("malformed_response", "Wikimedia returned malformed search data.")
+        return pages
+
+    def _cool_down(self, retry_after: str | None) -> None:
+        try:
+            delay = float(retry_after) if retry_after is not None else COMMONS_COOLDOWN_SECONDS
+        except ValueError:
+            delay = COMMONS_COOLDOWN_SECONDS
+        # No blocking retry: other routed providers continue immediately.
+        self._cooldown_until = time.monotonic() + min(600.0, max(30.0, delay))
 
     def download(self, candidate: MediaCandidate, destination: Path) -> Path:
         if destination.is_file() and destination.stat().st_size > 0:
@@ -900,6 +997,93 @@ def _semantic_query(text: str, stop: set[str], *, limit: int) -> str:
 
 def _plain_metadata(value: str) -> str:
     return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", html.unescape(value))).strip()
+
+
+def _dimension(value: Any) -> int:
+    """A reported pixel size, or 0 (unknown) - never an invented size."""
+    try:
+        return max(0, int(value or 0))
+    except (ValueError, TypeError, OverflowError):
+        return 0
+
+
+COMMONS_MEDIA_HOSTS = {"upload.wikimedia.org", "thumb.wikimedia.org"}
+# Standard Wikimedia thumbnail file name: ``<N>px-<original>`` (optionally with the
+# lossy/lossless and ``pageN-`` prefixes used for multi-page/raster-converted files).
+_COMMONS_THUMB_NAME = re.compile(r"/(?:(?:lossy|lossless|qlossless)-)?(?:page\d+-)?(\d{2,5})px-[^/]+$")
+
+
+def commons_delivered_size(info: dict[str, Any]) -> tuple[int, int, str]:
+    """(width, height, source) of the file ``thumburl or url`` actually delivers.
+
+    ``source`` is one of ``original`` (no thumbnail requested), ``original_unscaled``
+    (the original is smaller than the requested width and is served as is),
+    ``thumb_url`` (``<N>px-`` in a standard thumbnail URL, height scaled from the
+    original), ``thumb_url_capped`` (never upscaled past the original),
+    ``api_thumb_capped`` (unrecognised URL: the API's thumbnail size, capped at the
+    original, is the most that can be assumed) or ``original_unknown`` (0x0: the
+    original's size is not validated, so nothing is assumed).
+    """
+    original_width, original_height = _dimension(info.get("width")), _dimension(info.get("height"))
+    if original_width <= 0 or original_height <= 0:
+        return 0, 0, "original_unknown"
+    thumb = str(info.get("thumburl") or "")
+    if not thumb:
+        return original_width, original_height, "original"
+    parts = urlsplit(thumb)
+    if parts.scheme == "https" and parts.hostname in COMMONS_MEDIA_HOSTS:
+        if "/thumb/" not in parts.path:
+            # ``...?utm_content=thumbnail_unscaled`` on the original's own path.
+            if parts.path == urlsplit(str(info.get("url") or "")).path:
+                return original_width, original_height, "original_unscaled"
+        else:
+            match = _COMMONS_THUMB_NAME.search(parts.path)
+            if match:
+                requested = int(match[1])
+                if requested >= original_width:
+                    return original_width, original_height, "thumb_url_capped"
+                return requested, max(1, round(original_height * requested / original_width)), "thumb_url"
+    # Unexpected URL shape: trust nothing beyond the original's own bounds.
+    api_width = _dimension(info.get("thumbwidth")) or original_width
+    if api_width >= original_width:
+        return original_width, original_height, "api_thumb_capped"
+    return api_width, max(1, round(original_height * api_width / original_width)), "api_thumb_capped"
+
+
+_NASA_DETAILS = re.compile(r"images\.nasa\.gov/details[/-]([A-Za-z0-9][A-Za-z0-9_.-]*?)(?:\.html?)?(?=[\"'\s<>?#]|$)")
+# Titles use spaces or underscores around the ID (``PIA24546_Perseverance.jpg``).
+_JPL_IMAGE_ID = re.compile(r"(?<![A-Za-z0-9])PIA\d{5}(?!\d)")
+
+
+def commons_nasa_identity(title: str, metadata: dict[str, Any]) -> str | None:
+    """NASA library ID a Commons file explicitly mirrors (credit link or JPL PIA ID)."""
+    def text(key: str) -> str:
+        value = metadata.get(key)
+        return html.unescape(str(value.get("value") or "")) if isinstance(value, dict) else ""
+
+    for field_text in (text("Credit"), text("ImageDescription")):
+        match = _NASA_DETAILS.search(field_text)
+        if match:
+            return match[1]
+    match = _JPL_IMAGE_ID.search(title) or _JPL_IMAGE_ID.search(text("Credit"))
+    return match[0] if match else None
+
+
+# Function words that would match almost any file once terms are OR-ed.
+_COMMONS_QUERY_STOP = {
+    "dem", "den", "des", "eines", "einen", "über", "unter", "durch", "nach", "bei", "aus",
+    "into", "onto", "over", "under", "through", "about", "its", "their", "his", "her",
+}
+
+
+def commons_relaxed_query(query: str) -> str | None:
+    """Any-keyword CirrusSearch query (``a OR b OR c``) from the scene query's content words."""
+    words = [
+        word for word in re.findall(r"[^\W_]{3,}", query.casefold())
+        if word not in _RELEVANCE_STOP and word not in _COMMONS_QUERY_STOP
+    ]
+    words = list(dict.fromkeys(words))[:6]
+    return " OR ".join(words) if len(words) > 1 else None
 
 
 _RELEVANCE_STOP = {
@@ -1947,6 +2131,29 @@ def normalize_cached_photo(path: Path) -> Path:
         raise MediaProviderError("provider_error", f"The provider returned a file that is not a usable image ({exc}).") from exc
 
 
+def delivered_photo(candidate: MediaCandidate, downloaded: Path) -> tuple[MediaCandidate, dict[str, Any] | None]:
+    """The candidate with the DECODED size of its cached file as the authoritative one.
+
+    Provider metadata (API thumbnails, originals) only estimates the delivered
+    file. The second value records the provider-reported size next to the decoded
+    one (``None`` when the file cannot be identified: FFmpeg may still read it, so
+    the provider size stands). An image below the shared quality floor is removed
+    and refused so the next candidate is used.
+    """
+    size = still_image.decoded_size(downloaded)
+    if size is None:
+        return candidate, None
+    width, height = size
+    if min(width, height) < MIN_USABLE_SHORT_SIDE:
+        downloaded.unlink(missing_ok=True)
+        raise MediaProviderError(
+            "undersized_media",
+            f"The downloaded image is too small ({width}x{height}, minimum short side {MIN_USABLE_SHORT_SIDE}px).",
+        )
+    delivered = {"width": width, "height": height, "source": "decoded", "reported": [candidate.width, candidate.height]}
+    return replace(candidate, width=width, height=height), delivered
+
+
 def asset_filename_id(identifier: str) -> str:
     """Keep canonical external IDs in evidence, never in unsafe file paths."""
     return identifier if re.fullmatch(r"[\w-]{1,100}", identifier) else hashlib.sha256(identifier.encode()).hexdigest()[:32]
@@ -1973,10 +2180,56 @@ def _cache_candidate(
         if acquisition_budget is not None and not acquisition_budget.claim("downloads"):
             raise MediaProviderError("budget_exhausted", "Visual acquisition download budget exhausted.")
         downloaded = provider_call(lambda: downloader.download(candidate, destination))
+    delivered = None
     if candidate.kind == "photo":
         normalize_cached_photo(downloaded)
+        candidate, delivered = delivered_photo(candidate, downloaded)
     relative = downloaded.relative_to(render_root.resolve()).as_posix()
-    return candidate_evidence(candidate) | {"cache_path": relative, "relevance": relevance}
+    evidence = candidate_evidence(candidate) | {"cache_path": relative, "relevance": relevance}
+    if delivered:
+        evidence["delivered_dimensions"] = delivered
+    return evidence
+
+
+def asset_metadata(candidate: MediaCandidate) -> dict[str, Any]:
+    """One provider-independent view of a candidate: source, URLs, type,
+    dimensions, license, attribution and usage restrictions.
+
+    Unknown values stay ``None``; license status is the rights authority's
+    decision, so an unknown license is never reported as reusable.
+    """
+    rights = MediaRights.read(candidate.rights)
+    decision = evaluate_rights(rights)
+    width, height = _dimension(candidate.width), _dimension(candidate.height)
+    return {
+        "version": 1,
+        "source": candidate.provider,
+        "source_url": candidate.source_url or None,
+        "media_url": candidate.download_url or None,
+        "preview_url": candidate.preview_url or None,
+        "asset_type": candidate.kind,
+        "dimensions": {"width": width or None, "height": height or None, "known": bool(width and height)},
+        "duration": candidate.duration,
+        "license": {
+            "id": rights.license_id,
+            "name": rights.license_name,
+            "url": rights.license_url,
+            "public_domain": rights.public_domain,
+            "commercial_use_allowed": rights.commercial_use_allowed,
+            "modifications_allowed": rights.modifications_allowed,
+            "rights_source": rights.rights_source,
+            "status": decision.status,
+            "reason": decision.reason,
+            "policy_version": decision.policy_version,
+        },
+        "attribution": {
+            "required": rights.attribution_required,
+            "text": rights.attribution_text,
+            "creator": candidate.creator or None,
+            "creator_url": candidate.creator_url,
+        },
+        "usage_restrictions": usage_restrictions(rights),
+    }
 
 
 def candidate_evidence(candidate: MediaCandidate) -> dict[str, Any]:
@@ -1991,6 +2244,7 @@ def candidate_evidence(candidate: MediaCandidate) -> dict[str, Any]:
         "rights": accepted_rights(candidate.rights),
         "rights_acceptance": vars(evaluate_rights(candidate.rights)),
         "origin": candidate.origin,
+        "asset_metadata": asset_metadata(candidate),
         "canonical_asset_key": candidate.canonical_asset_key or (
             f"source:{canonical_source(candidate.source_url)}" if canonical_source(candidate.source_url) else candidate.identity),
     }
