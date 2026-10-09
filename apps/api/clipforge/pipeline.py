@@ -35,12 +35,12 @@ from .narration import (
     clean_research_claim,
     clean_script_blocks,
     contamination_issues,
+    split_sentences,
 )
 from .novelty import (
     current_information_gain,
     prune_redundant_information,
     safe_novelty_plan,
-    verified_script_key,
 )
 from .pacing import analyze_pacing
 from .payoff import (
@@ -944,7 +944,7 @@ def _fit_blocks(
             continue
         sentences = [
             sentence.strip()
-            for sentence in re.split(r"(?<=[.!?])\s+", block["text"])
+            for sentence in split_sentences(block["text"])
             if sentence.strip()
         ]
         kept: list[str] = []
@@ -1101,7 +1101,7 @@ def _normalise_blocks(
             continue
         sentences = [
             sentence.strip()
-            for sentence in re.split(r"(?<=[.!?])\s+", block["text"])
+            for sentence in split_sentences(block["text"])
             if sentence.strip()
         ]
         # A payoff block closes on its last sentence (the resolution); every
@@ -1167,7 +1167,12 @@ def _reverify_current_contract(
         "research_coverage": state.get("contract_coverage"), "explanation_audit": None,
         "word_budget": max(12, int(state["duration"]["max_seconds"] * SPEAKING_RATE_WPM * float(state.get("voice", {}).get("speed") or 1.0) / 60)),
     }
-    script["script_story_quality_v1"] = verify_current_script(blocks, context, provider)
+    previous = script.get("script_story_quality_v1") or {}
+    report = verify_current_script(blocks, context, provider)
+    recovery = previous.get("generation_recovery") or previous.get("holistic")
+    if recovery:
+        report["generation_recovery"] = copy.deepcopy(recovery)
+    script["script_story_quality_v1"] = report
     audit = (script["script_story_quality_v1"].get("holistic") or {}).get("explanation_audit")
     state["explanation_audit"] = audit
     readiness = content_readiness(state)
@@ -1706,20 +1711,28 @@ def _build_initial_state(
     }
     if script_quality_provider is None and settings.openai_api_key and settings.script_holistic_rewrite_enabled:
         script_quality_provider = OpenAIScriptStoryProvider(settings)
-    blocks, script_story_quality = run_script_story_quality(blocks, quality_context, provider=script_quality_provider)
+    finalized_transitions: dict[str, dict[str, Any]] = {}
+
+    def finalize_candidate(candidate):
+        normalized = _normalise_blocks(candidate, max_duration, wpm, story_arc)
+        final, transition = _advance_after_hook(normalized, story_arc)
+        finalized_transitions[script_quality_signature(final)] = transition
+        return final
+
+    blocks, script_story_quality = run_script_story_quality(
+        blocks, quality_context, provider=script_quality_provider, finalize_candidate=finalize_candidate,
+    )
     rewrite = script_story_quality.get("rewrite") if isinstance(script_story_quality.get("rewrite"), dict) else None
     if rewrite is not None:
         # The verified rewrite owns the narration, its hook wording included
         # (the hook intent and reveal contract were verified, not the words).
-        blocks = _normalise_blocks(blocks, max_duration, wpm, story_arc)
-        blocks, hook_transition = _advance_after_hook(blocks, story_arc)
+        # Text-mutating normalization and transitions already ran before the verifier.
+        hook_transition = finalized_transitions.get(script_quality_signature(blocks), hook_transition)
         verified_audit = (script_story_quality.get("holistic") or {}).get("explanation_audit")
         if verified_audit:
-            # Bound to the words that were verified (normalisation only re-splits them).
-            explanation_audit = {
-                **verified_audit,
-                "verified_script": verified_script_key([str(block.get("text") or "") for block in blocks]),
-            }
+            # Preserve the verifier's exact word key; a later mutation must
+            # invalidate it rather than silently rebinding approval.
+            explanation_audit = copy.deepcopy(verified_audit)
     elif selected_hook_candidate:
         blocks = _apply_selected_hook(blocks, selected_hook_candidate.text)
     for index, block in enumerate(blocks, 1):

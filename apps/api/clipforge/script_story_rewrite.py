@@ -233,7 +233,13 @@ VERIFIER_INSTRUCTIONS = (
     "tolerant of style. "
     + SHARED_RULES
     + "Hard requirements: grounded (every factual statement is supported by usable research facts, nothing "
-    "invented, nothing contradicting, cited ids fit their sentences); premature_reveal (the protected answer "
+    "invented, nothing contradicting, cited ids fit their sentences). Audit factual hook assertions and "
+    "presuppositions inside questions claim by claim: actor, agency, action, intent and causal relation. "
+    "Political or other context does not establish who acted. Use hook_grounding to inspect the candidate's "
+    "actual cited facts; uncited evidence elsewhere in the dossier cannot authorize a claim. Reject unsupported "
+    "agency even when the motive is answered. Pure rhetorical questions need no invented citations. "
+    "Historical motives require a supported immediate purpose, not a physical process or repetition of the "
+    "action verb; context and consequences alone do not answer WHY an actor acted. premature_reveal (the protected answer "
     "appears before its dependencies or in the hook); answers_question (the original question is actually "
     "answered); payoff_fulfilled (the payoff delivers the promised resolution); hook_promise_kept (the hook "
     "keeps the hook intent and its promise is paid off). Quality: information progression, sufficient "
@@ -384,6 +390,8 @@ def build_brief(blocks: list[dict[str, Any]], context: dict[str, Any], assessmen
             "factual_hook_requires_supporting_fact_ids": True,
             "nonfactual_rhetorical_hook_may_be_uncited": True,
             "citations_must_support_the_actual_claim": True,
+            "factual_question_presuppositions_require_grounding": True,
+            "context_does_not_establish_actor_agency_or_intent": True,
         },
         "version": REWRITE_VERSION,
         "question": {
@@ -828,7 +836,7 @@ def verify_current_script(
     findings = deterministic_findings(blocks, context, draft_has_hook=any(_role(block) == "hook" for block in blocks))
     brief = build_brief(blocks, context, report)
     verdict, error = _guard(lambda: provider.verify({
-        **brief, "mode": "verify_current_script", "candidate": {"beats": _beats(blocks)},
+        **brief, "mode": "verify_current_script", "candidate": {"beats": _beats(blocks)}, "hook_grounding": _hook_grounding(blocks, context),
         "deterministic_findings": findings,
     }))
     audit = None
@@ -868,10 +876,21 @@ def verify_current_script(
     return report
 
 
+def _hook_grounding(blocks: list[dict[str, Any]], context: dict[str, Any]) -> list[dict[str, Any]]:
+    usable = _usable_facts(context)
+    return [{
+        "text": str(block.get("text") or ""),
+        "fact_ids": list(block.get("fact_ids") or []),
+        "cited_facts": [copy.deepcopy(usable[identifier]) for identifier in block.get("fact_ids") or [] if identifier in usable],
+        "audit_claims": ["actor", "agency", "action", "intent", "causal_relation", "question_presuppositions"],
+    } for block in blocks if _role(block) == "hook"]
+
+
 def run_script_story_quality(
     blocks: list[dict[str, Any]],
     context: dict[str, Any],
     provider: ScriptStoryProvider | None = None,
+    *, finalize_candidate: Callable[[list[dict[str, Any]]], list[dict[str, Any]]] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Critic -> holistic rewrite -> verifier, with a bounded repair and a deterministic fallback.
 
@@ -995,6 +1014,9 @@ def run_script_story_quality(
             not candidate or _role(candidate[0]) != "hook" or _hook_findings(candidate, context)
         ):
             candidate, hook_restored = _restore_hook(candidate, context, draft_hook)
+        # Verify the exact production text and citation mapping, including deterministic transitions.
+        if finalize_candidate is not None:
+            candidate = finalize_candidate(candidate)
         findings = deterministic_findings(candidate, context, draft_has_hook=draft_has_hook)
         if hook_restored:
             findings.append(_finding("hook_restored", "minor", "The rewritten hook broke the hook intent; the selected Triple Hook was kept.", 1))
@@ -1003,7 +1025,7 @@ def run_script_story_quality(
         if not _severity(findings, "hard"):
             verify_brief = {
                 **(request if number == 3 else brief),
-                "candidate": {"beats": _beats(candidate)},
+                "candidate": {"beats": _beats(candidate)}, "hook_grounding": _hook_grounding(candidate, context),
                 "deterministic_findings": [item for item in findings if item["severity"] != "minor"],
             }
             verdict, verifier_error = _guard(lambda verify_brief=verify_brief: provider.verify(verify_brief))

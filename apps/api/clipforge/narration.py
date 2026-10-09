@@ -177,7 +177,7 @@ def clean_narration_text(value: object) -> str:
     )
     sentences = [
         sentence.strip()
-        for sentence in re.split(r"(?<=[.!?])\s+", text)
+        for sentence in split_sentences(text)
         if sentence.strip()
     ]
     text = " ".join(
@@ -442,3 +442,33 @@ def _markdown_link_text(match: re.Match[str]) -> str:
     if re.fullmatch(r"(?i)(?:source|citation|reference|read more|quelle|weiterlesen)", label):
         return ""
     return label
+
+
+def split_sentences(text: str) -> list[str]:
+    """Split spoken copy without turning dates, ordinals or abbreviations into beats.
+
+    Numeric ordinals need a month or an article/possessive before them; a
+    number at the end of an ordinary sentence remains a sentence boundary.
+    """
+    starts = [0]
+    months = r"(?:Januar|Februar|März|April|Mai|Juni|Juli|August|September|Oktober|November|Dezember)"
+    for boundary in re.finditer(r"(?<=[.!?])\s+", text):
+        left, right = text[:boundary.start()], text[boundary.end():]
+        if left.endswith("."):
+            if re.search(r"(?i)\b(?:Dr|Prof|Mr|Mrs|Ms|bzw|ca|vgl|Nr|Abb|vs)\.$", left):
+                continue
+            if re.search(r"(?i)(?:\bz\.\s*B|\bd\.\s*h|\be\.g|\bi\.e)\.$", left):
+                continue
+            if re.search(r"(?i)\b(?:z|d|e|i)\.$", left) and re.match(r"(?i)(?:B|h|g|e)\.", right):
+                continue
+            if re.search(r"\b\d+\.$", left):
+                if re.match(months + r"\b", right, re.IGNORECASE):
+                    continue
+                if (re.search(r"(?i)\b(?:der|die|das|den|dem|des|ein|eine|einen|einem|einer|sein|seine|ihr|ihre|unser|unsere)\s+\d+\.$", left)
+                        and not re.match(r"(?i)(?:Er|Sie|Es|Wir|Ihr|Ich|Du|Danach|Dann|Doch|Aber|Heute|Morgen)\b", right)):
+                    continue
+            if re.search(r"(?i)\b(?:Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\.$", left) and re.match(r"\d", right):
+                continue
+        starts.append(boundary.end())
+    return [part.strip() for start, end in zip(starts, [*starts[1:], len(text)], strict=True)
+            if (part := text[start:end]).strip()]

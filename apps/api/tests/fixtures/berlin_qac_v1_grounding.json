@@ -1,0 +1,339 @@
+{
+  "prompt": "Warum wurde die Berliner Mauer gebaut?",
+  "contract": {
+    "question_type": "historical_motive",
+    "core_question": "Warum wurde die Berliner Mauer gebaut?",
+    "primary_answer_obligation": {
+      "id": "primary_motive",
+      "description": "Erklären, dass die Berliner Mauer gebaut wurde, um die Flucht von DDR-Bürgerinnen und DDR-Bürgern in den Westen zu verhindern.",
+      "is_primary": true,
+      "is_required": true,
+      "fact_ids": []
+    },
+    "required_supporting_obligations": [],
+    "optional_context": [
+      "Die DDR-Führung war die handelnde Akteurin des Mauerbaus.",
+      "Der Bau der Mauer begann 1961; die Abriegelung erfolgte am 13. August 1961.",
+      "West-Berlin war ein wichtiger Fluchtweg aus der DDR.",
+      "Viele Menschen verließen die DDR; das Ausmaß und die Dauer dieser Abwanderung können als Hintergrund erläutert werden.",
+      "Die Abwanderung belastete die DDR wirtschaftlich, unter anderem durch den Verlust von Arbeitskräften, Fachleuten und jungen Menschen.",
+      "Die Abwanderung schwächte die DDR auch politisch.",
+      "Die Abriegelung sollte zudem die politische Herrschaft der SED stabilisieren.",
+      "Ein weiterer politischer Kontext ist die Begrenzung westlichen Einflusses beziehungsweise westlicher Fluchtmöglichkeiten.",
+      "Die Mauer wurde offiziell als „antifaschistischer Schutzwall“ bezeichnet; diese Darstellung unterschied sich vom tatsächlichen Hauptzweck der Fluchtverhinderung.",
+      "Der Bau stand im Kontext des Kalten Krieges und erfolgte mit Zustimmung beziehungsweise Rückendeckung der Sowjetunion.",
+      "Folgen für getrennte Familien und Todesopfer an der Grenze."
+    ],
+    "causal_mechanistic_chain": [
+      {
+        "id": "step_3",
+        "description": "Die Mauer wurde errichtet, um Fluchten aus der DDR zu unterbinden.",
+        "depth_level": 1
+      }
+    ],
+    "historical_motive": "Die unmittelbare Absicht war, die Flucht beziehungsweise Abwanderung aus der DDR zu verhindern.",
+    "required_mechanism_concepts": [
+      "Flucht beziehungsweise Abwanderung aus der DDR verhindern"
+    ],
+    "minimum_answer_depth": 1,
+    "unresolved_research_gaps": []
+  },
+  "contract_coverage": {
+    "is_sufficient": true,
+    "missing_obligations": [],
+    "coverage": [
+      {
+        "obligation_id": "primary_motive",
+        "status": "satisfied",
+        "supporting_fact_ids": [
+          "fact_01",
+          "fact_03",
+          "fact_07"
+        ],
+        "reasoning": "Fact 03 states that the Berliner Mauer supplemented the already fortified inner-German border, whose purpose was to stop the refugee flow. Facts 01 and 07 establish the mechanism of sealing off West Berlin and the crossing routes from East Berlin, supporting that this sealing served to prevent escapes/flight from the DDR."
+      }
+    ],
+    "diagnostic_reason": null
+  },
+  "facts": [
+    {
+      "id": "fact_01",
+      "claim": "Die Berliner Mauer war während der Teilung Deutschlands ein Grenzbefestigungssystem der Deutschen Demokratischen Republik (DDR), das vom 13. August 1961 bis zum 9. November 1989 bestand, um West-Berlin vom Gebiet der DDR hermetisch abzuriegeln. Sie trennte nicht nur die Verbindungen im Gebiet Groß-Berlins zwischen dem Ostteil („Hauptstadt der DDR“) und dem Westteil der Stadt, sondern umschloss alle drei Sektoren des Westteils vollständig und unterbrach damit auch seine Verbindungen zum sonstigen Umland, das im DDR-Bezirk Potsdam lag.",
+      "confidence": 0.78,
+      "sources": [
+        {
+          "label": "Berliner Mauer",
+          "url": "https://de.wikipedia.org/wiki/Berliner_Mauer"
+        }
+      ],
+      "verification": "source_attributed"
+    },
+    {
+      "id": "fact_02",
+      "claim": "Sie wurde aufgrund eines Beschlusses der politischen Führung der Sowjetunion Anfang August 1961 und einer wenige Tage später ergehenden Weisung der DDR-Regierung errichtet.",
+      "confidence": 0.78,
+      "sources": [
+        {
+          "label": "Berliner Mauer",
+          "url": "https://de.wikipedia.org/wiki/Berliner_Mauer"
+        }
+      ],
+      "verification": "source_attributed"
+    },
+    {
+      "id": "fact_03",
+      "claim": "Die Berliner Mauer ergänzte die 1378 Kilometer lange innerdeutsche Grenze zwischen der DDR und der Bundesrepublik, die bereits mehr als neun Jahre vorher „befestigt“ worden war, um den Flüchtlingsstrom zu stoppen.",
+      "confidence": 0.78,
+      "sources": [
+        {
+          "label": "Berliner Mauer",
+          "url": "https://de.wikipedia.org/wiki/Berliner_Mauer"
+        }
+      ],
+      "verification": "source_attributed"
+    },
+    {
+      "id": "fact_04",
+      "claim": "Vieles spricht dafür, dass die Flucht über die Mauer schließlich nur gelingen konnte, weil ein West-Berliner Polizeibeamter Feuerschutz gab.",
+      "confidence": 0.78,
+      "sources": [
+        {
+          "label": "Todesopfer an der Berliner Mauer",
+          "url": "https://de.wikipedia.org/wiki/Todesopfer_an_der_Berliner_Mauer"
+        }
+      ],
+      "verification": "source_attributed"
+    },
+    {
+      "id": "fact_05",
+      "claim": "Um die Mitte der 1960er Jahre waren andere Bezeichnungen, zu denen auch „die Mauer“ gehört hatte, aus der öffentlichen Sprache verschwunden, dagegen galt gesellschaftlich die Bezeichnung „antifaschistischer Schutzwall“ als Zeichen politischen Wohlverhaltens.",
+      "confidence": 0.78,
+      "sources": [
+        {
+          "label": "Berliner Mauer",
+          "url": "https://de.wikipedia.org/wiki/Berliner_Mauer"
+        }
+      ],
+      "verification": "source_attributed"
+    },
+    {
+      "id": "fact_06",
+      "claim": "Deshalb ließ Ost-Deutschland eine Mauer in Berlin bauen. Das war im Jahr 1961.",
+      "confidence": 0.85,
+      "sources": [
+        {
+          "label": "Die Geschichte der Berliner Mauer",
+          "url": "https://www.stiftung-berliner-mauer.de/de/ueber-uns/leichte-sprache/geschichte"
+        }
+      ],
+      "verification": "supported"
+    },
+    {
+      "id": "fact_07",
+      "claim": "Der Bau der Berliner Mauer am 13. August 1961 riegelte Ostberlin von allen Übergangswegen zu Westberlin ab.",
+      "confidence": 0.78,
+      "sources": [
+        {
+          "label": "Bau der Berliner Mauer - Geschichte kompakt",
+          "url": "https://www.geschichte-abitur.de/lexikon/uebersicht-deutsche-teilung/bau-der-berliner-mauer"
+        }
+      ],
+      "verification": "source_attributed"
+    },
+    {
+      "id": "fact_08",
+      "claim": "Die gemeinsame Politik über die ehemalige Reichshauptstadt scheiterte jedoch, weil es in West- und Ostberlin zur Entwicklung zweier verschiedener politischer Systeme kam.",
+      "confidence": 0.78,
+      "sources": [
+        {
+          "label": "Bau der Berliner Mauer - Geschichte kompakt",
+          "url": "https://www.geschichte-abitur.de/lexikon/uebersicht-deutsche-teilung/bau-der-berliner-mauer"
+        }
+      ],
+      "verification": "source_attributed"
+    }
+  ],
+  "blocks": [
+    {
+      "role": "hook",
+      "text": "In Ost- und Westberlin entwickelten sich zwei verschiedene politische Systeme. Warum zog die DDR trotzdem eine Grenze mitten durch die Stadt?",
+      "fact_ids": [
+        "fact_08"
+      ],
+      "id": "voice_block_01"
+    },
+    {
+      "role": "answer",
+      "text": "Der unmittelbare Zweck war: Fluchten aus der DDR in den Westen verhindern.",
+      "fact_ids": [
+        "fact_01",
+        "fact_03",
+        "fact_07"
+      ],
+      "id": "voice_block_02"
+    },
+    {
+      "role": "explanation",
+      "text": "Die innerdeutsche Grenze war schon zuvor befestigt worden, um den Flüchtlingsstrom zu stoppen.",
+      "fact_ids": [
+        "fact_03"
+      ],
+      "id": "voice_block_03"
+    },
+    {
+      "role": "detail",
+      "text": "Die Berliner Mauer ergänzte diese Grenze.",
+      "fact_ids": [
+        "fact_03"
+      ],
+      "id": "voice_block_04"
+    },
+    {
+      "role": "support",
+      "text": "Am 13.",
+      "fact_ids": [
+        "fact_07"
+      ],
+      "id": "voice_block_05"
+    },
+    {
+      "role": "detail",
+      "text": "August 1961 riegelte ihr Bau Ostberlin von allen Übergängen nach Westberlin ab.",
+      "fact_ids": [
+        "fact_07"
+      ],
+      "id": "voice_block_06"
+    },
+    {
+      "role": "detail",
+      "text": "Dem ging ein Beschluss der sowjetischen Führung voraus; wenige Tage später folgte die Weisung der DDR-Regierung.",
+      "fact_ids": [
+        "fact_02"
+      ],
+      "id": "voice_block_07"
+    },
+    {
+      "role": "detail",
+      "text": "Indem die DDR die Übergänge schloss und Westberlin vom DDR-Gebiet abriegelte, versperrte sie den Fluchtweg.",
+      "fact_ids": [
+        "fact_01",
+        "fact_03",
+        "fact_07"
+      ],
+      "id": "voice_block_08"
+    },
+    {
+      "role": "payoff",
+      "text": "Darum war die Mauer Teil eines Grenzsystems gegen die Abwanderung aus der DDR.",
+      "fact_ids": [
+        "fact_01",
+        "fact_03",
+        "fact_07"
+      ],
+      "id": "voice_block_09"
+    }
+  ],
+  "verification_diagnostics": {
+    "status": "CONTRACT_REVERIFY_FAILED",
+    "error": null,
+    "findings": [
+      {
+        "code": "grounding_hook_actor",
+        "severity": "hard",
+        "beat_index": 1,
+        "message": "Die Hook behauptet beziehungsweise setzt voraus, dass die DDR die Grenze zog, nennt als Beleg aber nur fact_08. Dieser Fakt belegt die unterschiedlichen politischen Systeme, nicht den DDR-Beschluss oder die Errichtung der Grenze; dafür wären etwa fact_01 oder fact_02 passend.",
+        "source": "verifier"
+      },
+      {
+        "code": "fragmented_date",
+        "severity": "major",
+        "beat_index": 5,
+        "message": "„Am 13.“ ist als eigener gesprochener Beat ein auffälliger Satzfragment und wirkt bei der kurzen Narration unnatürlich. Das Datum sollte mit dem folgenden Satz verbunden werden.",
+        "source": "verifier"
+      },
+      {
+        "code": "ungrounded",
+        "severity": "hard",
+        "beat_index": null,
+        "message": "The verifier found statements the research does not support.",
+        "source": "verifier"
+      }
+    ],
+    "attempts": 1
+  },
+  "writer_diagnostics": {
+    "status": "v2_success",
+    "writer_draft": [
+      {
+        "role": "explanation",
+        "text": "In Ost- und Westberlin hatten sich zwei ganz verschiedene politische Systeme entwickelt.",
+        "fact_ids": [
+          "fact_08"
+        ]
+      },
+      {
+        "role": "answer",
+        "text": "Die Mauer sollte vor allem verhindern, dass Menschen aus der DDR über West-Berlin in den Westen flohen. Sie ergänzte die bereits befestigte Grenze zwischen DDR und Bundesrepublik.",
+        "fact_ids": [
+          "fact_03"
+        ]
+      },
+      {
+        "role": "support",
+        "text": "Anfang August 1961 beschloss die sowjetische Führung den Bau. Wenige Tage später gab die DDR-Regierung die Weisung dazu.",
+        "fact_ids": [
+          "fact_02"
+        ]
+      },
+      {
+        "role": "support",
+        "text": "Am 13. August 1961 wurden die Übergänge von Ost- nach Westberlin abgeriegelt.",
+        "fact_ids": [
+          "fact_06",
+          "fact_07"
+        ]
+      },
+      {
+        "role": "payoff",
+        "text": "Darum umschloss die DDR West-Berlin mit einem Grenzsystem: Die Mauer sollte West-Berlin vom DDR-Gebiet abschneiden und so Fluchtwege schließen.",
+        "fact_ids": [
+          "fact_01"
+        ]
+      }
+    ],
+    "reviewed_draft": [
+      {
+        "role": "answer",
+        "text": "Die DDR ließ die Berliner Mauer bauen, um den Flüchtlingsstrom zu stoppen: Viele Menschen flohen aus der DDR über West-Berlin in den Westen.",
+        "fact_ids": [
+          "fact_03"
+        ]
+      },
+      {
+        "role": "explanation",
+        "text": "In Ost- und Westberlin hatten sich zwei verschiedene politische Systeme entwickelt. Die Mauer ergänzte deshalb die bereits befestigte Grenze zwischen der DDR und der Bundesrepublik.",
+        "fact_ids": [
+          "fact_08",
+          "fact_03"
+        ]
+      },
+      {
+        "role": "support",
+        "text": "Anfang August 1961 beschloss die sowjetische Führung den Bau; wenige Tage später gab die DDR-Regierung die Weisung. Am 13. August riegelte die DDR die Übergänge von Ost- nach West-Berlin ab.",
+        "fact_ids": [
+          "fact_02",
+          "fact_06",
+          "fact_07"
+        ]
+      },
+      {
+        "role": "payoff",
+        "text": "Darum umschloss die DDR West-Berlin mit einem Grenzsystem und schnitt es vom DDR-Gebiet und seinem Umland ab: So waren die Fluchtwege über West-Berlin geschlossen.",
+        "fact_ids": [
+          "fact_01",
+          "fact_03"
+        ]
+      }
+    ]
+  }
+}

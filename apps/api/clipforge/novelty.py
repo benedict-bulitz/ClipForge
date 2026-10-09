@@ -411,7 +411,8 @@ def _context(state: dict[str, Any]) -> dict[str, Any]:
     plan = state.get("novelty_plan") if isinstance(state.get("novelty_plan"), dict) else {}
     facts = [fact for fact in state.get("facts") or [] if isinstance(fact, dict) and fact.get("id")]
     audit = state.get("explanation_audit") if isinstance(state.get("explanation_audit"), dict) else {}
-    return {"intent": intent, "arc": arc, "plan": plan, "facts": facts, "audit": audit}
+    qac = state.get("question_answer_contract") or state.get("contract") or {}
+    return {"intent": intent, "arc": arc, "plan": plan, "facts": facts, "audit": audit, "qac": qac}
 
 
 def _anchor_ids(arc: dict[str, Any]) -> set[str]:
@@ -772,14 +773,39 @@ def _answer_sufficiency(units: list[dict[str, Any]], context: dict[str, Any], pa
         and (_REASON.search(unit["text"]) or set(unit["evidence"]["fact_ids"]) & spine_mechanism or unit.get("delta_source") == "ai")
         and not (set(unit["evidence"]["fact_ids"]) <= {primary} and not _REASON.search(unit["text"]))
     ]
+    from .research_v2.answer_relation import entity_coverage, question_frame, relation_issues
+
+    frame = question_frame(question, str(context["intent"].get("language") or "de"))
+    motive = (context.get("qac") or {}).get("question_type") == "historical_motive" or frame.relation == "purpose"
+    # Intentional actions are explained by an immediate purpose. They need
+    # neither a physical mechanism nor repetition of the asked action verb.
+    # Keep evidence and topic linkage; a context/consequence sentence alone
+    # must never become the answer merely because it mentions the subject.
+    if motive:
+        from dataclasses import replace
+
+        frame = replace(frame, relation="purpose")
+        facts = {str(fact["id"]): fact for fact in context["facts"] if fact_is_supported(fact)}
+        mechanisms = []
+        for unit in body:
+            ids = unit["evidence"]["fact_ids"]
+            cited = " ".join(str(facts[identifier].get("claim") or "") for identifier in ids if identifier in facts)
+            if (cited and unit["evidence"]["status"] in {"supported", "derived"}
+                    and not unit.get("open_question") and not unit.get("weak_resolution")
+                    and not relation_issues(frame, unit["text"])
+                    and not relation_issues(frame, cited)
+                    and entity_coverage(frame, unit["text"] + " " + cited)[0]):
+                mechanisms.append(unit)
     # "je älter man wird", "obwohl wir es nicht wollten": a question with a
     # condition asks why the condition changes things - the mechanism must
     # reach the condition, not only the effect.
     condition = _condition_terms(question)
-    linked = [unit for unit in mechanisms if _links_question(unit["text"], condition or terms)]
+    linked = [unit for unit in mechanisms if (
+        motive and not condition or _links_question(unit["text"], condition or terms)
+    )]
     reasons: list[str] = []
     if explanatory and not linked:
-        reasons.append("no_mechanism_linked_to_question")
+        reasons.append("no_supported_motive_linked_to_question" if motive else "no_mechanism_linked_to_question")
         if condition:
             # "je älter", "obwohl wir es nicht wollten": the very thing asked is unexplained.
             reasons.append("condition_not_explained")
@@ -805,10 +831,10 @@ def _answer_sufficiency(units: list[dict[str, Any]], context: dict[str, Any], pa
     alignment = domain_alignment(question_intent, [unit["text"] for unit in body])
     if alignment["status"] == "mismatch":
         reasons.append("answers_excluded_interpretation")
-    missing_research = spine.get("status") == "missing_mechanism"
+    missing_research = not motive and spine.get("status") == "missing_mechanism"
     if explanatory and missing_research:
         reasons.append("research_has_no_mechanism")
-    structural = {"no_mechanism_linked_to_question", "payoff_does_not_resolve"} & set(reasons)
+    structural = {"no_mechanism_linked_to_question", "no_supported_motive_linked_to_question", "payoff_does_not_resolve"} & set(reasons)
     audit = context.get("audit") or {}
     verified = bool(
         ai and ai["verdict"] == "answered" and audit.get("source") == VERIFIED_AUDIT_SOURCE
@@ -839,6 +865,7 @@ def _answer_sufficiency(units: list[dict[str, Any]], context: dict[str, Any], pa
     return {
         "status": status,
         "explanatory_question": explanatory,
+        "answer_relation": "purpose" if motive else "mechanism",
         "reasons": reasons,
         "mechanism_block_ids": [unit["block_id"] for unit in linked],
         "question_terms": sorted(terms),
@@ -850,7 +877,7 @@ def _answer_sufficiency(units: list[dict[str, Any]], context: dict[str, Any], pa
         "missing": (ai or {}).get("missing") or "",
         "research_required": status == "fail" and bool(
             missing_research or {
-                "no_mechanism_linked_to_question", "question_left_open", "condition_not_explained", "review_unanswered",
+                "no_mechanism_linked_to_question", "no_supported_motive_linked_to_question", "question_left_open", "condition_not_explained", "review_unanswered",
                 "answers_excluded_interpretation",
             } & set(reasons)
         ),

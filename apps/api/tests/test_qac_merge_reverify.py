@@ -175,8 +175,8 @@ def test_automatic_post_verification_mutation_gets_final_verifier(monkeypatch, s
     original = pipeline.run_script_story_quality
     signatures = []
 
-    def mutate(blocks, context, provider):
-        blocks, report = original(blocks, context, provider)
+    def mutate(blocks, context, provider, **kwargs):
+        blocks, report = original(blocks, context, provider, **kwargs)
         signatures.append(report["rewrite"]["verified_script_signature"])
         blocks[0]["text"] += " Watch the wings."
         if not success:
