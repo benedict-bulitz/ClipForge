@@ -58,6 +58,15 @@ PROCESS_PATTERN = re.compile(
     r"chang\w*|generat\w*|trigger\w*|determin\w*|detect\w*|measur\w*)\b",
     re.IGNORECASE,
 )
+INHIBITION_PATTERN = re.compile(
+    r"\b(?:hemm\w*|verhindert|verhindern|unterbind\w*|schützt|schützen|inhibit\w*|suppress\w*|prevent\w*|"
+    r"cannot (?:survive|grow|reproduce)|(?:nicht|kein\w*)\s+(?:überleben|wachsen|vermehren)|"
+    r"(?:nicht|kein\w*)\s+\w+\s+(?:überleben|wachsen|vermehren))\b", re.IGNORECASE,
+)
+FORCE_PATTERN = re.compile(
+    r"\b(?:hebt|heben|hob|angehoben|anheben|uplift\w*|lifts?|raises?|"
+    r"drückt|drücken|schiebt|schieben|push\w*|reduzier\w*|reduces?)\b", re.IGNORECASE,
+)
 KIND_PATTERNS: dict[str, re.Pattern[str]] = {
     "misconception": re.compile(
         r"(?i)\b(?:myth\w*|misconception\w*|misunderstand\w*|common belief|widely believed|contrary to|"
@@ -74,6 +83,7 @@ KIND_PATTERNS: dict[str, re.Pattern[str]] = {
         r"aus angst|reason\w*|motiv\w*|fear of|to (?:stop|prevent|keep)|"
         r"da\s+(?:sie|er|es|die|der|das)\b|(?:ursache|grund)\b[^.;]{0,100}\b(?:ist|sind)|"
         r"liegt daran|durch\b[^.;]{1,80}\b(?:druck|unterschied|änderung)\w*)\b|" + PROCESS_PATTERN.pattern
+        + "|" + INHIBITION_PATTERN.pattern + "|" + FORCE_PATTERN.pattern
     ),
     "number": re.compile(r"(?i)\b\d[\d.,]*\s*(?:%|prozent|percent|°c|grad|kelvin|k\b|km|m\b|cm|mm|nm|kg|g\b|"
                          r"ghz|mhz|hz|watt|w\b|kw|millionen|milliarden|million|billion|tausend|thousand|mal\b|times\b)|"
@@ -209,7 +219,7 @@ class EvidenceUnit:
         return {
             "id": self.id,
             "text": self.text[:400],
-            "excerpt": self.excerpt[:400],
+            "excerpt": self.excerpt[:800],
             "subject_context": self.subject_context[:400],
             "source_id": self.source_id,
             "sub_question": self.sub_question,
@@ -322,7 +332,11 @@ def units_from_paragraphs(
             seen.add(key)
             score, sub, hits = best
             kinds = kinds_of(text)
-            excerpt = paragraph if len(paragraph) <= 400 else paragraph[max(0, paragraph.find(sentence) - 120):][:400]
+            # Keep the local relationship as well as its effect. Cropping a
+            # paragraph between a property and its cause makes a valid step
+            # appear unsupported at the package boundary. This is context,
+            # never a substitute for a causal statement in the unit itself.
+            excerpt = paragraph if len(paragraph) <= 800 else paragraph[max(0, paragraph.find(sentence) - 240):][:800]
             unit = EvidenceUnit(
                 id="",
                 text=text,

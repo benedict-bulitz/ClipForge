@@ -1,0 +1,1007 @@
+{
+  "honey": {
+    "question": "Warum wird Honig nie schlecht?",
+    "language": "de",
+    "job_id": "83bf44f9-c51d-4725-9518-cf88e6352740",
+    "runtime_commit": "032cca436c7a404af4bdc19f4d8fb36f796d0105",
+    "sub_questions": [
+      {
+        "id": "q_core",
+        "kind": "core",
+        "question": "Warum wird Honig nie schlecht?",
+        "query": "wird Honig nie schlecht"
+      },
+      {
+        "id": "q_mechanism",
+        "kind": "mechanism",
+        "question": "Warum wird Honig nie schlecht? (cause / mechanism)",
+        "query": "wird Honig nie schlecht Ursache Erklärung wie funktioniert"
+      }
+    ],
+    "sources": [
+      {
+        "source": {
+          "id": "src_01",
+          "url": "https://www.nearbees.de/wissen/honig/honig-haltbarkeit",
+          "title": "Haltbarkeit von Honig: Kann Honig schlecht werden?",
+          "organization": "nearBees",
+          "source_type": "generic_secondary",
+          "authority": "low",
+          "basis": "full_text",
+          "evidence_provenance": "full_text",
+          "retrieval": "ok",
+          "published_at": "2023-01-13",
+          "updated_at": "2023-01-17",
+          "fetched_at": "2026-10-10T06:34:27+00:00"
+        },
+        "cache_sha256": "b240a1debb7d9e6c5a8be2e91c72b9d23d747b6b569cbaedf936735b47397a74",
+        "fetched_at": "2026-10-10T06:34:27+00:00",
+        "paragraphs": [
+          "Laut Gesetz braucht auch Honig ein Mindesthaltbarkeitsdatum - das liegt in der Regel bei zwei Jahren. Bei richtiger Lagerung an einem dunklen, kühlen und trockenen Ort hast Du aber deutlich länger etwas von ihm - wenn Du ihn nicht davor schon aufisst. Seine lange Haltbarkeit hat das flüssige Gold übrigens seiner Zusammensetzung zu verdanken: Durch den hohen Zuckergehalt und den niedrigen Anteil an Wasser können sich Bakterien und andere Mikroorganismen nur schwer vermehren.",
+          "Doch wo lagerst Du Honig am besten? Manch einem kommt vielleicht der Kühlschrank in den Sinn. Aber obwohl es dort dunkel und kalt ist, ist das nicht der beste Ort für Honig. Die niedrigen Temperaturen begünstigen das Auskristallisieren des Honigs. Doch damit noch nicht genug: Im eher feuchten Kühlschranklima kann Honig Feuchtigkeit aus der Luft ziehen - Experten bezeichnen diese Eigenschaft als Hygroskopie. Dem flüssigen Gold kann das aber schnell zum Verhängnis werden, da ein höherer Wassergehalt Gärung begünstigt. Lagere Deinen Honig also lieber in einem dunklen Küchenschrank oder in der Speisekammer",
+          "Obwohl Honig die besten Voraussetzungen für ein langes Leben hat, kann es trotzdem sein, dass er schlecht wird. Während Schimmel kein Problem für das flüssige Gold ist, kann Gärung die Qualität aber durchaus beeinflussen. Anzeichen dafür sind beispielsweise Schaum oder kleine Bläschen an der Oberfläche des Honigs. Aber auch ein zunächst süßer, dann säuerlicher Geruch deutet auf eine Gärung hin. Solange er noch süßlich-fruchtig riecht, kannst Du vergorenen Honig übrigens noch essen - manch einem schmeckt das vielleicht sogar besser. Auch zum Süßen von Tee oder zum Backen eignet er sich meist noch gut.",
+          "Doch wie kommt es zur Gärung? Vielleicht konntest Du bei Deinem Honig schon einmal eine sogenannte Phasentrennung beobachten: Unten siehst Du eine feste, auskristallisierte Masse, oben dagegen eine flüssige Schicht. Das Phänomen tritt auf, wenn die Glukose kristallisiert und nach unten sinkt - in der oberen Schicht bleiben wiederum hauptsächlich Wasser und Fruktose zurück.",
+          "Für die Entmischung kann es unterschiedliche Gründe geben: Das kann beispielsweise eine zu lange und zu warme Lagerung sein oder ein nicht richtig verschlossener Honigtopf, sodass das flüssige Gold Wasser aus der Luft zieht. Möglicherweise hat der Imker den Honig auch nach dem Schleudern nicht gerührt, bis er vollkommen homogen war. Dem tatsächlichen Ursprung auf die Schliche zu kommen, ist also gar nicht so einfach. Die Phasentrennung muss aber nicht bedeuten, dass der Honig verdorben ist. Du kannst ihn einfach wieder verrühren oder die flüssige Schicht abgießen. Grundsätzlich ist er jetzt aber anfälliger für Mikroorganismen und anschließend für Gärung, da sich in der oberen Schicht viel Wasser befindet.",
+          "Ein weiteres Phänomen bei Honig ist die sogenannte Blütenbildung : Dabei kannst Du an der Oberfläche oder an der Innenwand eines Honigglases eine weiße Färbung entdecken. Es handelt sich aber nicht etwa um Schimmel oder einen Beweis für Verfälschung, wie manch einer vermutet, sondern um einen natürlichen Prozess. Mit der Zeit wird jeder Honig fest - dabei wird Wasser zwischen den einzelnen Kristallen gebunden. Es kann aber auch passieren, dass Luft eingeschlossen wird, wodurch die einzelnen Kristalle heller erscheinen.",
+          "Die Gründe für dieses Phänomen können ganz unterschiedlich sein. Vielleicht hat die Imkerin den Honig nicht vollständig gerührt, möglicherweise liegt das Problem aber auch in der Lagerung: Wiederholte Temperaturwechsel können Blütenbildung begünstigen. Grundsätzlich bedeuten die weißen Ablagerungen aber nicht, dass der Honig schlecht geworden ist - vielmehr sind sie ein Zeichen für Naturbelassenheit.",
+          "Honig ist bei richtiger Verarbeitung und Lagerung sehr lang haltbar. Kleinere Schönheitsfehler tun dem Geschmack keinen Abbruch - beginnt Dein Honig aber zu gären, solltest Du ihn etwas genauer im Blick behalten. Wie bei den meisten Lebensmitteln kann ein kurzer Sicht- und Geruchstest aber schon Auskunft darüber geben, ob das flüssige Gold noch genießbar ist. Im Zweifelsfall sei aber lieber einmal zu vorsichtig."
+        ],
+        "tables": []
+      },
+      {
+        "source": {
+          "id": "src_02",
+          "url": "https://bienen.info/honig-haltbarkeit-kann-honig-schlecht-werden/",
+          "title": "Honig Haltbarkeit - Kann Honig schlecht werden?",
+          "organization": "Bienen.info - Die Welt der Bienen",
+          "source_type": "generic_secondary",
+          "authority": "low",
+          "basis": "full_text",
+          "evidence_provenance": "full_text",
+          "retrieval": "ok",
+          "published_at": "2019-07-03",
+          "updated_at": "2020-08-22",
+          "fetched_at": "2026-10-10T06:34:28+00:00"
+        },
+        "cache_sha256": "472a955e208c764006819b6fc5e36111da74f199debf6a2e9153a3c848b46a3f",
+        "fetched_at": "2026-10-10T06:34:28+00:00",
+        "paragraphs": [
+          "Über den Autor: Bienen.info, gegründet 2019, widmet sich der Welt der Bienen mit wissenschaftlicher Genauigkeit. Unsere Fachtexte sind von Biologen, Ärzten, Apothekern und Medizinwissenschaftlern verfasst.",
+          "Verfasst unter Berücksichtigung wissenschaftlicher Standards. Erfahre mehr über Bienen.info",
+          "Honig ist für seine sehr lange Haltbarkeit bekannt. Das liegt an seinen besonderen Eigenschaften. Allerdings kann Honig auch verderben, wenn die Lagerung falsch ist. In diesem Beitrag erklärt ihnen eine promovierte Diplom-Biologin , wodurch Honig so gut haltbar wird und wie die ideale Lagerung aussieht.",
+          "Der niedrige Wassergehalt und hohe Zuckergehalt eines Honigs sind wesentlich für die Haltbarkeit entscheidend. 1 Für die Produktion von qualitativ gutem Honig streben Imker einen Wassergehalt von unter 18 Prozent an.",
+          "Es gibt jedoch auch Honigsorten, bei denen der Wassergehalt höher liegt. Heidehonig darf einen Wassergehalt von 21,5 Prozent haben und gilt dann immer noch als hochwertig. Bei vielen anderen Honigsorten ist ein höherer Wassergehalt ein Merkmal für eine schlechtere Qualität und kann den Honig schneller verderben lassen.",
+          "Neben dem niedrigen Wassergehalt besitzt Honig einige Stoffe, die eine antimikrobielle Wirkung haben. 1, 2 Honig enthält im Allgemeinen das Enzym Glucose-Oxidase, das Wasserstoffperoxid bildet. Wasserstoffperoxid wirkt keimtötend. Weitere in Honig zu findende Inhaltsstoffe sind Phenolsäuren, Flavonoide und proteinartige Bestandteile, denen Wissenschaftler ebenfalls eine antimikrobielle Wirkung zuschreiben. Zudem weist Honig in der Regel einen niedrigen pH-Wert auf, der vor Keimen schützt. Der neuseeländische Manuka-Honig ist darüber hinaus reich an Methylglyoxal , was diesen Honig Studien zufolge besonders antimikrobiell macht. 3 Die antimikrobielle Wirkung von Honig nutzen mittlerweile auch Ärzte zur Behandlung von infizierten Wunden. 4 Dazu verwenden sie speziellen medizinischen Honig, der sterilisiert sowie standardisiert ist und die Zulassung als Medizinprodukt hat.",
+          "Die richtige Lagerung von Honig ist wichtig, um eine lange Haltbarkeit zu gewährleisten und die Qualität zu erhalten. Honig ist an einem kühlen, trockenen und vor Licht geschützten Ort am besten aufgehoben. Die Lagerungstemperatur sollte unter 18 °C und idealerweise bei 15 °C liegen. 5 Licht und wärmere Temperaturen können wertvolle Inhaltsstoffe des Honigs wie Enzyme und Vitamine zerstören sowie den Geschmack beeinträchtigen. Der Kühlschrank ist wiederum kälter als notwendig und vor allem bei größeren Mengen kostspieliger, also kein idealer Lagerungsort. Die kalten Temperaturen lassen den Honig aber auch nicht verderben.",
+          "Außerdem sollte das Honigglas fest verschlossen sein, damit der Honig kein Wasser aus der Luft aufnimmt. Honig ist schließlich aufgrund des hohen Zuckergehalts hygroskopisch, zieht also Wasser an. Bei einer offenen Lagerung würde der Wassergehalt des Honigs so stark ansteigen, dass der Honig schnell verdirbt. Darüber hinaus nimmt Honig leicht Gerüche aus der Umgebung an und kann dadurch einen schlechten Geschmack erhalten. Zudem sollten keine Verunreinigungen in den Honig gelangen, beispielsweise durch einen schon anderweitig benutzten Löffel.",
+          "So sieht die optimale Lagerung von Honig aus:",
+          "Honig ist bei richtiger Lagerung und ohne Verunreinigung jahrelang haltbar. 5 Die Länge der Lagerung kann allerdings die Zusammensetzung des Honigs wie beispielsweise die Konzentration an Mineralstoffen und Enzymen verändern. 5, 6 Für Imker ist es vor allem wichtig, dass sie die vorgegebenen Grenzwerte für bestimmte Inhaltsstoffe wie etwa Hydroxymethylfurfural (HMF) beachten. HMF im Honig entsteht natürlicherweise aus Zucker, kommt aber in qualitativ gutem Honig nur in geringen Mengen vor. In höheren Mengen gilt HMF als potentiell krebserregend. Laut einer Studie kann Honig seine Eigenschaften bei einer Lagerung bei 15 °C im Dunkeln und fest verschlossen länger als dreieinhalb Jahre beibehalten. 5 Zu den untersuchten Eigenschaften, die gleichzeitig Qualitätsparameter des Honigs sind, zählten:",
+          "Aktivität des Enzyms Invertase (spaltet Saccharose in Glucose und Fructose)",
+          "Aktivität des Enzyms Diastase (baut Stärke zu Zucker ab)",
+          "Bei einer Lagerung über 18 °C ist früher mit Veränderungen zu rechnen. Es kann zum Verderb des Honigs kommen oder dazu, dass der Honig nicht mehr die vorgeschriebenen Grenzwerte bestimmter Inhaltsstoffe einhält.",
+          "Seit 2004 sind Imker verpflichtet, ein Mindesthaltbarkeitsdatum für den Honig anzugeben. Die Honigverordnung schreibt die Angabe eines Mindesthaltbarkeitsdatums vor, das zwei Jahre nach dem Abfülldatum liegt. Nach Ablauf dieses Datums ist der Honig nicht zwangsläufig verdorben oder ungenießbar, wenn die Lagerung angemessen war. Wer sich aber nicht an die Angaben zur Lagerung hält und den Honig unter sehr schlechten Bedingungen aufbewahrt, kann sich auch nicht auf das Mindesthaltbarkeitsdatum verlassen und der Honig kann schon früher verderben. Daher ist es so oder so hilfreich, verdorbenen Honig unabhängig vom Mindesthaltbarkeitsdatum zu erkennen.",
+          "Ein steigender Wassergehalt führt unweigerlich dazu, dass Honig verdirbt. Denn dann können sich Hefezellen im Honig vermehren, die Zucker zu Kohlendioxid und Alkohol abbauen. Der Honig beginnt also zu gären und der Alkoholgehalt steigt an. Bereits ab einem Wasseranteil von 20 Prozent kann Honig auf diese Weise verderben. Zunächst ist der Honig dann noch fruchtig. Mit der Zeit entwickelt sich durch die Gärung ein recht säuerlicher Geschmack, bis er einfach nur noch verdorben schmeckt. Da neben dem Alkohol auch Kohlendioxid entsteht, bilden sich an der Oberfläche des Honigs kleine Bläschen oder gar richtiger Schaum. Zudem wöbt sich der Deckel des Honigglases nach außen, sofern der Verschluss dicht ist. Eine unmittelbare Entsorgung des Honigs ist jedoch nicht unbedingt nötig. Zumindest am Anfang der Gärung kann der Honig noch zum Süßen oder zur Gewinnung von Honigwein dienen. Beim Kochen und Backen des Honigs verfliegt ein Großteil des Alkohols.",
+          "Honig kann über mehrere Jahre ohne Qualitätsverlust haltbar bleiben, wenn die Lagerung bei einer Temperatur unter 18 °C an einem dunklen erfolgt und das Honigbehältnis fest verschlossen ist. So kann die tatsächliche Haltbarkeit von Honig auch das vorgeschriebene Mindesthaltbarkeitsdatum deutlich überschreiten. Bei falscher Lagerung kann Honig allerdings durchaus verderben.",
+          "Dem kostbaren Honig zuliebe sollten die Empfehlungen zur Lagerung daher wirklich ernst genommen werden, wenn er nicht ohnehin schnell aufgegessen wird. Besonders leckeren und hochwertigen Honig in BIO Qualität findest du hier .",
+          "Die Inhalte wurden selber produziert, außer folgende Inhalte:"
+        ],
+        "tables": []
+      },
+      {
+        "source": {
+          "id": "src_03",
+          "url": "https://www.wachs-hoedl.com/kann-honig-schlecht-werden",
+          "title": "Kann Honig schlecht werden » alles zur Honig Haltbarkeit",
+          "organization": "Kann Honig schlecht werden » alles zur Honig Haltbarkeit",
+          "source_type": "generic_secondary",
+          "authority": "low",
+          "basis": "full_text",
+          "evidence_provenance": "full_text",
+          "retrieval": "ok",
+          "published_at": null,
+          "updated_at": null,
+          "fetched_at": "2026-10-10T06:34:31+00:00"
+        },
+        "cache_sha256": "e6dd8d001e7649d1f5804b9a47a6005d211428aa90af929de1a87e74a83adb50",
+        "fetched_at": "2026-10-10T06:34:31+00:00",
+        "paragraphs": [
+          "Honig hat eine Vielzahl an positiven Eigenschaften. Vielen ist aber nicht klar wie lange Honig eigentlich haltbar ist. E rfahren Sie jetzt alles zur Honig Haltbarkeit!",
+          "I n wie weit der Honig gesundheitsfördernde Wirkungen hat, hängt zu einem großen Teil von der Behandlung und Lagerung des Honigs ab. Durch Licht, Wärme und Sauerstoff werden viele Inhaltsstoffe zerstört. Die Vitamine sind am empfindlichsten, sie werden durch Licht, Wärme und Sauerstoff geschädigt. Wenn der Honig über 40°C erhitzt wird verlieren die Enzyme ihre Wirkung. Saccharase, die auch Invertase genannt wird ist besonders hitzeempfindlich. Bei 45°C wird dieses Enzym erheblich geschädigt und bei 70°C vollständig zerstört. Viele Aromastoffe gehen bei höheren Temperaturen auch verloren. Man sollte jede unnötige Erwärmung vermeiden. Hitzestabiler sind dagegen Mineralstoffe und sekundäre Pflanzenstoffe. Auch die Kohlenhydrate leiden unter der Erwärmung.",
+          "HMF (Hydroxymethylfurfural) entsteht, wenn die im Honig enthaltenen Zucker unter Wärmeeinwirkung Wasser abspalten. Frisch geschleuderte Honige haben so gut wie kein HMF, deshalb gibt dieser Stoff Auskunft darüber, wie stark der Honig Wärmeeinflüssen ausgesetzt war. Für die Haltbarkeit ist auch der Wassergehalt eines Honigs von großer Bedeutung: Je mehr Wasser im Honig ist, desto schneller kann er gären.",
+          "Ein nicht wärmegeschädigter, echter Honig ist bei richtiger Lagerung nahezu unbegrenzt haltbar. Die Biene gibt dem Honig verschiedene Wirkstoffe dazu, damit dieser nicht schnell verdirbt.",
+          "Wenn der Honig zu stark erhitzt wird, über 40°C verlieren viele Enzyme ihre Wirkung. Wenn der Honig zu viel Wassergehalt hat kann er leichter gären.",
+          "Am besten Sie bewahren den Honig trocken, dunkel und kühl auf. Die ideale Lagertemperatur ist zwischen 10 bis 15°C und eine Luftfeuchtigkeit von 60 Prozent. Bei diesen Bedingungen ist das Wachstum von Hefepilzen gehemmt. Achtung: Ist Honig in Gläsern abgefüllt und dieser steht in feuchten Räumen kann der Honig auch Wasser aus der Umgebungsluft aufnehmen. Hier besteht die Gefahr der Gärung. Die schonendste Lagerung für den Honig ist das Tiefgefrieren, da weder Enzyme noch Vitamine kälteempfindlich sind. Wichtig ist hier nur, dass der Honig langsam bei niedrigen Temperaturen wieder aufgetaut wird.",
+          "Grundsätzlich lässt sich sagen, dass Honig unbegrenzt haltbar ist, sofern er trocken und luftdicht gelagert wird. Beim Verkauf von Honig muss jedoch natürlich immer ein Mindesthaltbarkeitsdatum am Honigglas stehen.",
+          "Laut Gesetz brauch auch der Honig ein Mindesthaltbarkeitsdatum. Jeder Imker kann das Mindesthaltbarkeitsdatum selbst festlegen. Empfohlen wird ab der Abfüllung 2 Jahre, dies soll als Richtlinie gelten. Jedoch ist Honig, wenn er richtig gelagert ist über Jahre hinweg haltbar.",
+          "Der Honig muss bis zu diesem Zeitpunkt seine spezifischen Eigenschaften erhalten.",
+          "Ja, wenn der Honig nicht wärmegeschädigt und optimal gelagert ist, ist der Verzehr auch nach Ablauf des Datums noch bedenkenlos möglich. Bei richtiger Lagerung ist Honig nahezu unbegrenzt haltbar.",
+          "Folgende Anzeichen gibt es wenn der Honig schlecht geworden ist:",
+          "Es entsteht eine flüssige dunkle Oberschicht und eine feste helle Unterschicht.",
+          "In dieser Form ist der Honig aber nicht gesundheitsschädlich, jedoch ist die Enzymaktivität stark herabgesetzt. Bei kandierten Honig der schon in Gläsern abgefüllt ist können sich während der Lagerung weiße Kristalle am Glasrand oder auf der Oberfläche bilden. Wenn der Honig nicht wärmegeschädigt ist wirken die Enzyme im Glas weiter. So kann es passieren das zum Beispiel der Traubenzucker in Fruchtzucker umgewandelt wird. Wenn der Fruchtzuckergehalt über ein bestimmtes Maß ansteigt, bricht das Gitterwerk der Traubenzuckerkristalle zusammen und am Boden bildet sich eine feste weiße Schicht. Darüber bildet sich eine dunklere flüssigere Schicht der Fruchtzucker. Diese Veränderungen haben jedoch keinen Einfluss auf den ernährungsphysiologischen Wert.",
+          "Hat der Honig jedoch einmal zu gären begonnen kann man diesen ideal noch als Backhonig bzw. als Honig für die Metherstellung verwenden.",
+          "Die Bienen geben dem Honig verschiedene Wirkstoffe hinzu damit er nicht schnell verdirbt. Die im Honig enthaltenen Säuren und Enzyme hemmen das Wachstum und die Lebensfähigkeit von Pilzen, Bakterien und anderen Mikroorganismen.",
+          "Inhibine ist ein Stoff der im Honig vorkommt und er hat eine keimhemmende Wirkung. Diese Inhibine sind stark Wärme und Lichtempfindlich.",
+          "Wenn der Honig so alt ist das er vergoren ist kann dieser noch zum Backen oder zum Herstellen von Honigwein verwendet werden.",
+          "Am Entscheidendsten über die Haltbarkeit vom Honig ist der Wassergehalt vom Honig. Je mehr Wasser im Honig vorhanden ist, desto schneller kann er gären.",
+          "Nein, Honig muss nicht im Kühlschrank gelagert werden, empfohlen wird eine Lagertemperatur von 10 bis 15°C und eine relative Luftfeuchtigkeit von maximal 60 Prozent.",
+          "Nein, im Gegenteil dies ist ein Zeichen das der Honig echt ist und keinen Hitzeschaden erlitten hat."
+        ],
+        "tables": []
+      },
+      {
+        "source": {
+          "id": "src_04",
+          "url": "https://www.honigplus.de/blog/kann-honig-schlecht-werden/",
+          "title": "Kann Honig schlecht werden? Was tun, wenn das MHD abgelaufen ist? · HonigPlus",
+          "organization": "HonigPlus",
+          "source_type": "generic_secondary",
+          "authority": "low",
+          "basis": "full_text",
+          "evidence_provenance": "full_text",
+          "retrieval": "ok",
+          "published_at": "2015-11-03",
+          "updated_at": "2026-07-29",
+          "fetched_at": "2026-10-10T06:34:27+00:00"
+        },
+        "cache_sha256": "cc61e5cd09db5c77e7ca0ebbbfdc3d91d15b3885fed62458ca578b80e1af72f4",
+        "fetched_at": "2026-10-10T06:34:27+00:00",
+        "paragraphs": [
+          "Die Frage “ Kann Honig schlecht werden? ” bekommt man als Imker sehr oft gestellt. Insbesondere wenn das Mindesthaltbarkeitsdatum (MHD) bereits in der Vergangenheit liegt, werden Verbraucher verunsichert. Wir können Entwarnung geben, grundsätzlich gilt nämlich: Honig wird bei richtiger Lagerung nicht schlecht. Lediglich der Wassergehalt im Honig darf nicht zu hoch sein. So ist Honig auch nach Jahrhunderten, sogar nach über 3.000 Jahren verzehrbar, wie Forscher mit Honig aus einem ägyptischen Grab beweisen konnten.",
+          "Was es mit dem Wassergehalt im Honig auf sich hat und wie Honig optimal gelagert werden sollte, wird im nächsten Abschnitt erklärt.",
+          "Nein. Ein überschrittenes Mindesthaltbarkeitsdatum macht Honig nicht gefährlich. Das MHD ist kein Verbrauchsdatum, sondern eine Garantie des Herstellers für Aroma, Farbe und Konsistenz — keine Aussage über Genusstauglichkeit. Richtig gelagerter Honig ist auch Jahre nach dem aufgedruckten Datum bedenkenlos essbar.",
+          "Gefährlich wird Honig praktisch nur in zwei Fällen, und beide haben mit dem MHD nichts zu tun:",
+          "Der Honig gärt , weil sein Wassergehalt zu hoch ist. Das erkennst du an einer flüssigen Schicht obenauf, an Bläschen und an einem prickelnden, leicht alkoholischen Geschmack. Solcher Honig gehört nicht mehr aufs Brot.",
+          "Säuglinge unter zwölf Monaten dürfen grundsätzlich keinen Honig bekommen — unabhängig von Alter und Haltbarkeit des Glases. Honig kann Sporen des Bakteriums Clostridium botulinum enthalten, mit denen der noch unreife Darm von Babys nicht umgehen kann. Für ältere Kinder und Erwachsene besteht dieses Risiko nicht.",
+          "Was viele für Verderb halten, ist dagegen völlig harmlos: Wird der Honig fest, weiß oder körnig, kristallisiert er lediglich aus. Das ist ein natürlicher Vorgang und sogar ein Zeichen für unbehandelte Ware — mehr dazu im Beitrag über weißen Honig und im Vergleich von flüssigem und cremigem Honig .",
+          "Naturhonig besteht chemisch gesehen hauptsächlich aus Kohlenhydraten und Wasser. Hinzu kommen noch gesundheitsfördernde Inhaltsstoffe wie z.B. antibakteriell wirkende Inhibine und Vitamine. Der Rohstoff für den Honig ist der von den Bienen gesammelte Nektar. Dieser enthält ca. 80% Wasser. Nachdem die Bienen den Nektar in ihren Bienenstock gebracht haben, dicken sie den Nektar ein, wodurch sein Wassergehalt verringert wird. Ab einem Wassergehalt von 18 Prozent (lt. dem Deutschen Imkerbund) spricht man von reifen Honig , der geerntet werden kann. Die Honigverordnung schreibt einen Wassergehalt von max. 20 Prozent vor.",
+          "Sollte der Honig davor geerntet werden und damit zu viel Wassergehalt haben, beginnt der Honig im Glas zu gären. Honig der gärt ist in der Regel nicht mehr als Brotaufstrich verzehrbar. Dies wird sichtbar, wenn sich der Honig im Glas absetzt (siehe Foto). Ist der Honig im reifen Zustand geerntet worden, wird der Honig bei richtiger Lagerung nicht schlecht. Anders sieht es bei Honig-Zubereitungen aus, denen weitere Zutaten beigemischt sind — etwa Nüsse, Trockenfrüchte oder Gewürze. Diese Zutaten halten deutlich kürzer als der Honig selbst, weshalb solche Produkte ein früheres Mindesthaltbarkeitsdatum tragen. Hier lohnt sich der Blick aufs Etikett.",
+          "Wenn Honig nicht mehr gut ist, weil bspw. der Wassergehalt zu hoch war, dann setzt sich eine mindestens Zentimeter dicke, flüssige Schicht auf dem Honig ab. Nach einiger Zeit kommt es zusätzlich zur Blasenbildung, da der Honig nun gärt. Wenn man gegärten Honig probiert, prickelt der leicht. Dieser Honig sollte nur noch zum Backen oder zur Erstellung von Honigwein (Met) verwendet werden.",
+          "Honig sollte am besten an einem Ort aufbewahrt werden welcher trocken , kühl und dunkel ist. Ideal ist eine Temperatur zwischen vier und 15 Grad. Bei langfristig höheren Temperaturen kann der Honig sich entmischen und der Gärprozess wird dadurch begünstigt. Eine hohe Luftfeuchtigkeit führt dazu, dass Honig Wasser aus der Umgebungsluft aufnimmt. Wenn der Honig beispielsweise in einem feuchten Keller gelagert wird, zieht der Honig Wasser aus der Luft. Der Wassergehalt im Honig steigt dann im Zweifel auf über 18%, wodurch er zu gären beginnen kann. Helligkeit ist bei der Lagerung zu vermeiden da Licht der Feind von Enzymen ist. Ohne Enzyme verliert der Honig jegliche desinfizierenden Wirkung und ist dann nur noch ein leckeres Süßungsmittel.",
+          "Wir haben nun bereits geklärt, dass Honig eigentlich nicht schlecht werden kann insofern er zum richtigen Zeitpunkt geerntet wurde und richtig gelagert wird. Daher stellt sich die Frage weshalb auf Honig dann das Mindesthaltbarkeitsdatum abgedruckt ist? Der Grund hierfür ist die EU Verordnung Nr. 1169/2011 .",
+          "Nach dieser Verordnung muss jedes Lebensmittel ein Mindesthaltbarkeitsdatum enthalten. Der Deutsche Imkerbund empfiehlt ein Mindesthaltbarkeitsdatum von maximal zwei Jahren nach Abfüllung. An diese Empfehlung halten sich so gut wie alle Honigproduzenten.",
+          "Das MHD sagt also mehr über die EU-Kennzeichnungspflicht aus als über den Honig im Glas.",
+          "Ansehen. Hat sich oben eine flüssige Schicht abgesetzt? Sind Bläschen zu sehen?",
+          "Riechen. Riecht der Honig säuerlich oder nach Alkohol statt nach Honig?",
+          "Ist alles unauffällig, kann der Honig ganz normal weiterverwendet werden — auch wenn das MHD Jahre zurückliegt. Ist er kristallisiert, hilft ein Wasserbad bei maximal 40 °C ; höhere Temperaturen zerstören die Enzyme. Zeigt er dagegen Gärungsanzeichen, gehört er nicht mehr aufs Brot, lässt sich aber noch zum Backen oder für Met verwenden."
+        ],
+        "tables": []
+      },
+      {
+        "source": {
+          "id": "src_05",
+          "url": "https://www.leniundhans.de/ratgeber/honig/haltbarkeit-von-honig/",
+          "title": "Haltbarkeit von Honig",
+          "organization": "Leni & Hans",
+          "source_type": "generic_secondary",
+          "authority": "low",
+          "basis": "full_text",
+          "evidence_provenance": "full_text",
+          "retrieval": "ok",
+          "published_at": "2021-06-30",
+          "updated_at": "2023-03-09",
+          "fetched_at": "2026-10-10T06:34:28+00:00"
+        },
+        "cache_sha256": "0a65c291197f917909537b50ab9e5dad30184f3ff729533bd73ac5ce130e0611",
+        "fetched_at": "2026-10-10T06:34:28+00:00",
+        "paragraphs": [
+          "Bei richtiger Lagerung wird Honig nicht schlecht. Auch bei Ablauf des Mindesthaltbarkeitsdatums ist das Naturprodukt in der Regel weiterhin genießbar. Das Gesetz schreibt für jedes Lebensmittel ein Mindesthaltbarkeitsdatum vor. Bei Honig beträgt es zwei Jahre nach Abfüllung. Forschungsergebnisse beweisen, dass Honig bei der richtigen Lagerung sogar über drei Jahre haltbar ist. Der Wasseranteil entscheidet in erster Linie über die Haltbarkeit des Naturproduktes. Die Deutsche Honigverordnung schreibt einen maximalen Gehalt von 20 Prozent vor. Durch diesen geringen Wassergehalt können Bakterien und Keime nicht überleben.",
+          "Bei unsachgemäßer Handhabe oder unsauberer Abfüllung kann Honig gären. Er enthält dann einen alkoholischen, sehr fruchtigen Geschmack und bildet Blasen. Gegorener Honig ist nicht gesundheitsschädlich. In einigen Kulturen gilt er sogar als Delikatesse. Er bildet die Grundlage für Honigwein und eignet sich weiterhin zum Backen. Man sollte bei der Entnahme von Honig immer einen sauberen Löffel verwenden. Auch die richtige Lagerung verhindert Gärprozesse des Naturprouktes.",
+          "Kristallisierter Honig ist nicht schlecht. Im Gegenteil: Der natürliche Vorgang ist ein Zeichen für die Qualität des Honigs. Durch Pollen und die Kristallisation des Zuckers verfestigt Honig sich mit der Zeit. Industrieller Honig wird oft gefiltert und enthält weniger Pollen. Er bleibt länger flüssig, hat aber natürliche Inhaltsstoffe verloren.",
+          "Auch bei optimaler Lagerung von Honig , kann sich die Struktur verändern. Mit der Kristallisation bilden sich weiße Körnchen am Glasrand oder auf der Oberfläche. Imker sprechen von der sogenannten Blütenbildung. Hierbei handelt es sich keinesfalls um Zucker. Trockene Lagerung fördert die Blütenbildung. Durch die Kristallisation entstehen Hohlräume in der feinen Struktur des Honigs. Bei Trockenheit füllen sich die Räume nicht mehr mit flüssigem Honig, sondern mit Luft.",
+          "Auch sehr kalte Temperaturen ab 4 Grad haben einen negativen Effekt auf den Honig und verursachen in dem Naturprodukt weißliche Luftblasen. Seine Enzyme arbeiten weiterhin, wobei sich Trauben- in Fruchtzucker umwandelt. Nimmt sein Gehalt im Honig zu verdrängt er den Traubenzucker an den Boden des Gefäßes. Dort bildet der abgesetzte Traubenzucker eine weiße Schicht, während sich der flüssige Fruchtzucker dunkler darüber ablagert. Die Inhaltsstoffe bleiben bei diesem chemischen Vorgang vollständig erhalten.",
+          "Du bist überzeugt von der langen Haltbarkeit von Honig? Dann kannst du bei uns im Online-Shop aus einer großen Auswahl unterschiedlicher Honigsorten wählen und den für dich passenden Honig kaufen ."
+        ],
+        "tables": []
+      },
+      {
+        "source": {
+          "id": "src_06",
+          "url": "https://www.rund-um-die-biene.at/de_DE/honig/haltbarkeit",
+          "title": "Honig: Kann Honig schlecht werden? | Rund um die Biene",
+          "organization": "Rund um die Biene",
+          "source_type": "generic_secondary",
+          "authority": "low",
+          "basis": "full_text",
+          "evidence_provenance": "full_text",
+          "retrieval": "ok",
+          "published_at": null,
+          "updated_at": null,
+          "fetched_at": "2026-10-10T06:34:30+00:00"
+        },
+        "cache_sha256": "654cb81d6f156606af8579dd25593d46008e35fc4fb5e47db6435c04a6053951",
+        "fetched_at": "2026-10-10T06:34:30+00:00",
+        "paragraphs": [
+          "Diese Frage beschäftigt viele Menschen, insbesondere wenn sie einen alten Glasbehälter im Schrank finden oder Honig seit einiger Zeit lagern. Als einer der beliebtesten natürlichen Süßstoffe und gesundes Lebensmittel hat Honig eine bemerkenswerte Haltbarkeit. Doch wie lange bleibt er wirklich genießbar? In diesem Artikel werden wir uns genauer mit der Haltbarkeit von Honig befassen und herausfinden, ob er tatsächlich verderben kann.",
+          "Grundsätzlich kann festgestellt werden, dass Honig unter optimalen Bedingungen, d. h. trocken, dunkel und vor Wärme geschützt gelagert, praktisch unbegrenzt haltbar ist. Beim Verkauf von Honig ist jedoch ein Mindesthaltbarkeitsdatum auf dem Etikett erforderlich.",
+          "Wie wird das Mindesthaltbarkeitsdatum festgelegt Gemäß gesetzlichen Bestimmungen muss auch Honig ein Mindesthaltbarkeitsdatum tragen. Dieses Datum wird von jedem Imker individuell, üblicherweise mit einer Zeitspanne von etwa 2 Jahren, festgelegt.",
+          "Welche Bedeutung hat das Datum auf den Etiketten der Honiggläser? Das Mindesthaltbarkeitsdatum gibt an, bis wann der Honig seine charakteristischen Eigenschaften behalten sollte.",
+          "Ist der Honig auch nach Ablauf des Mindesthaltbarkeitsdatums noch sicher zu verzehren? Ja, sofern der Honig nicht durch Wärme beeinträchtigt wurde und ideal gelagert wurde, ist der Verzehr auch nach Ablauf des Mindesthaltbarkeitsdatums unbedenklich. Unter optimalen Lagerbedingungen ist Honig praktisch unbegrenzt haltbar.",
+          "Warum ist Honig so lange haltbar? Diese Frage ist aufgrund seiner einzigartigen chemischen Zusammensetzung von Honig von Interesse.",
+          "Honig hat einen niedrigen Wassergehalt, typischerweise unter 18%, was das Wachstum von Mikroorganismen hemmt. Außerdem enthält er natürliche Zucker wie Glukose und Fructose, die hygroskopisch sind und Feuchtigkeit absorbieren, wodurch die Umgebung für Bakterien weniger geeignet wird. Die sauren pH-Werte von Honig, normalerweise zwischen 3 und 4, tragen auch zur Haltbarkeit bei, da viele Bakterien in sauren Umgebungen nicht überleben können.",
+          "Darüber hinaus produzieren Bienen Enzyme, die den Zucker in Honig in kleine Mengen Wasserstoffperoxid umwandeln, was ebenfalls antibakterielle Eigenschaften hat. All diese Faktoren zusammen machen Honig zu einem haltbaren Lebensmittel.",
+          "Es ist empfehlenswert, den Honig an einem trockenen, dunklen und kühlen Ort aufzubewahren. Die optimale Lagertemperatur liegt zwischen 10 und 15°C, bei einer Luftfeuchtigkeit von etwa 60 Prozent, um das Wachstum von Hefepilzen zu verlangsamen. Es ist wichtig zu beachten, dass Honig, der in Gläsern abgefüllt ist und in feuchten Räumen gelagert wird, Feuchtigkeit aus der Umgebungsluft aufnehmen kann, was zu einem Risiko der Gärung führt.",
+          "Die schonendste Methode Honig für längere Zeit aufzubewahren ist das Tiefgefrieren, da weder Enzyme noch Vitamine kälteempfindlich sind. Es ist jedoch entscheidend, den Honig langsam bei niedrigen Temperaturen aufzutauen, um seine Qualität zu erhalten.",
+          "Die richtige Lagerung von Honig ist entscheidend, um seine Qualität und Haltbarkeit zu gewährleisten. Es empfiehlt sich, den Honig an einem kühlen, trockenen und dunklen Ort aufzubewahren, idealerweise bei Temperaturen zwischen 10 und 15°C und einer Luftfeuchtigkeit von etwa 60 Prozent. Ein kühler, dunkler Schrank oder eine Vorratskammer eignen sich gut für die Lagerung von Honig.",
+          "Im Gegensatz dazu ist die Lagerung von Honig im Kühlschrank nicht unbedingt notwendig und kann sogar nachteilig sein. Der Kühlschrank kann zu einer Kristallisation des Honigs führen, was ihn fest und weniger ansprechend macht, obwohl dies die Qualität nicht beeinträchtigt. Zudem kann der Honig im Kühlschrank Feuchtigkeit aus der Luft absorbieren, was zu einer erhöhten Gefahr der Gärung führen kann, insbesondere wenn der Deckel nicht richtig verschlossen ist.",
+          "Insgesamt ist es ratsam, Honig bei Raumtemperatur und fernab von Feuchtigkeit und direktem Sonnenlicht zu lagern, um seine Konsistenz und Qualität zu erhalten.",
+          "Die Kristallisation oder Blütenbildung im Honig ist ein natürlicher Prozess, bei dem der Zucker im Honig zu Kristallen kristallisiert. Dies führt dazu, dass der Honig eine festere Konsistenz erhält. Die Kristallisation ist kein Zeichen von Verderb oder minderer Qualität, sondern eher ein Hinweis auf die Reinheit des Honigs. Bestimmte Honigsorten kristallisieren schneller als andere, abhängig von ihrer Zusammensetzung. Durch sanftes Erwärmen kann die Kristallisation rückgängig gemacht werden, ohne die Qualität des Honigs zu beeinträchtigen.",
+          "Die Phasentrennung von Honig bezieht sich auf ein natürliches Phänomen, bei dem sich Honig in zwei Schichten aufteilt: eine obere, flüssige Schicht und eine untere, festere Schicht. Dies tritt aufgrund der unterschiedlichen Zusammensetzung von Zuckerarten im Honig auf. In der Regel besteht die obere Schicht hauptsächlich aus Glukose, während die untere Schicht reich an Fructose ist. Diese Phasentrennung ist kein Anzeichen für Verderb, sondern zeigt die natürlichen Eigenschaften von Honig an. Durch einfaches Umrühren kann der Honig wieder homogenisiert werden.",
+          "Gärender Honig oder Schimmel im Honig sind Anzeichen für eine unzureichende Lagerung oder Verunreinigungen. Wenn Honig gärt, bedeutet dies, dass sich Bakterien darin vermehren, was zu einem unangenehmen Geruch und Geschmack führt. Schimmelbildung entsteht durch das Eindringen von Luftfeuchtigkeit oder Fremdpartikeln. Beide Zustände deuten auf eine unsichere Verzehrbarkeit hin und der Honig sollte entsorgt werden. Eine ordnungsgemäße Lagerung in einem luftdichten Behälter bei geeigneten Bedingungen kann dies verhindern.",
+          "Entdecken Sie unser gesamtes Sortiment an Honig von unseren kleinen, regionalen Imkern aus der Region.",
+          "Tolles Produkt Super tolles Produkt aus meiner Region. Christa - Basierend auf Kundenbewertungen auf Trusted Shops",
+          "Christa - Basierend auf Kundenbewertungen auf Trusted Shops",
+          "Bestellung und Lieferung top Von der Bestellung bis zur Lieferung alles top. Gerne wieder. Manfred - Basierend auf Kundenbewertungen auf Trusted Shops",
+          "Von der Bestellung bis zur Lieferung alles top. Gerne wieder.",
+          "Manfred - Basierend auf Kundenbewertungen auf Trusted Shops",
+          "Schnelle Lieferung Schnelle Lieferung, sehr gut verpackt. Freundliche, persönliche Worte im Paket. Man kommt sich nicht vor, wie eine Nummer Angela - Basierend auf Kundenbewertungen auf Trusted Shops",
+          "Schnelle Lieferung, sehr gut verpackt. Freundliche, persönliche Worte im Paket. Man kommt sich nicht vor, wie eine Nummer",
+          "Angela - Basierend auf Kundenbewertungen auf Trusted Shops",
+          "Rasche Lieferung Rasche Lieferung, sehr gute Qualität !! Elvira - Basierend auf Kundenbewertungen auf Trusted Shops",
+          "Elvira - Basierend auf Kundenbewertungen auf Trusted Shops",
+          "Rasche Lieferung Rasche Lieferung, alles top. Elisabeth - Basierend auf Kundenbewertungen auf Trusted Shops",
+          "Elisabeth - Basierend auf Kundenbewertungen auf Trusted Shops",
+          "Schnell und unkompliziert Schnell und unkompliziert Petra - Basierend auf Kundenbewertungen auf Trusted Shops",
+          "Petra - Basierend auf Kundenbewertungen auf Trusted Shops",
+          "Honig ist ein Naturprodukt mit einer außergewöhnlich langen Haltbarkeit, solange er richtig gelagert wird. Selbst nach dem Mindesthaltbarkeitsdatum kann Honig sicher verzehrt werden, vorausgesetzt, er wurde korrekt aufbewahrt und zeigt keine Anzeichen von Gärung oder Schimmelbildung. Die Kristallisation von Honig ist ebenfalls ein natürlicher Prozess und beeinträchtigt nicht seine Qualität. Durch sanftes Erwärmen kann die Konsistenz wieder verflüssigt werden.",
+          "Es ist wichtig, Honig an einem kühlen, trockenen und dunklen Ort zu lagern, um eine maximale Haltbarkeit zu gewährleisten. Die Lagerung im Kühlschrank ist nicht unbedingt erforderlich und kann sogar zu unerwünschter Kristallisation führen.",
+          "Insgesamt bleibt Honig ein vielseitiges und gesundes Lebensmittel, das auch nach Ablauf des Mindesthaltbarkeitsdatums bedenkenlos genossen werden kann, solange es keine Anzeichen von Verderb aufweist.",
+          "Am besten ist es den festen Honig einfach mit einer Gabel ein bisschen aufzukratzen, so wird er wieder flüssig genung um ihn aufs Brot zu schmieren, sogar ganz ohne vom Brot zu rinnen bzw. zu laufen. Wenn der Honig aber doch verflüssig werden soll, empfehlen wir das Glas entweder im Wasserbad zu erwärmen oder in den Backofen zu stellen. Wichtig ist allerdings, dass der Honig nie für längere Zeit über 40° Celsius erwärmt wird, denn dadurch würde er viele Inhaltsstoffe verlieren, die ihn so wertvoll machen. Manche Honigsorten werden schneller fest, da mehr Glucose als Fructose im Honig enthalten ist. Das Kristallisieren von Honig sagt aber nichts über dessen Qualität aus - im Gegenteil - jeder echte Honig kristallisiert mit der Zeit aus, die einen schneller die anderen langsamer.",
+          "Bienenhonig sollte nicht über 40ºC erwärmt werden, da Honig viele wärmeempfindliche Inhaltsstoffe enthält und diese über 40°C schaden nehmen! In einem handwarmen Wasserbad kann man Honig langsam weich bzw. flüssig werden lassen.",
+          "Unbehandelter Bienenhonig wird über kurz oder lang dickflüssig bzw. fest. Die Konsistenz eines Honigs hängt vor allem von der trachttypischen Zusammensetzung des natürlichen Zuckers ab. Enthält ein Honig besonders viel Fruchtzucker (Fruktose), so bleibt er lange flüssig. Ist dagegen mehr Traubenzucker (Glukose) enthalten, kristallisiert er schon bald nach der Ernte aus. Auch die Fermente (Enzyme) im Bienenhonig bewirken eine Umwandlung der Zucker. Deshalb kristallisiert Honig mit der Zeit aus und wird umso fester, je länger er lagert.",
+          "Honig sollte dunkel (lichtgeschützt), trocken und nicht zu warm aufbewahrt werden. Da Bienenhonig schnell Fremdgerüche annimmt und stark wasseranziehend (hygroskopisch) ist, sollte er am besten in einem fest verschlossen Glas gelagert werden.",
+          "Bei richtiger Lagerung ist Honig im Prinzip unbegrenzt haltbar. Es wurden sogar Honige als Grabbeigaben in den ägyptischen Pyramiden von 3.200 v. Chr. gefunden, die heute noch genießbar sind. Allerdings verliert der Honig bei langer und unsachgemäßer Lagerung einen Teil seiner wertgebenden Inhaltsstoffe. Daher wird in der Regel von 24 Monaten Lagerfähigkeit ausgegangen. Sollte ein Mindesthaltbarkeitsdatum überschritten sein, kann Bienenhonig unbedenklich konsumiert werden.",
+          "Um festzustellen, ob Honig noch genießbar ist, gibt es einige einfache Methoden:",
+          "Sichtprüfung : Überprüfen Sie den Honig auf Anzeichen von Schimmelbildung oder ungewöhnlichen Verfärbungen. Vermeiden Sie den Verzehr, wenn Sie irgendwelche Anzeichen von Verderb feststellen.",
+          "Geruchstest : Riechen Sie am Honig. Frischer Honig hat einen angenehmen, süßen Duft. Ein ungewöhnlicher oder säuerlicher Geruch kann auf Verderb hinweisen.",
+          "Geschmacksprobe : Kosten Sie eine kleine Menge Honig. Frischer Honig sollte süß und angenehm schmecken. Ein bitterer oder unangenehmer Geschmack könnte auf Verderb hinweisen.",
+          "Konsistenz : Berücksichtigen Sie die Konsistenz des Honigs. Kristallisierter Honig ist zwar nicht schlecht, aber seine Qualität kann beeinträchtigt sein. Erwärmen Sie kristallisierten Honig vorsichtig, um ihn wieder zu verflüssigen.",
+          "Wenn der Honig keine Anzeichen von Verderb aufweist und gut riecht, schmeckt und aussieht, kann er sicher verzehrt werden. Achten Sie jedoch immer auf Veränderungen und entsorgen Sie Honig, der verdorben zu sein scheint.",
+          "Die Haltbarkeit von offenem Honig hängt von verschiedenen Faktoren ab, darunter die Lagerbedingungen und die Umgebung, in der er aufbewahrt wird. Grundsätzlich bleibt Honig bei sachgemäßer Lagerung lange haltbar, auch wenn er geöffnet ist. Idealerweise sollte der offene Honig in einem luftdichten Behälter an einem kühlen, trockenen und dunklen Ort aufbewahrt werden. Unter diesen Bedingungen kann Honig mehrere Jahre lang genießbar bleiben. Es ist jedoch wichtig, den Honig regelmäßig zu überprüfen, um sicherzustellen, dass er keine Anzeichen von Verderb zeigt, wie zum Beispiel Schimmelbildung oder ungewöhnliche Verfärbungen. Wenn der Honig weiterhin gut riecht, schmeckt und aussieht, kann er sicher verzehrt werden.",
+          "Kristallisierter Honig ist ein natürlicher Prozess und kein Anzeichen von Verderb. Um kristallisierten Honig wieder zu verflüssigen, können Sie ihn vorsichtig erwärmen. Füllen Sie dazu eine Schüssel mit warmem Wasser und stellen Sie das Honigglas hinein. Lassen Sie es einige Minuten stehen, bis der Honig wieder flüssig wird. Sie können den Honig auch kurz in der Mikrowelle erwärmen, achten Sie jedoch darauf, ihn nicht zu überhitzen, da dies die Qualität beeinträchtigen kann. Nach dem Erwärmen können Sie den Honig wie gewohnt verwenden. Es ist wichtig zu beachten, dass kristallisierter Honig immer noch sicher zu essen ist und die Kristalle keinen Einfluss auf den Geschmack oder die Qualität haben.",
+          "Die Haltbarkeit von Honig hängt weniger von der Sorte als vielmehr von den Lagerbedingungen ab. Grundsätzlich haben alle Honigsorten eine lange Haltbarkeit, wenn sie richtig gelagert werden. Rohhonig, also Honig, der nicht erhitzt oder gefiltert wurde, neigt jedoch dazu, länger zu halten, da er mehr Enzyme und natürliche Bestandteile enthält, die seine Haltbarkeit unterstützen können. Manche Menschen bevorzugen auch bestimmte Sorten wie Manuka-Honig wegen ihrer potenziellen gesundheitlichen Vorteile, aber diese Präferenz hat keinen Einfluss auf die Haltbarkeit. Wichtig ist, den Honig an einem kühlen, trockenen und dunklen Ort aufzubewahren, um seine Qualität zu erhalten, unabhängig von der Sorte.",
+          "Ja, in der Regel kann man ein Jahr abgelaufenen Honig noch essen, vorausgesetzt, er wurde ordnungsgemäß gelagert und zeigt keine Anzeichen von Verderb wie Schimmelbildung, ungewöhnliche Verfärbungen oder unangenehmen Geruch. Honig ist ein Naturprodukt mit einer außergewöhnlich langen Haltbarkeit, und das Mindesthaltbarkeitsdatum dient oft mehr als eine Orientierungshilfe. Solange der Honig keine offensichtlichen Anzeichen von Verderb aufweist und noch gut schmeckt, kann er sicher verzehrt werden. Es ist wichtig, den Honig vor dem Verzehr gründlich zu prüfen und bei Bedenken lieber auf ihn zu verzichten.",
+          "Entdecken Sie weitere Informationen über Honig! Tauchen Sie tiefer in die faszinierende Welt dieses natürlichen Süßstoffs ein und erfahren Sie Wissenswertes über Herstellung, Sorten, gesundheitliche Vorteile und vieles mehr. Lesen Sie weiter, um Ihr Wissen über Honig zu erweitern und seine Vielseitigkeit zu entdecken!",
+          "Honig: das kostbare Naturprodukt! Hier finden Sie alles Wissenswerte über dieses Superfood der Bienen sowie hilfreiche Tipps zum Kauf von erstklassigem Honig. Tauchen Sie ein in die faszinierende Welt des Honigs und entdecken Sie seine zahlreichen gesundheitlichen Vorzüge und kulinarischen Möglichkeiten. Lesen Sie weiter, um mehr zu erfahren und Ihren nächsten Honigkauf optimal zu gestalten!",
+          "Erkunden Sie die Vielfalt und die gesundheitlichen Vorzüge dieses Naturprodukts. Erfahren Sie, warum Honig als echtes Superfood gilt, von seinen antioxidativen Eigenschaften bis zu seinen positiven Auswirkungen auf die Gesundheit. Entdecken Sie die zahlreichen Vorzüge von Honig und wie Sie ihn bestmöglich in Ihre Ernährung einbinden können.",
+          "Immer mehr Gesundheitsbewusste und Umweltfreunde entscheiden sich für Bio-Honig. Doch was genau verbirgt sich hinter diesem Begriff? Dieser Artikel beleuchtet die Merkmale, Herstellungsmethoden und Vorteile von Bio-Honig. Begleiten Sie uns auf einer Entdeckungsreise in die Welt des Bio-Honigs und erfahren Sie, warum er eine lohnenswerte Alternative zum konventionellen Honig darstellt.",
+          "Selbst in seiner süßesten Form ist Honig keineswegs einheitlich. Die Vielfalt der Honigwelt ist ebenso faszinierend wie facettenreich. Jede Honigsorte offenbart ihre individuellen Merkmale und Charakteristika, von den sanften Blütenhügeln der Flachlande bis hin zu den wilden Wäldern der Berge. Dieser Artikel erkundet die facettenreichen Geschmacksprofile, Texturen und gesundheitlichen Vorzüge verschiedener Honigsorten. Entdecken Sie mit uns, was Honig so einzigartig macht und warum jede Sorte ihre eigene, unverwechselbare Geschichte erzählt.",
+          "Erleben Sie die faszinierende Welt der Honiggewinnung: Von der Blüte bis zum süßen Genuss. Dieser Artikel bietet einen umfassenden Einblick in den Entstehungsprozess von Honig. Erfahren Sie, wie Bienen Nektar sammeln, verarbeiten und in den köstlichen Honig verwandeln, den wir alle schätzen. Entdecken Sie die Geheimnisse und Schritte hinter der Honigherstellung und lassen Sie sich von der Natur begeistern.",
+          "Honig ist ein vielseitiges Naturprodukt, das weit mehr als nur eine süße Note bietet. Daher sollte Honig häufiger als Teil einer gesunden Ernährung genossen werden. Ob pur, als köstliches Honigbrot zum Frühstück, in Salatdressings, Saucen, Hauptgerichten oder Desserts – die Verwendungsmöglichkeiten sind vielfältig und bereichern jede Mahlzeit.",
+          "Honig aus Österreich steht für Regionalität, Nachhaltigkeit und höchsten Genuss. Heimische Imker gewinnen ihn mit viel Leidenschaft und traditionellem Handwerk. Jede Sorte – ob Blütenhonig, Waldhonig oder Cremehonig – spiegelt die Vielfalt der Natur wider und bietet ein reines, unverfälschtes Naturprodukt."
+        ],
+        "tables": []
+      }
+    ],
+    "original_package_status": "partial",
+    "original_core": {
+      "key": "claim_09",
+      "role": "core_answer",
+      "text": "Darüber hinaus nimmt Honig leicht Gerüche aus der Umgebung an und kann dadurch einen schlechten Geschmack erhalten.",
+      "evidence_ids": [
+        "ev_09"
+      ],
+      "source_ids": [
+        "src_02"
+      ],
+      "independent_sources": 1,
+      "verification": "source_attributed",
+      "origin": "evidence",
+      "basis": "full_text",
+      "authority_tier": 3,
+      "evidence_provenance": [
+        "full_text"
+      ],
+      "fact_id": "fact_01"
+    },
+    "original_rejections": [
+      {
+        "text": "Am besten ist es den festen Honig einfach mit einer Gabel ein bisschen aufzukratzen, so wird er wieder flüssig genung um ihn aufs Brot zu schmieren, sogar ganz ohne vom Brot zu rinnen bzw. zu laufen.",
+        "reason": "not_a_core_answer",
+        "issues": [
+          "advice_not_explanation"
+        ],
+        "evidence_ids": [
+          "ev_41"
+        ]
+      },
+      {
+        "text": "Was es mit dem Wassergehalt im Honig auf sich hat und wie Honig optimal gelagert werden sollte, wird im nächsten Abschnitt erklärt.",
+        "reason": "not_a_core_answer",
+        "issues": [
+          "no_cause_or_mechanism"
+        ],
+        "evidence_ids": [
+          "ev_25"
+        ]
+      },
+      {
+        "text": "Obwohl Honig die besten Voraussetzungen für ein langes Leben hat, kann es trotzdem sein, dass er schlecht wird.",
+        "reason": "not_a_core_answer",
+        "issues": [
+          "no_cause_or_mechanism"
+        ],
+        "evidence_ids": [
+          "ev_02"
+        ]
+      },
+      {
+        "text": "Die Gründe für dieses Phänomen können ganz unterschiedlich sein.",
+        "reason": "not_a_core_answer",
+        "issues": [
+          "entity_mismatch",
+          "no_cause_or_mechanism"
+        ],
+        "evidence_ids": [
+          "ev_03"
+        ]
+      },
+      {
+        "text": "Grundsätzlich bedeuten die weißen Ablagerungen aber nicht, dass der Honig schlecht geworden ist - vielmehr sind sie ein Zeichen für Naturbelassenheit.",
+        "reason": "not_a_core_answer",
+        "issues": [
+          "no_cause_or_mechanism"
+        ],
+        "evidence_ids": [
+          "ev_04"
+        ]
+      },
+      {
+        "text": "Es gibt jedoch auch Honigsorten, bei denen der Wassergehalt höher liegt.",
+        "reason": "not_a_core_answer",
+        "issues": [
+          "no_cause_or_mechanism"
+        ],
+        "evidence_ids": [
+          "ev_12"
+        ]
+      },
+      {
+        "text": "Bei vielen anderen Honigsorten ist ein höherer Wassergehalt ein Merkmal für eine schlechtere Qualität und kann den Honig schneller verderben lassen.",
+        "reason": "not_a_core_answer",
+        "issues": [
+          "no_cause_or_mechanism"
+        ],
+        "evidence_ids": [
+          "ev_13"
+        ]
+      },
+      {
+        "text": "Am besten Sie bewahren den Honig trocken, dunkel und kühl auf.",
+        "reason": "not_a_core_answer",
+        "issues": [
+          "advice_not_explanation",
+          "no_cause_or_mechanism"
+        ],
+        "evidence_ids": [
+          "ev_21"
+        ]
+      },
+      {
+        "text": "Grundsätzlich lässt sich sagen, dass Honig unbegrenzt haltbar ist, sofern er trocken und luftdicht gelagert wird.",
+        "reason": "not_a_core_answer",
+        "issues": [
+          "no_cause_or_mechanism"
+        ],
+        "evidence_ids": [
+          "ev_22"
+        ]
+      },
+      {
+        "text": "Der Honig muss bis zu diesem Zeitpunkt seine spezifischen Eigenschaften erhalten.",
+        "reason": "not_a_core_answer",
+        "issues": [
+          "no_cause_or_mechanism"
+        ],
+        "evidence_ids": [
+          "ev_23"
+        ]
+      }
+    ]
+  },
+  "everest": {
+    "question": "Warum wird der Mount Everest jedes Jahr ein Stück höher?",
+    "language": "de",
+    "job_id": "26e10252-e6e9-4dcd-b7d5-dfb427fcaffa",
+    "runtime_commit": "032cca436c7a404af4bdc19f4d8fb36f796d0105",
+    "sub_questions": [
+      {
+        "id": "q_core",
+        "kind": "core",
+        "question": "Warum wird der Mount Everest jedes Jahr ein Stück höher?",
+        "query": "wird der Mount Everest jedes Jahr ein Stück höher"
+      },
+      {
+        "id": "q_mechanism",
+        "kind": "mechanism",
+        "question": "Warum wird der Mount Everest jedes Jahr ein Stück höher? (cause / mechanism)",
+        "query": "wird der Mount Everest jedes Jahr ein Stück höher Ursache Erklärung wie funktioniert"
+      }
+    ],
+    "sources": [
+      {
+        "source": {
+          "id": "src_01",
+          "url": "https://www.forschung-und-wissen.de/nachrichten/geologie/deshalb-waechst-der-mount-everest-schneller-als-seine-umgebung-13379432",
+          "title": "Deshalb wächst der Mount Everest schneller als seine Umgebung",
+          "organization": "Forschung und Wissen",
+          "source_type": "journalism",
+          "authority": "medium",
+          "basis": "full_text",
+          "evidence_provenance": "full_text",
+          "retrieval": "ok",
+          "published_at": "2024-09-30",
+          "updated_at": "2024-09-30",
+          "fetched_at": "2026-10-10T06:39:48+00:00"
+        },
+        "cache_sha256": "8a47951d93774b3cb45d7a8ca26f45e33ebf85428e17f46661025d8b24c9c5b8",
+        "fetched_at": "2026-10-10T06:39:48+00:00",
+        "paragraphs": [
+          "Der Mount Everest wächst deutlich schneller als seine benachbarten Berge. Forscher haben nun den Grund dafür entdeckt.",
+          "London (England). Der Mount Everest ist mit einer Höhe von 8.849 Metern der höchste Berg der Erde , wenn die Höhe vom Meeresniveau aus bestimmt wird. Die enorme Höhe des Berges entstand durch die indische Kontinentalplatte, die sich auf die Eurasische Platte schiebt und dadurch das Gebirge formt. Weil der geologische Prozess noch immer abläuft, wird der Mount Everest jedes Jahr mehrere Zentimeter höher.",
+          "In den letzten Jahren ist der Mount Everest laut GPS-Messungen jedoch ungewöhnlich schnell gewachsen, nämlich rund 0,2 Zentimeter mehr als die Berge in seiner Umgebung. Forscher der chinesischen Universität für Geowissenschaften und des University College London (UCL) haben nun eine Erklärung für das Wachstum entdeckt.",
+          "Laut ihrer Publikation im Fachmagazin Nature Geoscience haben die Wissenschaftler das Flussnetzwerk um den Mount Everest untersucht. Das Wasser aus den Flüssen um den höchsten Berg der Erde fließt in den Kosi, einen Nebenfluss des Ganges. Der Kosi wird wiederum durch einen Arm des Flusses Arun gespeist. Eine Simulation der Forscher zeigt, dass der Arun vor etwa 89.000 Jahren einen anderen Fluss eingefangen hat. Anschließend hat der dadurch angewachsene Arun ein neues Flussbett freigespült, was zu einer höheren Erosion und der Bildung des heutigen Flusstals des Arun geführt hat.",
+          "Es kam dadurch in der Region des Mount Everest zu einem so großen Verlust an Landmasse, dass sich das Gelände inklusive des Berges schneller erhoben hat. Die Auswirkungen sind zwar deutlich kleiner als die der tektonischen Prozesse, haben aber dazu beigetragen, dass der Mount Everest 15 bis 50 Meter seiner aktuellen Gesamthöhe erreichen konnte.",
+          "Die Simulation zeigt zudem, dass der Effekt zur anomalen Höhe des Mount Everest (8.849 m) beigetragen hat. Der Mount Everest ist deutlich höher als der K2 (8.611 m) und die drei nächsthohen Gipfeln im Himalaja (8.586 m, 8.516 m, 8.485 m). Eine Gipfelhöhe von rund 8.500 Metern scheint somit die natürliche, durch tektonischen Prozesse entstehende Höhe zu sein. Es wird somit deutlich, dass der Mount Everest seine ungewöhnliche Höhe nur erreichen konnte, weil noch weitere Prozesse aktiv waren."
+        ],
+        "tables": []
+      },
+      {
+        "source": {
+          "id": "src_02",
+          "url": "https://www.geo.de/natur/warum-der-mount-everest-so-stark-an-hoehe-zulegt-35106218.html",
+          "title": "Warum der Mount Everest so stark an Höhe zulegt - [GEO]",
+          "organization": "geo.de",
+          "source_type": "specialist_secondary",
+          "authority": "medium",
+          "basis": "snippet",
+          "evidence_provenance": "search_snippet",
+          "retrieval": "access_denied",
+          "published_at": null,
+          "updated_at": null,
+          "fetched_at": "2026-10-10T06:39:49+00:00"
+        },
+        "saved_units": [
+          {
+            "id": "ev_12",
+            "text": "Forscher nennen nun einen der Gründe dafür · Die außerordentliche Höhe und das aktuelle Wachstum des Mount Everest könnte zumindest ein Stück weit mit einem Fluss in der Nähe zu tun.",
+            "excerpt": "Sie GEO als Ihre bevorzugte Quelle fest. ... Der Mount Everest ist der höchste Berg der Welt und er wächst noch weiter. Forscher nennen nun einen der Gründe dafür · Die außerordentliche Höhe und das aktuelle Wachstum des Mount Everest könnte zumindest ein Stück weit mit einem Fluss in der Nähe zu tun. \"Der Fluss Arun entwässert die südlichen Weiten Tibets und die Nordhänge des Mount Everest, bevor",
+            "source_id": "src_02",
+            "sub_question": "q_core",
+            "kind": "caveat",
+            "kinds": [
+              "caveat"
+            ],
+            "relevance": 0.583,
+            "basis": "snippet",
+            "provenance": "search_snippet",
+            "numbers": [],
+            "time_sensitive": true
+          },
+          {
+            "id": "ev_14",
+            "text": "Die Simulationen deuten darauf hin, dass vor rund 89.000 Jahren durch Erosion eine Verbindung zwischen dem Arun und einem anderen Fluss entstand.",
+            "excerpt": " Modells gingen die Forscher in der Zeit zurück und simulierten die Flussentwicklung unter verschiedenen Gegebenheiten. Die Simulationen deuten darauf hin, dass vor rund 89.000 Jahren durch Erosion eine Verbindung zwischen dem Arun und einem anderen Fluss entstand.",
+            "source_id": "src_02",
+            "sub_question": "q_core",
+            "kind": "number",
+            "kinds": [
+              "number"
+            ],
+            "relevance": 0.417,
+            "basis": "snippet",
+            "provenance": "search_snippet",
+            "numbers": [
+              "89000"
+            ],
+            "time_sensitive": false
+          }
+        ]
+      },
+      {
+        "source": {
+          "id": "src_03",
+          "url": "https://www.swr.de/swrkultur/wissen/warum-gibt-es-keine-berge-ueber-9000-meter-100.html",
+          "title": "Warum gibt es keine Berge über 9.000 Meter?",
+          "organization": "SWR Kultur",
+          "source_type": "generic_secondary",
+          "authority": "low",
+          "basis": "full_text",
+          "evidence_provenance": "full_text",
+          "retrieval": "ok",
+          "published_at": "2025-08-01",
+          "updated_at": "2025-08-01",
+          "fetched_at": "2026-10-10T06:39:48+00:00"
+        },
+        "cache_sha256": "3da1f50b068609d6b2eec91d1476588a42a0869f2b1d8bd87a96d89361991e16",
+        "fetched_at": "2026-10-10T06:39:48+00:00",
+        "paragraphs": [
+          "Der derzeit höchste Berg der Erde ist der Mount Everest mit einer Höhe von 8.849 Metern. Ob es in der Erdgeschichte jemals höhere Berge gegeben hat oder ob es künftig höhere Berge geben wird, darüber lässt sich nur spekulieren. Dennoch: Sehr viel höher dürften sie nicht gewesen sein, denn es gibt tatsächlich eine Obergrenze für die Höhe von Gebirgen.",
+          "Eines vorab: Es geht um Berge an Land, also um die Gipfelhöhe über dem Meeresspiegel. Man könnte die Höhe von Bergen auch so verstehen, dass damit die Höhe von der Basis gemeint ist – in diesem Sinn ist der Mauna Kea auf Hawaii der höchste Berg. Zwar liegt sein Gipfel nur auf einer Meereshöhe von 4.200 Metern – aber der größte Teil dieses Vulkans liegt unter der Wasseroberfläche. Und wenn man vom Meeresgrund rechnet, ist er über 10.000 Meter hoch. Ich rede hier aber nur über die Gipfel von Bergen an Land: Warum sind die nie höher als 9.000 Meter?",
+          "Was den Mount Everest betrifft: Der wächst immer noch; er wird jedes Jahr ein paar Millimeter höher. Der Everest ist Teil des Himalayas. Dort stoßen zwei riesige Kontinentalplatten aufeinander. Nämlich die südliche indische Platte und die nördliche eurasische Platte. Der Druck der Kollision schiebt die Gesteine immer weiter übereinander und lässt so das Gebirge weiter anwachsen.",
+          "Gleichzeitig gibt es aber Gegenspieler – Kräfte, die die Berge wieder schrumpfen lassen.",
+          "Zum einen gibt es die Erosion . Also Wind, Regen und sorgen dafür, dass das Gestein zerbröselt und abgetragen wird oder dass immer wieder ganze Hänge und Bergflanken abrutschen. Je exponierter der Gipfel, desto stärker wirken diese Kräfte.",
+          "Ein weiterer Faktor sind Erdbeben . Wo Kontinentalplatten kollidieren und sich übereinander schieben, kommt es regelmäßig zu Erdbeben. Und auch diese führen meist zu einem Absinken, wie es etwa durch Messungen beim Beben in Nepal im Jahr 2015 gut dokumentiert werden konnte.",
+          "Und es gibt noch eine weitere Gegenspielerin, die verhindert, dass Berge ins Unendliche wachsen: Die Schwerkraft !",
+          "Die Schwerkraft, also die Anziehungskraft der Erde, ist hauptverantwortlich dafür, dass sämtliche Gebirge auf der Erde eine natürliche Höhengrenze haben.",
+          "Denn ein Berg ist ja nicht nur hoch, sondern auch schwer – er bildet eine gewaltige Masse, die die Erdkruste nach unten drückt. Ab einer mittleren Höhe von 5.000 Metern wird dieser Druck so hoch, dass das Gestein in der Tiefe plastisch wird. Es ist dann noch fest – also kein glutflüssiges Magma – kann sich aber trotzdem verformen und sogar fließen. Allerdings ganz langsam und zäh.",
+          "Durch den Druck des eigenen Gewichtes beginnt also das Gestein in der Tiefe seitlich abzufließen. Und damit ergibt sich eine natürliche, sozusagen physikalisch-chemische Höhenbegrenzung. Die Folge: Selbst für die höchsten Bergspitzen ist bei etwa 10.000 Metern Schluss!",
+          "Ganz anders dagegen auf dem Mars: Der Olympus Mons erreicht hier eine Höhe von über 20 Kilometern! Der Hintergrund: Auf dem kleineren Mars ist die Schwerkraft deutlich geringer. So kann sich hier viel mehr Gestein übereinander türmen, bis es durch den Druck seines Gewichtes plastisch wird."
+        ],
+        "tables": []
+      },
+      {
+        "source": {
+          "id": "src_04",
+          "url": "https://www.joyn.de/bts/serien/galileo/mount-everest-warum-der-hoechste-berg-immer-hoeher-wird-4771",
+          "title": "Mount Everest: Warum der höchste Berg immer höher wird",
+          "organization": "BTS - Behind the Screens",
+          "source_type": "journalism",
+          "authority": "medium",
+          "basis": "full_text",
+          "evidence_provenance": "full_text",
+          "retrieval": "ok",
+          "published_at": "2024-10-09",
+          "updated_at": "2025-08-18",
+          "fetched_at": "2026-10-10T06:39:48+00:00"
+        },
+        "cache_sha256": "bc92b0c24e00e390d56f76e2dcfb94a8a1908bb972c732a3eb50d3d8d7aea513",
+        "fetched_at": "2026-10-10T06:39:48+00:00",
+        "paragraphs": [
+          "Der Mount Everest ist der höchste Berg der Welt. Er misst derzeit fast 8.849 Meter. Allerdings wird er Jahr für Jahr immer höher. Forschende haben nun untersucht, warum das so ist.",
+          "Der Himalaja ist ein Faltengebirge , das durch die Kollision der Indischen Kontinentalplatte mit der Eurasischen Platte entstanden ist. Hier befindet sich auch der Mount Everest, der mit knapp 8.849 Metern der höchste Berg der Welt ist.",
+          "Durch den kontinuierlichen Druck der beiden Kontinentalplatten gegeneinander wächst der ganze Himalaya jedes Jahr etwa um einige Zentimeter. Aber: Der Mount Everest wächst hierbei laut den Forschenden der China University of Geosciences (Beijing) schneller als die andere Gipfel im Gebirge.",
+          "Durch Simulationen haben die Forschenden ermittelt, dass der Everest infolge der Erosion jährlich etwa 0,16 bis 0,53 Millimeter an Höhe gewinnt.",
+          "\"Galileo X-Plorer: Everest - all inclusive\" jetzt kostenlos streamen!",
+          "Der Druck durch die Kollision der indischen und der eurasischen Platte vor 40 bis 50 Millionen Jahren bildete den Himalaya - und bis heute bleibt die Plattentektonik der Hauptgrund für ihr kontinuierliches Wachstum . Laut den Forschenden gibt es allerdings noch einen weiteren wichtigen Faktor: den Arun-Fluss . Auch er soll maßgeblich zur Erhebung des Berges beitragen.",
+          "Während der Arun durch das Himalaja-Gebirge fließt, trägt er Material von der Erdkruste ab. Dadurch verringert sich der Druck auf den Erdmantel. Der Erdmantel ist die nächstliegende Schicht unter der Kruste. Dadurch biegt sich die verdünnte Kruste und drückt nach oben.",
+          "Das wird als isostatischer Bodenhebung bezeichnet. Die in \"Nature Geoscience\" veröffentlichte Studie zeigt, dass diese aufwärtsgerichtete Kraft auch dazu führt, dass der Everest und andere benachbarte Gipfel weiter an Höhe gewinnen. In der Umgebung des Mount Everest befinden sich auch der viert- und fünfthöchsten Berge der Welt , Lhotse und Makalu.",
+          "Mit Xenon in Rekordzeit auf den Mount Everest? Das Supergas im \"Galileo\"-Check",
+          "Weltall auf der Erde: \"Galileo\" erkundet die Oberfläche des Mondes",
+          "\"Auf der Walz - Drei Jahre und ein Tag\": Das passiert wirklich auf den Wanderungen",
+          "\"Hate Watching\": Warum sind wir fasziniert von dem, was wir hassen?",
+          "Um die Auswirkungen rund um den Mount Everest zu untersuchen, entwickelten die Forschenden ein Computermodell . Mit diesem Modell simulierten sie die Kräfte , die das fließende Wasser auf den Grund und die Seiten des Flussbettes ausübt. Das heutige Erscheinungsbild des Arun-Flusses diente dabei als Grundlage. Das Forschungsteam geht davon aus, dass eine solch geformte Landschaft nur durch enorme Wassermengen entstehen konnte.",
+          "Das Computer-Modell zeigt, dass der Fluss Arun vor etwa 89.000 Jahren so viel Wasser führte, dass er ein tiefes Tal im Himalaja bildete. Der Grund für die großen Wassermassen lag in der Ausbreitung des Flussnetzwerkes . Das abtransportierte Gestein reduzierte die Last und bewirkte somit, dass sich das Gelände in diesem Gebirge hob.",
+          "Aufgrund der Erosion von Gestein und Boden durch den Arun schätzen die Forschenden, dass der Mount Everest etwa 15 bis 50 Meter höher ist, als er ohne diese Einflüsse wäre.",
+          "Allerdings wird dieser Effekt laut den Forschenden nicht dauerhaft anhalten . Der Prozess läuft nur so lange, bis das Flusssystem einen neuen Gleichgewichts-Zustand erreicht.",
+          "Außerdem wird die Höhe von Bergen noch durch weitere Faktoren limitiert: So erodiert die Spitze des Berges. Schnee, Eis und Wind tragen den Fels ab. Nach geowissenschaftlichen Maßstäben sind Höhen über zehn Kilometer nicht möglich . Der Grund: Das enorme Gewicht. Die zunehmende Masse und Basis des Berges üben enormen Druck auf den Untergrund aus. Überschreitet dieser Druck ein kritisches Maß, verflüssigt sich das Gestein und limitiert so letztendlich auch die maximale Höhe.",
+          "Die Spitze des Berges erodiert durch Schnee, Eis und Wind, die den Fels abtragen. Das Geröll sammelt sich in den Tälern, wird zerkleinert und teilweise über Flüsse abtransportiert. Nach geowissenschaftlichen Maßstäben sind Höhen über zehn Kilometer nicht möglich, da die zunehmende Masse und Basis des Berges enormen Druck auf den Untergrund ausüben. Überschreitet dieser Druck ein kritisches Maß, verflüssigt sich das Gestein und limitiert die maximale Höhe.",
+          "Achttausender sind Berge, die über 8.000 Meter hoch sind. Die zehn höchsten Berge der Erde sind: Mount Everest (8.849 Meter, Nepal/Tibet), K2 (8.611 Meter, Pakistan/China), Kangchendzönga (8.586 Meter, Nepal/Indien), Lhotse (8.516 Meter, Nepal/Tibet), Makalu (8.485 Meter, Nepal/Tibet), Cho Oyu (8.188 Meter, Nepal/Tibet), Dhaulagiri (8.167 Meter, Nepal), Manaslu (8.163 Meter, Nepal), Nanga Parbat (8.126 Meter, Pakistan) und Annapurna I (8.091 Meter, Nepal).",
+          "Seit 2020 beträgt die exakte offizielle Höhenangabe des Mount Everest 8848 Meter und 86 Zentimeter.",
+          "Als die Indische Platte auf die Eurasische Platte traf, wurden die Gesteinsmassen an der Kollisionsstelle zusammengepresst und nach oben gedrückt, was zur Faltung der Erdkruste und zur Bildung des Himalaya führte. Die Indische Platte bewegt sich weiterhin langsam nach Norden, wodurch der Himalaya kontinuierlich wächst."
+        ],
+        "tables": []
+      },
+      {
+        "source": {
+          "id": "src_05",
+          "url": "https://www.tagesspiegel.de/wissen/wachstumsschub-im-himalaya-der-mount-everest-wird-jedes-jahr-ein-wenig-grosser-12460643.html",
+          "title": "Wachstumsschub im Himalaya: Der Mount Everest wird jedes Jahr ein wenig größer",
+          "organization": "Der Tagesspiegel",
+          "source_type": "journalism",
+          "authority": "medium",
+          "basis": "full_text",
+          "evidence_provenance": "full_text",
+          "retrieval": "ok",
+          "published_at": "2024-09-30",
+          "updated_at": "2024-09-30",
+          "fetched_at": "2026-10-10T06:39:49+00:00"
+        },
+        "cache_sha256": "255dbb466888040121c37c8585c6d2a229bebf9518804e1a91f55841672a9266",
+        "fetched_at": "2026-10-10T06:39:49+00:00",
+        "paragraphs": [
+          "Die außerordentliche Höhe und das aktuelle Wachstum des Mount Everest könnte zumindest ein Stück weit mit einem Fluss in der Nähe zu tun. Der Fluss Arun hat einem Computermodell zufolge vor etwa 89.000 Jahre so viel Wasser geführt, dass er ein tiefes Tal in den Himalaya schnitt."
+        ],
+        "tables": []
+      },
+      {
+        "source": {
+          "id": "src_06",
+          "url": "https://www.n-tv.de/wissen/Warum-der-Mount-Everest-immer-hoeher-wird-article25262874.html",
+          "title": "Warum der Mount Everest immer höher wird",
+          "organization": "n-tv.de",
+          "source_type": "journalism",
+          "authority": "medium",
+          "basis": "full_text",
+          "evidence_provenance": "full_text",
+          "retrieval": "ok",
+          "published_at": "2024-10-01",
+          "updated_at": "2024-10-03",
+          "fetched_at": "2026-10-10T06:39:48+00:00"
+        },
+        "cache_sha256": "9233f29c8ad69948624d627ad580bc2402de6925860617b34c9db63181e0eff3",
+        "fetched_at": "2026-10-10T06:39:48+00:00",
+        "paragraphs": [
+          "Mit seinen 8849 Metern Höhe ist er bereits der höchste Berg der Welt. Doch der Mount Everest wächst immer weiter - und das deutlich schneller als die anderen Himalaja-Gipfel. Ein Forschungsteam hat nun herausgefunden, woran das liegen könnte.",
+          "Die außerordentliche Höhe und das aktuelle Wachstum des Mount Everest könnten zumindest ein Stück weit mit einem Fluss in der Nähe zu tun haben. Der Fluss Arun hat einem Computermodell zufolge vor etwa 89.000 Jahren so viel Wasser geführt, dass er ein tiefes Tal in den Himalaja schnitt. Das fortgespülte Gestein führte demnach zu einer geringeren Last und damit zu einer Geländeerhebung in dem Gebirge, die den Mount Everest zusätzlich 15 bis 50 Meter in die Höhe gehoben hat. Der Prozess hält bis heute an und trägt zur jährlichen Erhöhung des höchsten Bergs der Erde um etwa zwei Millimeter bei, wie ein Team um Jin-Gen Dai von der China University of Geosciences in Peking berichtet.",
+          "Der Himalaja ist ein Faltengebirge, das sich durch den Zusammenstoß der indischen Kontinentalplatte mit Eurasien gebildet hat. Der Mount Everest überragt mit seinen 8849 Metern über dem Meeresspiegel die nächsthöheren Achttausender-Gipfel um mehr als 200 Meter. Dies sei überraschend, wenn man bedenke, dass die Tektonik im Himalaja relativ einheitlich sei, schreiben die Studienautoren im Fachjournal \"Nature Geoscience\" . Sie wollten herausfinden, ob Prozesse in bestimmten Flusssystemen zu dieser außerordentlichen Höhe beigetragen haben.",
+          "Die sogenannte isostatische Bodenhebung ist ein Prozess, der in nördlichen Gebieten wie Skandinavien, Kanada und Sibirien, gut untersucht ist: Nachdem diese Gebiete am Ende der letzten Eiszeit vor etwa 11.700 Jahren von einem bis zu drei Kilometer dicken Eispanzer befreit waren, verringerte sich das Gewicht, mit dem die Erdkruste in den zähflüssigen Teil des Erdmantels drückte. Die Folge war ein Auftrieb und eine Bodenhebung um mehrere Hundert Meter. Ähnliches geschieht auch, wenn reißende Wassermassen durch Erosion Gestein abtragen, wodurch sich der Druck auf den Erdmantel verringert.",
+          "Um diesen Effekt rund um den Mount Everest zu untersuchen, entwickelten Dai und Kollegen ein Computermodell. Damit simulierten sie die Kraft, die das fließende Wasser auf den Grund und die Seiten des Flussbettes ausübt. Das heutige Erscheinungsbild des Flusses Arun war dabei der Ausgangspunkt. \"Der Fluss Arun entwässert die südlichen Weiten Tibets und die Nordhänge des Mount Everest, bevor er durch eine enge Schlucht fließt, die auf 35 Kilometern einen Höhenunterschied von sieben Kilometern aufweist.\" Die Forscher vermuteten, dass eine solche Landschaft nur durch enorme Wassermassen geformt werden konnte.",
+          "Mithilfe des Modells gingen die Forscher in der Zeit zurück und simulierten die Flussentwicklung unter verschiedenen Gegebenheiten. Die Simulationen deuten darauf hin, dass vor rund 89.000 Jahren durch Erosion eine Verbindung zwischen dem Arun und einem anderen Fluss entstand. Dadurch wurde Wasser des anderen Flusses in den Arun umgeleitet, der mit einem Mal sehr viel mehr Wasser führte. Die Geologen nennen diesen Vorgang Flussanzapfung. Die vereinigte Wasserkraft hat dann vermutlich die tiefe Schlucht geschaffen.",
+          "Die Bodenhebung infolge der starken Erosion betraf in erster Linie den Fluss selbst, aber in abnehmender Stärke auch die nähere Umgebung, zu der der Mount Everest gehört. Je nachdem, wie groß die Bodenhebung war, könnte der Mount Everest 15 bis 50 Meter in die Höhe gehoben worden sein. Den Simulationen zufolge trägt der Effekt noch heute 0,16 bis 0,53 Millimeter zur jährlichen Erhöhung des Mount Everest bei. \"Unsere Studie deckt einen bisher unerkannten, zusätzlichen Mechanismus der Gesteinshebung auf, der seit der Flussanzapfung aktiv ist\", schreiben Dai und Kollegen."
+        ],
+        "tables": []
+      }
+    ],
+    "original_package_status": "missing_mechanism",
+    "original_core": null,
+    "original_rejections": [
+      {
+        "text": "Weil der geologische Prozess noch immer abläuft, wird der Mount Everest jedes Jahr mehrere Zentimeter höher.",
+        "reason": "not_a_core_answer",
+        "issues": [
+          "misses_distinguishing_condition"
+        ],
+        "evidence_ids": [
+          "ev_01"
+        ]
+      },
+      {
+        "text": "Der Fluss Arun hat einem Computermodell zufolge vor etwa 89.000 Jahren so viel Wasser geführt, dass er ein tiefes Tal in den Himalaja schnitt. Das fortgespülte Gestein führte demnach zu einer geringer",
+        "reason": "not_a_core_answer",
+        "issues": [
+          "misses_distinguishing_condition"
+        ],
+        "evidence_ids": [
+          "ev_08",
+          "ev_14",
+          "ev_22",
+          "ev_29"
+        ]
+      },
+      {
+        "text": "Die außerordentliche Höhe und das aktuelle Wachstum des Mount Everest könnte zumindest ein Stück weit mit einem Fluss in der Nähe zu tun.",
+        "reason": "not_a_core_answer",
+        "issues": [
+          "no_cause_or_mechanism"
+        ],
+        "evidence_ids": [
+          "ev_12",
+          "ev_30",
+          "ev_33"
+        ]
+      },
+      {
+        "text": "\"Der Fluss Arun entwässert die südlichen Weiten Tibets und die Nordhänge des Mount Everest, bevor er durch eine enge Schlucht fließt, die auf 35 Kilometern einen Höhenunterschied von sieben Kilometern",
+        "reason": "not_a_core_answer",
+        "issues": [
+          "entity_mismatch",
+          "no_cause_or_mechanism"
+        ],
+        "evidence_ids": [
+          "ev_13",
+          "ev_38"
+        ]
+      },
+      {
+        "text": "Der Mount Everest ist mit einer Höhe von 8.849 Metern der höchste Berg der Erde , wenn die Höhe vom Meeresniveau aus bestimmt wird.",
+        "reason": "not_a_core_answer",
+        "issues": [
+          "entity_mismatch",
+          "no_cause_or_mechanism"
+        ],
+        "evidence_ids": [
+          "ev_04",
+          "ev_18",
+          "ev_24",
+          "ev_34"
+        ]
+      },
+      {
+        "text": "Der Mount Everest ist deutlich höher als der K2 (8.611 m) und die drei nächsthohen Gipfeln im Himalaja (8.586 m, 8.516 m, 8.485 m).",
+        "reason": "not_a_core_answer",
+        "issues": [
+          "entity_mismatch",
+          "no_cause_or_mechanism"
+        ],
+        "evidence_ids": [
+          "ev_07",
+          "ev_36"
+        ]
+      },
+      {
+        "text": "Aufgrund der Erosion von Gestein und Boden durch den Arun schätzen die Forschenden, dass der Mount Everest etwa 15 bis 50 Meter höher ist, als er ohne diese Einflüsse wäre.",
+        "reason": "not_a_core_answer",
+        "issues": [
+          "entity_mismatch"
+        ],
+        "evidence_ids": [
+          "ev_21"
+        ]
+      },
+      {
+        "text": "Eine Gipfelhöhe von rund 8.500 Metern scheint somit die natürliche, durch tektonischen Prozesse entstehende Höhe zu sein. Es wird somit deutlich, dass der Mount Everest seine ungewöhnliche Höhe nur er",
+        "reason": "not_a_core_answer",
+        "issues": [
+          "entity_mismatch"
+        ],
+        "evidence_ids": [
+          "ev_02"
+        ]
+      },
+      {
+        "text": "Anschließend hat der dadurch angewachsene Arun ein neues Flussbett freigespült, was zu einer höheren Erosion und der Bildung des heutigen Flusstals des Arun geführt hat.",
+        "reason": "not_a_core_answer",
+        "issues": [
+          "entity_mismatch"
+        ],
+        "evidence_ids": [
+          "ev_03"
+        ]
+      },
+      {
+        "text": "In den letzten Jahren ist der Mount Everest laut GPS-Messungen jedoch ungewöhnlich schnell gewachsen, nämlich rund 0,2 Zentimeter mehr als die Berge in seiner Umgebung.",
+        "reason": "not_a_core_answer",
+        "issues": [
+          "observer_relation",
+          "misses_distinguishing_condition",
+          "no_cause_or_mechanism"
+        ],
+        "evidence_ids": [
+          "ev_06"
+        ]
+      }
+    ]
+  },
+  "dog": {
+    "question": "Warum hecheln Hunde, statt zu schwitzen?",
+    "language": "de",
+    "job_id": "a85514ab-4bca-479a-87ca-12440ea5cd08",
+    "runtime_commit": "032cca436c7a404af4bdc19f4d8fb36f796d0105",
+    "sub_questions": [
+      {
+        "id": "q_core",
+        "kind": "core",
+        "question": "Warum hecheln Hunde, statt zu schwitzen?",
+        "query": "hecheln Hunde, statt zu schwitzen"
+      },
+      {
+        "id": "q_mechanism",
+        "kind": "mechanism",
+        "question": "Warum hecheln Hunde, statt zu schwitzen? (cause / mechanism)",
+        "query": "hecheln Hunde, statt zu schwitzen Ursache Erklärung wie funktioniert"
+      }
+    ],
+    "sources": [
+      {
+        "source": {
+          "id": "src_01",
+          "url": "https://www.wissen.de/hecheln-gegen-hitze",
+          "title": "Hecheln gegen Hitze | wissen.de",
+          "organization": "wissen.de",
+          "source_type": "journalism",
+          "authority": "medium",
+          "basis": "full_text",
+          "evidence_provenance": "full_text",
+          "retrieval": "ok",
+          "published_at": "2022-02-26",
+          "updated_at": "2015-05-21",
+          "fetched_at": "2026-10-10T06:36:16+00:00"
+        },
+        "cache_sha256": "ffe59d537b72f277bb8524f69edd245d46f8805097a94c2ea11de178167c8921",
+        "fetched_at": "2026-10-10T06:36:16+00:00",
+        "paragraphs": [
+          "Bild vergrößern Hechelnder Dalmatiner shutterstock.com/SasPartout Anders als für andere Tiere ist es für Hunde nicht nur normal sondern notwendig, ihre Zunge aus dem Maul hängen zu lassen und zu hecheln. Je wärmer die Temperaturen und je höher die Anstrengung, desto mehr hechelt ein Hund. Doch warum ist das Hecheln für Hunde notwendig und wie funktioniert dieser Mechanismus?",
+          "Hunde besitzen weniger Schweißdrüsen als viele andere Tiere und als Menschen. Die meisten befinden sich unter den Pfoten und dienen dazu, den zurückgelegten Weg für andere Hunde zu markieren. Diese wenigen Schweißdrüsen können aber niemals die Temperatur des gesamten Hundekörpers regulieren. Deshalb schwitzt ein Hund über die Zunge: Er lässt sie heraushängen und atmet durch die Nase ein, wobei ein Luftzug entsteht, der die Verdunstung von Feuchtigkeit begünstigt. Diese Verdunstung hält die Körpertemperatur des Hundes konstant.",
+          "Bild vergrößern Rasender Dackel istockphoto.com/Glenn Nagel Beim Hecheln erhöht sich die Atemfrequenz von ca. 30 auf ganze 300 bis 400 Atemzüge pro Minute. Je schneller der Hund hechelt, desto flacher atmet er. Außerdem gelangt sehr viel weniger Luft in die Lungen, als dies bei hechelnden Menschen der Fall wäre. Die Luft zirkuliert im sogenannten „Totraum“ zwischen Maulschleimhaut, Luftröhre und Bronchien. Dieser Mechanismus wird deshalb „Totraumventilation“ genannt und verhindert eine Hyperventilation. Eine Austrocknung des Mundraums während des Hechelns wird übrigens durch eine vermehrte Speichelproduktion, das sogenannte „Sabbern“, verhindert.",
+          "Je mehr Körpervolumen ein Hund hat, desto mehr schwitzt er und desto weniger Wärme lassen die Fettpolster heraus. Große und dicke Hunde hecheln und „sabbern“ also häufiger, als kleinere Hunde. Ein bekanntes Beispiel ist der Bernhardiner. Außerdem hat die hohe Luftfeuchtigkeit bei Hitze die Verhinderung von ausreichender Verdunstung zur Folge. Deshalb sind sehr dickfellige und dickhäutige Hunde in kühlen Gefilden besser aufgehoben und sollten lieber nicht in den Sommerurlaub mitgenommen werden.",
+          "Vorsicht gilt auch für Besitzer von kurznasigen Hunden! Denn die Atmung dieser Tiere ist im Vergleich zu langnasigen Hunden eingeschränkt, weshalb der Wärmeaustausch schlechter funktioniert. Möpse, Bulldoggen, Pekinesen, Boxer und vergleichbare Rassen sind also ebenfalls besonders hitzeempfindlich!",
+          "Natürlich muss aber auch bei geringen Temperaturen die innere Körperwärme konstant gehalten werden, die durch den Energieumsatz bei Aufregung, Stress, Bewegung und bei der Verdauung entsteht. Hundebesitzer müssen sich also nicht wundern, wenn ihr Haustier auch im Winter hechelt.",
+          "Neben der Körpertemperatur muss auch das Gehirn eines Hundes kühl gehalten werden: Dort befindet sich eine Art Thermostat, das bereits bei einem geringen Wärmeanstieg ausgelöst wird und den Hund zum Hecheln veranlasst. Das verhindert eine Beeinträchtigung der Hirnfunktionen, die ein Temperaturanstieg sonst zur Folge hätte. Je stärker ein Hund hechelt, desto kühler ist das venöse Blut rund um die Arterien an der Schädelbasis und desto kühler erreicht das Blut das Gehirn. Auch Katzen, Schafe und Ziegen haben ein solches Kühlsystem im Gehirn. A propos: Das Hecheln ist im Tierreich weiter verbreitet als man vermutet! Viele Tiere (zum Beispiel Vögel) atmen bei Hitze mit offenem Mund."
+        ],
+        "tables": []
+      },
+      {
+        "source": {
+          "id": "src_02",
+          "url": "https://www.fressnapf.de/magazin/hund/gesundheit/hecheln/",
+          "title": "Hund hechelt – das steckt dahinter | FRESSNAPF",
+          "organization": "FRESSNAPF",
+          "source_type": "generic_secondary",
+          "authority": "low",
+          "basis": "full_text",
+          "evidence_provenance": "full_text",
+          "retrieval": "ok",
+          "published_at": "2024-02-16",
+          "updated_at": "2025-01-31",
+          "fetched_at": "2026-10-10T06:36:17+00:00"
+        },
+        "cache_sha256": "955636e210b9c2685591f4f5a8784158631173b4e6d47263b1a1048b7e0daa7a",
+        "fetched_at": "2026-10-10T06:36:17+00:00",
+        "paragraphs": [
+          "Damit kühlt der Hund seine Körpertemperatur herunter, und das ist völlig normal. Doch starkes Hecheln gepaart mit Unruhe oder weiteren Symptomen kann auch ein Anzeichen für ein ernst zu nehmendes Problem sein. Sei es, dass der Hund krank ist, Schmerzen hat, unter einer Vergiftung oder Infektion leidet.",
+          "Was bedeutet es, wenn ein Hund stark hechelt?",
+          "Warum hechelt mein Hund, obwohl es nicht warm ist?",
+          "Fazit: Hund hechelt – nicht immer ist das harmlos",
+          "Hunde hecheln, vor allem dann, wenn es warm ist. Denn anders als wir Menschen verfügen Hunde über nur wenige Schweißdrüsen. Die meisten davon sitzen in den Pfoten und dienen dazu, die eigene Laufspur für Artgenossen zu markieren. Richtig schwitzen und sich darüber abkühlen funktioniert aber nicht. Also hechelt der Hund. Dabei lässt er die Zunge heraushängen und atmet durch die Nase ein. Es entsteht ein Luftzug und die Feuchtigkeit verdunstet. Dadurch hält der Hund seine Körpertemperatur konstant. Gleichzeitig erhöht sich die Atemfrequenz. Statt der normalen 30 Atemzüge pro Minute können es zwischen 300 und 400 sein. Der Hund hechelt also stark. Allerdings ist der Atem flach – je mehr der Hund hechelt, desto flacher wird der Atem. Außerdem produziert der Hund „Sabber“, was das Austrocknen des Mundraums verhindert. Je größer und schwerer ein Hund ist, desto mehr muss er hecheln, um die Körpertemperatur bei Hitze konstant zu halten. Auch kurzschnäuzige Hunde haben bei Hitze mehr Mühe, die Körpertemperatur über das Hecheln zu regulieren.",
+          "In der Regel hechelt ein Hund dann stark, wenn es ihm zu warm ist. Also in den Sommermonaten oder bei Anstrengung. In den Sommermonaten kannst du deinem Hund helfen, besser mit der Wärme klarzukommen. Stell ihm immer frisches Wasser zur Verfügung. Ein Trinkbrunnen ermuntert deine Fellnase, mehr zu trinken. Immerhin dürfen es an warmen Tagen gut 100 Milliliter pro Kilogramm Körpergewicht sein. Verleg die Gassirunden in die frühen Morgen- oder späten Abendstunden. Hundesport an heißen Tagen sollte tabu sein. Und auf keinen Fall darfst du deinen Vierbeiner allein im Auto zurücklassen, das schnell zur tödlichen Falle werden kann. Viele Tipps, wie du mit Hund cool durch heiße Tage kommst, erhältst du im Ratgeberbeitrag „Wie kühlt man Hunde im Sommer ab?“",
+          "Starkes Hecheln kann beim Hund ein Zeichen von Überhitzung sein. Dann kommen noch folgende Symptome hinzu:",
+          "Verzweifelte Suche nach einer Möglichkeit, ins Kühle zu kommen",
+          "Schafft es der Hund in dieser Situation nicht, sich abzukühlen, droht ein lebensbedrohlicher Hitzschlag. Dann kommen diese Symptome hinzu:",
+          "Auch Erbrechen, Durchfall und Teilnahmslosigkeit können sich zu den Symptomen gesellen. Ein Hitzschlag ist immer ein Notfall, der tödlich enden kann! Leite Erste-Hilfe-Maßnahmen ein und bring den Hund zum Tierarzt. Ausführliche Informationen findest du im Beitrag „Hitzschlag beim Hund erkennen, behandeln und vorbeugen“ .",
+          "Hunde hecheln aus verschiedenen Gründen, zum Beispiel auch wegen körperlicher Anstrengung. Weitere Gründe, wenn der Hund viel hechelt, können sein:",
+          "Im Folgenden wird erläutert, wie sich die einzelnen Ursachen bemerkbar machen.",
+          "Angst und Stress können zu einem verstärkten Hecheln führen. Ist dein Hund gestresst, hechelt er stark und läuft unruhig umher. Außerdem wirst du verstärktes Gähnen, Winseln, Zittern und das Lecken über die Lefzen beobachten können, wenn dein Vierbeiner Stress hat. Auch versucht dein Hund, sich zu verkriechen oder zu verstecken. Häufig zeigen Hunde dieses Verhalten bei Feuerwerk oder Gewitter. Nimm deinen Hund zunächst aus der Situation oder versuche, ihn abzulenken. Geh mit gezieltem Training gegen die Gewitterangst vor. Bei ausgeprägter Panik solltest du dir Hilfe bei deinem Tierarzt suchen. Manche Hunde haben Angst im Dunkeln, hecheln und sind unruhig. Hier schafft schon ein bisschen Licht Abhilfe.",
+          "Kurzschnäuzige Rassen mit flachen Gesichtern haben besondere Schwierigkeiten, sich durch Hecheln abzukühlen. Durch die veränderte Anatomie sind die oberen Atemwege verengt und der Hund bekommt ohnehin nur schlecht Luft. Bei Hitze müssen diese Hunde stärker hecheln als andere Rassen. Vor allem Französische Bulldogge, Englische Bulldogge, Mops und Boxer sind vom brachycephalen obstruktiven Syndrom betroffen.",
+          "Du hast deinem Hund ein neues Medikament gegeben? Dann kann dieses eine allergische Reaktion auslösen. Unter Umständen bekommt dein Hund schlecht Luft, ist lethargisch oder erbricht sich. Auch Heuschnupfen kann zu vermehrtem Hecheln führen, da die Pollen oftmals ein Anschwellen der Schleimhäute in den Atemwegen verursachen. Pfeifendes Atmen und Atemnot sind die Folge. Geh bei einem Verdacht auf eine Allergie unbedingt zum Tierarzt.",
+          "Bestimmte Infektionen verursachen bei Hunden eine Lungenentzündung. Dein Hund bekommt schlecht Luft, hustet und hechelt. In der Regel hat er auch Fieber, das heißt, eine Körpertemperatur über 39 Grad. Nimm Fieber in jedem Fall beim Hund ernst und such sofort einen Tierarzt auf.",
+          "Krankheiten können ursächlich für übermäßiges Hecheln sein. Diabetes und Cushing Sydrom sind bekannt dafür, starkes Hecheln auszulösen. Weitere Symptome sind erhöhter Durst, Gewichtszunahme, dünneres Fell und dünnere Haut, kugeliger Bauch. Wenn dein Hund schon im Ruhezustand hechelt, ihn einfache körperliche Anstrengung belastet, er müde ist und er hustet, könnte eine Herzerkrankung dahinterstecken. Blasse Schleimhäute und starkes Hecheln deuten auf eine Anämie (Blutarmut) hin. Auch Kreislaufprobleme führen zu einem auffälligen Hecheln. Geh bitte zum Tierarzt, wenn du den Verdacht hast, dass das Hecheln eine krankhafte Ursache hat.",
+          "Viele Hunde sind Meister darin, Schmerzen lange vor Herrchen und Frauchen zu verstecken. Erst, wenn es ganz schlimm wird, lassen sie Schmerzen erkennen. Verstärktes Hecheln zu ungewöhnlichen Zeiten, zum Beispiel abends und nachts und im Ruhezustand, kann ein Hinweis auf Schmerzen des Hundes sein. Unter Umständen kommen noch Futterverweigerung, eine verkrampfte Körperhaltung und Bewegung, Rückzug, Erschöpfung und Erbrechen hinzu. Verletzungen und chronische Gelenkerkrankungen wie Arthrose können ebenfalls sehr schmerzhaft sein. Bei Schmerzen solltest du deinen Hund dem Tierarzt vorstellen.",
+          "Eine Vergiftung kann dafür verantwortlich sein, wenn der Hund zittert und hechelt. Folgende Symptome sprechen ebenfalls für eine Vergiftung: Unruhe, Apathie, Erbrechen, Taumeln, extremes Speicheln, erhöhte Herz- oder Atemfrequenz, Blutungen, Muskelzittern, Krämpfe, Anfälle, blasse, bläuliche oder stark gerötete Schleimhäute, erhöhte oder erniedrigte Körpertemperatur, Verlust des Bewusstseins. Bei einer Vergiftung zählt jede Minute, bring den Hund sofort zum Tierarzt oder in eine Tierklinik.",
+          "Bei älteren Tieren solltest du daran denken, dass Hunde dement werden können. 48 Prozent aller Hunde über sieben Jahre entwickeln eine Demenz. Ein Leitsymptom des kognitiven Dysfunktionssyndroms, wie Hundedemenz heißt, ist die Veränderung des Schlaf-wach-Rhythmus. Der Hund schläft tagsüber mehr und läuft dafür unruhig nachts umher, hechelt und winselt. Weitere Symptome einer Demenz sind Desorientierung, veränderte Interaktionen, Unsauberkeit und verringerte Aktivität. Dein Tierarzt hat geeignete Medikamente, um die Hundedemenz zu lindern.",
+          "Hechelt dein Hund nachts und abends, kann ganz banal Übergewicht die Ursache sein. Denn schon kleine Aktivitäten bringen den Vierbeiner aus der Puste. Dicke Hunde hecheln oft bereits im Ruhezustand. Außerdem kann Übergewicht zu Atemwegserkrankungen und weiteren Krankheiten führen. Deshalb sollte dein Hund dringend abnehmen, wenn er das ein oder andere Kilo zu viel auf den Rippen hat. Tierärzte und Ernährungsberater helfen deinem Vierbeiner dabei. Zudem kannst du auf spezielles Lightfutter oder eine Reduktionsdiät zurückgreifen, damit die Pfunde purzeln. Moderate Bewegung ist beim Abnehmen ebenfalls sehr hilfreich.",
+          "Falsches, schwer verdauliches Futter kann ebenfalls für verstärktes Hecheln am Abend oder in der Nacht sorgen. Gerade dunkles Fleisch wie Rind führt bei der Verdauung zu einer Erwärmung des Körpers. Füttere daher eher helles Fleisch abends und nur kleine Portionen, mindestens zwei am Tag sollten es für große Hunde sein. Auch sollte dein Hund nicht zu spät gefüttert werden. Nach der Fütterung sollte der Hund zwei Stunden ruhen.",
+          "Rückt der Geburtstermin deiner trächtigen Hündin näher? Hecheln, schnelles Atmen und Unruhe sind Anzeichen dafür, dass die Welpen bald das Licht der Welt erblicken. Weitere Anzeichen sind Futterverweigerung, häufiges Lösen, Anhänglichkeit, Belecken der Scheide, Ausfluss und Scharren in der Wurfkiste. Gut zu wissen: Hechelt die trächtige Hündin deutlich vor dem errechneten Geburtstermin, kann dies ein Hinweis auf Komplikationen sein. Lass sie in diesem Fall gründlich tierärztlich untersuchen!",
+          "Hunde hecheln zur Temperaturregulierung. An heißen Tagen, nach Sport und Spiel ist das ganz normal. Verschaffe deinem Hund Abkühlung und biete ihm immer genug zu trinken an. Verleg eure Aktivitäten auf den frühen Morgen oder späten Abend. Eine Überhitzung kann schnell zum Hitzschlag und Tod führen. Aber auch weitere Ursachen können zu starkem Hecheln fühlen. In vielen Fällen kannst du mit einfachen Mitteln deinem Hund helfen. Bei Vergiftungen, Infektionen, Krankheiten, Schmerzen und Allergien solltest du mit der Lakritznase einen Tierarzt aufsuchen. Auch bei dem Verdacht auf eine Demenz ist der Gang zum Tierarzt angezeigt.",
+          "Unsere erfahrenen Tierärzte können dir in einer Videosprechstunde helfen, gesundheitliche Probleme deines Haustieres zu Hause zu lösen. Sofortige Gewissheit für dich – keine Angst und Stress für dein Tier."
+        ],
+        "tables": []
+      },
+      {
+        "source": {
+          "id": "src_04",
+          "url": "https://www.purina.de/artikel/hunde/verhalten/haeufige-fragen/hund-hecheln",
+          "title": "Hund hechelt: Gründe & Tipps im Überblick | PURINA",
+          "organization": "purina.de",
+          "source_type": "unknown",
+          "authority": "unknown",
+          "basis": "snippet",
+          "evidence_provenance": "search_snippet",
+          "retrieval": "access_denied",
+          "published_at": null,
+          "updated_at": null,
+          "fetched_at": "2026-10-10T06:36:20+00:00"
+        },
+        "saved_units": [
+          {
+            "id": "ev_25",
+            "text": "Denn sobald Hunden warm ist, fehlt ihnen die Fähigkeit zu schwitzen und darüber ihre Temperatur zu regulieren.",
+            "excerpt": "Finde in unserem Leitfaden heraus, worauf du achten solltest. Dein Hund hechelt, um nicht zu überhitzen. Denn sobald Hunden warm ist, fehlt ihnen die Fähigkeit zu schwitzen und darüber ihre Temperatur zu regulieren. Wenn das Hecheln deines Hundes jedoch mit zusätzlichen Symptomen einhergeht, kann es ein Zeichen für etwas Ernsteres sein. Finde in unserem Leitfaden heraus, worauf du achten solltest.",
+            "source_id": "src_04",
+            "sub_question": "q_mechanism",
+            "kind": "mechanism",
+            "kinds": [
+              "mechanism"
+            ],
+            "relevance": 0.85,
+            "basis": "snippet",
+            "provenance": "search_snippet",
+            "numbers": [],
+            "time_sensitive": false
+          },
+          {
+            "id": "ev_27",
+            "text": "Wenn das Hecheln deines Hundes jedoch mit zusätzlichen Symptomen einhergeht, kann es ein Zeichen für etwas Ernsteres sein.",
+            "excerpt": "rhitzen. Denn sobald Hunden warm ist, fehlt ihnen die Fähigkeit zu schwitzen und darüber ihre Temperatur zu regulieren. Wenn das Hecheln deines Hundes jedoch mit zusätzlichen Symptomen einhergeht, kann es ein Zeichen für etwas Ernsteres sein. Finde in unserem Leitfaden heraus, worauf du achten solltest. Dein Hund hechelt, um nicht zu überhitzen. Denn sobald Hunden warm ist, fehlt ihnen die Fähigke",
+            "source_id": "src_04",
+            "sub_question": "q_core",
+            "kind": "caveat",
+            "kinds": [
+              "caveat"
+            ],
+            "relevance": 0.75,
+            "basis": "snippet",
+            "provenance": "search_snippet",
+            "numbers": [],
+            "time_sensitive": false
+          }
+        ]
+      }
+    ],
+    "original_package_status": "sufficient",
+    "original_core": {
+      "key": "claim_02",
+      "role": "core_answer",
+      "text": "Deshalb schwitzt ein Hund über die Zunge: Er lässt sie heraushängen und atmet durch die Nase ein, wobei ein Luftzug entsteht, der die Verdunstung von Feuchtigkeit begünstigt. Diese Verdunstung hält die Körpertemperatur des Hundes konstant.",
+      "evidence_ids": [
+        "ev_02",
+        "ev_11"
+      ],
+      "source_ids": [
+        "src_01",
+        "src_02"
+      ],
+      "independent_sources": 2,
+      "verification": "supported",
+      "origin": "evidence",
+      "basis": "full_text",
+      "authority_tier": 1,
+      "evidence_provenance": [
+        "full_text"
+      ],
+      "fact_id": "fact_01"
+    },
+    "original_rejections": [
+      {
+        "text": "Je mehr Körpervolumen ein Hund hat, desto mehr schwitzt er und desto weniger Wärme lassen die Fettpolster heraus.",
+        "reason": "not_a_core_answer",
+        "issues": [
+          "no_cause_or_mechanism"
+        ],
+        "evidence_ids": [
+          "ev_04"
+        ]
+      },
+      {
+        "text": "Denn sobald Hunden warm ist, fehlt ihnen die Fähigkeit zu schwitzen und darüber ihre Temperatur zu regulieren.",
+        "reason": "not_a_core_answer",
+        "issues": [
+          "asked_thing_is_the_cause_not_the_effect"
+        ],
+        "evidence_ids": [
+          "ev_25"
+        ]
+      },
+      {
+        "text": "Wenn das Hecheln deines Hundes jedoch mit zusätzlichen Symptomen einhergeht, kann es ein Zeichen für etwas Ernsteres sein.",
+        "reason": "not_a_core_answer",
+        "issues": [
+          "no_cause_or_mechanism"
+        ],
+        "evidence_ids": [
+          "ev_27"
+        ]
+      },
+      {
+        "text": "Große und dicke Hunde hecheln und „sabbern“ also häufiger, als kleinere Hunde.",
+        "reason": "not_a_core_answer",
+        "issues": [
+          "no_cause_or_mechanism"
+        ],
+        "evidence_ids": [
+          "ev_07"
+        ]
+      },
+      {
+        "text": "Die Luft zirkuliert im sogenannten „Totraum“ zwischen Maulschleimhaut, Luftröhre und Bronchien. Dieser Mechanismus wird deshalb „Totraumventilation“ genannt und verhindert eine Hyperventilation.",
+        "reason": "not_a_core_answer",
+        "issues": [
+          "entity_mismatch",
+          "naming_not_cause"
+        ],
+        "evidence_ids": [
+          "ev_05"
+        ]
+      },
+      {
+        "text": "Denn die Atmung dieser Tiere ist im Vergleich zu langnasigen Hunden eingeschränkt, weshalb der Wärmeaustausch schlechter funktioniert.",
+        "reason": "not_a_core_answer",
+        "issues": [
+          "asked_thing_is_the_cause_not_the_effect"
+        ],
+        "evidence_ids": [
+          "ev_06"
+        ]
+      },
+      {
+        "text": "Bild vergrößern Hechelnder Dalmatiner shutterstock.com/SasPartout Anders als für andere Tiere ist es für Hunde nicht nur normal sondern notwendig, ihre Zunge aus dem Maul hängen zu lassen und zu heche",
+        "reason": "not_a_core_answer",
+        "issues": [
+          "no_cause_or_mechanism"
+        ],
+        "evidence_ids": [
+          "ev_08"
+        ]
+      },
+      {
+        "text": "Dein Hund hechelt, um nicht zu überhitzen.",
+        "reason": "not_a_core_answer",
+        "issues": [
+          "restates_phenomenon"
+        ],
+        "evidence_ids": [
+          "ev_26"
+        ]
+      },
+      {
+        "text": "Wenn dein Hund hechelt, ist das erstmal ganz normal.",
+        "reason": "not_a_core_answer",
+        "issues": [
+          "no_cause_or_mechanism"
+        ],
+        "evidence_ids": [
+          "ev_28"
+        ]
+      }
+    ]
+  }
+}

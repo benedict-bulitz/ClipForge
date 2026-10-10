@@ -322,6 +322,18 @@ def validate_synthesized(text: str, evidence_ids: list[str], evidence: dict[str,
         return "unknown_evidence_ids"
     cited = [evidence[item] for item in evidence_ids]
     cited_text = " ".join(unit.text for unit in cited)
+    # An ongoing process does not prove a measured change in every interval.
+    # Check cadence against the cited statement, never the user's question or
+    # a page title. Keep the source's own quantified/qualified wording intact.
+    for period, adverb in (("Jahr|year", "jährlich|annually|yearly"),
+                           ("Monat|month", "monatlich|monthly"),
+                           ("Tag|day", "täglich|daily")):
+        cadence = rf"(?i)\b(?:(?:jedes|jeden|jede|pro|every|each|per)\s+(?:single\s+)?(?:{period})|{adverb})\b"
+        if re.search(cadence, text) and not re.search(cadence, cited_text):
+            return "recurrence_not_in_evidence"
+    certainty = r"(?i)\b(?:garantiert|ausnahmslos|guaranteed|necessarily|without exception|every single)\b"
+    if re.search(certainty, text) and not re.search(certainty, cited_text):
+        return "certainty_not_in_evidence"
     missing_numbers = numbers_in(text) - numbers_in(cited_text)
     if missing_numbers:
         return "number_not_in_evidence:" + ",".join(sorted(missing_numbers))[:40]

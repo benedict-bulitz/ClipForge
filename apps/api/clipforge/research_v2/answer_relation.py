@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 
 from ..question_intent import answer_mode
 from ..story_arc import is_explanatory_question
-from .evidence import KIND_PATTERNS, PROCESS_PATTERN, words
+from .evidence import INHIBITION_PATTERN, KIND_PATTERNS, PROCESS_PATTERN, words
 
 _TOKEN = re.compile(r"[A-Za-zÄÖÜäöüß0-9][\wÄÖÜäöüß-]*")
 _LEAD = {
@@ -48,6 +48,7 @@ _FILLER = {
     "always", "only", "just", "the", "a", "an", "of", "on", "to", "and", "or", "it", "its", "at", "after", "before",
     "wurde", "wurden", "wird", "werden", "war", "waren", "ist", "sind", "hat", "haben", "hatte", "kann", "können", "lässt",
     "vom", "zum", "zur", "auch", "obwohl", "sie", "sein", "seine", "ihre", "durch", "aus",
+    "nie", "niemals", "never", "doesn't", "don't", "go", "goes", "get", "gets",
 }
 _ADJ_SUFFIX = ("lich", "isch", "ig", "en", "er", "es", "em", "e", "n", "s", "ish")
 _ADVICE = re.compile(
@@ -121,14 +122,52 @@ _PREDICATE_EQUIVALENTS = (
     re.compile(r"(?i)\b(?:verlieren|verliert|nachlass\w*|abnehm\w*|nimmt\b[^.;]{0,30}\bab|verringer\w*|sink\w*|decreas\w*|declin\w*|loses?|lose)\b"),
     _DETECTION,
     re.compile(r"(?i)\b(?:beats?|puls\w*|schlägt|schlagen|takt\w*)\b"),
+    re.compile(r"(?i)\b(?:wächst|wachsen|höher|anheb\w*|hebt|heben|erhob\w*|erheb\w*|"
+               r"grow\w*|higher|ris(?:e|es|ing)|uplift\w*|raises?)\b"),
 )
+# Adverbial time/degree phrases qualify a process; they are not its subject.
+# Apply only to explanatory questions, preserving dates in identity/time questions.
+_ADVERBIAL = re.compile(
+    r"(?i)\b(?:jedes|jeden|jede|pro)\s+(?:Jahr|Monat|Woche|Tag|Stunde)\b|"
+    r"\b(?:every|each|per)\s+(?:year|month|week|day|hour)\b|"
+    r"\bein\s+(?:kleines\s+)?Stück(?=\s+(?-i:[a-zäöü]\w*er)\b)|"
+    r"\ba\s+(?:little(?:\s+bit)?|bit)(?=\s+(?:higher|lower|bigger|smaller|larger|greater|"
+    r"faster|slower|taller|shorter|more|less)\b)"
+)
+# Event equivalence, rather than an ambiguous adjective (bad taste is not decay).
+# These describe material deterioration and resistance for any subject.
+_DETERIORATION = re.compile(
+    r"(?i)\b(?:verdirb\w*|verderb\w*|spoil\w*|decay\w*|rotting|"
+    r"(?:wird|werden|geworden|goes?|becomes?)\b[^.;?]{0,35}\b(?:schlecht|bad))\b"
+)
+_DURABILITY = re.compile(r"(?i)\b(?:haltbar\w*|shelf life|resist\w*\s+(?:spoil\w*|decay)|keep\w*\s+fresh)\b")
+# Inhibition has a target: blocking sound or heat is not preventing decay.
+# These process participants apply to deterioration of any material, not a topic.
+_DECAY_EFFECT = re.compile(r"(?i)\b(?:verdirb\w*|verderb\w*|spoil\w*|decay\w*|decompos\w*|"
+                          r"zersetz\w*|korro\w*|corro\w*|mikroorgan\w*|microorgan\w*|"
+                          r"mikrobi\w*|microbi\w*|bakter\w*|bacter\w*|keim\w*|hefe\w*|yeast\w*|fung\w*)\b")
+_NEGATIVE = re.compile(r"(?i)\b(?:nicht|nie|niemals|never|not|doesn't|don't|resist\w*)\b")
+_RESISTANCE_EVENT = re.compile(
+    r"(?i)\b(?:nicht|nie|niemals|never|not|doesn't|don't|resist\w*)\b[^.;,:]{0,30}\b"
+    r"(?:verdirb\w*|verderb\w*|spoil\w*|decay\w*|rots?)\b|"
+    r"\b(?:verdirb\w*|spoil\w*|decay\w*|rots?)\s+(?:nicht|nie|not|never)\b"
+)
+_MATERIAL_REASON = re.compile(r"(?i)\b(?:weil|denn|because|due to|aufgrund|wegen|durch)\b")
+_GROWTH_PROCESS = re.compile(r"(?i)\b(?:wächst|wachsen|anheb\w*|angehoben|hebt|heben|erhob\w*|erheb\w*|"
+                             r"grow\w*|ris(?:e|es|ing)|uplift\w*|raises?)\b")
+_GROWTH_QUESTION = re.compile(r"(?i)\b(?:wird|werden|gets?|getting)\b[^?]{0,90}\b(?:höher|higher)\b")
+_UNSPECIFIED_CAUSE = re.compile(
+    r"(?i)\b(?:liegt an|due to|because of)\s+(?:seinen?|ihren?|its|their)\s+"
+    r"(?:besonder\w*|special|unique)?\s*(?:Eigenschaften|properties)\b"
+)
+_NAME_PREFIX = re.compile(r"(?i)^(?:mount|mont|mt|lake|loch|saint|sankt|san|santa)$")
 _PERIPHERAL = re.compile(
     r"(?i)\b(?:untersucht\w*|untersuchen|erforscht\w*|erforschen|forschungs\w*|studie\w*|study|studies|researchers?|"
     r"investigat\w*|specifications?|\w*hersteller\w*|manufacturers?)\b"
 )
 _REPORTED_CAUSE = re.compile(r"(?i)\b(?:heraus|found|discovered|zeigten|zeigen|showed|show)\b[^.;]{0,30}\b(?:dass|that)\b(.*)")
 _CAUSE_SUBJECT = re.compile(r"(?i)^\s*(?:(?:die|der|the)\s+)?(?:ursache|grund|cause|reason)\b")
-_LOCAL_REFERENCE = re.compile(r"(?i)^\s*(?:(?:die|der|das)\s+(?:dabei|dadurch)|(?:da\s+)?(?:sie|er|es|diese\w*|deren|seine\w*|ihre\w*|dadurch|dabei|damit|it|its|they|their|this|these))\b")
+_LOCAL_REFERENCE = re.compile(r"(?i)^\s*(?:(?:die|der|das)\s+(?:dabei|dadurch)|(?:durch|wegen|aufgrund|by|due to)\s+(?:dies\w*|this|these)|(?:da\s+)?(?:sie|er|es|diese\w*|deren|seine\w*|ihre\w*|dadurch|dabei|damit|it|its|they|their|this|these))\b")
 # Opposing grammatical scope modifiers must not be supplied by a page title.
 # These pairs apply to any process/device, not to a particular question/topic.
 _OPPOSING_MODIFIERS = (
@@ -162,6 +201,11 @@ def inflects(term: str, word: str) -> bool:
     if len(a) >= 4 and b.startswith(a):
         return True
     return any(b == a + suffix + ending for suffix in _ADJ_SUFFIX for ending in ("", "e", "en", "er", "es", "em"))
+
+
+def _deteriorates(text: str, language: str) -> bool:
+    # English "rot" is the German color adjective, not a shared event stem.
+    return bool(_DETERIORATION.search(text) or language == "en" and re.search(r"(?i)\brots?\b", text))
 
 
 @dataclass(frozen=True)
@@ -248,7 +292,10 @@ def question_frame(question: str, language: str = "de") -> QuestionFrame:
         qtype = "how" if re.match(r"(?i)^\s*(?:wie|how)\b", text) else "why"
     else:
         qtype = next((name for name, pattern in _QTYPE if pattern.search(text)), "other")
-    tokens = _TOKEN.findall(text)
+    entity_text = _ADVERBIAL.sub(" ", text) if qtype in {"why", "how"} else text
+    if lang == "en":
+        entity_text = re.sub(r"(?i)\b(does|do|is|are|has|have)n['’]t\b", r"\1 not", entity_text)
+    tokens = _TOKEN.findall(entity_text)
     if tokens and tokens[0].casefold() in _LEAD:
         tokens = tokens[1:]
     entities: list[Entity] = []
@@ -262,7 +309,8 @@ def question_frame(question: str, language: str = "de") -> QuestionFrame:
                 phrase = [token]
                 # Only a proper adjective ("Berliner", "Wiener") fuses with the next noun into one name;
                 # "KI Bilder" stays subject + object.
-                while (index + 1 < len(tokens) and tokens[index + 1][:1].isupper() and phrase[-1].endswith("er")
+                while (index + 1 < len(tokens) and tokens[index + 1][:1].isupper()
+                       and (phrase[-1].endswith("er") or _NAME_PREFIX.fullmatch(phrase[-1]))
                        and tokens[index + 1].casefold() not in _FILLER):
                     index += 1
                     phrase.append(tokens[index])
@@ -297,12 +345,25 @@ def question_frame(question: str, language: str = "de") -> QuestionFrame:
         elif qtype in {"why", "how"}:
             # Action words are the requested event, not extra entities. Keep
             # their relation in non-copular English questions as in German.
+            negated = re.search(r"(?i)\b(?:not|never)\s+([a-z]+)\b", entity_text)
             actions = {token.casefold() for token in content if PROCESS_PATTERN.fullmatch(token)
                        or _OPERATION.fullmatch(token)
-                       or any(pattern.fullmatch(token) for pattern in _PREDICATE_EQUIVALENTS)}
+                       or any(pattern.fullmatch(token) for pattern in _PREDICATE_EQUIVALENTS)
+                       or _deteriorates(token, lang)
+                       or _deteriorates(text, lang) and token.casefold() == "bad"
+                       or negated and token.casefold() == negated.group(1).casefold()}
             predicate.update(actions)
             content = [token for token in content if token.casefold() not in actions]
-        entities = [Entity(token, token, frozenset()) for token in content]
+        index = 0
+        while index < len(content):
+            token = content[index]
+            if _NAME_PREFIX.fullmatch(token) and index + 1 < len(content) and content[index + 1][:1].isupper():
+                head = content[index + 1]
+                entities.append(Entity(f"{token} {head}", head, frozenset({_fold(token)})))
+                index += 2
+            else:
+                entities.append(Entity(token, token, frozenset()))
+                index += 1
     terms = frozenset(words(text))
     condition_terms: set[str] = set()
     for match in _CONDITION_CLAUSE.finditer(text):
@@ -414,6 +475,10 @@ def _shared_shape_issues(frame: QuestionFrame, text: str) -> list[str]:
         issues.append("advice_not_explanation")
     if _AUTHOR_PURPOSE.search(text):
         issues.append("author_or_article_purpose")  # why the page was written, not why the phenomenon happens
+    if re.search(r"(?i)\b(?:diese|die|this|the)\s+(?:Frage|question)\b[^.;]{0,100}\b(?:Interesse|interest)\b", text):
+        issues.append("author_or_article_purpose")
+    if _UNSPECIFIED_CAUSE.search(text):
+        issues.append("unspecified_cause")
     reported = _REPORTED_CAUSE.search(text)
     explains_finding = bool(reported and PROCESS_PATTERN.search(reported.group(1)))
     if _PERIPHERAL.search(text) and not explains_finding and not _PERIPHERAL.search(frame.question):
@@ -481,13 +546,26 @@ _PROPERTY_REFERENCE = re.compile(
 
 
 
-def covers_predicate(frame: QuestionFrame, text: str, antecedent: str = "") -> bool:
+def covers_predicate(frame: QuestionFrame, text: str, antecedent: str = "", *, context: str = "") -> bool:
     """A causal core explains the asked state, rather than any effect on its entity.
 
     A property reference may inherit the state from its actual preceding
     sentence; entity co-occurrence alone never supplies the missing predicate.
     Existing spatial contrasts retain their distinguishing-condition semantics.
     """
+    if _deteriorates(frame.question, frame.language):
+        event = _deteriorates(text, frame.language)
+        inhibitory_effect = bool(INHIBITION_PATTERN.search(text) and _DECAY_EFFECT.search(text))
+        resistant = bool(inhibitory_effect or _RESISTANCE_EVENT.search(text)
+                         or _DURABILITY.search(text) and _MATERIAL_REASON.search(text))
+        # The actual local explanation must connect an inhibitory effect to
+        # durability. A page title or unrelated property mention cannot do so.
+        linked_effect = bool(inhibitory_effect and _DURABILITY.search(context))
+        if not _NEGATIVE.search(frame.question):
+            return event and not bool(_RESISTANCE_EVENT.search(text))
+        return (event or bool(_DURABILITY.search(text)) or linked_effect) and resistant
+    if _GROWTH_PROCESS.search(frame.question) or _GROWTH_QUESTION.search(frame.question):
+        return bool(_GROWTH_PROCESS.search(text))
     if not frame.predicate or relation_hits(frame, text):
         return True
     if any(pattern.search(frame.question) and pattern.search(text) for pattern in _PREDICATE_EQUIVALENTS):
@@ -506,11 +584,17 @@ def core_issues(frame: QuestionFrame, text: str, antecedent: str = "", *, contex
     ``antecedent`` is what a pronoun in ``text`` may refer to (see ``resolves_pronoun``).
     """
     issues = _shared_shape_issues(frame, text)
+    question_main = re.split(r"(?i)[,;]|\b(?:when|while|if|obwohl|wenn|falls)\b", frame.question)[0]
+    effect = re.split(r"(?i)[.;]|\b(?:because|weil|denn)\b", text)[0]
+    if (frame.relation != "purpose" and _NEGATIVE.search(question_main)
+            and not _deteriorates(frame.question, frame.language) and relation_hits(frame, effect)
+            and not _NEGATIVE.search(effect) and not INHIBITION_PATTERN.search(effect)):
+        issues.append("polarity_mismatch")
     resolved = antecedent if resolves_pronoun(frame, text, antecedent) else ""
     # Local source context may resolve a reference or a nominal cause of an
     # already-named property. Mere co-occurrence on a page does not suffice.
     if context and (_LOCAL_REFERENCE.search(text) or _CAUSE_SUBJECT.search(text)) \
-            and _context_linked(frame, text, context) and covers_predicate(frame, text):
+            and _context_linked(frame, text, context) and covers_predicate(frame, text, context=context):
         resolved = f"{resolved} {context}"
     covered, _names = entity_coverage(frame, f"{text} {resolved}")
     if frame.entities and covered < frame.required_entities:
@@ -523,7 +607,7 @@ def core_issues(frame: QuestionFrame, text: str, antecedent: str = "", *, contex
     if frame.qtype in {"why", "how"}:
         if frame.qtype == "how" and _OPERATION.search(frame.question) and not PROCESS_PATTERN.search(text):
             issues.append("no_operational_process")
-        if frame.relation != "purpose" and not covers_predicate(frame, text, antecedent):
+        if frame.relation != "purpose" and not covers_predicate(frame, text, antecedent, context=context):
             issues.append("predicate_mismatch")
         if not _CAUSAL.search(text) and not (frame.relation == "purpose" and _PURPOSE.search(text)):
             issues.append("no_cause_or_mechanism")
@@ -553,6 +637,8 @@ def answer_fit(frame: QuestionFrame, text: str) -> int:
     predicate.  (The distinguishing modifier is an eligibility rule, not a bonus: it must not
     outrank corroboration among answers that all cover it.)"""
     fit = relation_hits(frame, text)
+    if _deteriorates(frame.question, frame.language) and INHIBITION_PATTERN.search(text):
+        fit += 2  # Prefer the concrete prevented effect over generic durability context.
     if frame.relation == "purpose" and re.search(r"(?i)\bum\b[^.;:]{1,80}?\bzu\s+\w+|\bdamit\b|\bziel\w*|\bin order to\b|\bto (?:prevent|stop)\b", text):
         fit += 2
     return fit
@@ -595,9 +681,12 @@ def mechanism_issues(frame: QuestionFrame, text: str, context: str = "") -> list
     and state the requested relation (a purpose for an intentional action, not its result)."""
     linked = context if _context_linked(frame, text, context) else ""
     issues = topical_issues(frame, text, linked)
-    if frame.relation != "purpose" and not covers_predicate(frame, text) and not (
-        PROCESS_PATTERN.search(text) and covers_predicate(frame, context)
-    ):
+    inherited_process = PROCESS_PATTERN.search(text) and covers_predicate(frame, context)
+    if _deteriorates(frame.question, frame.language):
+        inherited_process = inherited_process and INHIBITION_PATTERN.search(context) and _DECAY_EFFECT.search(context)
+    if _GROWTH_PROCESS.search(frame.question) or _GROWTH_QUESTION.search(frame.question):
+        inherited_process = False  # A static dimension is not a step in ongoing growth.
+    if frame.relation != "purpose" and not covers_predicate(frame, text, context=context) and not inherited_process:
         issues.append("predicate_mismatch")
     if "entity_mismatch" not in issues and (
         not covers_distinguishing(frame, text) or not covers_conditions(frame, text)
