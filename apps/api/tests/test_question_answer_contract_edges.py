@@ -254,7 +254,7 @@ def test_combined_native_evidence_unblocks_full_pipeline_after_narrow_retry(monk
             facts = brief["research"]["facts"]
             mechanism = next(fact for fact in facts if "Sauerstoff" in fact["claim"])
             surface = next(fact for fact in facts if "Oberfläche" in fact["claim"])
-            return [("hook", "Die rote Farbe des Mars beginnt mit einer chemischen Veränderung.", []),
+            return [("hook", "Die rote Farbe des Mars beginnt mit einer chemischen Veränderung.", [mechanism["id"]]),
                     ("explanation", mechanism["claim"], [mechanism["id"]]),
                     ("payoff", surface["claim"], [surface["id"]])]
 

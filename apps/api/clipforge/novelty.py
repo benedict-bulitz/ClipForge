@@ -24,6 +24,7 @@ import json
 import re
 from typing import Any
 
+from .script_grounding import contradicts_citation, semantic_entries
 from .story_arc import (
     _families,
     arc_units,
@@ -437,6 +438,7 @@ def _novelty_class(plan: dict[str, Any], arc: dict[str, Any], fact_ids: list[str
 def _evidence(
     block: dict[str, Any], result: dict[str, Any], grounding: bool,
     facts_by_id: dict[str, dict[str, Any]], supported_words: set[str], supported_claims: list[str],
+    semantic: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     fact_ids = _fact_ids(block)
     sources = sorted({
@@ -448,23 +450,35 @@ def _evidence(
     if not grounding:
         return {**base, "status": "not_applicable", "reason": "No research evidence applies to this project."}
     text = _text(block)
+    unknown = sorted(set(fact_ids) - set(facts_by_id))
+    unusable = [identifier for identifier in fact_ids if identifier in facts_by_id and not fact_is_supported(facts_by_id[identifier])]
+    if unknown or unusable:
+        return {**base, "status": "unsupported", "kind": "invalid_citation", "reason": "Unknown or unusable fact IDs: " + ", ".join([*unknown, *unusable])}
     cited = [fact_id for fact_id in fact_ids if fact_id in facts_by_id and fact_is_supported(facts_by_id[fact_id])]
     cited_claims = [str(facts_by_id[fact_id].get("claim") or "") for fact_id in cited]
-    allowed_numbers = set().union(*(_numbers(claim) for claim in supported_claims)) if supported_claims else set()
+    number_claims = cited_claims if fact_ids else supported_claims
+    allowed_numbers = set().union(*(_numbers(claim) for claim in number_claims)) if number_claims else set()
     unsupported_numbers = sorted(
         number for number in _numbers(text)
-        if number not in allowed_numbers and not any(_rounded_from(text, claim) for claim in supported_claims)
+        if number not in allowed_numbers and not any(_rounded_from(text, claim) for claim in number_claims)
     )
     if unsupported_numbers:
-        return {**base, "status": "unsupported", "reason": f"The figure(s) {', '.join(unsupported_numbers)} appear in no supported fact."}
+        return {**base, "status": "unsupported", "kind": "unsupported_number", "reason": f"The figure(s) {', '.join(unsupported_numbers)} appear in no cited supported fact."}
+    if contradicts_citation(text, cited_claims):
+        return {**base, "status": "unsupported", "kind": "citation_contradiction", "reason": "The claim reverses a proposition in its cited evidence."}
+    if semantic and all(item.get("status") == "supported" and item.get("covers_all_claims")
+                        and set(item.get("supporting_fact_ids") or []) <= set(cited)
+                        and item.get("supporting_fact_ids") for item in semantic):
+        return {**base, "status": "supported", "kind": "semantic", "reason": "Independent claim verification supports the exact cited paraphrase."}
     said = set(result["said_words"])
     new = set(result["new_words"])
     if cited:
         cited_words = set().union(*(proposition_words(claim) for claim in cited_claims))
         if not said or _related(said, cited_words) or _numbers(text) & set().union(*(_numbers(claim) for claim in cited_claims)):
             return {**base, "status": "supported", "reason": "Cites supported research facts."}
-        # A sentence split from a longer block inherits the block's fact IDs;
-        # it is still grounded when the research as a whole says it.
+        # An unrelated citation cannot borrow support elsewhere in the dossier.
+        return {**base, "status": "unsupported", "kind": "lexical_mismatch",
+                "reason": "The wording cannot be established from its cited facts without independent claim verification."}
     if not new:
         return {**base, "status": "derived", "reason": "Adds no new claim beyond what was already said."}
     grounded = _related(new, supported_words)
@@ -472,7 +486,7 @@ def _evidence(
         return {**base, "status": "derived", "reason": "Every new term is found in the supported research."}
     missing = sorted(new - grounded)[:5]
     prefix = "Cites a research fact but states something it does not. " if cited else ""
-    return {**base, "status": "unsupported", "reason": prefix + "New terms not found in any supported fact: " + ", ".join(missing) + "."}
+    return {**base, "status": "unsupported", "kind": "lexical_mismatch", "reason": prefix + "New terms not found in any supported fact: " + ", ".join(missing) + "."}
 
 
 def _question(context: dict[str, Any]) -> str:
@@ -1058,6 +1072,7 @@ def assess_blocks(blocks: list[dict[str, Any]], state: dict[str, Any]) -> list[d
     supported_words = set().union(*(proposition_words(claim) for claim in supported_claims)) if supported_claims else set()
     supported_words |= proposition_words(_question(context))
     grounding = bool(facts) and intent.get("research_required", True) is not False and intent.get("content_type") != "fictional_story"
+    semantic = semantic_entries(blocks, facts, context["audit"])
     anchors = _anchor_ids(arc)
     units: list[dict[str, Any]] = []
     hook_text = ""
@@ -1094,7 +1109,11 @@ def assess_blocks(blocks: list[dict[str, Any]], state: dict[str, Any]) -> list[d
             # repeated statement better than a shared noun.
             repeats = max(earlier, key=lambda unit: _shared_weight(set(result["said_words"]), unit), default=None)
         novelty_class = _novelty_class(plan, arc, fact_ids)
-        evidence = _evidence(block, result, grounding, facts_by_id, supported_words, supported_claims)
+        from .narration import split_sentences
+
+        judged = [semantic.get((index + 1, sentence)) for sentence in split_sentences(text)]
+        evidence = _evidence(block, result, grounding, facts_by_id, supported_words, supported_claims,
+                             judged if judged and all(judged) else None)
         redundancy = "none"
         if category == "filler":
             redundancy = "filler"

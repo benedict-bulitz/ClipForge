@@ -174,8 +174,8 @@ def test_islands_pipeline_hook_precedes_the_answer_even_when_the_writer_opens_wi
     assert triple_hook.hook_text_leaks(state, hook["text"]) is None
     assert hook["text"] != ISLANDS_Q
     roles = [block["role"] for block in blocks]
-    answer = next(index for index, block in enumerate(blocks) if "fact_02" in (block.get("fact_ids") or []))
-    evidence = next(index for index, block in enumerate(blocks) if "fact_01" in (block.get("fact_ids") or []))
+    answer = next(index for index, block in enumerate(blocks) if block["role"] != "hook" and "fact_02" in (block.get("fact_ids") or []))
+    evidence = next(index for index, block in enumerate(blocks) if block["role"] != "hook" and "fact_01" in (block.get("fact_ids") or []))
     assert roles[0] == "hook" and evidence < answer  # the reveal comes after its evidence
     assert state["scenes"][0]["story_stage"] == "before_reveal"
     assert state["script"]["triple_hook"]["selected_strategy"] == "verified_statistic"

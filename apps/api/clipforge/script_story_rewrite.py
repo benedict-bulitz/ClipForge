@@ -37,6 +37,7 @@ from openai import OpenAI, OpenAIError
 from pydantic import BaseModel, ConfigDict, Field
 
 from .config import Settings
+from .contract_diagnostics import sanitized
 from .language import detect_text_language
 from .novelty import (
     VERIFIED_AUDIT_SOURCE,
@@ -45,6 +46,15 @@ from .novelty import (
     verified_script_key,
 )
 from .payoff import reveals_protected_payoff
+from .script_grounding import (
+    ClaimGrounding,
+    check_claim_grounding,
+    contradicts_citation,
+    evidence_key,
+    grounding_request,
+    hook_has_assertion,
+    hook_semantically_supported,
+)
 from .script_review import ScriptReviewSentence, ScriptReviewSufficiency
 from .script_story_quality import (
     _premature_reveal,
@@ -144,6 +154,7 @@ class VerifierResponse(BaseModel):
     findings: list[EditorFinding] = Field(default_factory=list, max_length=16)
     answer_sufficiency: ScriptReviewSufficiency
     explanation_audit: list[ScriptReviewSentence] = Field(default_factory=list, max_length=24)
+    claim_grounding: list[ClaimGrounding] = Field(default_factory=list, max_length=64)
 
 
 class ScriptStoryProviderError(RuntimeError):
@@ -253,7 +264,15 @@ VERIFIER_INSTRUCTIONS = (
     "explained causally, otherwise answers_question is false. Fill explanation_audit with one entry per "
     "candidate sentence after the hook (quote it "
     "exactly) and answer_sufficiency for the ORIGINAL question. deterministic_findings are lexical hints and "
-    "may be wrong. Return only the structured output."
+    "may be wrong. Fill claim_grounding with one entry for EVERY exact sentence in claim_grounding_request, "
+    "including the hook. Judge all assertions and presuppositions in that sentence (including actor, agency, "
+    "intent, causal direction and specificity), not just its topic. supporting_fact_ids must be a subset of "
+    "that beat's actual citations, never uncited facts elsewhere. covers_all_claims is true only when every "
+    "claim in the sentence is accounted for. Mark supported semantic paraphrases supported, factual gaps "
+    "unsupported, ambiguity uncertain and genuinely rhetorical text nonfactual with no supporting IDs. "
+    "Every cited ID must support some actual claim in the beat; reject unrelated citations. "
+    "The QuestionAnswerContract defines necessary answer depth; legacy story context cannot add mandatory "
+    "requirements. Optional detail may enrich the script but is not required. Return only the structured output."
 )
 
 
@@ -278,7 +297,7 @@ class OpenAIScriptStoryProvider:
                 store=False,
             )
         except (OpenAIError, ValueError, TypeError) as exc:
-            raise ScriptStoryProviderError(str(exc)[:240]) from exc
+            raise ScriptStoryProviderError(sanitized(str(exc), (getattr(self._client, "api_key", None),))[:240]) from exc
         parsed = response.output_parsed
         if not isinstance(parsed, schema):
             raise ScriptStoryProviderError(f"No parsed {schema.__name__}")
@@ -492,20 +511,21 @@ def _finding(code: str, severity: str, message: str, beat_index: int | None = No
 
 def _hook_findings(candidate: list[dict[str, Any]], context: dict[str, Any]) -> list[dict[str, Any]]:
     """The rewritten hook keeps the hook *intent's* safety rules, not its wording."""
-    from .triple_hook import verbal_still_valid
+    from .triple_hook import _INVALIDATING, REVEAL_CODES, state_context, verbal_still_valid
+    from .verbal_hook import assess_verbal, canonical_strategy
 
     hook = candidate[0] if candidate and _role(candidate[0]) == "hook" else None
     if hook is None:
         return []
     text = str(hook.get("text") or "")
     found: list[dict[str, Any]] = []
-    if _withhold(context) and set(_ids(hook)) & _protected_ids(context):
+    if _withhold(context) and hook_has_assertion(text) and set(_ids(hook)) & _protected_ids(context):
         found.append(_finding("hook_reveals_answer", "hard", "The hook cites a protected payoff fact.", 1))
     if _withhold(context) and reveals_protected_payoff(text, _payoff_plan(context)):
         found.append(_finding("hook_reveals_answer", "hard", "The hook states the protected answer.", 1))
     plan = _triple_hook(context)
     state = {
-        **{key: context.get(key) for key in ("intent", "facts", "story_arc", "payoff_plan", "format_plan", "novelty_plan")},
+        **{key: context.get(key) for key in ("intent", "facts", "story_arc", "payoff_plan", "format_plan", "novelty_plan", "explanation_audit")},
         "script": {"blocks": candidate, "triple_hook": plan},
     }
     try:
@@ -513,8 +533,11 @@ def _hook_findings(candidate: list[dict[str, Any]], context: dict[str, Any]) -> 
     except Exception:  # noqa: BLE001 - an unassessable hook is judged by the other checks
         valid = True
     if not valid:
+        hard = assess_verbal(text, canonical_strategy(plan.get("selected_strategy")) or "evidence_insight", state_context(state))["hard_fail"]
+        invalidating = {code for code in hard if code in _INVALIDATING or code.endswith(REVEAL_CODES)}
+        code = "hook_lexical_grounding" if invalidating == {"unsupported_cause"} else "hook_safety"
         found.append(_finding(
-            "hook_safety", "hard",
+            code, "hard",
             "The hook fails the Triple Hook safety rules (spoiler, unsupported claim, clickbait, question echo or body duplicate).",
             1,
         ))
@@ -522,16 +545,20 @@ def _hook_findings(candidate: list[dict[str, Any]], context: dict[str, Any]) -> 
 
 
 def _restore_hook(
-    candidate: list[dict[str, Any]], context: dict[str, Any], draft_hook: dict[str, Any]
+    candidate: list[dict[str, Any]], context: dict[str, Any], draft_hook: dict[str, Any],
+    rejected_hooks: set[str] | None = None,
 ) -> tuple[list[dict[str, Any]], bool]:
     """Replace an unsafe or missing rewritten hook by the draft's selected hook when that one is safe."""
     original = str(draft_hook.get("text") or "").strip()
     hooks = [block for block in candidate if _role(block) == "hook"]
-    if not original or len(hooks) > 1:
+    if not original or original in (rejected_hooks or set()) or len(hooks) > 1:
         return candidate, False
     body = [block for block in candidate if _role(block) != "hook"]
     restored = [{"id": "voice_block_01", "role": "hook", "text": original, "fact_ids": _ids(draft_hook)}, *body]
-    if _hook_findings(restored, context):
+    if _hook_findings(restored, context) or any(
+        finding["severity"] == "hard" and finding.get("beat_index") == 1
+        for finding in deterministic_findings(restored, context)
+    ):
         return candidate, False
     return restored, True
 
@@ -572,8 +599,6 @@ def deterministic_findings(
 
     facts = {str(fact.get("id")): fact for fact in context.get("facts") or [] if isinstance(fact, dict) and fact.get("id")}
     usable = _usable_facts(context)
-    usable_claims = [str(fact.get("claim") or "") for fact in usable.values()]
-    allowed_numbers = set().union(*(_numbers(claim) for claim in usable_claims)) if usable_claims else set()
     for index, block in enumerate(candidate, 1):
         ids = _ids(block)
         unknown = sorted(set(ids) - set(facts))
@@ -585,9 +610,15 @@ def deterministic_findings(
         if _role(block) != "hook" and not ids:
             found.append(_finding("uncited_beat", "hard", "A factual beat cites no research fact.", index))
         text = str(block.get("text") or "")
+        if _role(block) == "hook" and not ids and hook_has_assertion(text):
+            found.append(_finding("uncited_hook", "hard", "A factual hook assertion cites no supporting research fact.", index))
+        cited_claims = [str(usable[identifier].get("claim") or "") for identifier in ids if identifier in usable]
+        if contradicts_citation(text, cited_claims):
+            found.append(_finding("citation_contradiction", "hard", "The claim reverses its cited evidence.", index))
+        allowed_numbers = set().union(*(_numbers(claim) for claim in cited_claims)) if cited_claims else set()
         numbers = sorted(
             number for number in _numbers(text)
-            if number not in allowed_numbers and not any(_rounded_from(text, claim) for claim in usable_claims)
+            if number not in allowed_numbers and not any(_rounded_from(text, claim) for claim in cited_claims)
         )
         if numbers:
             found.append(_finding("unsupported_number", "hard", "Numbers not in the research: " + ", ".join(numbers) + ".", index))
@@ -635,6 +666,27 @@ def _content_blockers(candidate: list[dict[str, Any]], context: dict[str, Any]) 
                 str(issue["issue_type"]), "hard", str(issue.get("reason") or ""), ids.get(str(issue.get("segment_id") or "")),
             ))
     return found
+
+
+def _verification_audit(verdict: VerifierResponse, blocks: list[dict[str, Any]], context: dict[str, Any],
+                        findings: list[dict[str, Any]]) -> dict[str, Any]:
+    findings.extend(check_claim_grounding(verdict.claim_grounding, blocks, _usable_facts(context)))
+    audit = {
+        "sentences": [item.model_dump(mode="json") for item in verdict.explanation_audit],
+        "answer_sufficiency": verdict.answer_sufficiency.model_dump(mode="json"),
+        "source": VERIFIED_AUDIT_SOURCE,
+        "verified_script": verified_script_key([str(block.get("text") or "") for block in blocks]),
+        "claim_grounding": {
+            "approved": verdict.grounded and not _severity([item for item in findings if item["code"] != "hook_lexical_grounding"], "hard"),
+            "evidence_key": evidence_key(blocks, context.get("facts") or []),
+            "evaluations": [item.model_dump(mode="json") for item in verdict.claim_grounding],
+        },
+    }
+
+    if hook_semantically_supported(blocks, context.get("facts") or [], audit):
+        findings[:] = [item for item in findings if item["code"] != "hook_lexical_grounding"]
+    audit["claim_grounding"]["approved"] = verdict.grounded and not _severity(findings, "hard")
+    return audit
 
 
 # ---------------------------------------------------------------------------
@@ -701,7 +753,8 @@ def _supported_obligations(context: dict[str, Any]) -> list[dict[str, Any]]:
 
 def _verifier_findings(verdict: VerifierResponse) -> list[dict[str, Any]]:
     found = [
-        _finding(item.code, item.severity, item.message, item.beat_index, source="verifier")
+        _finding(item.code, "hard" if item.code.casefold() == "answer_payoff_duplicate" and item.severity != "minor" else item.severity,
+                 item.message, item.beat_index, source="verifier")
         for item in verdict.findings
     ]
 
@@ -730,7 +783,7 @@ def _verifier_findings(verdict: VerifierResponse) -> list[dict[str, Any]]:
         (not verdict.payoff_fulfilled, "payoff_unfulfilled", "hard", "The verifier found the payoff unfulfilled."),
         (verdict.answer_sufficiency.verdict == "unanswered", "question_unanswered", "hard", "Answer sufficiency: unanswered."),
         (not verdict.hook_promise_kept, "hook_promise_broken", "major", "The hook promise is not kept."),
-        (verdict.answer_payoff_duplicate, "answer_payoff_duplicate", "major", "Answer and payoff say the same thing."),
+        (verdict.answer_payoff_duplicate, "answer_payoff_duplicate", "hard", "Answer and payoff say the same thing."),
     )
     known = {(item["code"], item["severity"]) for item in found}
     for failed, code, severity, message in checks:
@@ -748,7 +801,7 @@ def _guard(call: Callable[[], Any]) -> tuple[Any, str | None]:
     try:
         return call(), None
     except Exception as exc:  # noqa: BLE001 - every provider failure has a deterministic fallback
-        return None, f"{type(exc).__name__}: {str(exc)[:200]}"
+        return None, sanitized(f"{type(exc).__name__}: {str(exc)[:200]}")
 
 
 def _with_holistic(report: dict[str, Any], holistic: dict[str, Any], mode: str) -> dict[str, Any]:
@@ -837,18 +890,14 @@ def verify_current_script(
     brief = build_brief(blocks, context, report)
     verdict, error = _guard(lambda: provider.verify({
         **brief, "mode": "verify_current_script", "candidate": {"beats": _beats(blocks)}, "hook_grounding": _hook_grounding(blocks, context),
+        "claim_grounding_request": grounding_request(blocks, _usable_facts(context)),
         "deterministic_findings": findings,
     }))
     audit = None
     if verdict is not None:
         verdict = _checked_verdict(verdict, context)
         findings.extend(_verifier_findings(verdict))
-        audit = {
-            "sentences": [item.model_dump(mode="json") for item in verdict.explanation_audit],
-            "answer_sufficiency": verdict.answer_sufficiency.model_dump(mode="json"),
-            "source": VERIFIED_AUDIT_SOURCE,
-            "verified_script": verified_script_key([str(block.get("text") or "") for block in blocks]),
-        }
+        audit = _verification_audit(verdict, blocks, context, findings)
         findings.extend(_content_blockers(blocks, {**context, "explanation_audit": audit}))
     failures = _severity(findings, "hard")
     # A re-verification must also keep the current hook's promise.
@@ -866,6 +915,7 @@ def verify_current_script(
         report["changes"] = {key: [] for key in report["changes"]}
         report["rewrite"] = {
             "verified_by": "ai_verifier", "verified_script_signature": signature, "status": "verified",
+            "verified_evidence_key": evidence_key(blocks, context.get("facts") or []),
         }
     report["rewrite"]["contract_evaluations"] = [item.model_dump() for item in verdict.contract_evaluations] if verdict else []
     report["holistic"] = {"explanation_audit": audit}
@@ -941,6 +991,9 @@ def run_script_story_quality(
         return fallback_blocks, _with_holistic(fallback_report, holistic, "deterministic")
 
     draft_hook = next((block for block in original if _role(block) == "hook"), None)
+    rejected_hooks = {str(draft_hook.get("text") or "").strip()} if draft_hook and any(
+        finding.severity == "hard" and finding.beat_index == 1 for finding in critic.findings
+    ) else set()
     draft_has_hook = draft_hook is not None
     critic_payload = {
         "verdict": critic.verdict,
@@ -1011,9 +1064,9 @@ def run_script_story_quality(
         candidate = _candidate_blocks(response)
         hook_restored = False
         if draft_has_hook and (
-            not candidate or _role(candidate[0]) != "hook" or _hook_findings(candidate, context)
+            not candidate or _role(candidate[0]) != "hook" or any(item["code"] != "hook_lexical_grounding" for item in _hook_findings(candidate, context))
         ):
-            candidate, hook_restored = _restore_hook(candidate, context, draft_hook)
+            candidate, hook_restored = _restore_hook(candidate, context, draft_hook, rejected_hooks)
         # Verify the exact production text and citation mapping, including deterministic transitions.
         if finalize_candidate is not None:
             candidate = finalize_candidate(candidate)
@@ -1022,10 +1075,11 @@ def run_script_story_quality(
             findings.append(_finding("hook_restored", "minor", "The rewritten hook broke the hook intent; the selected Triple Hook was kept.", 1))
         verdict: VerifierResponse | None = None
         verifier_error: str | None = None
-        if not _severity(findings, "hard"):
+        if not _severity([item for item in findings if item["code"] not in {"uncited_hook", "hook_lexical_grounding"}], "hard"):
             verify_brief = {
                 **(request if number == 3 else brief),
                 "candidate": {"beats": _beats(candidate)}, "hook_grounding": _hook_grounding(candidate, context),
+                "claim_grounding_request": grounding_request(candidate, _usable_facts(context)),
                 "deterministic_findings": [item for item in findings if item["severity"] != "minor"],
             }
             verdict, verifier_error = _guard(lambda verify_brief=verify_brief: provider.verify(verify_brief))
@@ -1051,12 +1105,7 @@ def run_script_story_quality(
             if failures:
                 holistic["failure_type"] = ("COVERAGE_UNAVAILABLE" if not coverage_known else "RESEARCH_MISSING" if missing_research else "SUPPORTED_BUT_OMITTED")
 
-            audit = {
-                "sentences": [item.model_dump(mode="json") for item in verdict.explanation_audit],
-                "answer_sufficiency": verdict.answer_sufficiency.model_dump(mode="json"),
-                "source": VERIFIED_AUDIT_SOURCE,
-                "verified_script": verified_script_key([str(block.get("text") or "") for block in candidate]),
-            }
+            audit = _verification_audit(verdict, candidate, context, findings)
         if not _severity(findings, "hard"):
             findings.extend(_content_blockers(candidate, {**context, "explanation_audit": audit} if audit else context))
         if verdict is None and _contract_obligations(context):
@@ -1094,11 +1143,14 @@ def run_script_story_quality(
                 "grounded", "answers_question", "payoff_fulfilled", "hook_promise_kept", "premature_reveal",
             )} if verdict else None,
             "explanation_audit": audit,
+            "claim_grounding": audit.get("claim_grounding") if audit else None,
             "hard": _severity(findings, "hard"),
             "major": _severity(findings, "major"),
             "minor": _severity(findings, "minor"),
         }
         attempts.append(attempt)
+        if candidate and any(item.get("beat_index") == 1 for item in attempt["hard"]):
+            rejected_hooks.add(str(candidate[0].get("text") or "").strip())
         if research_need or (not attempt["hard"] and not attempt["major"]):
             break
         previous = candidate
@@ -1107,6 +1159,7 @@ def run_script_story_quality(
     holistic["attempts"] = [
         {key: value for key, value in item.items() if key not in {"explanation_audit"}} for item in attempts
     ]
+    holistic["rejected_hooks"] = sorted(rejected_hooks)
     passing = [item for item in attempts if "blocks" in item and not item["hard"]]
     if passing:
         best = min(passing, key=lambda item: (len(item["major"]), -item["attempt"]))
@@ -1134,6 +1187,7 @@ def run_script_story_quality(
             "beats": _beats(final),
             "verified_by": "ai_verifier" if best["status"] == "verified" else "deterministic_gate",
             "verified_script_signature": script_quality_signature(final) if best["status"] == "verified" else None,
+            "verified_evidence_key": evidence_key(final, context.get("facts") or []) if best["status"] == "verified" else None,
             "contract_evaluations": best["contract_evaluations"],
         }
         return final, _with_holistic(report, holistic, "holistic_ai")

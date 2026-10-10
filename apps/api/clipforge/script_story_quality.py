@@ -23,6 +23,7 @@ from .novelty import (
     prune_redundant_information,
 )
 from .payoff import reveals_protected_payoff, trim_post_payoff_fluff
+from .script_grounding import hook_has_assertion, narrated_fact_ids
 from .story_arc import arc_units, is_explanatory_question, order_blocks_for_reveal
 from .verbal_hook import information_gain, proposition_words
 
@@ -354,12 +355,12 @@ def _premature_reveal(blocks: list[dict[str, Any]], context: dict[str, Any]) -> 
     found: list[dict[str, Any]] = []
     for index, block in enumerate(blocks):
         role = str(block.get("role") or "").casefold()
-        fact_ids = {str(item) for item in block.get("fact_ids") or []}
+        fact_ids = {str(item) for item in narrated_fact_ids(block, list(units.values()))}
         # Fact identity is authoritative. A provider's broad ``answer`` role
         # can contain setup, while Triple Hook/payoff validators already own
         # lexical hook-spoiler detection.
         states_answer = primary in fact_ids if primary else role == "answer"
-        if role == "hook" and fact_ids & {str(item) for item in (arc.get("hook") or {}).get("protected_ids") or []}:
+        if role == "hook" and hook_has_assertion(str(block.get("text") or "")) and set(block.get("fact_ids") or []) & {str(item) for item in (arc.get("hook") or {}).get("protected_ids") or []}:
             found.append({"index": index, "block": block, "reason": "The hook carries a protected payoff fact."})
         elif states_answer and required_here - seen - fact_ids:
             found.append({
@@ -531,10 +532,11 @@ def assess_script_story_quality(
     has_supported_fact = any(
         isinstance(fact, dict) and fact_is_supported(fact) for fact in context.get("facts") or []
     )
-    research_insufficient = any(
-        item["issue_type"] in {"unsupported_claim", "too_thin"} and item["severity"] == "error"
-        for item in issues
-    ) or (not has_supported_fact and any(item["issue_type"] == "generic_statement" for item in issues))
+    coverage = context.get("research_coverage") or context.get("contract_coverage") or {}
+    research_insufficient = coverage.get("is_sufficient") is False or (
+        coverage.get("is_sufficient") is not True and not has_supported_fact
+        and any(item["severity"] == "error" for item in issues)
+    )
     blockers = sorted({item["issue_type"] for item in issues if item["severity"] == "error"})
     return {
         "version": QUALITY_VERSION,

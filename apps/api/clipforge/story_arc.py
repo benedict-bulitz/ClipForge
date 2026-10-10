@@ -928,7 +928,9 @@ def story_brief(arc: dict[str, Any] | None) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 def _block_units(block: dict[str, Any], units: dict[str, dict[str, Any]]) -> list[str]:
-    return [fact_id for fact_id in block.get("fact_ids") or [] if fact_id in units]
+    from .script_grounding import narrated_fact_ids
+
+    return [fact_id for fact_id in narrated_fact_ids(block, list(units.values())) if fact_id in units]
 
 
 def _dominant_role(unit_ids: list[str], units: dict[str, dict[str, Any]], arc: dict[str, Any]) -> str | None:
@@ -1066,7 +1068,7 @@ def order_blocks_for_reveal(blocks: list[dict[str, Any]], arc: dict[str, Any] | 
     def states_answer(block: dict[str, Any]) -> bool:
         # By fact identity, or the writer's own answer statement: a
         # synthesized conclusion may cite other facts, or none.
-        return primary in (block.get("fact_ids") or []) or str(block.get("role") or "").casefold() == "answer"
+        return primary in _block_units(block, units) or str(block.get("role") or "").casefold() == "answer"
 
     answer = [index for index, block in enumerate(blocks) if states_answer(block)]
     needed = [
@@ -1184,8 +1186,15 @@ def story_script_issues(state: dict[str, Any]) -> list[str]:
                 issues.append(f"fact_before_dependency:{fact_id}")
     withhold = bool(arc.get("curiosity_gap", {}).get("withhold_answer"))
     for block, unit_ids in mapped:
-        if str(block.get("role") or "").casefold() == "hook" and withhold and set(unit_ids) & set(arc.get("hook", {}).get("protected_ids") or []):
+        if str(block.get("role") or "").casefold() == "hook" and withhold and set(block.get("fact_ids") or []) & set(arc.get("hook", {}).get("protected_ids") or []):
+            from .script_grounding import hook_has_assertion
+
+            if not hook_has_assertion(str(block.get("text") or "")):
+                continue
             issues.append("protected_reveal_in_hook")
+            for identifier in block.get("fact_ids") or []:
+                if any(first_seen.get(dep, -1) > 0 for dep in units.get(identifier, {}).get("depends_on") or []):
+                    issues.append(f"fact_before_dependency:{identifier}")
     answer_block = next((unit_ids for block, unit_ids in mapped if str(block.get("role") or "").casefold() == "answer" and unit_ids), None)
     if answer_block and primary not in answer_block and any(units[fact_id]["role"] == "secondary_insight" for fact_id in answer_block):
         issues.append("secondary_insight_presented_as_answer")
@@ -1198,8 +1207,9 @@ def story_script_issues(state: dict[str, Any]) -> list[str]:
             issues.append(f"duplicate_information_block:{block.get('id') or ''}")
         covered |= set(unit_ids)
         previous = key if key else previous
-    if final and final in first_seen:
-        tail = mapped[max(index for index, (_b, unit_ids) in enumerate(mapped) if final in unit_ids) + 1:]
+    final_positions = [index for index, (_b, unit_ids) in enumerate(mapped) if final in unit_ids]
+    if final and final_positions:
+        tail = mapped[max(final_positions) + 1:]
         for block, unit_ids in tail:
             new = [fact_id for fact_id in unit_ids if fact_id != final]
             if _OUTRO.search(str(block.get("text") or "")) or (not new and str(block.get("role") or "").casefold() != "detail"):

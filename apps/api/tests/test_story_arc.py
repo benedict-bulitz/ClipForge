@@ -109,7 +109,7 @@ def generate(monkeypatch, tmp_path: Path, question: str, facts: list[dict]) -> d
 def body_fact_order(state: dict) -> list[str]:
     order: list[str] = []
     for block in state["script"]["blocks"]:
-        for fact_id in block.get("fact_ids") or []:
+        for fact_id in story_module._block_units(block, units(state["story_arc"])):
             if fact_id not in order:
                 order.append(fact_id)
     return order

@@ -911,7 +911,7 @@ def _require_ready(state: dict) -> None:
     if not readiness["ready"]:
         raise ScriptNotReady(
             not_ready_message(readiness),
-            category="research_required" if readiness["research_required"] else "script_not_ready",
+            category=readiness["failure_category"],
         )
 
 

@@ -277,7 +277,12 @@ class Writer:
         pass
 
     def generate(self, _request):
-        return ScriptWriterResult(ScriptDraftV2(language="de", blocks=[ScriptBlockV2(**block) for block in WRITER_BLOCKS]), "connected")
+        # Preserve the archived run above; the provider now supplies the exact
+        # citations for each payoff claim rather than an ambiguous union.
+        blocks = [ScriptBlockV2(**block) for block in WRITER_BLOCKS[:-1]]
+        blocks += [ScriptBlockV2(role="support", text=S_MORE_OFTEN, fact_ids=["fact_03"]),
+                   ScriptBlockV2(role="payoff", text=S_RESOLUTION, fact_ids=["fact_04"])]
+        return ScriptWriterResult(ScriptDraftV2(language="de", blocks=blocks), "connected")
 
 
 class OfflineReviewer:

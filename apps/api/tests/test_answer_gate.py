@@ -76,7 +76,8 @@ M_PAYOFF = "Darum wirkt das Foto schlechter: Dein Gehirn kennt dein Spiegelbild 
 MIRROR_SCRIPT = [M_ANSWER, M_DIFFERENT, M_STRANGE, M_REVERSED, M_UNMIRRORED, M_OTHERS, M_VOICE, M_VOICE_MORE, M_PAYOFF]
 MIRROR_BLOCKS = [
     {"role": "answer", "text": f"{M_ANSWER} {M_DIFFERENT} {M_STRANGE}", "fact_ids": ["fact_01"]},
-    {"role": "explanation", "text": f"{M_REVERSED} {M_UNMIRRORED} {M_OTHERS}", "fact_ids": ["fact_02"]},
+    {"role": "explanation", "text": f"{M_REVERSED} {M_UNMIRRORED}", "fact_ids": ["fact_02"]},
+    {"role": "explanation", "text": M_OTHERS, "fact_ids": ["fact_01", "fact_02"]},
     {"role": "support", "text": f"{M_VOICE} {M_VOICE_MORE}", "fact_ids": ["fact_03"]},
     {"role": "payoff", "text": M_PAYOFF, "fact_ids": ["fact_04"]},
 ]
@@ -150,11 +151,17 @@ def body(blocks: list[dict]) -> list[str]:
 # PHOTO: valid, duplicated analogy compressed
 # ---------------------------------------------------------------------------
 
-def test_photo_drops_the_voice_analogy_the_hook_already_spent():
+def test_photo_drops_spent_analogy_and_unverified_paraphrase():
     pruned, repairs, state = repaired("mirror")
-    assert [repair["action"] for repair in repairs] == ["remove_hook_analogy_reuse", "remove_hook_analogy_reuse"]
-    assert {repair["text"] for repair in repairs} == {M_VOICE, M_VOICE_MORE}
-    assert body(pruned) == [M_ANSWER, M_DIFFERENT, M_STRANGE, M_REVERSED, M_UNMIRRORED, M_OTHERS, M_PAYOFF]
+    assert [repair["action"] for repair in repairs] == ["remove_hook_analogy_reuse", "remove_weak_tail", "remove_hook_analogy_reuse"]
+    assert {repair["text"] for repair in repairs} == {M_VOICE, M_VOICE_MORE, M_OTHERS}
+    # The reconstructed facts do not lexically establish this paraphrase.
+    # No independent claim assessment exists, so it cannot borrow support
+    # from question wording or another beat instead of its actual citations.
+    _, original_state = real("mirror")
+    disputed = next(unit for unit in assess_information_gain(original_state)["units"] if unit["text"] == M_OTHERS)
+    assert disputed["evidence"]["kind"] == "lexical_mismatch"
+    assert body(pruned) == [M_ANSWER, M_DIFFERENT, M_STRANGE, M_REVERSED, M_UNMIRRORED, M_PAYOFF]
     assert set(body(pruned)) <= set(MIRROR_SCRIPT)  # nothing invented or rewritten
     readiness = content_readiness(state)
     assert readiness["ready"] and readiness["status"] == "ready"

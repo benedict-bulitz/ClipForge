@@ -12,6 +12,7 @@ from typing import Any
 
 from .novelty import current_information_gain
 from .renderer import RenderUnavailable
+from .script_grounding import evidence_key, hook_semantically_supported
 from .script_story_quality import current_script_story_quality, script_quality_signature
 from .triple_hook import state_context
 from .verbal_hook import narrates_failure, ungrounded_cause
@@ -112,7 +113,8 @@ def content_readiness(state: dict[str, Any]) -> dict[str, Any]:
         script = state.get("script") or {}
         rewrite = (script.get("script_story_quality_v1") or {}).get("rewrite") or {}
         signature = script_quality_signature(script.get("blocks") or [])
-        if rewrite.get("verified_by") != "ai_verifier" or rewrite.get("verified_script_signature") != signature:
+        if (rewrite.get("verified_by") != "ai_verifier" or rewrite.get("verified_script_signature") != signature
+                or rewrite.get("verified_evidence_key") not in {None, evidence_key(script.get("blocks") or [], state.get("facts") or [])}):
             code = "contract_reverify_failed" if rewrite.get("status") == "CONTRACT_REVERIFY_FAILED" else "contract_verification_stale"
             blocking.append({"code": code, "message": "No independent contract verification for the current script."})
     if state.get("contract") and contract_coverage.get("is_sufficient") is False:
@@ -128,16 +130,34 @@ def content_readiness(state: dict[str, Any]) -> dict[str, Any]:
             cause = ungrounded_cause(hook, state_context(state))
         except Exception:  # noqa: BLE001 - a broken hook context must not hide the other checks
             cause = []
-        if cause:
+        if cause and not hook_semantically_supported((state.get("script") or {}).get("blocks") or [],
+                                                     state.get("facts") or [], state.get("explanation_audit") or {}):
             blocking.append({
                 "code": "hook_unsupported_claim",
                 "message": "The hook asserts a cause no researched fact supports: " + ", ".join(cause[:4]) + ".",
             })
     sufficiency = report.get("answer_sufficiency") if isinstance(report.get("answer_sufficiency"), dict) else {}
-    research_required = (bool(sufficiency.get("research_required")) and any(
-        item["code"] == "information_gain_answer_insufficient" for item in blocking
-    )) or any(item["code"] in {"research_insufficient", "research_contract_insufficient"} for item in blocking) or bool(
-        quality.get("research_insufficient") and blocking
+    # Research coverage judges evidence; a script that omitted or miscited
+    # already-supported information must not request another research run.
+    evidence_missing = any(item["code"] in {"research_insufficient", "research_contract_insufficient"} for item in blocking)
+    evidence_sufficient = (bool(state.get("contract")) and contract_coverage.get("is_sufficient") is True) or (
+        not state.get("contract") and package is not None and package.get("status") == "sufficient"
+    )
+    research_required = evidence_missing if evidence_sufficient else evidence_missing or bool(
+        (sufficiency.get("research_required") or quality.get("research_insufficient")) and blocking
+    )
+    recovery = quality.get("generation_recovery") or quality.get("holistic") or {}
+    grounding_failed = any(item["code"] in {"script_story_quality_unsupported_claim", "hook_unsupported_claim"}
+                           for item in blocking) or any(
+        any(token in str(item.get("code") or "").lower()
+            for token in ("ground", "citation", "uncited", "unsupported", "fabricated", "unusable", "contradict"))
+        for item in [*(quality.get("verification_diagnostics") or {}).get("findings", []),
+                     *(item for attempt in recovery.get("attempts") or [] for item in attempt.get("hard") or [])]
+        if item.get("severity") == "hard"
+    )
+    failure_category = None if not blocking else "research_required" if research_required else (
+        "script_recovery_failed" if recovery.get("status") == "needs_fix"
+        else "script_grounding_failed" if grounding_failed else "script_not_ready"
     )
     if not blocking:
         status = "ready"
@@ -150,6 +170,7 @@ def content_readiness(state: dict[str, Any]) -> dict[str, Any]:
         "ready": not blocking,
         "status": status,
         "research_required": research_required,
+        "failure_category": failure_category,
         "blocking": blocking,
         "answer_sufficiency": sufficiency,
     }
