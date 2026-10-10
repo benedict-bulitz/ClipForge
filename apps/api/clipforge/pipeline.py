@@ -85,6 +85,7 @@ from .script_writer import (
 from .story_arc import (
     annotate_story_roles,
     arc_units,
+    editorial_payoff_plan,
     essential_fact_ids,
     omittable_fact_ids,
     order_blocks_for_reveal,
@@ -496,10 +497,10 @@ def _generate_body_with_v2_or_fallback(
                 *RETENTION_REQUIREMENTS,
                 "Stop when the explanation is complete.",
             ],
-            payoff_plan=payoff_plan,
+            payoff_plan=editorial_payoff_plan(payoff_plan, question_answer_contract),
             format_plan=format_plan,
             novelty_plan=novelty_plan,
-            story_arc=story_brief(story_arc) or None,
+            story_arc=story_brief(story_arc, question_answer_contract=question_answer_contract) or None,
             required_answer_evidence=answer_evidence,
         )
     except ValidationError as exc:
@@ -552,7 +553,7 @@ def _generate_body_with_v2_or_fallback(
             "Respect the payoff plan; do not add a generic post-payoff outro.",
             *RETENTION_REQUIREMENTS,
         ],
-        story_arc=story_brief(story_arc) or None,
+        story_arc=story_brief(story_arc, question_answer_contract=question_answer_contract) or None,
     )
     try:
         review_result = review_script_v2(review_request, selected_review_provider)

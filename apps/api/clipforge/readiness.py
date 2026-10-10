@@ -178,6 +178,11 @@ def content_readiness(state: dict[str, Any]) -> dict[str, Any]:
 
 def not_ready_message(readiness: dict[str, Any], language: str | None = None) -> str:
     """Localized user failure; technical reasons stay in readiness.blocking."""
+    script_failed = readiness.get("failure_category") in {"script_grounding_failed", "script_recovery_failed"}
     if str(language or readiness.get("language") or "en").startswith("de"):
+        if script_failed:
+            return "ClipForge konnte den Text für dieses Video noch nicht zuverlässig prüfen. Bitte versuche es erneut."
         return "ClipForge konnte für diese Frage noch keine ausreichend belegte Antwort erstellen. Bitte versuche es erneut."
+    if script_failed:
+        return "ClipForge couldn't reliably verify the script for this video yet. Please try again."
     return "ClipForge couldn't create a sufficiently supported answer for this question yet. Please try again."

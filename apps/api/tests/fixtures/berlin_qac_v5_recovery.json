@@ -1,0 +1,1755 @@
+{
+  "provenance": {
+    "job_id": "f33fda96-51ac-4863-aa37-c3a00faabdf0",
+    "project_id": "c4bf81d9-c20d-4233-bf7b-a2b5ad0ced35",
+    "runtime_commit": "426dc932a6f2220d1ecaae4563ca19c38bad1205",
+    "source": "read-only SQLite project revision 1",
+    "verifier_responses": "Flags, findings, obligation evaluations and claim reviews persisted per attempt; full explanation audits were not persisted.",
+    "limitations": "Full original provider requests/responses and per-attempt explanation audits were not persisted. payoff_plan is the final persisted plan; do not treat it as the original writer request."
+  },
+  "job": {
+    "status": "failed",
+    "current_stage": "storyboard",
+    "progress": 0.16554758045843948,
+    "failure_category": "script_recovery_failed",
+    "failure_message": "ClipForge konnte für diese Frage noch keine ausreichend belegte Antwort erstellen. Bitte versuche es erneut.",
+    "started_at": "2026-10-10 05:12:18.306431",
+    "completed_at": "2026-10-10 05:16:41.552624"
+  },
+  "prompt": "Warum wurde die Berliner Mauer gebaut?",
+  "intent": {
+    "topic": "Warum wurde die Berliner Mauer gebaut",
+    "intent": "explain",
+    "question": "Warum wurde die Berliner Mauer gebaut?",
+    "language": "de",
+    "content_type": "factual_explainer",
+    "tone": "fast_documentary",
+    "research_required": true,
+    "visual_style": "documentary_graphics",
+    "shortform": true,
+    "question_intent": {
+      "version": 1,
+      "source": "planner",
+      "original_question": "Warum wurde die Berliner Mauer gebaut?",
+      "intended_question": "Warum ließ die DDR-Führung die Berliner Mauer bauen?",
+      "question_type": "causal_why",
+      "answer_mode": "explanation",
+      "actor": "die DDR-Führung",
+      "target_phenomenon": "der Bau der Berliner Mauer",
+      "key_contrast_or_condition": "Die Mauer trennte Ost- und West-Berlin und sperrte Wege in den Westen.",
+      "expected_explanation_domain": "politische und wirtschaftliche Gründe der DDR während der deutschen Teilung",
+      "explicitly_excluded_interpretations": [
+        "Wie die Berliner Mauer technisch gebaut wurde.",
+        "Warum einzelne Fluchten über die Mauer gelangen oder scheiterten.",
+        "Warum die Mauer 1989 fiel."
+      ],
+      "confidence": "high",
+      "candidates": [
+        {
+          "question_type": "causal_why",
+          "score": 0.6,
+          "signal": "a why question without agency signals"
+        }
+      ],
+      "ambiguous": false,
+      "reinterpreted": false,
+      "grammar_question_type": "causal_why"
+    }
+  },
+  "facts": [
+    {
+      "id": "fact_01",
+      "claim": "Die Berliner Mauer war während der Teilung Deutschlands ein Grenzbefestigungssystem der Deutschen Demokratischen Republik (DDR), das vom 13. August 1961 bis zum 9. November 1989 bestand, um West-Berlin vom Gebiet der DDR hermetisch abzuriegeln. Sie trennte nicht nur die Verbindungen im Gebiet Groß-Berlins zwischen dem Ostteil („Hauptstadt der DDR“) und dem Westteil der Stadt, sondern umschloss alle drei Sektoren des Westteils vollständig und unterbrach damit auch seine Verbindungen zum sonstigen Umland, das im DDR-Bezirk Potsdam lag.",
+      "confidence": 0.78,
+      "priority": "MUST_KNOW",
+      "sources": [
+        {
+          "label": "Berliner Mauer",
+          "url": "https://de.wikipedia.org/wiki/Berliner_Mauer",
+          "source_id": "src_01",
+          "source_type": "reference",
+          "authority": "medium",
+          "published_at": null,
+          "fetched_at": "2026-10-10T05:13:09+00:00"
+        }
+      ],
+      "verification": "source_attributed",
+      "research_role": "core_answer",
+      "evidence_ids": [
+        "ev_01"
+      ]
+    },
+    {
+      "id": "fact_02",
+      "claim": "Sie wurde aufgrund eines Beschlusses der politischen Führung der Sowjetunion Anfang August 1961 und einer wenige Tage später ergehenden Weisung der DDR-Regierung errichtet.",
+      "confidence": 0.78,
+      "priority": "MUST_KNOW",
+      "sources": [
+        {
+          "label": "Berliner Mauer",
+          "url": "https://de.wikipedia.org/wiki/Berliner_Mauer",
+          "source_id": "src_01",
+          "source_type": "reference",
+          "authority": "medium",
+          "published_at": null,
+          "fetched_at": "2026-10-10T05:13:09+00:00"
+        }
+      ],
+      "verification": "source_attributed",
+      "research_role": "mechanism",
+      "evidence_ids": [
+        "ev_02"
+      ]
+    },
+    {
+      "id": "fact_03",
+      "claim": "Die Berliner Mauer ergänzte die 1378 Kilometer lange innerdeutsche Grenze zwischen der DDR und der Bundesrepublik, die bereits mehr als neun Jahre vorher „befestigt“ worden war, um den Flüchtlingsstrom zu stoppen.",
+      "confidence": 0.78,
+      "priority": "MUST_KNOW",
+      "sources": [
+        {
+          "label": "Berliner Mauer",
+          "url": "https://de.wikipedia.org/wiki/Berliner_Mauer",
+          "source_id": "src_01",
+          "source_type": "reference",
+          "authority": "medium",
+          "published_at": null,
+          "fetched_at": "2026-10-10T05:13:09+00:00"
+        }
+      ],
+      "verification": "source_attributed",
+      "research_role": "mechanism",
+      "evidence_ids": [
+        "ev_03"
+      ]
+    },
+    {
+      "id": "fact_04",
+      "claim": "Vieles spricht dafür, dass die Flucht über die Mauer schließlich nur gelingen konnte, weil ein West-Berliner Polizeibeamter Feuerschutz gab.",
+      "confidence": 0.78,
+      "priority": "MUST_KNOW",
+      "sources": [
+        {
+          "label": "Todesopfer an der Berliner Mauer",
+          "url": "https://de.wikipedia.org/wiki/Todesopfer_an_der_Berliner_Mauer",
+          "source_id": "src_05",
+          "source_type": "reference",
+          "authority": "medium",
+          "published_at": null,
+          "fetched_at": "2026-10-10T05:13:10+00:00"
+        }
+      ],
+      "verification": "source_attributed",
+      "research_role": "mechanism",
+      "evidence_ids": [
+        "ev_33"
+      ]
+    },
+    {
+      "id": "fact_05",
+      "claim": "Um die Mitte der 1960er Jahre waren andere Bezeichnungen, zu denen auch „die Mauer“ gehört hatte, aus der öffentlichen Sprache verschwunden, dagegen galt gesellschaftlich die Bezeichnung „antifaschistischer Schutzwall“ als Zeichen politischen Wohlverhaltens.",
+      "confidence": 0.78,
+      "priority": "USEFUL",
+      "sources": [
+        {
+          "label": "Berliner Mauer",
+          "url": "https://de.wikipedia.org/wiki/Berliner_Mauer",
+          "source_id": "src_01",
+          "source_type": "reference",
+          "authority": "medium",
+          "published_at": null,
+          "fetched_at": "2026-10-10T05:13:09+00:00"
+        }
+      ],
+      "verification": "source_attributed",
+      "research_role": "observation",
+      "evidence_ids": [
+        "ev_06"
+      ]
+    },
+    {
+      "id": "fact_06",
+      "claim": "Der Bau der Berliner Mauer am 13. August 1961 riegelte Ostberlin von allen Übergangswegen zu Westberlin ab.",
+      "confidence": 0.78,
+      "priority": "USEFUL",
+      "sources": [
+        {
+          "label": "Bau der Berliner Mauer - Geschichte kompakt",
+          "url": "https://www.geschichte-abitur.de/lexikon/uebersicht-deutsche-teilung/bau-der-berliner-mauer",
+          "source_id": "src_03",
+          "source_type": "specialist_secondary",
+          "authority": "medium",
+          "published_at": "2016-09-07",
+          "fetched_at": "2026-10-10T05:13:14+00:00"
+        }
+      ],
+      "verification": "source_attributed",
+      "research_role": "number",
+      "evidence_ids": [
+        "ev_18"
+      ]
+    },
+    {
+      "id": "fact_07",
+      "claim": "Der Mangel an Arbeitskräften war inzwischen so schwerwiegend, dass die DDR gefährdet war, ihre Wirtschaft nicht mehr aufrechterhalten zu können, denn allein im Ostteil Berlins fehlten 45.000 Arbeitskräfte.",
+      "confidence": 0.78,
+      "priority": "USEFUL",
+      "sources": [
+        {
+          "label": "Berliner Mauer",
+          "url": "https://de.wikipedia.org/wiki/Berliner_Mauer",
+          "source_id": "src_01",
+          "source_type": "reference",
+          "authority": "medium",
+          "published_at": null,
+          "fetched_at": "2026-10-10T05:13:09+00:00"
+        }
+      ],
+      "verification": "source_attributed",
+      "research_role": "number",
+      "evidence_ids": [
+        "ev_08"
+      ]
+    },
+    {
+      "id": "fact_08",
+      "claim": "Die gemeinsame Politik über die ehemalige Reichshauptstadt scheiterte jedoch, weil es in West- und Ostberlin zur Entwicklung zweier verschiedener politischer Systeme kam.",
+      "confidence": 0.78,
+      "priority": "USEFUL",
+      "sources": [
+        {
+          "label": "Bau der Berliner Mauer - Geschichte kompakt",
+          "url": "https://www.geschichte-abitur.de/lexikon/uebersicht-deutsche-teilung/bau-der-berliner-mauer",
+          "source_id": "src_03",
+          "source_type": "specialist_secondary",
+          "authority": "medium",
+          "published_at": "2016-09-07",
+          "fetched_at": "2026-10-10T05:13:14+00:00"
+        }
+      ],
+      "verification": "source_attributed",
+      "research_role": "caveat",
+      "evidence_ids": [
+        "ev_20"
+      ]
+    }
+  ],
+  "contract": {
+    "question_type": "historical_motive",
+    "core_question": "Warum wurde die Berliner Mauer gebaut?",
+    "primary_answer_obligation": {
+      "id": "primary_motive",
+      "description": "Erklären, dass die Mauer gebaut wurde, um die Flucht beziehungsweise Abwanderung von Menschen aus der DDR in den Westen zu verhindern.",
+      "is_primary": true,
+      "is_required": true,
+      "fact_ids": []
+    },
+    "required_supporting_obligations": [],
+    "optional_context": [
+      "Die DDR- beziehungsweise SED-Führung veranlasste den Bau der Mauer; der Bau begann 1961.",
+      "West-Berlin war ein wichtiger Fluchtweg aus der DDR, und viele Menschen verließen die DDR.",
+      "Die Abwanderung führte für die DDR zu Verlusten an Bevölkerung sowie an Arbeitskräften, insbesondere Fachkräften, und schwächte sie wirtschaftlich und politisch.",
+      "Die Grenzschließung diente außerdem der Sicherung politischer Kontrolle, der Herrschaft der SED und der Stabilität des SED-Regimes.",
+      "Die Mauer wurde am 13. August 1961 errichtet; die DDR bezeichnete sie propagandistisch als „antifaschistischen Schutzwall“.",
+      "Die Teilung Deutschlands und Berlins sowie die Spannungen des Kalten Krieges bilden den historischen Kontext.",
+      "Fluchtzahlen, die Berlin-Krise und die konkreten Folgen des Arbeitskräfteverlusts können weiterführend erläutert werden."
+    ],
+    "causal_mechanistic_chain": [],
+    "historical_motive": "Die unmittelbare Absicht war, die Flucht beziehungsweise Abwanderung von Menschen aus der DDR in den Westen zu verhindern.",
+    "required_mechanism_concepts": [
+      "Flucht beziehungsweise Abwanderung von Menschen aus der DDR in den Westen verhindern"
+    ],
+    "minimum_answer_depth": 1,
+    "unresolved_research_gaps": []
+  },
+  "coverage": {
+    "is_sufficient": true,
+    "missing_obligations": [],
+    "coverage": [
+      {
+        "obligation_id": "primary_motive",
+        "status": "satisfied",
+        "supporting_fact_ids": [
+          "fact_01",
+          "fact_03",
+          "fact_06"
+        ],
+        "reasoning": "Fact 03 nennt ausdrücklich das Ziel, den Flüchtlingsstrom zu stoppen. Die Berliner Mauer ergänzte diese bereits zur Fluchtverhinderung befestigte innerdeutsche Grenze. Fact 01 und Fact 06 belegen den dafür eingesetzten Mechanismus: die hermetische Abriegelung West-Berlins beziehungsweise die Schließung der Übergänge von Ost- nach West-Berlin."
+      }
+    ],
+    "diagnostic_reason": null
+  },
+  "minimality": {
+    "repaired": true,
+    "repair_check": {
+      "minimally_sufficient": true,
+      "preserves_question_semantics": true,
+      "preserves_explicit_constraints": true,
+      "preserves_primary_cause_or_motive": true,
+      "preserves_necessary_chain": true,
+      "components": [
+        {
+          "component_id": "N1",
+          "correctly_required_or_optional": true,
+          "reason": "Der unmittelbare Zweck, Flucht beziehungsweise Abwanderung aus der DDR in den Westen zu verhindern, bleibt als primäre erforderliche Antwortpflicht erhalten."
+        },
+        {
+          "component_id": "O1",
+          "correctly_required_or_optional": true,
+          "reason": "Die Benennung der DDR- oder SED-Führung als Bauveranlasser steht ausschließlich im optionalen Kontext."
+        },
+        {
+          "component_id": "O2",
+          "correctly_required_or_optional": true,
+          "reason": "Der Beginn des Baus 1961 ist nur optionaler historischer Kontext."
+        },
+        {
+          "component_id": "O3",
+          "correctly_required_or_optional": true,
+          "reason": "West-Berlin als Fluchtweg wird nur optional genannt und nicht als erforderlicher Begriff oder Kettenschritt verlangt."
+        },
+        {
+          "component_id": "O4",
+          "correctly_required_or_optional": true,
+          "reason": "Das Ausmaß der Abwanderung ist optionaler Anlasskontext und keine Antwortvoraussetzung."
+        },
+        {
+          "component_id": "O5",
+          "correctly_required_or_optional": true,
+          "reason": "Arbeitskräfte- und Fachkräfteverluste sind ausschließlich optionaler Vertiefungskontext."
+        },
+        {
+          "component_id": "O6",
+          "correctly_required_or_optional": true,
+          "reason": "Der Bevölkerungsverlust ist nur optionaler Kontext."
+        },
+        {
+          "component_id": "O7",
+          "correctly_required_or_optional": true,
+          "reason": "Die wirtschaftliche Schwächung der DDR wird nicht mehr gefordert, sondern nur optional eingeordnet."
+        },
+        {
+          "component_id": "O8",
+          "correctly_required_or_optional": true,
+          "reason": "Die politische Schwächung der DDR wird nicht mehr als notwendige Erklärung verlangt."
+        },
+        {
+          "component_id": "O9",
+          "correctly_required_or_optional": true,
+          "reason": "Herrschafts- und Kontrollsicherung der SED erscheint ausschließlich als optionales breiteres Ziel."
+        },
+        {
+          "component_id": "O10",
+          "correctly_required_or_optional": true,
+          "reason": "Die Stabilität des SED-Regimes wird nur als optionaler Kontext geführt."
+        },
+        {
+          "component_id": "O11",
+          "correctly_required_or_optional": true,
+          "reason": "Die frühere dreistufige Kausalkette wurde entfernt; die erforderliche Mindesttiefe beträgt nun korrekt eins."
+        }
+      ],
+      "reason": "Der reparierte Vertrag verlangt nur die minimal ausreichende unmittelbare Motivantwort und behält sie sowohl in der primären Antwortpflicht als auch im historischen Motiv bei. Alle weitergehenden Ursachen, Folgen, Akteure, Zeitangaben und Kontextinformationen sind ausschließlich optional; es bestehen keine zusätzlichen Pflichtkonzepte, Stützpflichten oder Kettenanforderungen."
+    }
+  },
+  "writer": {
+    "attempted": true,
+    "status": "v2_success",
+    "provider": "openai",
+    "error": null,
+    "fact_ids": [
+      "fact_01",
+      "fact_02",
+      "fact_03",
+      "fact_04",
+      "fact_05",
+      "fact_06"
+    ],
+    "writer_draft": [
+      {
+        "role": "answer",
+        "text": "Am 13. August 1961 riegelte die DDR Ost-Berlin von allen Wegen nach West-Berlin ab.",
+        "fact_ids": [
+          "fact_06"
+        ]
+      },
+      {
+        "role": "explanation",
+        "text": "Der Hauptgrund: Die Mauer sollte den Flüchtlingsstrom aus der DDR in den Westen stoppen. Sie ergänzte die schon zuvor befestigte Grenze zwischen DDR und Bundesrepublik.",
+        "fact_ids": [
+          "fact_03"
+        ]
+      },
+      {
+        "role": "support",
+        "text": "Dafür schloss die DDR West-Berlin vollständig vom DDR-Gebiet ab und trennte damit Ost und West in der Stadt.",
+        "fact_ids": [
+          "fact_01"
+        ]
+      },
+      {
+        "role": "support",
+        "text": "Der Bau folgte einem Beschluss der sowjetischen Führung und einer anschließenden Weisung der DDR-Regierung.",
+        "fact_ids": [
+          "fact_02"
+        ]
+      },
+      {
+        "role": "support",
+        "text": "In der DDR wurde die Mauer später offiziell „antifaschistischer Schutzwall“ genannt. Diese Bezeichnung galt als politisch erwünscht.",
+        "fact_ids": [
+          "fact_05"
+        ]
+      },
+      {
+        "role": "payoff",
+        "text": "Die Abriegelung war so streng, dass Fluchten über die Mauer offenbar nur gelangen konnten, wenn ein West-Berliner Polizist Feuerschutz gab.",
+        "fact_ids": [
+          "fact_04"
+        ]
+      }
+    ],
+    "reviewed_draft": [
+      {
+        "role": "answer",
+        "text": "Am 13. August 1961 riegelte die DDR Ost-Berlin von allen Übergangswegen nach West-Berlin ab.",
+        "fact_ids": [
+          "fact_06"
+        ]
+      },
+      {
+        "role": "explanation",
+        "text": "Der Hauptgrund war der Flüchtlingsstrom aus der DDR in den Westen.",
+        "fact_ids": [
+          "fact_03"
+        ]
+      },
+      {
+        "role": "support",
+        "text": "Dafür schloss die DDR West-Berlin vollständig vom DDR-Gebiet ab und trennte damit die Wege durch die Stadt.",
+        "fact_ids": [
+          "fact_01"
+        ]
+      },
+      {
+        "role": "payoff",
+        "text": "So versperrte die DDR vielen Menschen den Weg in den Westen – deshalb ließ sie die Berliner Mauer bauen.",
+        "fact_ids": [
+          "fact_01",
+          "fact_03"
+        ]
+      }
+    ],
+    "review": {
+      "status": "revised",
+      "issues": [
+        {
+          "code": "OFF_TOPIC_PAYOFF",
+          "message": "Der letzte Block beantwortet nicht, warum die Mauer gebaut wurde, sondern beschreibt eine einzelne Flucht und gehört zu einer ausgeschlossenen Deutung der Frage."
+        },
+        {
+          "code": "REDUNDANT_CONTEXT",
+          "message": "Die Bezeichnung „antifaschistischer Schutzwall“ erklärt den Baugrund nicht und lenkt vom Flüchtlingsstrom als Hauptgrund ab."
+        },
+        {
+          "code": "WEAK_CAUSAL_ENDING",
+          "message": "Der Text endet mit einem Beispiel zur Strenge der Grenze statt mit der klaren Verbindung: Die DDR wollte den Flüchtlingsstrom in den Westen stoppen."
+        }
+      ],
+      "error": null,
+      "provider": "openai"
+    },
+    "selected_fact_ids": [
+      "fact_01",
+      "fact_03",
+      "fact_06",
+      "fact_02",
+      "fact_04",
+      "fact_05",
+      "fact_07",
+      "fact_08"
+    ],
+    "explanation_audit": {
+      "sentences": [
+        {
+          "sentence": "Am 13. August 1961 riegelte die DDR Ost-Berlin von allen Übergangswegen nach West-Berlin ab.",
+          "delta": "advances_explanation",
+          "needed": true
+        },
+        {
+          "sentence": "Der Hauptgrund war der Flüchtlingsstrom aus der DDR in den Westen.",
+          "delta": "advances_explanation",
+          "needed": true
+        },
+        {
+          "sentence": "Dafür schloss die DDR West-Berlin vollständig vom DDR-Gebiet ab und trennte damit die Wege durch die Stadt.",
+          "delta": "useful_evidence",
+          "needed": true
+        },
+        {
+          "sentence": "So versperrte die DDR vielen Menschen den Weg in den Westen – deshalb ließ sie die Berliner Mauer bauen.",
+          "delta": "advances_explanation",
+          "needed": true
+        }
+      ],
+      "answer_sufficiency": {
+        "verdict": "answered",
+        "one_sentence_answer": "Die DDR ließ die Berliner Mauer bauen, um den Flüchtlingsstrom in den Westen zu stoppen, indem sie die Wege durch Berlin abriegelte.",
+        "missing": ""
+      },
+      "source": "script_review_v2"
+    }
+  },
+  "story_arc": {
+    "version": 1,
+    "status": "planned",
+    "source": "planner",
+    "format": "explanation",
+    "structure": "answer_first",
+    "primary_question": "Warum wurde die Berliner Mauer gebaut?",
+    "primary_answer_id": "fact_03",
+    "final_payoff_id": "fact_04",
+    "key_surprise_id": null,
+    "answer_subject": null,
+    "curiosity_gap": {
+      "question": "Warum wurde die Berliner Mauer gebaut?",
+      "planner_text": "Die sichtbare Mauer erklärt noch nicht, warum die DDR ihre eigene Bevölkerung am Weggehen hindern wollte.",
+      "closed_by": "fact_04",
+      "withhold_answer": false,
+      "kind": "why_or_how"
+    },
+    "hook": {
+      "protected_ids": [
+        "fact_02",
+        "fact_04",
+        "fact_05",
+        "fact_06",
+        "fact_07",
+        "fact_08"
+      ],
+      "allowed_ids": [
+        "fact_03",
+        "fact_01"
+      ]
+    },
+    "order": [
+      "fact_06",
+      "fact_03",
+      "fact_01",
+      "fact_02",
+      "fact_05",
+      "fact_08",
+      "fact_07",
+      "fact_04"
+    ],
+    "units": [
+      {
+        "id": "fact_06",
+        "fact_ids": [
+          "fact_06"
+        ],
+        "role": "essential_context",
+        "claim": "Der Bau der Berliner Mauer am 13. August 1961 riegelte Ostberlin von allen Übergangswegen zu Westberlin ab.",
+        "importance": 0.58,
+        "novelty": "core",
+        "surprise_value": 0.2,
+        "rank": null,
+        "depends_on": [],
+        "stage": 1,
+        "may_appear_in_hook": false,
+        "may_be_omitted": false,
+        "requires_prior_context": false,
+        "source": "planner",
+        "question_link": "chain",
+        "off_question": false,
+        "order": 0,
+        "must_not_appear_before": []
+      },
+      {
+        "id": "fact_03",
+        "fact_ids": [
+          "fact_03"
+        ],
+        "role": "primary_answer",
+        "claim": "Die Berliner Mauer ergänzte die 1378 Kilometer lange innerdeutsche Grenze zwischen der DDR und der Bundesrepublik, die bereits mehr als neun Jahre vorher „befestigt“ worden war, um den Flüchtlingsstrom zu stoppen.",
+        "importance": 0.84,
+        "novelty": "core",
+        "surprise_value": 0.2,
+        "rank": null,
+        "depends_on": [
+          "fact_06"
+        ],
+        "stage": 2,
+        "may_appear_in_hook": true,
+        "may_be_omitted": false,
+        "requires_prior_context": true,
+        "source": "planner",
+        "question_link": "answer",
+        "off_question": false,
+        "order": 1,
+        "must_not_appear_before": [
+          "fact_06"
+        ]
+      },
+      {
+        "id": "fact_01",
+        "fact_ids": [
+          "fact_01"
+        ],
+        "role": "supporting_fact",
+        "claim": "Die Berliner Mauer war während der Teilung Deutschlands ein Grenzbefestigungssystem der Deutschen Demokratischen Republik (DDR), das vom 13. August 1961 bis zum 9. November 1989 bestand, um West-Berlin vom Gebiet der DDR hermetisch abzuriegeln. Sie trennte nicht nur die Verbindungen im Gebiet Groß-Berlins zwischen dem Ostteil („Hauptstadt der DDR“) und dem Westteil der Stadt, sondern umschloss alle drei Sektoren des Westteils vollständig und unterbrach damit auch seine Verbindungen zum sonstigen Umland, das im DDR-Bezirk Potsdam lag.",
+        "importance": 0.93,
+        "novelty": "core",
+        "surprise_value": 0.2,
+        "rank": null,
+        "depends_on": [
+          "fact_03"
+        ],
+        "stage": 3,
+        "may_appear_in_hook": true,
+        "may_be_omitted": false,
+        "requires_prior_context": true,
+        "source": "planner",
+        "question_link": "chain",
+        "off_question": false,
+        "order": 2,
+        "must_not_appear_before": [
+          "fact_03"
+        ]
+      },
+      {
+        "id": "fact_02",
+        "fact_ids": [
+          "fact_02"
+        ],
+        "role": "supporting_fact",
+        "claim": "Sie wurde aufgrund eines Beschlusses der politischen Führung der Sowjetunion Anfang August 1961 und einer wenige Tage später ergehenden Weisung der DDR-Regierung errichtet.",
+        "importance": 0.86,
+        "novelty": "core",
+        "surprise_value": 0.2,
+        "rank": null,
+        "depends_on": [
+          "fact_03"
+        ],
+        "stage": 3,
+        "may_appear_in_hook": false,
+        "may_be_omitted": false,
+        "requires_prior_context": true,
+        "source": "planner",
+        "question_link": "question",
+        "off_question": false,
+        "order": 3,
+        "must_not_appear_before": [
+          "fact_03"
+        ]
+      },
+      {
+        "id": "fact_05",
+        "fact_ids": [
+          "fact_05"
+        ],
+        "role": "evidence",
+        "claim": "Um die Mitte der 1960er Jahre waren andere Bezeichnungen, zu denen auch „die Mauer“ gehört hatte, aus der öffentlichen Sprache verschwunden, dagegen galt gesellschaftlich die Bezeichnung „antifaschistischer Schutzwall“ als Zeichen politischen Wohlverhaltens.",
+        "importance": 0.65,
+        "novelty": "supporting",
+        "surprise_value": 0.2,
+        "rank": null,
+        "depends_on": [
+          "fact_03"
+        ],
+        "stage": 3,
+        "may_appear_in_hook": false,
+        "may_be_omitted": false,
+        "requires_prior_context": true,
+        "source": "planner",
+        "question_link": "chain",
+        "off_question": false,
+        "order": 4,
+        "must_not_appear_before": [
+          "fact_03"
+        ]
+      },
+      {
+        "id": "fact_08",
+        "fact_ids": [
+          "fact_08"
+        ],
+        "role": "supporting_fact",
+        "claim": "Die gemeinsame Politik über die ehemalige Reichshauptstadt scheiterte jedoch, weil es in West- und Ostberlin zur Entwicklung zweier verschiedener politischer Systeme kam.",
+        "importance": 0.5,
+        "novelty": "explanatory",
+        "surprise_value": 0.2,
+        "rank": null,
+        "depends_on": [],
+        "stage": 1,
+        "may_appear_in_hook": false,
+        "may_be_omitted": true,
+        "requires_prior_context": false,
+        "source": "planner",
+        "question_link": "off_question",
+        "off_question": true,
+        "order": 5,
+        "must_not_appear_before": []
+      },
+      {
+        "id": "fact_07",
+        "fact_ids": [
+          "fact_07"
+        ],
+        "role": "secondary_insight",
+        "claim": "Der Mangel an Arbeitskräften war inzwischen so schwerwiegend, dass die DDR gefährdet war, ihre Wirtschaft nicht mehr aufrechterhalten zu können, denn allein im Ostteil Berlins fehlten 45.000 Arbeitskräfte.",
+        "importance": 0.56,
+        "novelty": "supporting",
+        "surprise_value": 0.2,
+        "rank": null,
+        "depends_on": [
+          "fact_03"
+        ],
+        "stage": 3,
+        "may_appear_in_hook": false,
+        "may_be_omitted": true,
+        "requires_prior_context": true,
+        "source": "planner",
+        "question_link": "off_question",
+        "off_question": true,
+        "order": 6,
+        "must_not_appear_before": [
+          "fact_03"
+        ]
+      },
+      {
+        "id": "fact_04",
+        "fact_ids": [
+          "fact_04"
+        ],
+        "role": "explanation",
+        "claim": "Vieles spricht dafür, dass die Flucht über die Mauer schließlich nur gelingen konnte, weil ein West-Berliner Polizeibeamter Feuerschutz gab.",
+        "importance": 0.82,
+        "novelty": "core",
+        "surprise_value": 0.2,
+        "rank": null,
+        "depends_on": [
+          "fact_03"
+        ],
+        "stage": 3,
+        "may_appear_in_hook": false,
+        "may_be_omitted": false,
+        "requires_prior_context": true,
+        "source": "planner",
+        "question_link": "chain",
+        "off_question": false,
+        "order": 7,
+        "must_not_appear_before": [
+          "fact_03"
+        ]
+      }
+    ],
+    "repairs": [],
+    "planner_answers_why": true,
+    "question_intent": {
+      "version": 1,
+      "source": "planner",
+      "original_question": "Warum wurde die Berliner Mauer gebaut?",
+      "intended_question": "Warum ließ die DDR-Führung die Berliner Mauer bauen?",
+      "question_type": "causal_why",
+      "answer_mode": "explanation",
+      "actor": "die DDR-Führung",
+      "target_phenomenon": "der Bau der Berliner Mauer",
+      "key_contrast_or_condition": "Die Mauer trennte Ost- und West-Berlin und sperrte Wege in den Westen.",
+      "expected_explanation_domain": "politische und wirtschaftliche Gründe der DDR während der deutschen Teilung",
+      "explicitly_excluded_interpretations": [
+        "Wie die Berliner Mauer technisch gebaut wurde.",
+        "Warum einzelne Fluchten über die Mauer gelangen oder scheiterten.",
+        "Warum die Mauer 1989 fiel."
+      ],
+      "confidence": "high",
+      "ambiguous": false,
+      "reinterpreted": false,
+      "grammar_question_type": "causal_why"
+    },
+    "question_contract": {
+      "intended_question": "Warum ließ die DDR-Führung die Berliner Mauer bauen?",
+      "question_type": "causal_why",
+      "expected_explanation_domain": "politische und wirtschaftliche Gründe der DDR während der deutschen Teilung",
+      "excluded_interpretations": [
+        "Wie die Berliner Mauer technisch gebaut wurde.",
+        "Warum einzelne Fluchten über die Mauer gelangen oder scheiterten.",
+        "Warum die Mauer 1989 fiel."
+      ],
+      "explanation_spine": {
+        "explanatory_question": true,
+        "initial_observation": "fact_03",
+        "main_answer": "fact_03",
+        "mechanism": [
+          "fact_04"
+        ],
+        "necessary_support": [
+          "fact_06",
+          "fact_01",
+          "fact_02",
+          "fact_05"
+        ],
+        "final_resolution": "fact_04",
+        "status": "complete",
+        "research_required": false,
+        "source": "planner",
+        "question_terms": [
+          "gebaut",
+          "wurde"
+        ]
+      },
+      "core_question": "Warum wurde die Berliner Mauer gebaut?",
+      "hook_promise": "Die sichtbare Mauer erklärt noch nicht, warum die DDR ihre eigene Bevölkerung am Weggehen hindern wollte.",
+      "primary_answer_id": "fact_03",
+      "final_resolution_id": "fact_04",
+      "final_resolution": "Vieles spricht dafür, dass die Flucht über die Mauer schließlich nur gelingen konnte, weil ein West-Berliner Polizeibeamter Feuerschutz gab.",
+      "essential_explanation_chain": [
+        "fact_06",
+        "fact_03",
+        "fact_01",
+        "fact_02",
+        "fact_05",
+        "fact_04"
+      ],
+      "off_question_ids": [
+        "fact_08",
+        "fact_07"
+      ],
+      "subject_terms": [
+        "berliner",
+        "mauer"
+      ],
+      "question_terms": [
+        "gebaut",
+        "wurde"
+      ]
+    },
+    "issues": [],
+    "visual_protection": {
+      "target": "",
+      "source": "story_arc_not_withheld",
+      "planner_target": "",
+      "planner_conflict": false,
+      "answer_scene_ids": [
+        "scene_03_01",
+        "scene_03_02",
+        "scene_07_01",
+        "scene_07_02",
+        "scene_07_03"
+      ],
+      "scope": "none"
+    },
+    "block_units": {
+      "voice_block_02": [
+        "fact_06"
+      ],
+      "voice_block_03": [
+        "fact_03"
+      ],
+      "voice_block_04": [
+        "fact_02"
+      ],
+      "voice_block_05": [
+        "fact_07"
+      ],
+      "voice_block_06": [
+        "fact_07"
+      ],
+      "voice_block_07": [
+        "fact_01",
+        "fact_03"
+      ]
+    },
+    "script_issues": [
+      "required_fact_missing:fact_04",
+      "required_fact_missing:fact_05"
+    ],
+    "completeness": {
+      "mapped": true,
+      "complete": false,
+      "missing_required_ids": [
+        "fact_04",
+        "fact_05"
+      ]
+    }
+  },
+  "payoff_plan": {
+    "curiosity_question": "Warum baute ein Staat eine Mauer mitten durch Berlin?",
+    "payoff": "Die Mauer nahm Menschen den Berliner Ausweg nach Westen: West-Berlin wurde vom DDR-Gebiet hermetisch abgeriegelt. Genau so sollte die Abwanderung gestoppt werden.",
+    "payoff_type": "causal explanation.",
+    "payoff_dependencies": [
+      "Am 13. August 1961 wurden alle Übergangswege von Ost- nach West-Berlin abgeriegelt.",
+      "Die Mauer ergänzte die bestehende Grenze mit einem klaren Ziel: den Flüchtlingsstrom aus der DDR in den Westen zu stoppen.",
+      "Der Bau folgte auf einen Beschluss der sowjetischen Führung und eine Weisung der DDR-Regierung wenige Tage später."
+    ],
+    "reveal_policy": "immediate_context_allowed",
+    "hook_must_not_reveal": "",
+    "primary_answer_id": "fact_03",
+    "final_payoff_id": "fact_04",
+    "primary_answer": "Die Berliner Mauer ergänzte die 1378 Kilometer lange innerdeutsche Grenze zwischen der DDR und der Bundesrepublik, die bereits mehr als neun Jahre vorher „befestigt“ worden war, um den Flüchtlingsstrom zu stoppen.",
+    "final_payoff": "Vieles spricht dafür, dass die Flucht über die Mauer schließlich nur gelingen konnte, weil ein West-Berliner Polizeibeamter Feuerschutz gab.",
+    "protected_visual_target": "",
+    "desired_viewer_reaction": "Jetzt ist klar: Die Mauer diente vor allem dazu, Menschen am Weggehen zu hindern",
+    "supporting_information": [
+      "Am 13. August 1961 wurden alle Übergangswege von Ost- nach West-Berlin abgeriegelt.",
+      "Die Mauer ergänzte die bestehende Grenze mit einem klaren Ziel: den Flüchtlingsstrom aus der DDR in den Westen zu stoppen.",
+      "Der Bau folgte auf einen Beschluss der sowjetischen Führung und eine Weisung der DDR-Regierung wenige Tage später.",
+      "Der Druck war groß: Allein in Ost-Berlin fehlten 45.000 Arbeitskräfte."
+    ],
+    "format": "explanation",
+    "novelty_guidance": {
+      "recommended_angle": "Lead from the visible fact into the supported causal or mechanistic explanation.",
+      "distinctive_fact_ids": [],
+      "explanatory_gain_ids": [
+        "fact_08"
+      ],
+      "comparison_gain_ids": []
+    },
+    "status": "planned",
+    "post_payoff_fluff_trimmed": false
+  },
+  "hook": {
+    "verbal_hook": "Warum brauchte die DDR ausgerechnet in Berlin noch eine Mauer, obwohl die innerdeutsche Grenze schon befestigt war?",
+    "selected_strategy": "verified_statistic",
+    "supported_by_fact_ids": [
+      "fact_03"
+    ],
+    "curiosity_target": "Warum brauchte die DDR zusätzlich eine Mauer in Berlin?",
+    "promised_payoff": "Die Erklärung, dass die DDR den Flüchtlingsstrom in den Westen stoppen wollte.",
+    "payoff_fact_id": "fact_03",
+    "intended_reaction": "curiosity"
+  },
+  "recovery": {
+    "version": 2,
+    "status": "needs_fix",
+    "provider": "openai",
+    "error": null,
+    "critic": {
+      "verdict": "rewrite",
+      "findings": [
+        {
+          "code": "redundant_payoff",
+          "severity": "major",
+          "beat_index": 5,
+          "message": "Der Payoff wiederholt im Wesentlichen nur die bereits in Beat 3 und 4 gegebene Antwort: Flüchtlingsstrom stoppen beziehungsweise den Weg in den Westen versperren. Er liefert keinen neuen Erkenntnisschritt und könnte stattdessen kurz erklären, warum die DDR den Flüchtlingsstrom stoppen wollte."
+        },
+        {
+          "code": "shallow_causal_depth",
+          "severity": "major",
+          "beat_index": 3,
+          "message": "Die unmittelbare Absicht wird korrekt genannt, aber die Erklärung bleibt bei der bloßen Benennung des Flüchtlingsstroms stehen. Ein konkreter Grund für dessen Bedeutung – etwa der Verlust dringend benötigter Arbeitskräfte – würde die historische Motivation verständlicher machen."
+        },
+        {
+          "code": "weak_progression",
+          "severity": "minor",
+          "beat_index": 4,
+          "message": "Beat 4 erklärt zwar die Abriegelung, wiederholt aber teilweise die Aussage aus Beat 2. Die Informationsfolge könnte stärker vom Fluchtproblem über seine Folgen zur Entscheidung für die Mauer führen."
+        }
+      ],
+      "missed_fact_ids": [
+        "fact_07"
+      ],
+      "research_need": ""
+    },
+    "attempts": [
+      {
+        "attempt": 1,
+        "mode": "normal_rewrite",
+        "failed_obligations": [],
+        "contract_evaluations": [
+          {
+            "id": "primary_motive",
+            "status": "satisfied",
+            "is_primary": true,
+            "is_required": true,
+            "reasoning": "Die Kandidatin erklärt ausdrücklich, dass die Mauer den Flüchtlingsstrom aus der DDR in den Westen stoppen sollte. Das erfüllt die erforderliche historische Motivtiefe."
+          }
+        ],
+        "status": "verified",
+        "blocks": [
+          {
+            "role": "hook",
+            "text": "Warum brauchte die DDR ausgerechnet in Berlin noch eine Mauer, obwohl die innerdeutsche Grenze schon befestigt war?",
+            "fact_ids": [
+              "fact_03"
+            ],
+            "id": "voice_block_01"
+          },
+          {
+            "role": "answer",
+            "text": "Am 13. August 1961 wurden alle Übergangswege von Ost- nach West-Berlin abgeriegelt.",
+            "fact_ids": [
+              "fact_06"
+            ],
+            "id": "voice_block_02"
+          },
+          {
+            "role": "explanation",
+            "text": "Die Mauer ergänzte die bestehende Grenze mit einem klaren Ziel: den Flüchtlingsstrom aus der DDR in den Westen zu stoppen.",
+            "fact_ids": [
+              "fact_03"
+            ],
+            "id": "voice_block_03"
+          },
+          {
+            "role": "support",
+            "text": "Der Bau folgte auf einen Beschluss der sowjetischen Führung und eine Weisung der DDR-Regierung wenige Tage später.",
+            "fact_ids": [
+              "fact_02"
+            ],
+            "id": "voice_block_04"
+          },
+          {
+            "role": "detail",
+            "text": "Der Druck war groß: Allein in Ost-Berlin fehlten 45.000 Arbeitskräfte.",
+            "fact_ids": [
+              "fact_07"
+            ],
+            "id": "voice_block_05"
+          },
+          {
+            "role": "detail",
+            "text": "Die DDR riskierte, ihre Wirtschaft nicht mehr aufrechterhalten zu können.",
+            "fact_ids": [
+              "fact_07"
+            ],
+            "id": "voice_block_06"
+          },
+          {
+            "role": "payoff",
+            "text": "Die Mauer nahm Menschen den Berliner Ausweg nach Westen: West-Berlin wurde vom DDR-Gebiet hermetisch abgeriegelt. Genau so sollte die Abwanderung gestoppt werden.",
+            "fact_ids": [
+              "fact_01",
+              "fact_03"
+            ],
+            "id": "voice_block_07"
+          }
+        ],
+        "hook_changed": true,
+        "hook_restored": false,
+        "hook_intent_preserved": true,
+        "hook_intent_note": "Der Hook bewahrt die Neugierfrage, warum zur bereits befestigten innerdeutschen Grenze zusätzlich eine Mauer in Berlin nötig war.",
+        "reveal_beat_index": 3,
+        "payoff_beat_index": 6,
+        "rationale": "Die Fassung führt von der Berliner Abriegelung über das Ziel, Fluchten zu stoppen, zu dem wirtschaftlichen Druck durch Arbeitskräftemangel. Der Schluss erklärt die physische Funktion der Mauer als Mechanismus hinter diesem Ziel.",
+        "research_insufficiency": "",
+        "better_than_draft": true,
+        "verifier_error": null,
+        "verification_passed": false,
+        "verification_flags": {
+          "grounded": false,
+          "answers_question": true,
+          "payoff_fulfilled": true,
+          "hook_promise_kept": true,
+          "premature_reveal": false
+        },
+        "claim_grounding": {
+          "approved": false,
+          "evidence_key": "cad58ec4c596ebe77aa31f8dd1d5db1e9d1efeac6bbbe360068b07a00dfd3d23",
+          "evaluations": [
+            {
+              "beat_index": 1,
+              "sentence": "Warum brauchte die DDR ausgerechnet in Berlin noch eine Mauer, obwohl die innerdeutsche Grenze schon befestigt war?",
+              "status": "unsupported",
+              "supporting_fact_ids": [
+                "fact_03"
+              ],
+              "covers_all_claims": false,
+              "reasoning": "Fact_03 stützt, dass die innerdeutsche Grenze bereits befestigt war und dass die Mauer den Flüchtlingsstrom stoppen sollte. Er stützt jedoch nicht vollständig die presupponierte Notwendigkeit („brauchte“) oder die konkrete Agency der DDR in dieser Hook-Frage."
+            },
+            {
+              "beat_index": 2,
+              "sentence": "Am 13. August 1961 wurden alle Übergangswege von Ost- nach West-Berlin abgeriegelt.",
+              "status": "supported",
+              "supporting_fact_ids": [
+                "fact_06"
+              ],
+              "covers_all_claims": true,
+              "reasoning": "Fact_06 belegt Datum und Abriegelung von Ostberlin von allen Übergangswegen nach Westberlin."
+            },
+            {
+              "beat_index": 3,
+              "sentence": "Die Mauer ergänzte die bestehende Grenze mit einem klaren Ziel: den Flüchtlingsstrom aus der DDR in den Westen zu stoppen.",
+              "status": "supported",
+              "supporting_fact_ids": [
+                "fact_03"
+              ],
+              "covers_all_claims": true,
+              "reasoning": "Fact_03 sagt ausdrücklich, dass die Mauer die bereits befestigte Grenze ergänzte, um den Flüchtlingsstrom zu stoppen."
+            },
+            {
+              "beat_index": 4,
+              "sentence": "Der Bau folgte auf einen Beschluss der sowjetischen Führung und eine Weisung der DDR-Regierung wenige Tage später.",
+              "status": "supported",
+              "supporting_fact_ids": [
+                "fact_02"
+              ],
+              "covers_all_claims": true,
+              "reasoning": "Fact_02 belegt den Beschluss der politischen Führung der Sowjetunion und die wenige Tage später ergangene Weisung der DDR-Regierung."
+            },
+            {
+              "beat_index": 5,
+              "sentence": "Der Druck war groß: Allein in Ost-Berlin fehlten 45.000 Arbeitskräfte.",
+              "status": "supported",
+              "supporting_fact_ids": [
+                "fact_07"
+              ],
+              "covers_all_claims": true,
+              "reasoning": "Fact_07 belegt den gravierenden Arbeitskräftemangel und die Zahl von 45.000 fehlenden Arbeitskräften im Ostteil Berlins."
+            },
+            {
+              "beat_index": 6,
+              "sentence": "Die DDR riskierte, ihre Wirtschaft nicht mehr aufrechterhalten zu können.",
+              "status": "supported",
+              "supporting_fact_ids": [
+                "fact_07"
+              ],
+              "covers_all_claims": true,
+              "reasoning": "Fact_07 sagt ausdrücklich, dass die DDR wegen des Arbeitskräftemangels gefährdet war, ihre Wirtschaft nicht mehr aufrechterhalten zu können."
+            },
+            {
+              "beat_index": 7,
+              "sentence": "Die Mauer nahm Menschen den Berliner Ausweg nach Westen: West-Berlin wurde vom DDR-Gebiet hermetisch abgeriegelt.",
+              "status": "supported",
+              "supporting_fact_ids": [
+                "fact_01",
+                "fact_03"
+              ],
+              "covers_all_claims": true,
+              "reasoning": "Fact_01 belegt die hermetische Abriegelung West-Berlins und die Unterbrechung der Verbindungen; Fact_03 stützt den Bezug zum Flüchtlingsstrom in den Westen."
+            },
+            {
+              "beat_index": 7,
+              "sentence": "Genau so sollte die Abwanderung gestoppt werden.",
+              "status": "supported",
+              "supporting_fact_ids": [
+                "fact_03"
+              ],
+              "covers_all_claims": true,
+              "reasoning": "Fact_03 belegt ausdrücklich das Ziel, den Flüchtlingsstrom zu stoppen; „Abwanderung“ ist hier eine zulässige sinngemäße Wiedergabe."
+            }
+          ]
+        },
+        "hard": [
+          {
+            "code": "UNSUPPORTED_HOOK_PRESUPPOSITION",
+            "severity": "hard",
+            "beat_index": 1,
+            "message": "Die Hook-Frage setzt voraus, dass die DDR die Mauer in Berlin „brauchte“ und dass sie ausgerechnet dort nötig war. Der zitierte Fakt belegt die befestigte innerdeutsche Grenze und den Zweck, den Flüchtlingsstrom zu stoppen, aber nicht vollständig die behauptete Notwendigkeit beziehungsweise die konkrete Agency der DDR.",
+            "source": "verifier"
+          },
+          {
+            "code": "ungrounded",
+            "severity": "hard",
+            "beat_index": null,
+            "message": "The verifier found statements the research does not support.",
+            "source": "verifier"
+          },
+          {
+            "code": "claim_unsupported",
+            "severity": "hard",
+            "beat_index": 1,
+            "message": "Fact_03 stützt, dass die innerdeutsche Grenze bereits befestigt war und dass die Mauer den Flüchtlingsstrom stoppen sollte. Er stützt jedoch nicht vollständig die presupponierte Notwendigkeit („brauchte“) oder die konkrete Agency der DDR in dieser Hook-Frage.",
+            "source": "verifier"
+          }
+        ],
+        "major": [],
+        "minor": []
+      },
+      {
+        "attempt": 2,
+        "mode": "quality_repair",
+        "failed_obligations": [],
+        "contract_evaluations": [
+          {
+            "id": "primary_motive",
+            "status": "satisfied",
+            "is_primary": true,
+            "is_required": true,
+            "reasoning": "Die Kandidatenfassung erklärt ausdrücklich, dass der Flüchtlingsstrom aus der DDR in den Westen gestoppt werden sollte. Das erfüllt die primäre historische Motivverpflichtung; fact_03 stützt Ziel und unmittelbare Absicht."
+          }
+        ],
+        "status": "verified",
+        "blocks": [
+          {
+            "role": "hook",
+            "text": "Die Grenze zwischen DDR und Bundesrepublik war schon befestigt. Warum kam dann noch die Mauer in Berlin dazu?",
+            "fact_ids": [
+              "fact_03"
+            ],
+            "id": "voice_block_01"
+          },
+          {
+            "role": "answer",
+            "text": "Am 13. August 1961 riegelte ihr Bau Ost-Berlin von allen Übergängen nach West-Berlin ab.",
+            "fact_ids": [
+              "fact_06"
+            ],
+            "id": "voice_block_02"
+          },
+          {
+            "role": "explanation",
+            "text": "Das Ziel war, den Flüchtlingsstrom aus der DDR in den Westen zu stoppen.",
+            "fact_ids": [
+              "fact_03"
+            ],
+            "id": "voice_block_03"
+          },
+          {
+            "role": "support",
+            "text": "Denn West-Berlin wurde vollständig vom DDR-Gebiet abgeriegelt.",
+            "fact_ids": [
+              "fact_01"
+            ],
+            "id": "voice_block_04"
+          },
+          {
+            "role": "detail",
+            "text": "Der Weg durch die Stadt war damit blockiert.",
+            "fact_ids": [
+              "fact_01"
+            ],
+            "id": "voice_block_05"
+          },
+          {
+            "role": "detail",
+            "text": "Der Druck dahinter war enorm: Allein in Ost-Berlin fehlten 45.000 Arbeitskräfte.",
+            "fact_ids": [
+              "fact_07"
+            ],
+            "id": "voice_block_06"
+          },
+          {
+            "role": "detail",
+            "text": "Die DDR riskierte, ihre Wirtschaft nicht mehr aufrechterhalten zu können.",
+            "fact_ids": [
+              "fact_07"
+            ],
+            "id": "voice_block_07"
+          },
+          {
+            "role": "payoff",
+            "text": "Die Mauer war also kein Bauwerk gegen eine äußere Fluchtgefahr. Sie sperrte den Berliner Ausweg in den Westen, damit Menschen – und die Arbeitskräfte, die sie brauchte – nicht weiter die DDR verließen.",
+            "fact_ids": [
+              "fact_01",
+              "fact_03",
+              "fact_07"
+            ],
+            "id": "voice_block_08"
+          }
+        ],
+        "hook_changed": true,
+        "hook_restored": false,
+        "hook_intent_preserved": true,
+        "hook_intent_note": "Die Hook erhält die Neugierfrage: Warum wurde die bereits befestigte Grenze durch die Berliner Mauer ergänzt, ohne eine unbelegte Notwendigkeit oder konkrete Agency zu unterstellen.",
+        "reveal_beat_index": 3,
+        "payoff_beat_index": 6,
+        "rationale": "Die Erklärung führt von der bestehenden Grenze über die Abriegelung Berlins zum direkten Ziel und schließt mit dem wirtschaftlichen Druck durch fehlende Arbeitskräfte. Der Payoff verknüpft Sperrmechanismus und Motivation statt die Antwort nur zu wiederholen.",
+        "research_insufficiency": "",
+        "better_than_draft": true,
+        "verifier_error": null,
+        "verification_passed": false,
+        "verification_flags": {
+          "grounded": false,
+          "answers_question": true,
+          "payoff_fulfilled": true,
+          "hook_promise_kept": true,
+          "premature_reveal": false
+        },
+        "claim_grounding": {
+          "approved": false,
+          "evidence_key": "b076cbd6e291c74735589b1db3809eddf0b85760cea5757fcaf51c08d41c337b",
+          "evaluations": [
+            {
+              "beat_index": 1,
+              "sentence": "Die Grenze zwischen DDR und Bundesrepublik war schon befestigt.",
+              "status": "supported",
+              "supporting_fact_ids": [
+                "fact_03"
+              ],
+              "covers_all_claims": true,
+              "reasoning": "Fact_03 belegt, dass die innerdeutsche Grenze bereits zuvor befestigt worden war."
+            },
+            {
+              "beat_index": 1,
+              "sentence": "Warum kam dann noch die Mauer in Berlin dazu?",
+              "status": "supported",
+              "supporting_fact_ids": [
+                "fact_03"
+              ],
+              "covers_all_claims": true,
+              "reasoning": "Die rhetorische Frage setzt voraus, dass die Berliner Mauer die bereits befestigte Grenze ergänzte; genau das wird von fact_03 belegt."
+            },
+            {
+              "beat_index": 2,
+              "sentence": "Am 13. August 1961 riegelte ihr Bau Ost-Berlin von allen Übergängen nach West-Berlin ab.",
+              "status": "supported",
+              "supporting_fact_ids": [
+                "fact_06"
+              ],
+              "covers_all_claims": true,
+              "reasoning": "Fact_06 stützt Datum, Bau der Mauer und die Abriegelung aller Übergangswege von Ost- nach West-Berlin."
+            },
+            {
+              "beat_index": 3,
+              "sentence": "Das Ziel war, den Flüchtlingsstrom aus der DDR in den Westen zu stoppen.",
+              "status": "supported",
+              "supporting_fact_ids": [
+                "fact_03"
+              ],
+              "covers_all_claims": true,
+              "reasoning": "Fact_03 nennt ausdrücklich das Ziel, den Flüchtlingsstrom zu stoppen."
+            },
+            {
+              "beat_index": 4,
+              "sentence": "Denn West-Berlin wurde vollständig vom DDR-Gebiet abgeriegelt.",
+              "status": "supported",
+              "supporting_fact_ids": [
+                "fact_01"
+              ],
+              "covers_all_claims": true,
+              "reasoning": "Fact_01 belegt die hermetische Abriegelung West-Berlins vom DDR-Gebiet."
+            },
+            {
+              "beat_index": 5,
+              "sentence": "Der Weg durch die Stadt war damit blockiert.",
+              "status": "supported",
+              "supporting_fact_ids": [
+                "fact_01"
+              ],
+              "covers_all_claims": true,
+              "reasoning": "Fact_01 belegt, dass die Verbindungen zwischen Ost- und Westteil Berlins sowie zum Umland unterbrochen wurden."
+            },
+            {
+              "beat_index": 6,
+              "sentence": "Der Druck dahinter war enorm: Allein in Ost-Berlin fehlten 45.000 Arbeitskräfte.",
+              "status": "supported",
+              "supporting_fact_ids": [
+                "fact_07"
+              ],
+              "covers_all_claims": true,
+              "reasoning": "Fact_07 nennt den Mangel von 45.000 Arbeitskräften und beschreibt ihn als so schwerwiegend, dass die wirtschaftliche Aufrechterhaltung der DDR gefährdet war."
+            },
+            {
+              "beat_index": 7,
+              "sentence": "Die DDR riskierte, ihre Wirtschaft nicht mehr aufrechterhalten zu können.",
+              "status": "supported",
+              "supporting_fact_ids": [
+                "fact_07"
+              ],
+              "covers_all_claims": true,
+              "reasoning": "Diese Aussage ist eine direkte sinngemäße Wiedergabe von fact_07."
+            },
+            {
+              "beat_index": 8,
+              "sentence": "Die Mauer war also kein Bauwerk gegen eine äußere Fluchtgefahr.",
+              "status": "unsupported",
+              "supporting_fact_ids": [],
+              "covers_all_claims": false,
+              "reasoning": "Die Fakten belegen die Verhinderung der Flucht aus der DDR, sagen aber nicht ausdrücklich, dass die Mauer kein Bauwerk gegen eine äußere Fluchtgefahr war."
+            },
+            {
+              "beat_index": 8,
+              "sentence": "Sie sperrte den Berliner Ausweg in den Westen, damit Menschen – und die Arbeitskräfte, die sie brauchte – nicht weiter die DDR verließen.",
+              "status": "uncertain",
+              "supporting_fact_ids": [
+                "fact_01",
+                "fact_03",
+                "fact_07"
+              ],
+              "covers_all_claims": false,
+              "reasoning": "fact_01 und fact_03 stützen die Sperrung des Wegs in den Westen und das Ziel, den Flüchtlingsstrom zu stoppen. fact_07 stützt den Arbeitskräftemangel und den wirtschaftlichen Druck, belegt aber nicht ausdrücklich, dass genau diese Arbeitskräfte durch die Flucht verloren gingen oder dass dies der unmittelbare Zweck derM"
+            }
+          ]
+        },
+        "hard": [
+          {
+            "code": "UNSUPPORTED_PAYOFF_CONTRAST",
+            "severity": "hard",
+            "beat_index": 8,
+            "message": "Die Aussage „kein Bauwerk gegen eine äußere Fluchtgefahr“ wird von den zitierten Fakten nicht belegt. Außerdem ist die Verbindung zwischen den konkret benötigten Arbeitskräften und den Menschen, die weiter die DDR verließen, nur teilweise durch fact_07 und fact_03 gedeckt.",
+            "source": "verifier"
+          },
+          {
+            "code": "ungrounded",
+            "severity": "hard",
+            "beat_index": null,
+            "message": "The verifier found statements the research does not support.",
+            "source": "verifier"
+          },
+          {
+            "code": "claim_unsupported",
+            "severity": "hard",
+            "beat_index": 8,
+            "message": "Die Fakten belegen die Verhinderung der Flucht aus der DDR, sagen aber nicht ausdrücklich, dass die Mauer kein Bauwerk gegen eine äußere Fluchtgefahr war.",
+            "source": "verifier"
+          },
+          {
+            "code": "claim_unverifiable",
+            "severity": "hard",
+            "beat_index": 8,
+            "message": "fact_01 und fact_03 stützen die Sperrung des Wegs in den Westen und das Ziel, den Flüchtlingsstrom zu stoppen. fact_07 stützt den Arbeitskräftemangel und den wirtschaftlichen Druck, belegt aber nicht ausdrücklich, dass genau diese Arbeitskräfte durch die Flucht verloren gingen oder dass dies der unmittelbare Zweck derM",
+            "source": "verifier"
+          }
+        ],
+        "major": [],
+        "minor": []
+      },
+      {
+        "attempt": 3,
+        "mode": "fresh_regeneration",
+        "failed_obligations": [],
+        "contract_evaluations": [
+          {
+            "id": "primary_motive",
+            "status": "satisfied",
+            "is_primary": true,
+            "is_required": true,
+            "reasoning": "Die Kandidatenfassung erklärt ausdrücklich, dass die Mauer den Flüchtlingsstrom aus der DDR in den Westen stoppen und Menschen am Weggehen hindern sollte. Der erforderliche Mechanismus ist damit vollständig genannt."
+          }
+        ],
+        "status": "verified",
+        "blocks": [
+          {
+            "role": "hook",
+            "text": "Die Grenze zwischen DDR und Bundesrepublik war längst befestigt. Warum brauchte es dann noch eine Mauer mitten in Berlin?",
+            "fact_ids": [
+              "fact_03"
+            ],
+            "id": "voice_block_01"
+          },
+          {
+            "role": "explanation",
+            "text": "Am 13. August 1961 wurden alle Übergänge von Ost- nach West-Berlin abgeriegelt.",
+            "fact_ids": [
+              "fact_06"
+            ],
+            "id": "voice_block_02"
+          },
+          {
+            "role": "answer",
+            "text": "Der Grund: Die Mauer sollte den Flüchtlingsstrom aus der DDR in den Westen stoppen.",
+            "fact_ids": [
+              "fact_03"
+            ],
+            "id": "voice_block_03"
+          },
+          {
+            "role": "support",
+            "text": "Sie machte West-Berlin zum abgeschotteten Gebiet: vollständig umschlossen vom DDR-Gebiet.",
+            "fact_ids": [
+              "fact_01"
+            ],
+            "id": "voice_block_04"
+          },
+          {
+            "role": "payoff",
+            "text": "Die Mauer war also kein Schutzwall nach außen. Sie war ein Mittel, Menschen aus der DDR am Weggehen zu hindern.",
+            "fact_ids": [
+              "fact_01",
+              "fact_03",
+              "fact_06"
+            ],
+            "id": "voice_block_05"
+          }
+        ],
+        "hook_changed": true,
+        "hook_restored": false,
+        "hook_intent_preserved": true,
+        "hook_intent_note": "Der Hook bewahrt die Neugierfrage, warum zur bereits befestigten innerdeutschen Grenze eine zusätzliche Sperre in Berlin nötig war, ohne die Antwort vorwegzunehmen.",
+        "reveal_beat_index": 3,
+        "payoff_beat_index": 5,
+        "rationale": "Die Fassung führt von der bereits bestehenden Grenze über die konkrete Abriegelung Berlins direkt zur Fluchtverhinderung. Der Schluss übersetzt die räumliche Absperrung in den entscheidenden Zweck der Mauer.",
+        "research_insufficiency": "",
+        "better_than_draft": true,
+        "verifier_error": null,
+        "verification_passed": false,
+        "verification_flags": {
+          "grounded": false,
+          "answers_question": true,
+          "payoff_fulfilled": true,
+          "hook_promise_kept": true,
+          "premature_reveal": false
+        },
+        "claim_grounding": {
+          "approved": false,
+          "evidence_key": "be0dbd561427834d275f2e07d24af18b09da780981d26fded8c439ef89a6cf47",
+          "evaluations": [
+            {
+              "beat_index": 1,
+              "sentence": "Die Grenze zwischen DDR und Bundesrepublik war längst befestigt.",
+              "status": "supported",
+              "supporting_fact_ids": [
+                "fact_03"
+              ],
+              "covers_all_claims": true,
+              "reasoning": "Fact 03 belegt, dass die innerdeutsche Grenze bereits mehr als neun Jahre zuvor befestigt worden war."
+            },
+            {
+              "beat_index": 1,
+              "sentence": "Warum brauchte es dann noch eine Mauer mitten in Berlin?",
+              "status": "supported",
+              "supporting_fact_ids": [
+                "fact_03"
+              ],
+              "covers_all_claims": true,
+              "reasoning": "Die Frage ist rhetorisch formuliert. Die presupponierte Ergänzung der bereits befestigten Grenze durch die Berliner Mauer wird durch Fact 03 gestützt; „Berliner Mauer“ stützt den Berlinbezug."
+            },
+            {
+              "beat_index": 2,
+              "sentence": "Am 13. August 1961 wurden alle Übergänge von Ost- nach West-Berlin abgeriegelt.",
+              "status": "supported",
+              "supporting_fact_ids": [
+                "fact_06"
+              ],
+              "covers_all_claims": true,
+              "reasoning": "Fact 06 belegt Datum und die Abriegelung aller Übergangswege von Ostberlin nach Westberlin."
+            },
+            {
+              "beat_index": 3,
+              "sentence": "Der Grund: Die Mauer sollte den Flüchtlingsstrom aus der DDR in den Westen stoppen.",
+              "status": "supported",
+              "supporting_fact_ids": [
+                "fact_03"
+              ],
+              "covers_all_claims": true,
+              "reasoning": "Fact 03 nennt ausdrücklich das Stoppen des Flüchtlingsstroms als Zweck der befestigten Grenze, die durch die Mauer ergänzt wurde. Der Bezug von der DDR in den Westen ist im Kontext der innerdeutschen Grenze semantisch gedeckt."
+            },
+            {
+              "beat_index": 4,
+              "sentence": "Sie machte West-Berlin zum abgeschotteten Gebiet: vollständig umschlossen vom DDR-Gebiet.",
+              "status": "supported",
+              "supporting_fact_ids": [
+                "fact_01"
+              ],
+              "covers_all_claims": true,
+              "reasoning": "Fact 01 belegt die hermetische Abriegelung West-Berlins und die vollständige Umschließung durch das DDR-Umland."
+            },
+            {
+              "beat_index": 5,
+              "sentence": "Die Mauer war also kein Schutzwall nach außen.",
+              "status": "unsupported",
+              "supporting_fact_ids": [],
+              "covers_all_claims": false,
+              "reasoning": "Die zitierten Fakten belegen den Zweck, den Flüchtlingsstrom zu stoppen und West-Berlin abzuriegeln, aber nicht die absolute Aussage, dass die Mauer kein Schutzwall nach außen gewesen sei."
+            },
+            {
+              "beat_index": 5,
+              "sentence": "Sie war ein Mittel, Menschen aus der DDR am Weggehen zu hindern.",
+              "status": "supported",
+              "supporting_fact_ids": [
+                "fact_01",
+                "fact_03",
+                "fact_06"
+              ],
+              "covers_all_claims": true,
+              "reasoning": "Die Fakten belegen die Abriegelung der Übergänge, das Stoppen des Flüchtlingsstroms und die Funktion der Mauer als DDR-Grenzbefestigung."
+            }
+          ]
+        },
+        "hard": [
+          {
+            "code": "UNSUPPORTED_ABSOLUTE_CONTRAST",
+            "severity": "hard",
+            "beat_index": 5,
+            "message": "Die Aussage „kein Schutzwall nach außen“ ist als absolute Negation durch die zitierten Fakten nicht belegt. Belegt ist der Zweck, den Flüchtlingsstrom beziehungsweise das Weggehen aus der DDR zu verhindern; daraus folgt nicht ausdrücklich, dass die Mauer keinerlei Schutzfunktion nach außen hatte.",
+            "source": "verifier"
+          },
+          {
+            "code": "ungrounded",
+            "severity": "hard",
+            "beat_index": null,
+            "message": "The verifier found statements the research does not support.",
+            "source": "verifier"
+          },
+          {
+            "code": "answer_payoff_duplicate",
+            "severity": "hard",
+            "beat_index": null,
+            "message": "Answer and payoff say the same thing.",
+            "source": "verifier"
+          },
+          {
+            "code": "claim_unsupported",
+            "severity": "hard",
+            "beat_index": 5,
+            "message": "Die zitierten Fakten belegen den Zweck, den Flüchtlingsstrom zu stoppen und West-Berlin abzuriegeln, aber nicht die absolute Aussage, dass die Mauer kein Schutzwall nach außen gewesen sei.",
+            "source": "verifier"
+          }
+        ],
+        "major": [],
+        "minor": [
+          {
+            "code": "ANSWER_PAYOFF_DUPLICATION",
+            "severity": "minor",
+            "beat_index": 5,
+            "message": "Der Payoff wiederholt im Wesentlichen die bereits in Beat 3 gegebene Antwort, statt eine neue erklärende Ebene hinzuzufügen.",
+            "source": "verifier"
+          }
+        ]
+      }
+    ],
+    "rejected_hooks": [
+      "Warum brauchte die DDR ausgerechnet in Berlin noch eine Mauer, obwohl die innerdeutsche Grenze schon befestigt war?"
+    ],
+    "rejected_candidate_preserved": {
+      "attempt": 1,
+      "reason": "Required answer retained; hook remains rejected."
+    }
+  },
+  "final_blocks": [
+    {
+      "role": "hook",
+      "text": "Warum brauchte die DDR ausgerechnet in Berlin noch eine Mauer, obwohl die innerdeutsche Grenze schon befestigt war?",
+      "fact_ids": [
+        "fact_03"
+      ],
+      "id": "voice_block_01"
+    },
+    {
+      "role": "answer",
+      "text": "Am 13. August 1961 wurden alle Übergangswege von Ost- nach West-Berlin abgeriegelt.",
+      "fact_ids": [
+        "fact_06"
+      ],
+      "id": "voice_block_02"
+    },
+    {
+      "role": "explanation",
+      "text": "Die Mauer ergänzte die bestehende Grenze mit einem klaren Ziel: den Flüchtlingsstrom aus der DDR in den Westen zu stoppen.",
+      "fact_ids": [
+        "fact_03"
+      ],
+      "id": "voice_block_03"
+    },
+    {
+      "role": "support",
+      "text": "Der Bau folgte auf einen Beschluss der sowjetischen Führung und eine Weisung der DDR-Regierung wenige Tage später.",
+      "fact_ids": [
+        "fact_02"
+      ],
+      "id": "voice_block_04"
+    },
+    {
+      "role": "detail",
+      "text": "Der Druck war groß: Allein in Ost-Berlin fehlten 45.000 Arbeitskräfte.",
+      "fact_ids": [
+        "fact_07"
+      ],
+      "id": "voice_block_05"
+    },
+    {
+      "role": "detail",
+      "text": "Die DDR riskierte, ihre Wirtschaft nicht mehr aufrechterhalten zu können.",
+      "fact_ids": [
+        "fact_07"
+      ],
+      "id": "voice_block_06"
+    },
+    {
+      "role": "payoff",
+      "text": "Die Mauer nahm Menschen den Berliner Ausweg nach Westen: West-Berlin wurde vom DDR-Gebiet hermetisch abgeriegelt. Genau so sollte die Abwanderung gestoppt werden.",
+      "fact_ids": [
+        "fact_01",
+        "fact_03"
+      ],
+      "id": "voice_block_07"
+    }
+  ],
+  "readiness": {
+    "language": "de",
+    "ready": false,
+    "status": "blocked",
+    "research_required": false,
+    "failure_category": "script_recovery_failed",
+    "blocking": [
+      {
+        "code": "script_story_quality_low_information_gain",
+        "message": "Only 4 of 6 body beats add supported explanatory meaning."
+      },
+      {
+        "code": "script_story_quality_rewrite_hard_failure",
+        "message": "Bounded script recovery exhausted: Die Aussage „kein Schutzwall nach außen“ ist als absolute Negation durch die zitierten Fakten nicht belegt. Belegt ist der Zweck, den Flüchtlingsstrom beziehungsweise das Weggehen aus der DDR zu verhindern; daraus folgt nicht ausdrücklich, dass die Mauer keinerlei Schutzfunktion nach "
+      },
+      {
+        "code": "contract_verification_stale",
+        "message": "No independent contract verification for the current script."
+      }
+    ],
+    "answer_sufficiency": {
+      "status": "pass",
+      "explanatory_question": true,
+      "answer_relation": "purpose",
+      "reasons": [],
+      "mechanism_block_ids": [
+        "voice_block_07"
+      ],
+      "question_terms": [
+        "gebaut",
+        "wurde"
+      ],
+      "condition_terms": [],
+      "intent_alignment": {
+        "status": "not_applicable",
+        "expected_hits": 0,
+        "excluded_hits": 0
+      },
+      "intended_question": "Warum ließ die DDR-Führung die Berliner Mauer bauen?",
+      "review_verdict": "answered",
+      "one_sentence_answer": "Die DDR ließ die Berliner Mauer bauen, um den Flüchtlingsstrom in den Westen zu stoppen, indem sie die Wege durch Berlin abriegelte.",
+      "missing": "",
+      "research_required": false
+    },
+    "message": "ClipForge konnte für diese Frage noch keine ausreichend belegte Antwort erstellen. Bitte versuche es erneut."
+  },
+  "quality_issues": [
+    {
+      "issue_type": "clarity",
+      "severity": "warning",
+      "segment_id": "voice_block_04",
+      "segment": "Der Bau folgte auf einen Beschluss der sowjetischen Führung und eine Weisung der DDR-Regierung wenige Tage später.",
+      "reason": "Hard to follow on first listen (long_sentence, long_words, abstract_nouns): “Der Bau folgte auf einen Beschluss der sowjetischen Führung und eine Weisung der”",
+      "suggested_action": "Tighten into natural spoken language without changing the fact."
+    },
+    {
+      "issue_type": "irrelevant_segment",
+      "severity": "warning",
+      "segment_id": "voice_block_05",
+      "segment": "Der Druck war groß: Allein in Ost-Berlin fehlten 45.000 Arbeitskräfte.",
+      "reason": "Same subject, different question: “Der Druck war groß: Allein in Ost-Berlin fehlten 45.000 Arbeitskräfte.”",
+      "suggested_action": "Remove it unless it directly helps answer the core question."
+    },
+    {
+      "issue_type": "post_payoff_fluff",
+      "severity": "warning",
+      "segment_id": "voice_block_05",
+      "segment": "Der Druck war groß: Allein in Ost-Berlin fehlten 45.000 Arbeitskräfte.",
+      "reason": "2 beat(s) after the explanation is complete only delay the ending: “Der Druck war groß: Allein in Ost-Berlin fehlten 45.000 Arbe”",
+      "suggested_action": "End when the explanation or payoff is complete."
+    },
+    {
+      "issue_type": "low_information_gain",
+      "severity": "error",
+      "segment_id": null,
+      "segment": null,
+      "reason": "Only 4 of 6 body beats add supported explanatory meaning.",
+      "suggested_action": "Remove labels, repeated analogies and circular closure; use the supported mechanism instead."
+    },
+    {
+      "issue_type": "rewrite_hard_failure",
+      "severity": "error",
+      "segment_id": null,
+      "segment": null,
+      "reason": "Bounded script recovery exhausted: Die Aussage „kein Schutzwall nach außen“ ist als absolute Negation durch die zitierten Fakten nicht belegt. Belegt ist der Zweck, den Flüchtlingsstrom beziehungsweise das Weggehen aus der DDR zu verhindern; daraus folgt nicht ausdrücklich, dass die Mauer keinerlei Schutzfunktion nach ",
+      "suggested_action": "Generate again or extend the research."
+    }
+  ],
+  "selected_hook": {
+    "id": "hook_a",
+    "strategy": "verified_statistic",
+    "verbal_hook": "Die Berliner Mauer ergänzte schon eine Grenze von rund 1.400 Kilometern.",
+    "supported_by_fact_ids": [
+      "fact_03"
+    ]
+  }
+}

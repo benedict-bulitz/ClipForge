@@ -62,7 +62,7 @@ from .script_story_quality import (
     run_script_story_quality_v1,
     script_quality_signature,
 )
-from .story_arc import arc_units, story_brief
+from .story_arc import arc_units, editorial_payoff_plan, story_brief
 from .verbal_hook import _numbers, _rounded_from, information_gain, proposition_words
 
 REWRITE_VERSION = 2
@@ -177,7 +177,12 @@ SHARED_RULES = (
     "Facts: research.facts is the only evidence. A fact with usable=false must not be used. Every factual "
     "statement must be supported by usable facts; cite their exact ids. Never invent facts, mechanisms, "
     "numbers, statistics, dates, names or sources, never cite an id that is not listed, never contradict the "
-    "research. Reveal contract: when reveal_contract.withhold_answer is true the protected answer may be said "
+    "research. "
+    "Positive evidence for one purpose does not establish the absence of every other purpose or an exclusive "
+    "negative contrast. Do not infer an actor, necessity, or a causal link between separate facts without "
+    "support for that relationship. Optional context may be omitted instead of inventing a bridge. "
+    "Do not generalize evidence about one instance into a universal claim. "
+    "Reveal contract: when reveal_contract.withhold_answer is true the protected answer may be said "
     "only after the facts it depends on; later is fine, earlier never, and the hook never states or implies "
     "it. Write for the ear in the target language (language field); never mix languages. "
 )
@@ -193,7 +198,8 @@ CRITIC_INSTRUCTIONS = (
     + SHARED_RULES
     + "Severity: hard only for unsupported or contradicting statements, a premature protected reveal, or a "
     "question that is not answered; major for objectively weak writing a viewer would notice; minor for "
-    "taste. beat_index is the 1-based draft beat. missed_fact_ids lists usable fact ids that would "
+    "taste. Required depth comes from QuestionAnswerContract; optional background is not a missing mechanism. "
+    "beat_index is the 1-based draft beat. missed_fact_ids lists usable fact ids that would "
     "materially improve the explanation. verdict: strong only if you would ship the draft unchanged; "
     "needs_research only if the research cannot support a REQUIRED obligation from the contract (say what is missing in "
     "research_need); otherwise rewrite. deterministic_findings are lexical hints and may be wrong. Return only "
@@ -206,14 +212,17 @@ REWRITE_INSTRUCTIONS = (
     "every sentence, write new hook wording, reorder, merge, split, add or drop beats, change the answer "
     "structure, rewrite the payoff completely, choose a better analogy or none, compress or expand. Use ANY "
     "usable research fact, including facts the draft ignored, and choose the strongest subset. Quality beats "
-    "preserving the draft; do not patch critic findings one by one - optimise the whole script. "
+    "preserving the draft; optimise the whole script except when grounding_repair explicitly limits changes. "
     + SHARED_RULES
     + "Story contract: the first beat has role hook and keeps hook_intent (its curiosity promise and intended "
     "viewer reaction) in new or old words, without spending the protected answer. The payoff must answer the "
     "original question, deliver payoff_intent and leave the viewer with an 'ah, that is why' insight. For "
     "why/how questions explain the mechanism step by step - what physically or causally happens and why it "
     "produces the result - not only its name. An answer beat orients; the payoff closes the causal loop with "
-    "new information and must not restate the answer. Mention a concept (a list of factors, a technical "
+    "new information and must not restate the answer. The contract sets necessary depth: preserve every required "
+    "step, but do not invent deeper motives or negative contrasts for a stronger ending. When one closing "
+    "beat can contain the complete answer, orient with supported observations before it rather than giving "
+    "the complete answer twice. Mention a concept (a list of factors, a technical "
     "term) only if the script uses it. Every beat must give the viewer something new; no filler, no "
     "throat-clearing, no generic outro, no repeated analogy; end right after the payoff. Short, concrete, "
     "natural spoken sentences, one idea each. Stay within style.word_budget words in total. Every beat after "
@@ -230,8 +239,12 @@ REWRITE_INSTRUCTIONS = (
     "finding in verifier_findings and keep what worked in previous_rewrite. "
     "For mode contract_repair, resolve every failed_obligations entry holistically using its exact "
     "supporting_fact_ids and supporting_facts; do not append a patch sentence. "
+    "When grounding_repair is supplied, return the same number of beats and change only its repair_beat_indices; "
+    "keep all other text, roles and citations unchanged. Fix rejected assertions or presuppositions using "
+    "entailed wording, not new factual claims. The result will receive full independent verification. "
     "For mode fresh_regeneration, create a completely new script from the contract, required_supported_fact_ids, "
     "full research, hook intent, reveal constraints, language and word budget. No failed draft wording is supplied. "
+    "recovery_constraints names prior failure classes without quoting failed wording; avoid recreating them. "
     "Return only the structured output."
 )
 
@@ -383,9 +396,9 @@ def _small(value: Any, limit: int = 400) -> Any:
     return str(value)[:limit]
 
 
-def _story(arc: dict[str, Any]) -> Any:
+def _story(arc: dict[str, Any], contract: dict[str, Any] | None = None) -> Any:
     try:
-        return _small(story_brief(arc))
+        return _small(story_brief(arc, question_answer_contract=contract))
     except (KeyError, TypeError):  # a partial (legacy) arc is still useful as-is
         return _small(arc)
 
@@ -401,6 +414,8 @@ def build_brief(blocks: list[dict[str, Any]], context: dict[str, Any], assessmen
     usable = _usable_facts(context)
     script = context.get("script") if isinstance(context.get("script"), dict) else {}
     gain = assessment.get("information_gain") if isinstance(assessment.get("information_gain"), dict) else {}
+    contract = context.get("question_answer_contract")
+    editorial_payoff = editorial_payoff_plan(payoff, contract) or {}
     return {
         "question_answer_contract": context.get("question_answer_contract"),
         "research_coverage": context.get("research_coverage"),
@@ -411,12 +426,14 @@ def build_brief(blocks: list[dict[str, Any]], context: dict[str, Any], assessmen
             "citations_must_support_the_actual_claim": True,
             "factual_question_presuppositions_require_grounding": True,
             "context_does_not_establish_actor_agency_or_intent": True,
+            "positive_purpose_does_not_establish_an_exclusive_negative_contrast": True,
+            "separate_facts_do_not_establish_an_unstated_causal_link": True,
         },
         "version": REWRITE_VERSION,
         "question": {
             "original": str(context.get("prompt") or ""),
             "intended": str(
-                ((intent.get("question_intent") or {}) if isinstance(intent.get("question_intent"), dict) else {}).get(
+                (contract or {}).get("core_question") or ((intent.get("question_intent") or {}) if isinstance(intent.get("question_intent"), dict) else {}).get(
                     "intended_question"
                 )
                 or intent.get("question")
@@ -446,15 +463,15 @@ def build_brief(blocks: list[dict[str, Any]], context: dict[str, Any], assessmen
                 if isinstance(fact, dict) and fact.get("id")
             ],
         },
-        "story_arc": _story(arc),
+        "story_arc": _story(arc, contract),
         "hook_intent": {
             "selected_hook": str(script.get("selected_hook") or hook.get("verbal_hook") or ""),
             "strategy": hook.get("selected_strategy"),
-            "curiosity_target": _small(hook.get("curiosity_target")),
-            "promised_payoff": _small(hook.get("promised_payoff")),
+            "curiosity_target": (contract or {}).get("core_question") or _small(hook.get("curiosity_target")),
+            "promised_payoff": (contract or {}).get("primary_answer_obligation", {}).get("description") or _small(hook.get("promised_payoff")),
             "on_screen_text_hook": _small(hook.get("on_screen_text_hook")),
             "intended_reaction": hook.get("intended_reaction"),
-            "hook_promise": _small((arc.get("question_contract") or {}).get("hook_promise")),
+            "hook_promise": (contract or {}).get("core_question") or _small((arc.get("question_contract") or {}).get("hook_promise")),
         },
         "reveal_contract": {
             "withhold_answer": _withhold(context),
@@ -465,10 +482,10 @@ def build_brief(blocks: list[dict[str, Any]], context: dict[str, Any], assessmen
             "reveal_policy": payoff.get("reveal_policy"),
         },
         "payoff_intent": {
-            "final_payoff_id": arc.get("final_payoff_id"),
-            "payoff": _small(payoff.get("payoff")),
+            "final_payoff_id": None if contract else arc.get("final_payoff_id"),
+            "payoff": _small(editorial_payoff.get("payoff")),
             "payoff_type": payoff.get("payoff_type"),
-            "desired_viewer_reaction": payoff.get("desired_viewer_reaction"),
+            "desired_viewer_reaction": editorial_payoff.get("desired_viewer_reaction"),
         },
         "viewer_reaction": _small((context.get("reaction_plan") or {}).get("planned_arc")),
         "draft": {"beats": _beats(blocks)},
@@ -797,6 +814,49 @@ def _severity(findings: list[dict[str, Any]], level: str) -> list[dict[str, Any]
     return [item for item in findings if item["severity"] == level]
 
 
+def _grounding_repair(attempt: dict[str, Any], context: dict[str, Any]) -> dict[str, Any] | None:
+    """Scope a grounding-only repair; this preserves content, never approval."""
+    blocks = attempt.get("blocks") or []
+    review = attempt.get("claim_grounding") or {}
+    flags = attempt.get("verification_flags") or {}
+    # Normalization can expand a 16-beat rewrite. Do not demand that a repair
+    # return more beats than RewriteResponse's structured schema permits.
+    if (not blocks or len(blocks) > 16 or attempt.get("major") or flags.get("premature_reveal")
+            or not all(flags.get(key) for key in ("answers_question", "payoff_fulfilled", "hook_promise_kept"))
+            or attempt.get("failed_obligations")
+            or review.get("evidence_key") != evidence_key(blocks, context.get("facts") or [])):
+        return None
+    entries = [ClaimGrounding.model_validate(entry) for entry in review.get("evaluations") or []]
+    repair = {entry.beat_index for entry in entries if entry.status in {"unsupported", "uncertain"}}
+    if not repair or any(item["code"] != "ungrounded" and item.get("beat_index") not in repair
+                         for item in attempt.get("hard") or []):
+        return None
+    # Incomplete/mismatched reviews cannot establish which remaining beats
+    # were supported. A global grounded flag alone is insufficient.
+    if any(item["code"] not in {"claim_unsupported", "claim_unverifiable"}
+           for item in check_claim_grounding(entries, blocks, _usable_facts(context))):
+        return None
+    return {
+        "repair_beat_indices": sorted(repair),
+        "preserve_beat_indices": [index for index in range(1, len(blocks) + 1) if index not in repair],
+        "claim_evaluations": [entry.model_dump(mode="json") for entry in entries if entry.beat_index in repair],
+    }
+
+
+def _recovery_constraints(attempts: list[dict[str, Any]]) -> list[str]:
+    """Fixed labels only: fresh generation must not receive rejected prose."""
+    constraints: set[str] = set()
+    for attempt in attempts:
+        for item in attempt.get("hard") or []:
+            if item.get("beat_index") == 1:
+                constraints.add("hook_grounding")
+            if item["code"] in {"claim_unsupported", "claim_unverifiable", "ungrounded"}:
+                constraints.add("claim_grounding")
+            if item["code"] == "answer_payoff_duplicate":
+                constraints.add("answer_payoff_repetition")
+    return sorted(constraints)
+
+
 def _guard(call: Callable[[], Any]) -> tuple[Any, str | None]:
     try:
         return call(), None
@@ -958,6 +1018,7 @@ def run_script_story_quality(
         "error": None,
         "critic": None,
         "attempts": [],
+        "draft_blocks": copy.deepcopy(original),
     }
     if _contract_obligations(context) and not context.get("research_coverage"):
         holistic.update(status="coverage_unavailable", failure_type="COVERAGE_UNAVAILABLE")
@@ -1023,6 +1084,9 @@ def run_script_story_quality(
             "previous_rewrite": _beats(previous) if previous else None,
             "verifier_findings": repair_findings or None,
         }
+        grounding_repair = _grounding_repair(attempts[-1], context) if number == 2 and attempts else None
+        if grounding_repair:
+            request["grounding_repair"] = grounding_repair
         if number == 3:
             # Remove all failed prose and draft critiques; keep only generation constraints.
             request = {key: value for key, value in brief.items() if key not in {
@@ -1039,6 +1103,7 @@ def run_script_story_quality(
                     identifier for item in supported if item["is_required"]
                     for identifier in item["supporting_fact_ids"]
                 }),
+                recovery_constraints=_recovery_constraints(attempts),
             )
         response, error = _guard(lambda request=request: provider.rewrite(request))
         if error is not None:
@@ -1062,6 +1127,11 @@ def run_script_story_quality(
             attempts.append({"attempt": number, "status": "needs_research", "research_need": research_need})
             break
         candidate = _candidate_blocks(response)
+        proposed = copy.deepcopy(candidate) if grounding_repair else None
+        scope_mismatch = bool(grounding_repair and len(candidate) != len(previous))
+        if grounding_repair and not scope_mismatch:
+            candidate = [block if index in grounding_repair["repair_beat_indices"] else copy.deepcopy(previous[index - 1])
+                         for index, block in enumerate(candidate, 1)]
         hook_restored = False
         if draft_has_hook and (
             not candidate or _role(candidate[0]) != "hook" or any(item["code"] != "hook_lexical_grounding" for item in _hook_findings(candidate, context))
@@ -1071,6 +1141,8 @@ def run_script_story_quality(
         if finalize_candidate is not None:
             candidate = finalize_candidate(candidate)
         findings = deterministic_findings(candidate, context, draft_has_hook=draft_has_hook)
+        if scope_mismatch:
+            findings.append(_finding("grounding_repair_structure", "hard", "Grounding repair changed the beat count."))
         if hook_restored:
             findings.append(_finding("hook_restored", "minor", "The rewritten hook broke the hook intent; the selected Triple Hook was kept.", 1))
         verdict: VerifierResponse | None = None
@@ -1144,6 +1216,8 @@ def run_script_story_quality(
             )} if verdict else None,
             "explanation_audit": audit,
             "claim_grounding": audit.get("claim_grounding") if audit else None,
+            "grounding_repair": grounding_repair,
+            "proposed_blocks": proposed,
             "hard": _severity(findings, "hard"),
             "major": _severity(findings, "major"),
             "minor": _severity(findings, "minor"),

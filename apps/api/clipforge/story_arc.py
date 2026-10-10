@@ -15,6 +15,7 @@ real TTS durations still decide how long it takes.
 """
 from __future__ import annotations
 
+import copy
 import re
 from itertools import pairwise
 from typing import Any
@@ -886,12 +887,16 @@ def essential_fact_ids(arc: dict[str, Any] | None) -> set[str]:
     return {fact_id for fact_id, unit in arc_units(arc).items() if not unit.get("may_be_omitted")}
 
 
-def story_brief(arc: dict[str, Any] | None) -> dict[str, Any]:
+def story_brief(
+    arc: dict[str, Any] | None, *, question_answer_contract: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Compact arc view for providers (writer, hook) and the triple hook."""
-    if not isinstance(arc, dict) or not arc.get("units"):
+    if not isinstance(arc, dict):
+        arc = {}
+    if not arc.get("units") and not question_answer_contract:
         return {}
     units = arc_units(arc)
-    return {
+    brief = {
         "structure": arc.get("structure"),
         "format": arc.get("format"),
         "primary_question": arc.get("primary_question"),
@@ -921,6 +926,40 @@ def story_brief(arc: dict[str, Any] | None) -> dict[str, Any]:
             if fact_id in units
         ],
     }
+    if question_answer_contract:
+        # A legacy planner's final fact/spine is editorial guidance, not a
+        # second answer contract. In particular it may describe another event.
+        contract = copy.deepcopy(question_answer_contract)
+        question = contract["core_question"]
+        brief["primary_question"] = question
+        brief["question_contract"] = {
+            **contract, "intended_question": question,
+            "excluded_interpretations": copy.deepcopy((arc.get("question_contract") or {}).get("excluded_interpretations") or []),
+        }
+        brief["requirement_authority"] = "question_answer_contract"
+        brief["final_payoff_id"] = None
+        brief["curiosity_gap"] = {
+            "question": question, "withhold_answer": bool((arc.get("curiosity_gap") or {}).get("withhold_answer")),
+        }
+        for item in brief["information_order"]:
+            # The obligation descriptions decide what must be explained. A
+            # source's full contents do not become mandatory by citation.
+            item["may_be_omitted"] = item["fact_id"] != brief["primary_answer_id"]
+    return brief
+
+
+def editorial_payoff_plan(plan: dict[str, Any] | None, contract: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Keep reveal protections, but do not prescribe unverified closing prose."""
+    if not contract:
+        return copy.deepcopy(plan)
+    result = {key: copy.deepcopy(value) for key, value in (plan or {}).items()
+              if key in {"reveal_policy", "hook_must_not_reveal", "primary_answer_id", "protected_visual_target"}}
+    result.update(
+        payoff=contract["primary_answer_obligation"]["description"],
+        question_answer_contract=copy.deepcopy(contract),
+        desired_viewer_reaction="Understand the supported answer to the original question.",
+    )
+    return result
 
 
 # ---------------------------------------------------------------------------
