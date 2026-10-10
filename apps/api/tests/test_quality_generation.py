@@ -283,7 +283,8 @@ def test_german_project_sends_german_text_and_language_instructions_to_tts(
         settings(openai_api_key="test-key-not-real"),
     )
 
-    assert captured["input"] == state["script"]["text"]
+    from clipforge.narration import clean_narration_text
+    assert clean_narration_text(captured["input"]) == clean_narration_text(state["script"]["text"])
     assert "Natural de narration" in captured["instructions"]
     assert detect_text_language(captured["input"]) == "de"
 

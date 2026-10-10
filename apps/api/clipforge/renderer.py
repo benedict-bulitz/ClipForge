@@ -758,14 +758,66 @@ def _create_voice(state: dict, temp: Path, settings: Settings) -> tuple[Path, st
     text = clean_narration_text(raw_text)
     if text != raw_text or contamination_issues(raw_text):
         raise RenderUnavailable("Narration validation failed before voice generation.")
-    text = text[:4096]
+    
+    # 1. SMART PAUSES
+    blocks = state.get("script", {}).get("blocks")
+    if isinstance(blocks, list) and blocks:
+        tts_parts = []
+        for i, block in enumerate(blocks):
+            role = str(block.get("role", "")).casefold()
+            btext = str(block.get("text", "")).strip()
+            if not btext:
+                continue
+            if i > 0:
+                if role in {"setup", "payoff", "turn", "context", "intro", "outro", "hook"}:
+                    tts_parts.append("\n\n")
+                elif role in {"detail", "support"}:
+                    tts_parts.append(" ")
+                else:
+                    tts_parts.append("\n\n")
+            tts_parts.append(btext)
+        tts_text = "".join(tts_parts)
+    else:
+        tts_text = text
+    
+    tts_text = tts_text[:4096]
+
+    # 2. DYNAMIC PACING
+    base_speed = float(state.get("voice", {}).get("speed") or 1.0)
+    word_count = int(state.get("script", {}).get("word_count") or len(text.split()))
+    lang = str(state.get("intent", {}).get("language", "de")).casefold()
+    max_duration = float(state.get("duration", {}).get("maximum_seconds") or 0.0)
+    
+    adjusted_speed = base_speed
+    if word_count > 0:
+        avg_word_length = sum(len(w) for w in text.split()) / word_count
+        if lang.startswith("de") and avg_word_length > 6.0:
+            adjusted_speed *= 1.03
+        
+        if max_duration > 0:
+            natural_duration = word_count / 2.5
+            if natural_duration > max_duration:
+                required_speed = natural_duration / max_duration
+                adjusted_speed = max(adjusted_speed, min(1.18, required_speed))
+                
+        sentences = re.split(r"(?<=[.!?])\s+", text)
+        if sentences:
+            avg_sentence_length = word_count / len(sentences)
+            if avg_sentence_length > 16:
+                adjusted_speed *= 0.96
+    
+    final_speed = round(max(0.75, min(1.35, adjusted_speed)), 2)
+    state.setdefault("voice", {})["effective_speed"] = final_speed
+
     requested_provider = str(state.get("voice", {}).get("provider") or "").casefold()
     if requested_provider in {"", "auto", "openai_or_system", "cached"}:
         requested_provider = "openai" if settings.openai_api_key else "system"
     elif requested_provider == "macos_say" and settings.openai_api_key and str(state.get("voice", {}).get("model") or "system") == "system":
-        # Legacy states created before provider persistence used macos_say as a
-        # placeholder; upgrade them to the configured provider on rerender.
         requested_provider = "openai"
+
+    output = temp / "voice.wav"
+    provider_used = "macos_say"
+
     if requested_provider == "openai":
         if not settings.openai_api_key:
             raise VoiceGenerationError(
@@ -773,7 +825,6 @@ def _create_voice(state: dict, temp: Path, settings: Settings) -> tuple[Path, st
                 category="openai_not_configured",
                 status_code=503,
             )
-        output = temp / "voice.wav"
         try:
             voice_id = str(state["voice"].get("voice_id") or "marin")
             if voice_id not in OPENAI_VOICES:
@@ -783,46 +834,84 @@ def _create_voice(state: dict, temp: Path, settings: Settings) -> tuple[Path, st
             response = OpenAI(api_key=settings.openai_api_key).audio.speech.create(
                 model=model,
                 voice=voice_id,
-                input=text,
-                instructions=tts_instructions(state["voice"], state["intent"]["language"]),
+                input=tts_text,
+                instructions=tts_instructions(state["voice"], state.get("intent", {}).get("language", "de")),
                 response_format="wav",
-                speed=max(0.25, min(4.0, float(state["voice"].get("speed") or 1.0))),
+                speed=max(0.25, min(4.0, final_speed)),
             )
             if len(response.content) <= 4096:
                 raise OSError("Narration response was empty")
             output.write_bytes(response.content)
             state["voice"].update(cached=False, audio_source="generated")
-            return output, "openai"
+            provider_used = "openai"
         except (OpenAIError, OSError) as exc:
             raise _openai_voice_error(exc) from exc
-    if requested_provider not in {"system", "macos_say"}:
-        raise RenderUnavailable(f"Unsupported voice provider: {requested_provider}")
-    state["voice"].update(provider="macos_say", model="system")
-    say = shutil.which("say")
-    if not say:
-        raise RenderUnavailable("No voice provider is available.")
-    output = temp / "voice.aiff"
-    voice = _system_voice(say, state["voice"], state["intent"]["language"])
-    rate = max(
-        140,
-        round(state["script"]["word_count"] / max(1, state["duration"]["estimated_seconds"]) * 60),
-    )
-    rate = round(rate * max(0.7, min(1.4, float(state["voice"].get("speed") or 1.0))))
-    command = [say]
-    if voice:
-        command.extend(["-v", voice])
-    command.extend(["-r", str(rate), "-o", str(output), text])
-    completed = _run_process(
-        command,
-        timeout=90,
-        failure="System narration did not finish in time.",
-    )
-    if completed.returncode != 0 or not output.exists() or output.stat().st_size <= 4096:
-        raise RenderUnavailable(completed.stderr.strip() or "System voice generation failed")
-    state["voice"].update(cached=False, audio_source="generated")
-    # Keep the renderer result label backwards-compatible while persisted state
-    # clearly records the intentional local/system provider.
-    return output, "macos_say"
+    else:
+        if requested_provider not in {"system", "macos_say"}:
+            raise RenderUnavailable(f"Unsupported voice provider: {requested_provider}")
+        state["voice"].update(provider="macos_say", model="system")
+        say = shutil.which("say")
+        if not say:
+            raise RenderUnavailable("No voice provider is available.")
+        output = temp / "voice.aiff"
+        voice = _system_voice(say, state["voice"], state.get("intent", {}).get("language", "de"))
+        rate = max(
+            140,
+            round(word_count / max(1, state.get("duration", {}).get("estimated_seconds", 30)) * 60),
+        )
+        rate = round(rate * final_speed)
+        command = [say]
+        if voice:
+            command.extend(["-v", voice])
+        command.extend(["-r", str(rate), "-o", str(output), text])
+        completed = _run_process(
+            command,
+            timeout=90,
+            failure="System narration did not finish in time.",
+        )
+        if completed.returncode != 0 or not output.exists() or output.stat().st_size <= 4096:
+            raise RenderUnavailable(completed.stderr.strip() or "System voice generation failed")
+        state["voice"].update(cached=False, audio_source="generated")
+
+    # 3. AUDIO DIAGNOSTICS
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg and output.exists() and output.stat().st_size > 0:
+        try:
+            probe = _run_process(
+                [ffmpeg, "-v", "info", "-i", str(output), "-af", "volumedetect,silencedetect=noise=-40dB:d=2.0", "-f", "null", "-"],
+                timeout=30,
+                failure="Diagnostics probe failed"
+            )
+            out_err = probe.stderr
+            
+            duration_match = re.search(r"Duration:\s+(\d+):(\d+):(\d+(?:\.\d+)?)", out_err)
+            duration_sec = 0.0
+            if duration_match:
+                duration_sec = int(duration_match.group(1)) * 3600 + int(duration_match.group(2)) * 60 + float(duration_match.group(3))
+                
+            max_vol = re.search(r"max_volume:\s+([-\d.]+)\s+dB", out_err)
+            mean_vol = re.search(r"mean_volume:\s+([-\d.]+)\s+dB", out_err)
+            silences = re.findall(r"silence_duration:\s+([\d.]+)", out_err)
+            
+            diagnostics = {"duration": round(duration_sec, 2)}
+            if max_vol:
+                diagnostics["max_volume"] = float(max_vol.group(1))
+            if mean_vol:
+                diagnostics["mean_volume"] = float(mean_vol.group(1))
+            
+            long_silences = [float(s) for s in silences]
+            if long_silences:
+                diagnostics["excessive_silences"] = len(long_silences)
+                diagnostics["max_silence"] = max(long_silences)
+                
+            if max_vol and float(max_vol.group(1)) < -50.0:
+                diagnostics["warning"] = "Audio is extremely quiet or silent."
+                
+            state["voice"]["diagnostics"] = diagnostics
+        except Exception:  # noqa: BLE001
+            pass  # noqa: S110
+            
+    return output, provider_used
 
 
 def _openai_voice_error(exc: OpenAIError | OSError) -> VoiceGenerationError:

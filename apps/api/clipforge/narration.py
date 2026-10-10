@@ -124,7 +124,7 @@ def clean_narration_text(value: object) -> str:
     text = re.sub(r"(?:https?://|www\.)\S+", "", text)
     text = re.sub(r"(?m)^\s{0,3}#{1,6}\s*", "", text)
     text = re.sub(r"(?m)^\s*>\s?", "", text)
-    text = re.sub(r"(?m)^\s*(?:[-+*]|\d+[.)])\s+", "", text)
+    text = re.sub(r"(?m)^\s*[-+*]\s+", "", text)
     text = re.sub(r"\*\*([^*]+)\*\*|__([^_]+)__|~~([^~]+)~~", _first_group, text)
     text = re.sub(r"(?<!\w)[*_`]([^*_`]+)[*_`](?!\w)", r"\1", text)
 

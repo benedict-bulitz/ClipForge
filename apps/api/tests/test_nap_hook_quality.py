@@ -228,5 +228,5 @@ def test_nap_pipeline_selects_by_function_and_the_hook_persists(monkeypatch, tmp
     monkeypatch.setattr("clipforge.renderer.OpenAI", lambda **_k: SimpleNamespace(audio=SimpleNamespace(speech=Speech())))
     rendered["voice"].update(provider="openai", voice_id="marin", model="gpt-4o-mini-tts")
     _create_voice(rendered, tmp_path, settings)
-    assert str(captured["input"]) == clean_narration_text(rendered["script"]["text"])
+    assert clean_narration_text(str(captured["input"])) == clean_narration_text(rendered["script"]["text"])
     assert str(captured["input"]).startswith(hook)

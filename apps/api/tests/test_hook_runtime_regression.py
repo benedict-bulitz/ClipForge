@@ -184,7 +184,7 @@ def test_off_axis_research_sentence_never_opens_and_the_answer_waits(monkeypatch
     monkeypatch.setattr("clipforge.renderer.OpenAI", lambda **_k: type("Client", (), {"audio": type("Audio", (), {"speech": Speech()})()})())
     rendered["voice"].update(provider="openai", voice_id="marin", model="gpt-4o-mini-tts")
     _create_voice(rendered, tmp_path, settings(tmp_path))
-    assert str(captured["input"]) == clean_narration_text(rendered["script"]["text"])
+    assert clean_narration_text(str(captured["input"])) == clean_narration_text(rendered["script"]["text"])
     assert str(captured["input"]).startswith(hook)
 
 

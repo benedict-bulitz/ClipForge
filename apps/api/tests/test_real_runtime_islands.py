@@ -209,7 +209,7 @@ def test_real_runtime_trace_end_to_end(monkeypatch, tmp_path):
     monkeypatch.setattr("clipforge.renderer.OpenAI", lambda **_k: SimpleNamespace(audio=SimpleNamespace(speech=Speech())))
     rendered["voice"].update(provider="openai", voice_id="marin", model="gpt-4o-mini-tts")
     _create_voice(rendered, tmp_path, settings(tmp_path))
-    assert str(captured["input"]) == clean_narration_text(rendered["script"]["text"])
+    assert clean_narration_text(str(captured["input"])) == clean_narration_text(rendered["script"]["text"])
     assert str(captured["input"]).startswith(hook)
 
 
