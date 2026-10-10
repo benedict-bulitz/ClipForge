@@ -109,7 +109,7 @@ class SourceClass:
 
 def host_of(url: str) -> str:
     host = (urlsplit(str(url or "")).hostname or "").casefold()
-    return host[4:] if host.startswith("www.") else host
+    return host.removeprefix("www.")
 
 
 def registrable_domain(url_or_host: str) -> str:

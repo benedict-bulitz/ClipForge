@@ -25,7 +25,8 @@ from clipforge.config import Settings
 from clipforge.format_intelligence import plan_format
 from clipforge.hooks import CANONICAL_STRATEGIES, _grounded_insight, standalone_issue
 from clipforge.models import Project
-from clipforge.narration import clean_narration_text, clean_research_claim
+import re
+from clipforge.narration import clean_research_claim
 from clipforge.pipeline import build_initial_state
 from clipforge.renderer import RenderResult, _create_voice
 from clipforge.research import ResearchResult
@@ -209,7 +210,7 @@ def test_real_runtime_trace_end_to_end(monkeypatch, tmp_path):
     monkeypatch.setattr("clipforge.renderer.OpenAI", lambda **_k: SimpleNamespace(audio=SimpleNamespace(speech=Speech())))
     rendered["voice"].update(provider="openai", voice_id="marin", model="gpt-4o-mini-tts")
     _create_voice(rendered, tmp_path, settings(tmp_path))
-    assert clean_narration_text(str(captured["input"])) == clean_narration_text(rendered["script"]["text"])
+    assert re.sub(r"\s+", " ", str(captured["input"])).strip() == re.sub(r"\s+", " ", rendered["script"]["text"]).strip()
     assert str(captured["input"]).startswith(hook)
 
 

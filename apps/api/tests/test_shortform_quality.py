@@ -14,6 +14,7 @@ from clipforge.ai import (
 )
 from clipforge.alignment import alignment_readiness, phrase_fallback_items
 from clipforge.config import Settings
+import re
 from clipforge.narration import clean_narration_text, contamination_issues
 from clipforge.pipeline import (
     _apply_selected_hook,

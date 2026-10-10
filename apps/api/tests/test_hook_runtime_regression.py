@@ -14,7 +14,7 @@ from test_triple_hook import Judge, ai_candidate, generation
 import clipforge.services  # noqa: F401 - registers ORM models
 from clipforge.config import Settings
 from clipforge.models import Project
-from clipforge.narration import clean_narration_text
+import re
 from clipforge.pipeline import build_initial_state
 from clipforge.renderer import RenderResult, _create_voice
 from clipforge.research import ResearchResult
@@ -184,7 +184,7 @@ def test_off_axis_research_sentence_never_opens_and_the_answer_waits(monkeypatch
     monkeypatch.setattr("clipforge.renderer.OpenAI", lambda **_k: type("Client", (), {"audio": type("Audio", (), {"speech": Speech()})()})())
     rendered["voice"].update(provider="openai", voice_id="marin", model="gpt-4o-mini-tts")
     _create_voice(rendered, tmp_path, settings(tmp_path))
-    assert clean_narration_text(str(captured["input"])) == clean_narration_text(rendered["script"]["text"])
+    assert re.sub(r"\s+", " ", str(captured["input"])).strip() == re.sub(r"\s+", " ", rendered["script"]["text"]).strip()
     assert str(captured["input"]).startswith(hook)
 
 

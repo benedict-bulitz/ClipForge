@@ -18,7 +18,7 @@ from test_triple_hook import Judge, ai_candidate, generation, story
 
 from clipforge.config import Settings
 from clipforge.hooks import CANONICAL_STRATEGIES, strategy_function
-from clipforge.narration import clean_narration_text
+import re
 from clipforge.pipeline import build_initial_state
 from clipforge.renderer import RenderResult, _create_voice
 from clipforge.research import ResearchResult
@@ -228,5 +228,5 @@ def test_nap_pipeline_selects_by_function_and_the_hook_persists(monkeypatch, tmp
     monkeypatch.setattr("clipforge.renderer.OpenAI", lambda **_k: SimpleNamespace(audio=SimpleNamespace(speech=Speech())))
     rendered["voice"].update(provider="openai", voice_id="marin", model="gpt-4o-mini-tts")
     _create_voice(rendered, tmp_path, settings)
-    assert clean_narration_text(str(captured["input"])) == clean_narration_text(rendered["script"]["text"])
+    assert re.sub(r"\s+", " ", str(captured["input"])).strip() == re.sub(r"\s+", " ", rendered["script"]["text"]).strip()
     assert str(captured["input"]).startswith(hook)

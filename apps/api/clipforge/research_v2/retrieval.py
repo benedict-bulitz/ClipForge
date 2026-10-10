@@ -135,7 +135,9 @@ class RobotsPolicy:
 
 def _scrapling_dynamic(url: str, timeout_seconds: float) -> str | None:
     """Render a JS-only page with Scrapling's plain (non-stealth) browser fetcher."""
-    from scrapling.fetchers import DynamicFetcher  # optional extra: scrapling[fetchers] + playwright
+    from scrapling.fetchers import (
+        DynamicFetcher,  # optional extra: scrapling[fetchers] + playwright
+    )
 
     response = DynamicFetcher.fetch(
         url, headless=True, network_idle=True, disable_resources=True, timeout=int(timeout_seconds * 1000)

@@ -35,7 +35,7 @@ TIME_WORD_MAX_AGE_DAYS = 3 * 365
 
 def _shingles(text: str, size: int = 5) -> set[tuple[str, ...]]:
     tokens = re.findall(r"\w+", text.casefold())
-    return {tuple(tokens[index:index + size]) for index in range(0, max(0, len(tokens) - size + 1))}
+    return {tuple(tokens[index:index + size]) for index in range(max(0, len(tokens) - size + 1))}
 
 
 class _UnionFind:

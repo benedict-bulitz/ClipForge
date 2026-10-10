@@ -29,7 +29,7 @@ _MIRROR = re.compile(r"(?i)(?:^|\.)(?:web\.archive\.org|archive\.(?:today|ph|is)
 _KEYWORD_STOP = {
     "warum", "wieso", "weshalb", "was", "wie", "wann", "wo", "wer", "welche", "welcher", "welches", "why", "what", "how",
     "when", "where", "who", "which", "der", "die", "das", "dem", "den", "des", "ein", "eine", "the", "and", "does", "do",
-    "is", "are", "was", "were", "ist", "sind", "bleibt", "wird", "wurde", "hat", "haben", "kann", "können",
+    "is", "are", "were", "ist", "sind", "bleibt", "wird", "wurde", "hat", "haben", "kann", "können",
     "ursache", "erklärung", "funktioniert", "cause", "explanation", "works", "work",
 }
 
