@@ -883,7 +883,14 @@ def omittable_fact_ids(arc: dict[str, Any] | None) -> set[str]:
     return {fact_id for fact_id, unit in arc_units(arc).items() if unit.get("may_be_omitted")}
 
 
-def essential_fact_ids(arc: dict[str, Any] | None) -> set[str]:
+def essential_fact_ids(
+    arc: dict[str, Any] | None, *, question_answer_contract: dict[str, Any] | None = None,
+) -> set[str]:
+    if question_answer_contract:
+        # QAC verifies required meanings and their supporting citations. A
+        # legacy fact-presence list must not add a second set of obligations.
+        primary = (arc or {}).get("primary_answer_id")
+        return {str(primary)} if primary else set()
     return {fact_id for fact_id, unit in arc_units(arc).items() if not unit.get("may_be_omitted")}
 
 
@@ -937,6 +944,10 @@ def story_brief(
             "excluded_interpretations": copy.deepcopy((arc.get("question_contract") or {}).get("excluded_interpretations") or []),
         }
         brief["requirement_authority"] = "question_answer_contract"
+        brief["dependency_policy"] = (
+            "QAC required obligations determine essential content. order_after_if_included preserves "
+            "causal and chronological ordering only when both facts are narrated; it does not require optional context."
+        )
         brief["final_payoff_id"] = None
         brief["curiosity_gap"] = {
             "question": question, "withhold_answer": bool((arc.get("curiosity_gap") or {}).get("withhold_answer")),
@@ -945,6 +956,10 @@ def story_brief(
             # The obligation descriptions decide what must be explained. A
             # source's full contents do not become mandatory by citation.
             item["may_be_omitted"] = item["fact_id"] != brief["primary_answer_id"]
+            # Preserve chronological/causal ordering when both facts are
+            # included, without requiring optional setup to be added.
+            item["order_after_if_included"] = item["depends_on"]
+            item["depends_on"] = []
     return brief
 
 
@@ -1025,7 +1040,8 @@ def annotate_story_roles(state: dict[str, Any]) -> dict[str, Any] | None:
         arc["block_units"] = {block_id: unit_ids for block_id, unit_ids in block_units.items() if unit_ids}
         arc["script_issues"] = story_script_issues(state)
         covered = {fact_id for unit_ids in block_units.values() for fact_id in unit_ids}
-        missing = sorted(essential_fact_ids(arc) - covered) if covered else []
+        contract = state.get("question_answer_contract") or state.get("contract")
+        missing = sorted(essential_fact_ids(arc, question_answer_contract=contract) - covered) if covered else []
         arc["completeness"] = {
             "mapped": bool(covered),
             "complete": bool(covered) and not missing and arc.get("primary_answer_id") in covered,
@@ -1214,7 +1230,8 @@ def story_script_issues(state: dict[str, Any]) -> list[str]:
     for index, (_block, unit_ids) in enumerate(mapped):
         for fact_id in unit_ids:
             first_seen.setdefault(fact_id, index)
-    for fact_id in sorted(essential_fact_ids(arc)):
+    contract = state.get("question_answer_contract") or state.get("contract")
+    for fact_id in sorted(essential_fact_ids(arc, question_answer_contract=contract)):
         if fact_id not in first_seen:
             issues.append(f"required_fact_missing:{fact_id}")
     if primary and primary not in first_seen:

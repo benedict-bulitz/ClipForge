@@ -182,6 +182,9 @@ SHARED_RULES = (
     "negative contrast. Do not infer an actor, necessity, or a causal link between separate facts without "
     "support for that relationship. Optional context may be omitted instead of inventing a bridge. "
     "Do not generalize evidence about one instance into a universal claim. "
+    "With QuestionAnswerContract, legacy order_after_if_included dependencies constrain the order of "
+    "facts you choose to include, not which background facts are mandatory. Only QAC required obligations "
+    "define essential answer content. Optional context absent from the script is not missing required context. "
     "Reveal contract: when reveal_contract.withhold_answer is true the protected answer may be said "
     "only after the facts it depends on; later is fine, earlier never, and the hook never states or implies "
     "it. Write for the ear in the target language (language field); never mix languages. "
@@ -477,7 +480,9 @@ def build_brief(blocks: list[dict[str, Any]], context: dict[str, Any], assessmen
             "withhold_answer": _withhold(context),
             "protected_fact_ids": sorted(_protected_ids(context)),
             "primary_answer_id": primary or None,
-            "must_follow_fact_ids": sorted(str(item) for item in units.get(primary, {}).get("depends_on") or []),
+            "must_follow_fact_ids": [] if contract else sorted(str(item) for item in units.get(primary, {}).get("depends_on") or []),
+            **({"order_after_if_included_fact_ids": sorted(str(item) for item in units.get(primary, {}).get("depends_on") or [])}
+               if contract else {}),
             "must_not_reveal_early": _small(payoff.get("hook_must_not_reveal")),
             "reveal_policy": payoff.get("reveal_policy"),
         },

@@ -272,18 +272,27 @@ def _issue(
     }
 
 
-def _dependency_violations(blocks: list[dict[str, Any]], arc: dict[str, Any]) -> list[dict[str, Any]]:
+def _dependency_violations(
+    blocks: list[dict[str, Any]], arc: dict[str, Any],
+    question_answer_contract: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     units = arc_units(arc)
+    # A hook citation can support just one part of a compound source fact.
+    # Count only facts actually narrated, not everything a cited source says.
+    narrated = [set(narrated_fact_ids(block, list(units.values()))) for block in blocks]
+    present = set().union(*narrated) if narrated else set()
     seen: set[str] = set()
     violations: list[dict[str, Any]] = []
     for index, block in enumerate(blocks):
+        own = narrated[index]
         if str(block.get("role") or "").casefold() == "hook":
+            seen |= own
             continue
-        own = {str(item) for item in block.get("fact_ids") or []}
         missing = {
             str(dependency)
             for fact_id in own
             for dependency in units.get(fact_id, {}).get("depends_on") or []
+            if not question_answer_contract or str(dependency) in present
             if str(dependency) not in seen and str(dependency) not in own
         }
         if missing:
@@ -316,7 +325,9 @@ def _quality_scores(
     redundant_ids = {
         str(unit.get("block_id") or "") for unit in body if unit.get("redundancy") != "none"
     } | set(semantic["tautological_answers"]) | semantic["analogy_repetitions"]
-    order_violations = _dependency_violations(blocks, context.get("story_arc") or {})
+    order_violations = _dependency_violations(
+        blocks, context.get("story_arc") or {}, context.get("question_answer_contract") or context.get("contract"),
+    )
     payoff = report.get("payoff") or {}
     payoff_score = 100 if payoff.get("result") == "strong" else 75 if payoff.get("status") == "pass" else 25
     payoff_indexes = [index for index, block in enumerate(blocks) if str(block.get("role") or "").casefold() == "payoff"]
@@ -484,7 +495,9 @@ def assess_script_story_quality(
                 unit,
             ))
 
-    for violation in _dependency_violations(blocks, context.get("story_arc") or {}):
+    for violation in _dependency_violations(
+        blocks, context.get("story_arc") or {}, context.get("question_answer_contract") or context.get("contract"),
+    ):
         unit = by_id.get(str(violation["block"].get("id") or ""))
         issues.append(_issue(
             "poor_fact_ordering",

@@ -475,7 +475,7 @@ def _generate_body_with_v2_or_fallback(
     if len(required_ids) > 10:
         diagnostics["reason"] = "required_answer_exceeds_writer_budget"
         return legacy_blocks, diagnostics
-    essential = essential_fact_ids(story_arc or {})
+    essential = essential_fact_ids(story_arc or {}, question_answer_contract=question_answer_contract)
     normalized_facts.sort(key=lambda fact: (fact.id not in required_ids, fact.id not in essential, fact.priority != "MUST_KNOW"))
     normalized_facts = normalized_facts[:10]
     diagnostics["selected_fact_ids"] = [fact.id for fact in normalized_facts]
@@ -662,6 +662,7 @@ def _generate_hook_candidates(
     format_plan: dict[str, Any] | None = None,
     novelty_plan: dict[str, Any] | None = None,
     story_arc: dict[str, Any] | None = None,
+    *, question_answer_contract: dict[str, Any] | None = None,
 ) -> Any:
     """The one bounded provider call for complete, document-strategy hook candidates."""
     final_body = " ".join(
@@ -680,7 +681,8 @@ def _generate_hook_candidates(
     supported = {name: {"fact_ids": entry["fact_ids"], "signals": entry["signals"]} for name, entry in context["signals"].items() if entry["viable"]}
     try:
         return generate_hook_candidates_with_openai(
-            prompt, intent, facts, final_body, settings, **planning, story_arc=story_brief(story_arc) or None,
+            prompt, intent, facts, final_body, settings, **planning,
+            story_arc=story_brief(story_arc, question_answer_contract=question_answer_contract) or None,
             supported_strategies=supported,
         )
     except TypeError:  # Compatibility with hook-provider test doubles of older signatures.
@@ -1661,6 +1663,7 @@ def _build_initial_state(
         format_plan,
         novelty_plan,
         story_arc,
+        question_answer_contract=question_answer_contract.model_dump() if question_answer_contract else None,
     )
     # Triple Hook V2 is the one verbal-hook authority: the spoken hook uses a
     # documented strategy supported by the research, selected together with
