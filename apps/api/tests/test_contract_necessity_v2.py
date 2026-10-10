@@ -160,8 +160,16 @@ def test_inconsistent_or_non_atomic_audit_cannot_enter_research(monkeypatch, err
     parse = raw_parser(monkeypatch, [proposed, minimum, audit])
     with pytest.raises(ContractGenerationFailure) as caught:
         qac.generate_contract(LIVE['prompt'], 'de', SETTINGS)
-    assert caught.value.diagnostics['failure_stage'] == 'necessity_audit'
-    assert parse.call_count == 3
+    if error == 'counterfactual':
+        # The invalid audit remains rejected; unavailable correction cannot pass.
+        assert caught.value.diagnostics['failure_stage'] == 'necessity_correction'
+        rejected = caught.value.diagnostics['rejected_necessity_audit']['diagnostics']
+        assert rejected['failure_stage'] == 'necessity_audit'
+        assert rejected['failed_invariants'][0]['code'] == 'COUNTERFACTUAL_NECESSITY_CONTRADICTION'
+        assert parse.call_count == 4
+    else:
+        assert caught.value.diagnostics['failure_stage'] == 'necessity_audit'
+        assert parse.call_count == 3
 
 
 @pytest.mark.parametrize('question,description,language', [

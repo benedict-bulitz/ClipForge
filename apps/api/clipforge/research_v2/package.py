@@ -233,8 +233,11 @@ def select_claims(
     eligible.sort(key=lambda group: _group_rank(group, sources, route))
     # Low-quality / user-generated evidence needs more caution: it is used only
     # when nothing better was found (the package then reports the gap).
-    if any(_group_rank(group, sources, route)[2] <= TIER_RANK["medium"]
-           and _answering_unit(group, frame, sources, route) is not None for group in eligible):
+    if any(
+        unit.basis == "full_text"
+        and TIER_RANK.get(str(sources.get(unit.source_id, {}).get("authority")), 3) <= TIER_RANK["medium"]
+        for group in eligible for unit in _answering_units(group, frame, sources, route)
+    ):
         eligible = [group for group in eligible if _group_rank(group, sources, route)[2] < TIER_RANK["low"]]
     chosen: list[PackageClaim] = []
     used: set[str] = set()
@@ -280,9 +283,18 @@ def select_claims(
                 "issues": core_issues(frame, lead(group).text, _antecedent(lead(group), sources), context=context(lead(group))),
                 "evidence_ids": [unit.id for unit in group.units][:4],
             })
-    answering.sort(key=lambda item: _authority_rank(
-        item[0], sources, route, answer_fit(frame, f"{item[1].text} {_antecedent(item[1], sources) if resolves_pronoun(frame, item[1].text, _antecedent(item[1], sources)) else ''}")
-    ))
+    def answer_rank(item):
+        group, unit = item
+        accepted = _answering_units(group, frame, sources, route)
+        qualified = ClaimGroup(key=group.key, units=accepted,
+                               clusters={str(sources.get(member.source_id, {}).get("cluster") or member.source_id)
+                                         for member in accepted})
+        return _authority_rank(
+            qualified, sources, route,
+            answer_fit(frame, f"{unit.text} {_antecedent(unit, sources) if resolves_pronoun(frame, unit.text, _antecedent(unit, sources)) else ''}"),
+        )
+
+    answering.sort(key=answer_rank)
     if answering:
         group, unit = answering[0]
         accepted_units = _answering_units(group, frame, sources, route)

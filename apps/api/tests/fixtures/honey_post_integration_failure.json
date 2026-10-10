@@ -1,0 +1,746 @@
+{
+  "job_id": "9af20422-5f13-408c-80fa-101abf505f41",
+  "runtime_commit": "7fd8448b6a0e7a90abdaac42db2fcc4e0faee5ba",
+  "question": "Warum wird Honig nie schlecht?",
+  "language": "de",
+  "contract_failure": {
+    "failure_stage": "necessity_audit",
+    "failure_code": "AUDIT_REJECTED",
+    "failure_kind": "semantic",
+    "failed_invariants": [
+      {
+        "code": "COUNTERFACTUAL_NECESSITY_CONTRADICTION",
+        "invariant": "A detail whose omission still answers the question cannot be necessary.",
+        "component_ids": [
+          "C1"
+        ],
+        "kind": "semantic"
+      },
+      {
+        "code": "COUNTERFACTUAL_NECESSITY_CONTRADICTION",
+        "invariant": "A detail whose omission still answers the question cannot be necessary.",
+        "component_ids": [
+          "C2"
+        ],
+        "kind": "semantic"
+      }
+    ],
+    "verification_flags": {
+      "minimally_sufficient": false,
+      "correction_required": true,
+      "primary_contains_unnecessary_conjunction": true,
+      "preserves_question_semantics": true,
+      "preserves_explicit_constraints": true
+    },
+    "reviewer_explanations": {
+      "C1": "Der hohe Zuckergehalt erklärt zwar, warum Wasser nicht verfügbar ist, doch die Frage wird mit der verbleibenden unmittelbaren Ursache der fehlenden Wasserverfügbarkeit und der Wachstumshemmung noch korrekt beantwortet. Als eigenständige Pflicht ist dieses Detail daher nicht strikt notwendig.",
+      "C2": "Auch ohne die getrennte Nennung des geringen Wassergehalts kann der hohe Zuckergehalt als Ursache der Wachstumshemmung die Warum-Frage beantworten. Die getrennte Formulierung ist somit nicht unabhängig erforderlich; zusammen mit der Wachstumshemmung bildet sie jedoch die minimale Erklärung gemäß N1.",
+      "C3": "Ohne die Aussage, dass dadurch Verderbniserreger nicht wachsen können, wird nicht erklärt, weshalb Honig kaum verdirbt. Dies ist der notwendige kausale Abschluss der Antwort.",
+      "C4": "Die Wirkung auf Mikroorganismen lässt sich korrekt ohne den Fachbegriff „Wasseraktivität“ erklären.",
+      "C5": "Das Wasserbinden ist eine zutreffende mechanistische Vertiefung, aber für die unmittelbare Antwort nicht erforderlich.",
+      "C6": "Säure verstärkt die Haltbarkeit, ist aber nicht nötig, um die zentrale Ursache des geringen Verderbs zu erklären.",
+      "C7": "Die unabhängige Mindestantwort verlangt nur die direkte Ursache samt Wirkung auf Mikroorganismen und hat die notwendige Tiefe 1. Eine zusätzliche mechanistische Stufe ist nicht erforderlich."
+    },
+    "question_minimum": {
+      "question_intent": "Erklärung der Ursache, warum Honig nicht leicht verdirbt.",
+      "minimal_answer": "Honig wird kaum schlecht, weil sein sehr geringer Wassergehalt und hoher Zuckergehalt Mikroorganismen das Wachstum entziehen.",
+      "necessary_components": [
+        {
+          "id": "N1",
+          "description": "Honigs geringer Wassergehalt bei hohem Zuckergehalt verhindert das Wachstum von Mikroorganismen.",
+          "necessity_reason": "Ohne die Angabe einer Ursache dafür, dass Verderbniserreger nicht wachsen können, bleibt die Warum-Frage unbeantwortet.",
+          "answer_without_component": "Honig wird kaum schlecht.",
+          "omission_still_answers_question": false,
+          "omission_failure": "unanswered"
+        }
+      ],
+      "explicit_constraints": [],
+      "explanatory_context": [
+        "Zucker bindet Wasser; dadurch ist die Wasseraktivität für die meisten Bakterien und Schimmelpilze zu niedrig.",
+        "Honig ist zudem sauer und enthält antimikrobiell wirkende Stoffe, die den Schutz verstärken.",
+        "Honig kann kristallisieren oder sich bei Feuchtigkeit bzw. Verunreinigung verändern; das ist nicht zwingend Verderb."
+      ],
+      "optional_extensions": [
+        "Unterscheidung zwischen praktisch sehr langer Haltbarkeit und absoluter Unverderblichkeit.",
+        "Hinweis zur luftdichten, trockenen Lagerung."
+      ],
+      "minimum_necessary_depth": 1,
+      "preserves_question_semantics": true,
+      "preserves_explicit_constraints": true
+    },
+    "necessity_components": [
+      {
+        "id": "C1",
+        "source_requirement_ids": [
+          "obligation:primary",
+          "concept:0",
+          "chain:step1"
+        ],
+        "description": "Der hohe Zuckergehalt ist die unmittelbare Ursache dafür, dass in Honig nur wenig Wasser für Mikroorganismen verfügbar ist.",
+        "strictly_necessary": true,
+        "semantic_role": "primary_cause_or_motive",
+        "atomic": true,
+        "minimum_answer_component_ids": [
+          "N1"
+        ],
+        "answer_without_component": "Honig wird kaum schlecht, weil Mikroorganismen wegen des geringen verfügbaren Wassers nicht wachsen können.",
+        "omission_still_answers_question": true,
+        "reason": "Der hohe Zuckergehalt erklärt zwar, warum Wasser nicht verfügbar ist, doch die Frage wird mit der verbleibenden unmittelbaren Ursache der fehlenden Wasserverfügbarkeit und der Wachstumshemmung noch korrekt beantwortet. Als eigenständige Pflicht ist dieses Detail daher nicht strikt notwendig."
+      },
+      {
+        "id": "C2",
+        "source_requirement_ids": [
+          "obligation:primary",
+          "concept:1"
+        ],
+        "description": "Honig bietet Mikroorganismen zu wenig verfügbares Wasser.",
+        "strictly_necessary": true,
+        "semantic_role": "primary_cause_or_motive",
+        "atomic": true,
+        "minimum_answer_component_ids": [
+          "N1"
+        ],
+        "answer_without_component": "Honig wird kaum schlecht, weil sein hoher Zuckergehalt Mikroorganismen am Wachstum hindert.",
+        "omission_still_answers_question": true,
+        "reason": "Auch ohne die getrennte Nennung des geringen Wassergehalts kann der hohe Zuckergehalt als Ursache der Wachstumshemmung die Warum-Frage beantworten. Die getrennte Formulierung ist somit nicht unabhängig erforderlich; zusammen mit der Wachstumshemmung bildet sie jedoch die minimale Erklärung gemäß N1."
+      },
+      {
+        "id": "C3",
+        "source_requirement_ids": [
+          "obligation:primary",
+          "chain:step2",
+          "concept:2"
+        ],
+        "description": "Der Mangel an verfügbarem Wasser verhindert das Wachstum beziehungsweise die Vermehrung von Mikroorganismen und damit typischen Verderb.",
+        "strictly_necessary": true,
+        "semantic_role": "necessary_bridge",
+        "atomic": true,
+        "minimum_answer_component_ids": [
+          "N1"
+        ],
+        "answer_without_component": "Honig enthält viel Zucker und wenig Wasser.",
+        "omission_still_answers_question": false,
+        "reason": "Ohne die Aussage, dass dadurch Verderbniserreger nicht wachsen können, wird nicht erklärt, weshalb Honig kaum verdirbt. Dies ist der notwendige kausale Abschluss der Antwort."
+      },
+      {
+        "id": "C4",
+        "source_requirement_ids": [
+          "chain:step2",
+          "concept:1"
+        ],
+        "description": "Die technische Bezeichnung des geringen verfügbaren Wassers als „niedrige Wasseraktivität“ nennen.",
+        "strictly_necessary": false,
+        "semantic_role": "extension",
+        "atomic": true,
+        "minimum_answer_component_ids": [],
+        "answer_without_component": "Honig wird kaum schlecht, weil hoher Zucker und wenig verfügbares Wasser Mikroorganismen am Wachsen hindern.",
+        "omission_still_answers_question": true,
+        "reason": "Die Wirkung auf Mikroorganismen lässt sich korrekt ohne den Fachbegriff „Wasseraktivität“ erklären."
+      },
+      {
+        "id": "C5",
+        "source_requirement_ids": [
+          "chain:step1"
+        ],
+        "description": "Erklären, dass Zucker den größten Teil des vorhandenen Wassers bindet.",
+        "strictly_necessary": false,
+        "semantic_role": "necessary_bridge",
+        "atomic": true,
+        "minimum_answer_component_ids": [],
+        "answer_without_component": "Honig wird kaum schlecht, weil sein hoher Zuckergehalt und geringer Wassergehalt Mikroorganismen zu wenig verfügbares Wasser zum Wachsen lassen.",
+        "omission_still_answers_question": true,
+        "reason": "Das Wasserbinden ist eine zutreffende mechanistische Vertiefung, aber für die unmittelbare Antwort nicht erforderlich."
+      },
+      {
+        "id": "C6",
+        "source_requirement_ids": [
+          "obligation:acidity",
+          "chain:step3",
+          "concept:3"
+        ],
+        "description": "Honigs Säuregehalt hemmt zusätzlich das Wachstum vieler Mikroorganismen.",
+        "strictly_necessary": false,
+        "semantic_role": "background",
+        "atomic": true,
+        "minimum_answer_component_ids": [],
+        "answer_without_component": "Honig wird kaum schlecht, weil hoher Zucker und wenig verfügbares Wasser Mikroorganismen am Wachsen hindern.",
+        "omission_still_answers_question": true,
+        "reason": "Säure verstärkt die Haltbarkeit, ist aber nicht nötig, um die zentrale Ursache des geringen Verderbs zu erklären."
+      },
+      {
+        "id": "C7",
+        "source_requirement_ids": [
+          "minimum_answer_depth"
+        ],
+        "description": "Eine zweistufige mechanistische Erklärung als Mindesttiefe verlangen.",
+        "strictly_necessary": false,
+        "semantic_role": "depth",
+        "atomic": true,
+        "minimum_answer_component_ids": [],
+        "answer_without_component": "Honig wird kaum schlecht, weil sein hoher Zuckergehalt und geringer Wassergehalt Mikroorganismen zu wenig verfügbares Wasser zum Wachsen lassen.",
+        "omission_still_answers_question": true,
+        "reason": "Die unabhängige Mindestantwort verlangt nur die direkte Ursache samt Wirkung auf Mikroorganismen und hat die notwendige Tiefe 1. Eine zusätzliche mechanistische Stufe ist nicht erforderlich."
+      }
+    ]
+  },
+  "sub_questions": [
+    {
+      "id": "q_core",
+      "kind": "core",
+      "question": "Warum wird Honig nie schlecht?",
+      "query": "wird Honig nie schlecht"
+    },
+    {
+      "id": "q_mechanism",
+      "kind": "mechanism",
+      "question": "Warum wird Honig nie schlecht? (cause / mechanism)",
+      "query": "wird Honig nie schlecht Ursache Erklärung wie funktioniert"
+    }
+  ],
+  "observed_selected_claims": [
+    {
+      "key": "claim_09",
+      "role": "core_answer",
+      "text": "Die Biene gibt dem Honig verschiedene Wirkstoffe dazu, damit dieser nicht schnell verdirbt.",
+      "evidence_ids": [
+        "ev_18"
+      ],
+      "source_ids": [
+        "src_03"
+      ],
+      "independent_sources": 1,
+      "verification": "source_attributed",
+      "origin": "evidence",
+      "basis": "full_text",
+      "authority_tier": 3,
+      "evidence_provenance": [
+        "full_text"
+      ]
+    },
+    {
+      "key": "claim_10",
+      "role": "observation",
+      "text": "Luftdicht abgeschlossen bleibt er so über den Winter haltbar.",
+      "evidence_ids": [
+        "ev_10"
+      ],
+      "source_ids": [
+        "src_02"
+      ],
+      "independent_sources": 1,
+      "verification": "source_attributed",
+      "origin": "evidence",
+      "basis": "full_text",
+      "authority_tier": 1,
+      "evidence_provenance": [
+        "full_text"
+      ]
+    }
+  ],
+  "observed_script_blocks": [
+    {
+      "role": "hook",
+      "text": "In einem luftdichten Glas hält Honig sogar über den Winter.",
+      "fact_ids": [
+        "fact_02"
+      ],
+      "id": "voice_block_01"
+    },
+    {
+      "role": "answer",
+      "text": "Honig wird nicht schnell schlecht, weil Bienen ihm verschiedene Wirkstoffe mitgeben.",
+      "fact_ids": [
+        "fact_01"
+      ],
+      "id": "voice_block_02"
+    },
+    {
+      "role": "payoff",
+      "text": "Darum bleibt er luftdicht verschlossen sogar über den Winter haltbar.",
+      "fact_ids": [
+        "fact_02"
+      ],
+      "id": "voice_block_03"
+    }
+  ],
+  "observed_readiness": {
+    "language": "de",
+    "ready": false,
+    "status": "research_required",
+    "research_required": true,
+    "failure_category": "research_required",
+    "blocking": [
+      {
+        "code": "script_story_quality_needs_research",
+        "message": "Für die Warum-Frage fehlt der belegte Mechanismus: Es braucht Quellen dazu, welche Bestandteile oder Eigenschaften Honig vor Verderb schützen und wie sie konkret wirken. Außerdem wäre belastbare Evidenz nötig, um die Aussage „nie schlecht“ einzuordnen, statt lediglich eine Haltbarkeit über den Winter zu nennen."
+      },
+      {
+        "code": "contract_unavailable",
+        "message": "Question answer contract generation unavailable."
+      }
+    ],
+    "answer_sufficiency": {
+      "status": "warning",
+      "explanatory_question": true,
+      "answer_relation": "mechanism",
+      "reasons": [
+        "review_partial",
+        "research_has_no_mechanism"
+      ],
+      "mechanism_block_ids": [
+        "voice_block_02"
+      ],
+      "question_terms": [
+        "honig",
+        "nie",
+        "schlecht"
+      ],
+      "condition_terms": [],
+      "intent_alignment": {
+        "status": "not_applicable",
+        "expected_hits": 0,
+        "excluded_hits": 0
+      },
+      "intended_question": "Warum wird Honig nie schlecht?",
+      "review_verdict": "partial",
+      "one_sentence_answer": "Honig wird nicht schnell schlecht, weil Bienen ihm verschiedene Wirkstoffe mitgeben; luftdicht verschlossen bleibt er dadurch sogar über den Winter haltbar.",
+      "missing": "Es fehlt der genaue Mechanismus, durch den die Wirkstoffe den Honig haltbar machen, und die Fakten belegen nicht, warum Honig wirklich nie schlecht wird.",
+      "research_required": false
+    },
+    "message": "ClipForge konnte für diese Frage noch keine ausreichend belegte Antwort erstellen. Bitte versuche es erneut."
+  },
+  "sources": [
+    {
+      "source": {
+        "id": "src_01",
+        "url": "https://www.nearbees.de/wissen/honig/honig-haltbarkeit",
+        "source_type": "generic_secondary",
+        "authority": "low",
+        "reasons": [
+          "retrieved page without authority signals"
+        ],
+        "basis": "full_text",
+        "evidence_provenance": "full_text",
+        "retrieval": "cached",
+        "cluster": "src_01",
+        "independence_note": null,
+        "published_at": "2023-01-13",
+        "updated_at": "2023-01-17",
+        "fetched_at": "2026-10-10T06:34:27+00:00",
+        "evidence_units": 8,
+        "used": false,
+        "title": "Haltbarkeit von Honig: Kann Honig schlecht werden?"
+      },
+      "page": {
+        "url": "https://www.nearbees.de/wissen/honig/honig-haltbarkeit",
+        "title": "Haltbarkeit von Honig: Kann Honig schlecht werden?",
+        "site_name": "nearBees",
+        "author": "",
+        "published_at": "2023-01-13",
+        "updated_at": "2023-01-17",
+        "language": "de",
+        "description": "Auch auf Honig findet sich ein Mindesthaltbarkeitsdatum - meist zwei Jahre nach Abfüllung. Doch bei richtiger Lagerung kann Honig weitaus länger genießbar sein.",
+        "headings": [
+          "Haltbarkeit von Honig: Kann das flüssige Gold schlecht werden?",
+          "Im Volksmund ist Honig ewig haltbar: In zahlreichen Pyramiden wurde er als ägyptische Grabbeigabe gefunden und war auch nach Tausenden von Jahren noch genießbar. Doch kann Honig wirklich nicht schlech",
+          "(Fast) Ewig haltbar - Honig richtig aufbewahren",
+          "Der nearBees Honigtopf",
+          "Blütenbildung, Phasentrennung & Co.: Einflüsse auf die Haltbarkeit von Honig",
+          "Gärender Honig und wie Du ihn erkennst",
+          "Aus eins wird zwei: Phasentrennung bei Honig",
+          "Blütenbildung der anderen Art: Weiße Kristalle im Honig",
+          "Genießbar, solange es schmeckt",
+          "Das könnte Dich auch interessieren",
+          "Von Raps über Löwenzahn bis hin zu Tanne",
+          "Honig: Seit jeher Bestandteil der Hausapotheke",
+          "Tipps & Tricks für die Honigverkostung"
+        ],
+        "paragraphs": [
+          "Laut Gesetz braucht auch Honig ein Mindesthaltbarkeitsdatum - das liegt in der Regel bei zwei Jahren. Bei richtiger Lagerung an einem dunklen, kühlen und trockenen Ort hast Du aber deutlich länger etwas von ihm - wenn Du ihn nicht davor schon aufisst. Seine lange Haltbarkeit hat das flüssige Gold übrigens seiner Zusammensetzung zu verdanken: Durch den hohen Zuckergehalt und den niedrigen Anteil an Wasser können sich Bakterien und andere Mikroorganismen nur schwer vermehren.",
+          "Doch wo lagerst Du Honig am besten? Manch einem kommt vielleicht der Kühlschrank in den Sinn. Aber obwohl es dort dunkel und kalt ist, ist das nicht der beste Ort für Honig. Die niedrigen Temperaturen begünstigen das Auskristallisieren des Honigs. Doch damit noch nicht genug: Im eher feuchten Kühlschranklima kann Honig Feuchtigkeit aus der Luft ziehen - Experten bezeichnen diese Eigenschaft als Hygroskopie. Dem flüssigen Gold kann das aber schnell zum Verhängnis werden, da ein höherer Wassergehalt Gärung begünstigt. Lagere Deinen Honig also lieber in einem dunklen Küchenschrank oder in der Speisekammer",
+          "Obwohl Honig die besten Voraussetzungen für ein langes Leben hat, kann es trotzdem sein, dass er schlecht wird. Während Schimmel kein Problem für das flüssige Gold ist, kann Gärung die Qualität aber durchaus beeinflussen. Anzeichen dafür sind beispielsweise Schaum oder kleine Bläschen an der Oberfläche des Honigs. Aber auch ein zunächst süßer, dann säuerlicher Geruch deutet auf eine Gärung hin. Solange er noch süßlich-fruchtig riecht, kannst Du vergorenen Honig übrigens noch essen - manch einem schmeckt das vielleicht sogar besser. Auch zum Süßen von Tee oder zum Backen eignet er sich meist noch gut.",
+          "Doch wie kommt es zur Gärung? Vielleicht konntest Du bei Deinem Honig schon einmal eine sogenannte Phasentrennung beobachten: Unten siehst Du eine feste, auskristallisierte Masse, oben dagegen eine flüssige Schicht. Das Phänomen tritt auf, wenn die Glukose kristallisiert und nach unten sinkt - in der oberen Schicht bleiben wiederum hauptsächlich Wasser und Fruktose zurück.",
+          "Für die Entmischung kann es unterschiedliche Gründe geben: Das kann beispielsweise eine zu lange und zu warme Lagerung sein oder ein nicht richtig verschlossener Honigtopf, sodass das flüssige Gold Wasser aus der Luft zieht. Möglicherweise hat der Imker den Honig auch nach dem Schleudern nicht gerührt, bis er vollkommen homogen war. Dem tatsächlichen Ursprung auf die Schliche zu kommen, ist also gar nicht so einfach. Die Phasentrennung muss aber nicht bedeuten, dass der Honig verdorben ist. Du kannst ihn einfach wieder verrühren oder die flüssige Schicht abgießen. Grundsätzlich ist er jetzt aber anfälliger für Mikroorganismen und anschließend für Gärung, da sich in der oberen Schicht viel Wasser befindet.",
+          "Ein weiteres Phänomen bei Honig ist die sogenannte Blütenbildung : Dabei kannst Du an der Oberfläche oder an der Innenwand eines Honigglases eine weiße Färbung entdecken. Es handelt sich aber nicht etwa um Schimmel oder einen Beweis für Verfälschung, wie manch einer vermutet, sondern um einen natürlichen Prozess. Mit der Zeit wird jeder Honig fest - dabei wird Wasser zwischen den einzelnen Kristallen gebunden. Es kann aber auch passieren, dass Luft eingeschlossen wird, wodurch die einzelnen Kristalle heller erscheinen.",
+          "Die Gründe für dieses Phänomen können ganz unterschiedlich sein. Vielleicht hat die Imkerin den Honig nicht vollständig gerührt, möglicherweise liegt das Problem aber auch in der Lagerung: Wiederholte Temperaturwechsel können Blütenbildung begünstigen. Grundsätzlich bedeuten die weißen Ablagerungen aber nicht, dass der Honig schlecht geworden ist - vielmehr sind sie ein Zeichen für Naturbelassenheit.",
+          "Honig ist bei richtiger Verarbeitung und Lagerung sehr lang haltbar. Kleinere Schönheitsfehler tun dem Geschmack keinen Abbruch - beginnt Dein Honig aber zu gären, solltest Du ihn etwas genauer im Blick behalten. Wie bei den meisten Lebensmitteln kann ein kurzer Sicht- und Geruchstest aber schon Auskunft darüber geben, ob das flüssige Gold noch genießbar ist. Im Zweifelsfall sei aber lieber einmal zu vorsichtig."
+        ],
+        "tables": [],
+        "schema_types": [],
+        "og_type": "article",
+        "doi": "",
+        "citation_journal": "",
+        "canonical": "https://www.nearbees.de/wissen/honig/honig-haltbarkeit",
+        "extractor": "scrapling",
+        "js_only": false
+      },
+      "fetched_at": "2026-10-10T06:34:27+00:00"
+    },
+    {
+      "source": {
+        "id": "src_02",
+        "url": "https://www.planet-wissen.de/gesellschaft/essen/frischhalten/pwieisthonigewighaltbar100.html",
+        "source_type": "specialist_secondary",
+        "authority": "medium",
+        "reasons": [
+          "specialist publication host"
+        ],
+        "basis": "full_text",
+        "evidence_provenance": "full_text",
+        "retrieval": "ok",
+        "cluster": "src_02",
+        "independence_note": null,
+        "published_at": "2026-04-28",
+        "updated_at": "2024-09-17",
+        "fetched_at": "2026-10-10T13:20:30+00:00",
+        "evidence_units": 8,
+        "used": true,
+        "title": "Frischhalten | Wie lange hält sich Honig?"
+      },
+      "page": {
+        "url": "https://www.planet-wissen.de/gesellschaft/essen/frischhalten/pwieisthonigewighaltbar100.html",
+        "title": "Frischhalten | Wie lange hält sich Honig?",
+        "site_name": "planet-wissen.de",
+        "author": "Malte Linde",
+        "published_at": "2026-04-28",
+        "updated_at": "2024-09-17",
+        "language": "de",
+        "description": "Honig ist sehr lichtempfindlich und sollte trocken, dunkel und kühl aufbewahrt werden. Dann kann er sich lange halten.",
+        "headings": [
+          "So entsteht Bienenhonig"
+        ],
+        "paragraphs": [
+          "Planet Wissen . 1 Min. 17 Sek. . Verfügbar bis 21.05.2029 . WDR . Von ZDF/TerraX/Ioanna Engel/ Anna-Lena Neidlinger, https://terraxplaincommons.zdf.de .",
+          "Honig ist ein bekanntes und beliebtes Lebensmittel. Der süße Stoff verlangt allerdings viel Arbeit von den Bienen. Ein Tropfen Honig ist das ganze Lebenswerk einer Biene .",
+          "Sie verwandelt dazu den Nektar verschiedener Pflanzen in ihrem Magen mithilfe von Enzymen in Brotaufstrich. Damit der Honig im Bienenstock nicht schlecht wird, versiegeln die Bienen die Honigwaben mit Wachs. Luftdicht abgeschlossen bleibt er so über den Winter haltbar.",
+          "Für einen Tropfen Honig muss eine Biene ein Leben lang arbeiten",
+          "Nicht nur einen Winter, sondern mehrere tausend Jahre lang hielt sich angeblich Honig, der bei archäologischen Ausgrabungen als Grabbeigabe entdeckt wurde. Nach Angaben der Wissenschaft war er immer noch genießbar. Ob tatsächlich jemand den Jahrtausendhonig probiert hat, ist allerdings nicht überliefert.",
+          "Grundsätzlich kann Honig verderben. Um das zu verhindern, sollte man ihn trocken, dunkel und kühl aufbewahren. Honig ist sehr lichtempfindlich. Wird er nicht dunkel gelagert, können seine antibakteriellen Inhaltsstoffe zerstört werden. Dieser Prozess dauert allerdings Monate, wenn nicht gar Jahre.",
+          "Außerdem ist Honig hygroskopisch, das heißt, er zieht Feuchtigkeit aus der Luft und beginnt zu gären. Aus diesem Grund sollte das Glas immer gut verschlossen sein. Absichtlich herbeigeführt, verwandelt dieser Gärungsprozess den Honig jedoch in ein neues Genussmittel: den Met, also Honigwein.",
+          "Außerdem sollte man bei der Wahl des richtigen Lagerplatzes für Honig darauf achten, dass er nicht direkt neben geruchsintensiven Lebensmitteln steht. Denn wenn das Glas nicht luftdicht verschlossen ist, kann der Honig leicht den Geruch und Geschmack von Käse , Kaffee oder Kräutern annehmen.",
+          "(Erstveröffentlichung 2002 zur Sendung \"Alles ist vergänglich\". Letzte Aktualisierung 13.09.2019)"
+        ],
+        "tables": [],
+        "schema_types": [
+          "Article",
+          "BreadcrumbList",
+          "Website",
+          "VideoObject",
+          "ImageObject"
+        ],
+        "og_type": "article",
+        "doi": "",
+        "citation_journal": "",
+        "canonical": "https://www.planet-wissen.de/gesellschaft/essen/frischhalten/pwieisthonigewighaltbar100.html",
+        "extractor": "scrapling",
+        "js_only": false
+      },
+      "fetched_at": "2026-10-10T13:20:30+00:00"
+    },
+    {
+      "source": {
+        "id": "src_03",
+        "url": "https://www.wachs-hoedl.com/kann-honig-schlecht-werden",
+        "source_type": "generic_secondary",
+        "authority": "low",
+        "reasons": [
+          "retrieved page without authority signals"
+        ],
+        "basis": "full_text",
+        "evidence_provenance": "full_text",
+        "retrieval": "cached",
+        "cluster": "src_03",
+        "independence_note": null,
+        "published_at": null,
+        "updated_at": null,
+        "fetched_at": "2026-10-10T06:34:31+00:00",
+        "evidence_units": 8,
+        "used": true,
+        "title": "Kann Honig schlecht werden » alles zur Honig Haltbarkeit"
+      },
+      "page": {
+        "url": "https://www.wachs-hoedl.com/kann-honig-schlecht-werden",
+        "title": "Kann Honig schlecht werden » alles zur Honig Haltbarkeit",
+        "site_name": "Kann Honig schlecht werden » alles zur Honig Haltbarkeit",
+        "author": "",
+        "published_at": null,
+        "updated_at": null,
+        "language": "de",
+        "description": "Erfahre, wie lange Honig haltbar ist, wie du erkennst ob er noch gut ist und wie du ihn richtig lagerst, damit er ewig genießbar bleibt ➤ Jetzt bei Wachs HÖ",
+        "headings": [
+          "Kann Honig schlecht werden?",
+          "Honig uns seine Eigenschaften zur Haltbarkeit",
+          "Was kann man machen, damit Honig länger hält?",
+          "Wie lange ist Honig haltbar?",
+          "Wie wird das Mindesthaltbarkeitsdatum gewählt?",
+          "Was sagt das Datum auf den Honiggläsern aus?",
+          "Ist der Verzehr auch nach Ablauf des Datums noch bedenkenlos möglich?",
+          "Ist der Honig schlecht geworden? – Anzeichen",
+          "Warum ist Honig so lange haltbar?",
+          "Kann Honig schlecht werden? FAQ",
+          "Was kann man mit altem Honig machen?",
+          "Welche Honigsorten halten am längsten?",
+          "Sollte Honig im Kühlschrank gelagert werden?",
+          "Ist die Kristallbildung im Honig ein schlechtes Zeichen?"
+        ],
+        "paragraphs": [
+          "Honig hat eine Vielzahl an positiven Eigenschaften. Vielen ist aber nicht klar wie lange Honig eigentlich haltbar ist. E rfahren Sie jetzt alles zur Honig Haltbarkeit!",
+          "I n wie weit der Honig gesundheitsfördernde Wirkungen hat, hängt zu einem großen Teil von der Behandlung und Lagerung des Honigs ab. Durch Licht, Wärme und Sauerstoff werden viele Inhaltsstoffe zerstört. Die Vitamine sind am empfindlichsten, sie werden durch Licht, Wärme und Sauerstoff geschädigt. Wenn der Honig über 40°C erhitzt wird verlieren die Enzyme ihre Wirkung. Saccharase, die auch Invertase genannt wird ist besonders hitzeempfindlich. Bei 45°C wird dieses Enzym erheblich geschädigt und bei 70°C vollständig zerstört. Viele Aromastoffe gehen bei höheren Temperaturen auch verloren. Man sollte jede unnötige Erwärmung vermeiden. Hitzestabiler sind dagegen Mineralstoffe und sekundäre Pflanzenstoffe. Auch die Kohlenhydrate leiden unter der Erwärmung.",
+          "HMF (Hydroxymethylfurfural) entsteht, wenn die im Honig enthaltenen Zucker unter Wärmeeinwirkung Wasser abspalten. Frisch geschleuderte Honige haben so gut wie kein HMF, deshalb gibt dieser Stoff Auskunft darüber, wie stark der Honig Wärmeeinflüssen ausgesetzt war. Für die Haltbarkeit ist auch der Wassergehalt eines Honigs von großer Bedeutung: Je mehr Wasser im Honig ist, desto schneller kann er gären.",
+          "Ein nicht wärmegeschädigter, echter Honig ist bei richtiger Lagerung nahezu unbegrenzt haltbar. Die Biene gibt dem Honig verschiedene Wirkstoffe dazu, damit dieser nicht schnell verdirbt.",
+          "Wenn der Honig zu stark erhitzt wird, über 40°C verlieren viele Enzyme ihre Wirkung. Wenn der Honig zu viel Wassergehalt hat kann er leichter gären.",
+          "Am besten Sie bewahren den Honig trocken, dunkel und kühl auf. Die ideale Lagertemperatur ist zwischen 10 bis 15°C und eine Luftfeuchtigkeit von 60 Prozent. Bei diesen Bedingungen ist das Wachstum von Hefepilzen gehemmt. Achtung: Ist Honig in Gläsern abgefüllt und dieser steht in feuchten Räumen kann der Honig auch Wasser aus der Umgebungsluft aufnehmen. Hier besteht die Gefahr der Gärung. Die schonendste Lagerung für den Honig ist das Tiefgefrieren, da weder Enzyme noch Vitamine kälteempfindlich sind. Wichtig ist hier nur, dass der Honig langsam bei niedrigen Temperaturen wieder aufgetaut wird.",
+          "Grundsätzlich lässt sich sagen, dass Honig unbegrenzt haltbar ist, sofern er trocken und luftdicht gelagert wird. Beim Verkauf von Honig muss jedoch natürlich immer ein Mindesthaltbarkeitsdatum am Honigglas stehen.",
+          "Laut Gesetz brauch auch der Honig ein Mindesthaltbarkeitsdatum. Jeder Imker kann das Mindesthaltbarkeitsdatum selbst festlegen. Empfohlen wird ab der Abfüllung 2 Jahre, dies soll als Richtlinie gelten. Jedoch ist Honig, wenn er richtig gelagert ist über Jahre hinweg haltbar.",
+          "Der Honig muss bis zu diesem Zeitpunkt seine spezifischen Eigenschaften erhalten.",
+          "Ja, wenn der Honig nicht wärmegeschädigt und optimal gelagert ist, ist der Verzehr auch nach Ablauf des Datums noch bedenkenlos möglich. Bei richtiger Lagerung ist Honig nahezu unbegrenzt haltbar.",
+          "Folgende Anzeichen gibt es wenn der Honig schlecht geworden ist:",
+          "Es entsteht eine flüssige dunkle Oberschicht und eine feste helle Unterschicht.",
+          "In dieser Form ist der Honig aber nicht gesundheitsschädlich, jedoch ist die Enzymaktivität stark herabgesetzt. Bei kandierten Honig der schon in Gläsern abgefüllt ist können sich während der Lagerung weiße Kristalle am Glasrand oder auf der Oberfläche bilden. Wenn der Honig nicht wärmegeschädigt ist wirken die Enzyme im Glas weiter. So kann es passieren das zum Beispiel der Traubenzucker in Fruchtzucker umgewandelt wird. Wenn der Fruchtzuckergehalt über ein bestimmtes Maß ansteigt, bricht das Gitterwerk der Traubenzuckerkristalle zusammen und am Boden bildet sich eine feste weiße Schicht. Darüber bildet sich eine dunklere flüssigere Schicht der Fruchtzucker. Diese Veränderungen haben jedoch keinen Einfluss auf den ernährungsphysiologischen Wert.",
+          "Hat der Honig jedoch einmal zu gären begonnen kann man diesen ideal noch als Backhonig bzw. als Honig für die Metherstellung verwenden.",
+          "Die Bienen geben dem Honig verschiedene Wirkstoffe hinzu damit er nicht schnell verdirbt. Die im Honig enthaltenen Säuren und Enzyme hemmen das Wachstum und die Lebensfähigkeit von Pilzen, Bakterien und anderen Mikroorganismen.",
+          "Inhibine ist ein Stoff der im Honig vorkommt und er hat eine keimhemmende Wirkung. Diese Inhibine sind stark Wärme und Lichtempfindlich.",
+          "Wenn der Honig so alt ist das er vergoren ist kann dieser noch zum Backen oder zum Herstellen von Honigwein verwendet werden.",
+          "Am Entscheidendsten über die Haltbarkeit vom Honig ist der Wassergehalt vom Honig. Je mehr Wasser im Honig vorhanden ist, desto schneller kann er gären.",
+          "Nein, Honig muss nicht im Kühlschrank gelagert werden, empfohlen wird eine Lagertemperatur von 10 bis 15°C und eine relative Luftfeuchtigkeit von maximal 60 Prozent.",
+          "Nein, im Gegenteil dies ist ein Zeichen das der Honig echt ist und keinen Hitzeschaden erlitten hat."
+        ],
+        "tables": [],
+        "schema_types": [
+          "FAQPage"
+        ],
+        "og_type": "website",
+        "doi": "",
+        "citation_journal": "",
+        "canonical": "https://www.wachs-hoedl.com/kann-honig-schlecht-werden",
+        "extractor": "scrapling",
+        "js_only": false
+      },
+      "fetched_at": "2026-10-10T06:34:31+00:00"
+    },
+    {
+      "source": {
+        "id": "src_04",
+        "url": "https://bienen.info/honig-haltbarkeit-kann-honig-schlecht-werden/",
+        "source_type": "generic_secondary",
+        "authority": "low",
+        "reasons": [
+          "retrieved page without authority signals"
+        ],
+        "basis": "full_text",
+        "evidence_provenance": "full_text",
+        "retrieval": "cached",
+        "cluster": "src_04",
+        "independence_note": null,
+        "published_at": "2019-07-03",
+        "updated_at": "2020-08-22",
+        "fetched_at": "2026-10-10T06:34:28+00:00",
+        "evidence_units": 8,
+        "used": false,
+        "title": "Honig Haltbarkeit - Kann Honig schlecht werden?"
+      },
+      "page": {
+        "url": "https://bienen.info/honig-haltbarkeit-kann-honig-schlecht-werden/",
+        "title": "Honig Haltbarkeit - Kann Honig schlecht werden?",
+        "site_name": "Bienen.info - Die Welt der Bienen",
+        "author": "Redaktion",
+        "published_at": "2019-07-03",
+        "updated_at": "2020-08-22",
+        "language": "de",
+        "description": "Wie lange ist Honig haltbar? Wie sollte man Honig lagern? Eine Biologin gibt wertvolle Tipps zum idealen Umgang mit dem Naturprodukt.",
+        "headings": [
+          "Honig Haltbarkeit – Kann Honig schlecht werden?",
+          "Diese Eigenschaften machen Honig lange haltbar",
+          "Honig enthält natürlicherweise antimikrobielle Stoffe",
+          "Die richtige Lagerung von Honig",
+          "So lange ist Honig haltbar",
+          "Die Bedeutung des Mindesthaltbarkeitsdatums",
+          "Bienengift-Kosmetik: Viel Geld, viel Versprechen – und kaum belegte Wirkung",
+          "Stiftung Warentest Honigtest 2025: Kritik an falschem Urteil",
+          "Naturwabenbau & Varroa: Was tun ohne Drohnenschnitt?",
+          "Wildbienenhotel – Alles Wissenswerte zu Nisthilfen für wilde Bienen",
+          "Bienenwachs – Verwendung, Studien und DIY Anleitungen",
+          "Bienensterben – Wie wichtig ist der Bienenschutz?",
+          "Bienenwachstücher – Umweltfreundlich und besser als Frischhaltefolie",
+          "Blütenpollen – Das Superfood der Bienen",
+          "Gelée Royale – Der Futtersaft der Bienenkönigin"
+        ],
+        "paragraphs": [
+          "Über den Autor: Bienen.info, gegründet 2019, widmet sich der Welt der Bienen mit wissenschaftlicher Genauigkeit. Unsere Fachtexte sind von Biologen, Ärzten, Apothekern und Medizinwissenschaftlern verfasst.",
+          "Verfasst unter Berücksichtigung wissenschaftlicher Standards. Erfahre mehr über Bienen.info",
+          "Honig ist für seine sehr lange Haltbarkeit bekannt. Das liegt an seinen besonderen Eigenschaften. Allerdings kann Honig auch verderben, wenn die Lagerung falsch ist. In diesem Beitrag erklärt ihnen eine promovierte Diplom-Biologin , wodurch Honig so gut haltbar wird und wie die ideale Lagerung aussieht.",
+          "Der niedrige Wassergehalt und hohe Zuckergehalt eines Honigs sind wesentlich für die Haltbarkeit entscheidend. 1 Für die Produktion von qualitativ gutem Honig streben Imker einen Wassergehalt von unter 18 Prozent an.",
+          "Es gibt jedoch auch Honigsorten, bei denen der Wassergehalt höher liegt. Heidehonig darf einen Wassergehalt von 21,5 Prozent haben und gilt dann immer noch als hochwertig. Bei vielen anderen Honigsorten ist ein höherer Wassergehalt ein Merkmal für eine schlechtere Qualität und kann den Honig schneller verderben lassen.",
+          "Neben dem niedrigen Wassergehalt besitzt Honig einige Stoffe, die eine antimikrobielle Wirkung haben. 1, 2 Honig enthält im Allgemeinen das Enzym Glucose-Oxidase, das Wasserstoffperoxid bildet. Wasserstoffperoxid wirkt keimtötend. Weitere in Honig zu findende Inhaltsstoffe sind Phenolsäuren, Flavonoide und proteinartige Bestandteile, denen Wissenschaftler ebenfalls eine antimikrobielle Wirkung zuschreiben. Zudem weist Honig in der Regel einen niedrigen pH-Wert auf, der vor Keimen schützt. Der neuseeländische Manuka-Honig ist darüber hinaus reich an Methylglyoxal , was diesen Honig Studien zufolge besonders antimikrobiell macht. 3 Die antimikrobielle Wirkung von Honig nutzen mittlerweile auch Ärzte zur Behandlung von infizierten Wunden. 4 Dazu verwenden sie speziellen medizinischen Honig, der sterilisiert sowie standardisiert ist und die Zulassung als Medizinprodukt hat.",
+          "Die richtige Lagerung von Honig ist wichtig, um eine lange Haltbarkeit zu gewährleisten und die Qualität zu erhalten. Honig ist an einem kühlen, trockenen und vor Licht geschützten Ort am besten aufgehoben. Die Lagerungstemperatur sollte unter 18 °C und idealerweise bei 15 °C liegen. 5 Licht und wärmere Temperaturen können wertvolle Inhaltsstoffe des Honigs wie Enzyme und Vitamine zerstören sowie den Geschmack beeinträchtigen. Der Kühlschrank ist wiederum kälter als notwendig und vor allem bei größeren Mengen kostspieliger, also kein idealer Lagerungsort. Die kalten Temperaturen lassen den Honig aber auch nicht verderben.",
+          "Außerdem sollte das Honigglas fest verschlossen sein, damit der Honig kein Wasser aus der Luft aufnimmt. Honig ist schließlich aufgrund des hohen Zuckergehalts hygroskopisch, zieht also Wasser an. Bei einer offenen Lagerung würde der Wassergehalt des Honigs so stark ansteigen, dass der Honig schnell verdirbt. Darüber hinaus nimmt Honig leicht Gerüche aus der Umgebung an und kann dadurch einen schlechten Geschmack erhalten. Zudem sollten keine Verunreinigungen in den Honig gelangen, beispielsweise durch einen schon anderweitig benutzten Löffel.",
+          "So sieht die optimale Lagerung von Honig aus:",
+          "Honig ist bei richtiger Lagerung und ohne Verunreinigung jahrelang haltbar. 5 Die Länge der Lagerung kann allerdings die Zusammensetzung des Honigs wie beispielsweise die Konzentration an Mineralstoffen und Enzymen verändern. 5, 6 Für Imker ist es vor allem wichtig, dass sie die vorgegebenen Grenzwerte für bestimmte Inhaltsstoffe wie etwa Hydroxymethylfurfural (HMF) beachten. HMF im Honig entsteht natürlicherweise aus Zucker, kommt aber in qualitativ gutem Honig nur in geringen Mengen vor. In höheren Mengen gilt HMF als potentiell krebserregend. Laut einer Studie kann Honig seine Eigenschaften bei einer Lagerung bei 15 °C im Dunkeln und fest verschlossen länger als dreieinhalb Jahre beibehalten. 5 Zu den untersuchten Eigenschaften, die gleichzeitig Qualitätsparameter des Honigs sind, zählten:",
+          "Aktivität des Enzyms Invertase (spaltet Saccharose in Glucose und Fructose)",
+          "Aktivität des Enzyms Diastase (baut Stärke zu Zucker ab)",
+          "Bei einer Lagerung über 18 °C ist früher mit Veränderungen zu rechnen. Es kann zum Verderb des Honigs kommen oder dazu, dass der Honig nicht mehr die vorgeschriebenen Grenzwerte bestimmter Inhaltsstoffe einhält.",
+          "Seit 2004 sind Imker verpflichtet, ein Mindesthaltbarkeitsdatum für den Honig anzugeben. Die Honigverordnung schreibt die Angabe eines Mindesthaltbarkeitsdatums vor, das zwei Jahre nach dem Abfülldatum liegt. Nach Ablauf dieses Datums ist der Honig nicht zwangsläufig verdorben oder ungenießbar, wenn die Lagerung angemessen war. Wer sich aber nicht an die Angaben zur Lagerung hält und den Honig unter sehr schlechten Bedingungen aufbewahrt, kann sich auch nicht auf das Mindesthaltbarkeitsdatum verlassen und der Honig kann schon früher verderben. Daher ist es so oder so hilfreich, verdorbenen Honig unabhängig vom Mindesthaltbarkeitsdatum zu erkennen.",
+          "Ein steigender Wassergehalt führt unweigerlich dazu, dass Honig verdirbt. Denn dann können sich Hefezellen im Honig vermehren, die Zucker zu Kohlendioxid und Alkohol abbauen. Der Honig beginnt also zu gären und der Alkoholgehalt steigt an. Bereits ab einem Wasseranteil von 20 Prozent kann Honig auf diese Weise verderben. Zunächst ist der Honig dann noch fruchtig. Mit der Zeit entwickelt sich durch die Gärung ein recht säuerlicher Geschmack, bis er einfach nur noch verdorben schmeckt. Da neben dem Alkohol auch Kohlendioxid entsteht, bilden sich an der Oberfläche des Honigs kleine Bläschen oder gar richtiger Schaum. Zudem wöbt sich der Deckel des Honigglases nach außen, sofern der Verschluss dicht ist. Eine unmittelbare Entsorgung des Honigs ist jedoch nicht unbedingt nötig. Zumindest am Anfang der Gärung kann der Honig noch zum Süßen oder zur Gewinnung von Honigwein dienen. Beim Kochen und Backen des Honigs verfliegt ein Großteil des Alkohols.",
+          "Honig kann über mehrere Jahre ohne Qualitätsverlust haltbar bleiben, wenn die Lagerung bei einer Temperatur unter 18 °C an einem dunklen erfolgt und das Honigbehältnis fest verschlossen ist. So kann die tatsächliche Haltbarkeit von Honig auch das vorgeschriebene Mindesthaltbarkeitsdatum deutlich überschreiten. Bei falscher Lagerung kann Honig allerdings durchaus verderben.",
+          "Dem kostbaren Honig zuliebe sollten die Empfehlungen zur Lagerung daher wirklich ernst genommen werden, wenn er nicht ohnehin schnell aufgegessen wird. Besonders leckeren und hochwertigen Honig in BIO Qualität findest du hier .",
+          "Die Inhalte wurden selber produziert, außer folgende Inhalte:"
+        ],
+        "tables": [],
+        "schema_types": [
+          "BlogPosting",
+          "BreadcrumbList",
+          "Organization",
+          "Person",
+          "WebPage",
+          "WebSite"
+        ],
+        "og_type": "article",
+        "doi": "",
+        "citation_journal": "",
+        "canonical": "https://bienen.info/honig-haltbarkeit-kann-honig-schlecht-werden/",
+        "extractor": "scrapling",
+        "js_only": false
+      },
+      "fetched_at": "2026-10-10T06:34:28+00:00"
+    },
+    {
+      "source": {
+        "id": "src_05",
+        "url": "https://www.leniundhans.de/ratgeber/honig/haltbarkeit-von-honig/",
+        "source_type": "generic_secondary",
+        "authority": "low",
+        "reasons": [
+          "retrieved page without authority signals"
+        ],
+        "basis": "full_text",
+        "evidence_provenance": "full_text",
+        "retrieval": "cached",
+        "cluster": "src_05",
+        "independence_note": null,
+        "published_at": "2021-06-30",
+        "updated_at": "2023-03-09",
+        "fetched_at": "2026-10-10T06:34:28+00:00",
+        "evidence_units": 8,
+        "used": false,
+        "title": "Haltbarkeit von Honig"
+      },
+      "page": {
+        "url": "https://www.leniundhans.de/ratgeber/honig/haltbarkeit-von-honig/",
+        "title": "Haltbarkeit von Honig",
+        "site_name": "Leni & Hans",
+        "author": "",
+        "published_at": "2021-06-30",
+        "updated_at": "2023-03-09",
+        "language": "de",
+        "description": "Wie lange ist Honig haltbar und kann Honig schlecht werden? Hier erfährst du alles über die richtige Lagerung und woran du schlechten Honig erkennst.",
+        "headings": [
+          "Kann Honig schlecht werden?",
+          "Unsachgemäße Handhabe verursacht Gärung",
+          "Kristallisationsvorgänge im Honig sind natürlich",
+          "Schichtbildung bei Honig ist unbedenklich"
+        ],
+        "paragraphs": [
+          "Bei richtiger Lagerung wird Honig nicht schlecht. Auch bei Ablauf des Mindesthaltbarkeitsdatums ist das Naturprodukt in der Regel weiterhin genießbar. Das Gesetz schreibt für jedes Lebensmittel ein Mindesthaltbarkeitsdatum vor. Bei Honig beträgt es zwei Jahre nach Abfüllung. Forschungsergebnisse beweisen, dass Honig bei der richtigen Lagerung sogar über drei Jahre haltbar ist. Der Wasseranteil entscheidet in erster Linie über die Haltbarkeit des Naturproduktes. Die Deutsche Honigverordnung schreibt einen maximalen Gehalt von 20 Prozent vor. Durch diesen geringen Wassergehalt können Bakterien und Keime nicht überleben.",
+          "Bei unsachgemäßer Handhabe oder unsauberer Abfüllung kann Honig gären. Er enthält dann einen alkoholischen, sehr fruchtigen Geschmack und bildet Blasen. Gegorener Honig ist nicht gesundheitsschädlich. In einigen Kulturen gilt er sogar als Delikatesse. Er bildet die Grundlage für Honigwein und eignet sich weiterhin zum Backen. Man sollte bei der Entnahme von Honig immer einen sauberen Löffel verwenden. Auch die richtige Lagerung verhindert Gärprozesse des Naturprouktes.",
+          "Kristallisierter Honig ist nicht schlecht. Im Gegenteil: Der natürliche Vorgang ist ein Zeichen für die Qualität des Honigs. Durch Pollen und die Kristallisation des Zuckers verfestigt Honig sich mit der Zeit. Industrieller Honig wird oft gefiltert und enthält weniger Pollen. Er bleibt länger flüssig, hat aber natürliche Inhaltsstoffe verloren.",
+          "Auch bei optimaler Lagerung von Honig , kann sich die Struktur verändern. Mit der Kristallisation bilden sich weiße Körnchen am Glasrand oder auf der Oberfläche. Imker sprechen von der sogenannten Blütenbildung. Hierbei handelt es sich keinesfalls um Zucker. Trockene Lagerung fördert die Blütenbildung. Durch die Kristallisation entstehen Hohlräume in der feinen Struktur des Honigs. Bei Trockenheit füllen sich die Räume nicht mehr mit flüssigem Honig, sondern mit Luft.",
+          "Auch sehr kalte Temperaturen ab 4 Grad haben einen negativen Effekt auf den Honig und verursachen in dem Naturprodukt weißliche Luftblasen. Seine Enzyme arbeiten weiterhin, wobei sich Trauben- in Fruchtzucker umwandelt. Nimmt sein Gehalt im Honig zu verdrängt er den Traubenzucker an den Boden des Gefäßes. Dort bildet der abgesetzte Traubenzucker eine weiße Schicht, während sich der flüssige Fruchtzucker dunkler darüber ablagert. Die Inhaltsstoffe bleiben bei diesem chemischen Vorgang vollständig erhalten.",
+          "Du bist überzeugt von der langen Haltbarkeit von Honig? Dann kannst du bei uns im Online-Shop aus einer großen Auswahl unterschiedlicher Honigsorten wählen und den für dich passenden Honig kaufen ."
+        ],
+        "tables": [],
+        "schema_types": [
+          "WebPage",
+          "ImageObject",
+          "BreadcrumbList",
+          "WebSite",
+          "Organization",
+          "FAQPage"
+        ],
+        "og_type": "article",
+        "doi": "",
+        "citation_journal": "",
+        "canonical": "https://www.leniundhans.de/ratgeber/honig/haltbarkeit-von-honig/",
+        "extractor": "scrapling",
+        "js_only": false
+      },
+      "fetched_at": "2026-10-10T06:34:28+00:00"
+    },
+    {
+      "source": {
+        "id": "src_06",
+        "url": "https://www.honigplus.de/blog/kann-honig-schlecht-werden/",
+        "source_type": "generic_secondary",
+        "authority": "low",
+        "reasons": [
+          "retrieved page without authority signals"
+        ],
+        "basis": "full_text",
+        "evidence_provenance": "full_text",
+        "retrieval": "cached",
+        "cluster": "src_06",
+        "independence_note": null,
+        "published_at": "2015-11-03",
+        "updated_at": "2026-07-29",
+        "fetched_at": "2026-10-10T06:34:27+00:00",
+        "evidence_units": 8,
+        "used": false,
+        "title": "Kann Honig schlecht werden? Was tun, wenn das MHD abgelaufen ist? · HonigPlus"
+      },
+      "page": {
+        "url": "https://www.honigplus.de/blog/kann-honig-schlecht-werden/",
+        "title": "Kann Honig schlecht werden? Was tun, wenn das MHD abgelaufen ist? · HonigPlus",
+        "site_name": "HonigPlus",
+        "author": "",
+        "published_at": "2015-11-03",
+        "updated_at": "2026-07-29",
+        "language": "de",
+        "description": "Ist abgelaufener Honig gefährlich? Nein – richtig gelagerter Honig bleibt weit über das MHD hinaus essbar. Woran du echten Verderb erkennst und wann Vorsicht gilt.",
+        "headings": [
+          "Ist abgelaufener Honig gefährlich?",
+          "Der Wassergehalt des Honigs sollte nicht mehr als 18% betragen",
+          "Alnatura Bio Akazienhonig, 350 g",
+          "maorika - Manuka Honig 550 MGO + 250g im Glas (lichtundurchlässig, kein Plastik) - laborgeprüft, zertifiziert",
+          "Woran erkennt man schlechten Honig?",
+          "Wie sollte Honig gelagert werden damit er nicht schlecht wird?",
+          "Wieso hat Honig ein Mindesthaltbarkeitsdatum?",
+          "Was tun, wenn der Honig abgelaufen ist?",
+          "Allgäuer Genuss-Box | Deutscher Honig Geschenkbox mit 5x 50g Feinschmecker-Brotaufstrich (5x Deutscher Honig)",
+          "Allgäuer Wanderimkerei Deutscher Blütenhonig I regionaler Genuss I fein-aromatisch I naturbelassen & hochwerti"
+        ],
+        "paragraphs": [
+          "Die Frage “ Kann Honig schlecht werden? ” bekommt man als Imker sehr oft gestellt. Insbesondere wenn das Mindesthaltbarkeitsdatum (MHD) bereits in der Vergangenheit liegt, werden Verbraucher verunsichert. Wir können Entwarnung geben, grundsätzlich gilt nämlich: Honig wird bei richtiger Lagerung nicht schlecht. Lediglich der Wassergehalt im Honig darf nicht zu hoch sein. So ist Honig auch nach Jahrhunderten, sogar nach über 3.000 Jahren verzehrbar, wie Forscher mit Honig aus einem ägyptischen Grab beweisen konnten.",
+          "Was es mit dem Wassergehalt im Honig auf sich hat und wie Honig optimal gelagert werden sollte, wird im nächsten Abschnitt erklärt.",
+          "Nein. Ein überschrittenes Mindesthaltbarkeitsdatum macht Honig nicht gefährlich. Das MHD ist kein Verbrauchsdatum, sondern eine Garantie des Herstellers für Aroma, Farbe und Konsistenz — keine Aussage über Genusstauglichkeit. Richtig gelagerter Honig ist auch Jahre nach dem aufgedruckten Datum bedenkenlos essbar.",
+          "Gefährlich wird Honig praktisch nur in zwei Fällen, und beide haben mit dem MHD nichts zu tun:",
+          "Der Honig gärt , weil sein Wassergehalt zu hoch ist. Das erkennst du an einer flüssigen Schicht obenauf, an Bläschen und an einem prickelnden, leicht alkoholischen Geschmack. Solcher Honig gehört nicht mehr aufs Brot.",
+          "Säuglinge unter zwölf Monaten dürfen grundsätzlich keinen Honig bekommen — unabhängig von Alter und Haltbarkeit des Glases. Honig kann Sporen des Bakteriums Clostridium botulinum enthalten, mit denen der noch unreife Darm von Babys nicht umgehen kann. Für ältere Kinder und Erwachsene besteht dieses Risiko nicht.",
+          "Was viele für Verderb halten, ist dagegen völlig harmlos: Wird der Honig fest, weiß oder körnig, kristallisiert er lediglich aus. Das ist ein natürlicher Vorgang und sogar ein Zeichen für unbehandelte Ware — mehr dazu im Beitrag über weißen Honig und im Vergleich von flüssigem und cremigem Honig .",
+          "Naturhonig besteht chemisch gesehen hauptsächlich aus Kohlenhydraten und Wasser. Hinzu kommen noch gesundheitsfördernde Inhaltsstoffe wie z.B. antibakteriell wirkende Inhibine und Vitamine. Der Rohstoff für den Honig ist der von den Bienen gesammelte Nektar. Dieser enthält ca. 80% Wasser. Nachdem die Bienen den Nektar in ihren Bienenstock gebracht haben, dicken sie den Nektar ein, wodurch sein Wassergehalt verringert wird. Ab einem Wassergehalt von 18 Prozent (lt. dem Deutschen Imkerbund) spricht man von reifen Honig , der geerntet werden kann. Die Honigverordnung schreibt einen Wassergehalt von max. 20 Prozent vor.",
+          "Sollte der Honig davor geerntet werden und damit zu viel Wassergehalt haben, beginnt der Honig im Glas zu gären. Honig der gärt ist in der Regel nicht mehr als Brotaufstrich verzehrbar. Dies wird sichtbar, wenn sich der Honig im Glas absetzt (siehe Foto). Ist der Honig im reifen Zustand geerntet worden, wird der Honig bei richtiger Lagerung nicht schlecht. Anders sieht es bei Honig-Zubereitungen aus, denen weitere Zutaten beigemischt sind — etwa Nüsse, Trockenfrüchte oder Gewürze. Diese Zutaten halten deutlich kürzer als der Honig selbst, weshalb solche Produkte ein früheres Mindesthaltbarkeitsdatum tragen. Hier lohnt sich der Blick aufs Etikett.",
+          "Wenn Honig nicht mehr gut ist, weil bspw. der Wassergehalt zu hoch war, dann setzt sich eine mindestens Zentimeter dicke, flüssige Schicht auf dem Honig ab. Nach einiger Zeit kommt es zusätzlich zur Blasenbildung, da der Honig nun gärt. Wenn man gegärten Honig probiert, prickelt der leicht. Dieser Honig sollte nur noch zum Backen oder zur Erstellung von Honigwein (Met) verwendet werden.",
+          "Honig sollte am besten an einem Ort aufbewahrt werden welcher trocken , kühl und dunkel ist. Ideal ist eine Temperatur zwischen vier und 15 Grad. Bei langfristig höheren Temperaturen kann der Honig sich entmischen und der Gärprozess wird dadurch begünstigt. Eine hohe Luftfeuchtigkeit führt dazu, dass Honig Wasser aus der Umgebungsluft aufnimmt. Wenn der Honig beispielsweise in einem feuchten Keller gelagert wird, zieht der Honig Wasser aus der Luft. Der Wassergehalt im Honig steigt dann im Zweifel auf über 18%, wodurch er zu gären beginnen kann. Helligkeit ist bei der Lagerung zu vermeiden da Licht der Feind von Enzymen ist. Ohne Enzyme verliert der Honig jegliche desinfizierenden Wirkung und ist dann nur noch ein leckeres Süßungsmittel.",
+          "Wir haben nun bereits geklärt, dass Honig eigentlich nicht schlecht werden kann insofern er zum richtigen Zeitpunkt geerntet wurde und richtig gelagert wird. Daher stellt sich die Frage weshalb auf Honig dann das Mindesthaltbarkeitsdatum abgedruckt ist? Der Grund hierfür ist die EU Verordnung Nr. 1169/2011 .",
+          "Nach dieser Verordnung muss jedes Lebensmittel ein Mindesthaltbarkeitsdatum enthalten. Der Deutsche Imkerbund empfiehlt ein Mindesthaltbarkeitsdatum von maximal zwei Jahren nach Abfüllung. An diese Empfehlung halten sich so gut wie alle Honigproduzenten.",
+          "Das MHD sagt also mehr über die EU-Kennzeichnungspflicht aus als über den Honig im Glas.",
+          "Ansehen. Hat sich oben eine flüssige Schicht abgesetzt? Sind Bläschen zu sehen?",
+          "Riechen. Riecht der Honig säuerlich oder nach Alkohol statt nach Honig?",
+          "Ist alles unauffällig, kann der Honig ganz normal weiterverwendet werden — auch wenn das MHD Jahre zurückliegt. Ist er kristallisiert, hilft ein Wasserbad bei maximal 40 °C ; höhere Temperaturen zerstören die Enzyme. Zeigt er dagegen Gärungsanzeichen, gehört er nicht mehr aufs Brot, lässt sich aber noch zum Backen oder für Met verwenden."
+        ],
+        "tables": [],
+        "schema_types": [
+          "Organization",
+          "WebSite",
+          "BlogPosting",
+          "BreadcrumbList"
+        ],
+        "og_type": "article",
+        "doi": "",
+        "citation_journal": "",
+        "canonical": "https://www.honigplus.de/blog/kann-honig-schlecht-werden/",
+        "extractor": "scrapling",
+        "js_only": false
+      },
+      "fetched_at": "2026-10-10T06:34:27+00:00"
+    }
+  ]
+}
