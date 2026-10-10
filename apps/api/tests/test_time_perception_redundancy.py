@@ -373,5 +373,7 @@ def test_generation_compresses_the_real_script(monkeypatch, tmp_path):
     assert body[-1]["text"] == S_ROUTINE and body[-1]["role"] == "payoff"
     gain = state["information_gain"]
     assert gain["payoff"]["status"] == "pass" and gain["summary"]["redundant_units"] == 0
-    # The survey fact only restated the opening; the arc marks it optional.
-    assert {fact_id for block in body for fact_id in block.get("fact_ids") or []} == {"fact_01", "fact_02", "fact_04"}
+    # The survey only restated the opening. The memory/retrospection fact
+    # is not asserted by the surviving routine sentence and cannot be donated
+    # to it as an unrelated citation from the discarded payoff.
+    assert {fact_id for block in body for fact_id in block.get("fact_ids") or []} == {"fact_01", "fact_02"}

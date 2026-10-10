@@ -76,7 +76,8 @@ M_PAYOFF = (
 )
 MIRROR_SCRIPT = [M_ANSWER, M_DIFFERENT, M_LIKES_LESS, M_REVERSED, M_OTHERS, M_UNFAMILIAR, M_FAMILIARITY, M_VOICE, M_LABEL, M_VANITY, M_PAYOFF]
 MIRROR_BLOCKS = [
-    {"role": "answer", "text": f"{M_ANSWER} {M_DIFFERENT} {M_LIKES_LESS}", "fact_ids": ["fact_01"]},
+    {"role": "answer", "text": f"{M_ANSWER} {M_DIFFERENT}", "fact_ids": ["fact_01"]},
+    {"role": "support", "text": M_LIKES_LESS, "fact_ids": ["fact_03"]},
     {"role": "explanation", "text": f"{M_REVERSED} {M_OTHERS} {M_UNFAMILIAR}", "fact_ids": ["fact_02"]},
     {"role": "support", "text": f"{M_FAMILIARITY} {M_VOICE} {M_LABEL} {M_VANITY}", "fact_ids": ["fact_03", "fact_04"]},
     {"role": "payoff", "text": M_PAYOFF, "fact_ids": ["fact_03"]},

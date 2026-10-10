@@ -165,3 +165,24 @@ def offline_script_story_editor(monkeypatch):
         raise script_story_rewrite.ScriptStoryProviderError("AI script editor is offline in the test suite")
 
     monkeypatch.setattr(script_story_rewrite.OpenAIScriptStoryProvider, "_parse", offline)
+
+
+@pytest.fixture(autouse=True)
+def forbid_paid_openai_transport(monkeypatch):
+    """Block only live OpenAI HTTP traffic; leave QAC planning and mocked parsing intact."""
+    import httpx
+
+    send = httpx.Client.send
+
+    def offline(client, request, *args, **kwargs):
+        if request.url.host == "api.openai.com" and isinstance(client._transport, httpx.HTTPTransport):
+            raise AssertionError("Live OpenAI HTTP traffic is forbidden in backend tests")
+        return send(client, request, *args, **kwargs)
+
+    monkeypatch.setattr(httpx.Client, "send", offline)
+
+
+@pytest.fixture()
+def legacy_without_qac(monkeypatch):
+    """Explicit opt-in for pre-QAC regression cases; never used by contract integration tests."""
+    monkeypatch.setattr("clipforge.pipeline.generate_contract", lambda *_a: None)

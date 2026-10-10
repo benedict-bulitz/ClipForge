@@ -5,6 +5,12 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from clipforge.question_answer_contract import (
+    answer_obligations,
+    evaluate_research_coverage,
+    generate_contract,
+)
+
 from .ai import (
     ai_plan_to_dict,
     generate_hook_candidates_with_openai,
@@ -15,6 +21,7 @@ from .ai import (
 from .alignment import phrase_fallback_items
 from .attention import replan_attention, resolve_attention_preferences
 from .config import Settings
+from .contract_diagnostics import ContractGenerationFailure, sanitized
 from .dependencies import resolve_edit_scope
 from .format_intelligence import plan_format
 from .hashing import attach_hashes
@@ -28,12 +35,12 @@ from .narration import (
     clean_research_claim,
     clean_script_blocks,
     contamination_issues,
+    split_sentences,
 )
 from .novelty import (
     current_information_gain,
     prune_redundant_information,
     safe_novelty_plan,
-    verified_script_key,
 )
 from .pacing import analyze_pacing
 from .payoff import (
@@ -42,6 +49,7 @@ from .payoff import (
     trim_post_payoff_fluff,
 )
 from .progress import ProgressCallback, report_progress
+from .question_answer_research import run_contract_research
 from .question_intent import interpret_question, merge_planner_intent
 from .question_intent import research_query as intent_research_query
 from .reactions import plan_viewer_reactions, reaction_arc
@@ -49,6 +57,7 @@ from .readiness import content_readiness, not_ready_message
 from .research import research_topic, research_with_strengthening
 from .research_v2.package import link_package_facts, research_brief
 from .schemas import AdvancedOptions
+from .script_grounding import evidence_key, sentence_citations
 from .script_review import (
     OpenAIScriptReviewProvider,
     ScriptReviewProvider,
@@ -60,7 +69,9 @@ from .script_story_quality import current_script_story_quality, script_quality_s
 from .script_story_rewrite import (
     OpenAIScriptStoryProvider,
     ScriptStoryProvider,
+    _supported_obligations,
     run_script_story_quality,
+    verify_current_script,
 )
 from .script_writer import (
     OpenAIScriptWriterProvider,
@@ -74,6 +85,7 @@ from .script_writer import (
 from .story_arc import (
     annotate_story_roles,
     arc_units,
+    editorial_payoff_plan,
     essential_fact_ids,
     omittable_fact_ids,
     order_blocks_for_reveal,
@@ -427,6 +439,8 @@ def _generate_body_with_v2_or_fallback(
     provider: ScriptWriterProvider | None = None,
     review_provider: ScriptReviewProvider | None = None,
     story_arc: dict[str, Any] | None = None,
+    question_answer_contract: dict[str, Any] | None = None,
+    research_coverage: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     diagnostics: dict[str, Any] = {
         "attempted": False,
@@ -451,6 +465,20 @@ def _generate_body_with_v2_or_fallback(
         diagnostics["reason"] = "no_normalized_facts"
         return legacy_blocks, diagnostics
 
+    answer_evidence = [item for item in _supported_obligations({
+        "facts": facts, "question_answer_contract": question_answer_contract, "research_coverage": research_coverage,
+    }) if item["is_required"]]
+    required_ids = {identifier for item in answer_evidence if item["is_required"] for identifier in item["supporting_fact_ids"]}
+    if not required_ids <= {fact.id for fact in normalized_facts}:
+        diagnostics["reason"] = "required_answer_evidence_unavailable"
+        return legacy_blocks, diagnostics
+    if len(required_ids) > 10:
+        diagnostics["reason"] = "required_answer_exceeds_writer_budget"
+        return legacy_blocks, diagnostics
+    essential = essential_fact_ids(story_arc or {}, question_answer_contract=question_answer_contract)
+    normalized_facts.sort(key=lambda fact: (fact.id not in required_ids, fact.id not in essential, fact.priority != "MUST_KNOW"))
+    normalized_facts = normalized_facts[:10]
+    diagnostics["selected_fact_ids"] = [fact.id for fact in normalized_facts]
     diagnostics["attempted"] = True
     try:
         request = ScriptWriterRequest(
@@ -469,10 +497,11 @@ def _generate_body_with_v2_or_fallback(
                 *RETENTION_REQUIREMENTS,
                 "Stop when the explanation is complete.",
             ],
-            payoff_plan=payoff_plan,
+            payoff_plan=editorial_payoff_plan(payoff_plan, question_answer_contract),
             format_plan=format_plan,
             novelty_plan=novelty_plan,
-            story_arc=story_brief(story_arc) or None,
+            story_arc=story_brief(story_arc, question_answer_contract=question_answer_contract) or None,
+            required_answer_evidence=answer_evidence,
         )
     except ValidationError as exc:
         diagnostics["reason"] = "request_validation_failed"
@@ -524,7 +553,7 @@ def _generate_body_with_v2_or_fallback(
             "Respect the payoff plan; do not add a generic post-payoff outro.",
             *RETENTION_REQUIREMENTS,
         ],
-        story_arc=story_brief(story_arc) or None,
+        story_arc=story_brief(story_arc, question_answer_contract=question_answer_contract) or None,
     )
     try:
         review_result = review_script_v2(review_request, selected_review_provider)
@@ -565,17 +594,22 @@ def _generate_body_with_v2_or_fallback(
 
 
 def _hooked_blocks(
-    body_blocks: list[dict[str, Any]], hook_text: str, story_arc: dict[str, Any] | None = None
+    body_blocks: list[dict[str, Any]], hook_text: str, story_arc: dict[str, Any] | None = None,
+    *, fact_ids: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """The body with exactly one hook block (same duplicate rule as the selector)."""
     remaining = [copy.deepcopy(block) for block in body_blocks if not _is_hook_block(block)]
     hook_block: dict[str, Any] = {"role": "hook", "text": hook_text}
+    if fact_ids is not None:
+        hook_block["fact_ids"] = list(dict.fromkeys(fact_ids))
 
     def _norm(value: object) -> str:
         return " ".join(str(value or "").casefold().split()).rstrip(".!?")
 
     if story_arc and remaining and _norm(hook_text) == _norm(remaining[0].get("text")):
-        hook_block["fact_ids"] = list(remaining[0].get("fact_ids") or [])
+        hook_block["fact_ids"] = list(dict.fromkeys([
+            *(hook_block.get("fact_ids") or []), *(remaining[0].get("fact_ids") or []),
+        ]))
         remaining = remaining[1:]
     return [hook_block, *remaining]
 
@@ -628,6 +662,7 @@ def _generate_hook_candidates(
     format_plan: dict[str, Any] | None = None,
     novelty_plan: dict[str, Any] | None = None,
     story_arc: dict[str, Any] | None = None,
+    *, question_answer_contract: dict[str, Any] | None = None,
 ) -> Any:
     """The one bounded provider call for complete, document-strategy hook candidates."""
     final_body = " ".join(
@@ -646,7 +681,8 @@ def _generate_hook_candidates(
     supported = {name: {"fact_ids": entry["fact_ids"], "signals": entry["signals"]} for name, entry in context["signals"].items() if entry["viable"]}
     try:
         return generate_hook_candidates_with_openai(
-            prompt, intent, facts, final_body, settings, **planning, story_arc=story_brief(story_arc) or None,
+            prompt, intent, facts, final_body, settings, **planning,
+            story_arc=story_brief(story_arc, question_answer_contract=question_answer_contract) or None,
             supported_strategies=supported,
         )
     except TypeError:  # Compatibility with hook-provider test doubles of older signatures.
@@ -689,16 +725,21 @@ def enforce_selected_hook(state: dict[str, Any], *, reselect: bool = False, shor
     # authoritative while it passes the safety rules; otherwise the plan's
     # hook is restored, and only if that is invalid too is one reselected.
     options = [] if reselect else list(dict.fromkeys(option for option in (current, authoritative) if option))
-    chosen = next((option for option in options if verbal_still_valid(state, option, strategy)), "")
+    recovery = ((script.get("script_story_quality_v1") or {}).get("generation_recovery")
+                or (script.get("script_story_quality_v1") or {}).get("holistic") or {})
+    rejected = set(recovery.get("rejected_hooks") or [])
+    chosen = next((option for option in options if option not in rejected and verbal_still_valid(state, option, strategy)), "")
+    chosen_ids = list((plan or {}).get("supported_by_fact_ids") or []) if chosen and chosen != current else None
     action = "kept" if chosen and chosen == authoritative else "user_hook_kept" if chosen else "reselected"
     if chosen and current and chosen != current:
         action = "restored"
     if not chosen:
-        excluded = {option for option in (current, authoritative) if option}
+        excluded = rejected | {option for option in (current, authoritative) if option}
         limit = len((current or authoritative).split()) - 1 if shorter and (current or authoritative) else None
         replacement = reselect_verbal(state, exclude=excluded, max_words=limit, allow_fallback=not reselect)
         if replacement is not None:
             chosen, strategy = replacement["text"], replacement["strategy"]
+            chosen_ids = list(replacement.get("supported_by_fact_ids") or [])
             if plan is not None:
                 plan["selected_strategy"] = plan["legacy_strategy"] = strategy
                 plan["supported_by_fact_ids"] = list(replacement.get("supported_by_fact_ids") or [])
@@ -708,7 +749,7 @@ def enforce_selected_hook(state: dict[str, Any], *, reselect: bool = False, shor
             action = "no_alternative"
             chosen = current or authoritative
     if chosen:
-        script["blocks"] = _apply_selected_hook(blocks, chosen)
+        script["blocks"] = _apply_selected_hook(blocks, chosen, fact_ids=chosen_ids)
         for index, block in enumerate(script["blocks"], 1):
             block["id"] = f"voice_block_{index:02d}"
         script["selected_hook"] = chosen
@@ -751,7 +792,7 @@ def _is_hook_block(block: dict[str, Any]) -> bool:
 
 
 def _apply_selected_hook(
-    blocks: list[dict[str, Any]], selected_hook: str | None
+    blocks: list[dict[str, Any]], selected_hook: str | None, *, fact_ids: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Keep exactly one hook block whose text is the authoritative selected hook."""
     hook_text = clean_narration_text(selected_hook or "").strip()
@@ -760,8 +801,10 @@ def _apply_selected_hook(
     existing = next((block for block in blocks if _is_hook_block(block)), None)
     remaining = [block for block in blocks if not _is_hook_block(block)]
     hook: dict[str, Any] = {"role": "hook", "text": hook_text}
-    if existing is not None and existing.get("fact_ids"):
-        hook["fact_ids"] = list(existing["fact_ids"])  # keep the hook's story identity
+    if fact_ids is not None:
+        hook["fact_ids"] = list(dict.fromkeys(fact_ids))
+    elif existing is not None and existing.get("text") == hook_text and existing.get("fact_ids"):
+        hook["fact_ids"] = list(existing["fact_ids"])
     return [hook, *remaining]
 
 
@@ -839,19 +882,22 @@ def ensure_hook_advances(state: dict[str, Any]) -> str:
     script = state.get("script") or {}
     blocks, report = _advance_after_hook(list(script.get("blocks") or []), state.get("story_arc"))
     if report["action"] == "no_safe_reorder":
-        excluded = {str(blocks[0].get("text") or "")}
+        recovery = ((script.get("script_story_quality_v1") or {}).get("generation_recovery")
+                    or (script.get("script_story_quality_v1") or {}).get("holistic") or {})
+        excluded = {str(blocks[0].get("text") or ""), *(recovery.get("rejected_hooks") or [])}
         following = str(blocks[1].get("text") or "")
         for _attempt in range(3):
             replacement = reselect_verbal(state, exclude=excluded, allow_fallback=False)
             if replacement is None:
                 break
             if information_gain(replacement["text"], following):
-                blocks = _apply_selected_hook(blocks, replacement["text"])
+                blocks = _apply_selected_hook(blocks, replacement["text"], fact_ids=replacement.get("supported_by_fact_ids") or [])
                 script["selected_hook"] = replacement["text"]
                 script["selected_hook_strategy"] = replacement["strategy"]
                 plan = state_plan(state)
                 if plan is not None:
                     plan["verbal_hook"] = replacement["text"]
+                    plan["supported_by_fact_ids"] = list(replacement.get("supported_by_fact_ids") or [])
                     plan["selected_strategy"] = plan["legacy_strategy"] = replacement["strategy"]
                     plan["reason_codes"] = list(dict.fromkeys([*(replacement.get("positive_codes") or []), "reselected_for_body_transition"]))[:10]
                 report = {"action": "hook_reselected", "restating": following}
@@ -917,7 +963,7 @@ def _fit_blocks(
             continue
         sentences = [
             sentence.strip()
-            for sentence in re.split(r"(?<=[.!?])\s+", block["text"])
+            for sentence in split_sentences(block["text"])
             if sentence.strip()
         ]
         kept: list[str] = []
@@ -1057,6 +1103,7 @@ def _normalise_blocks(
     max_duration: int,
     wpm: int = SPEAKING_RATE_WPM,
     story_arc: dict[str, Any] | None = None,
+    *, facts: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, str]]:
     clean = clean_script_blocks(blocks)
     sentence_blocks: list[dict[str, str]] = []
@@ -1064,19 +1111,30 @@ def _normalise_blocks(
         # Keep the authoritative hook as one block so duration fitting cannot
         # split it into hook+detail fragments that later duplicate on restore.
         if _is_hook_block(block):
+            ids = list(block.get("fact_ids") or [])
+            native = sentence_citations(block["text"], ids, facts, native_only=True) if facts is not None else None
+            if native is not None:
+                ids = list(dict.fromkeys(identifier for mapping in native for identifier in mapping))
             sentence_blocks.append(
                 {
                     "role": "hook",
                     "text": block["text"],
-                    "fact_ids": list(block.get("fact_ids") or []),
+                    "fact_ids": ids,
                 }
             )
             continue
         sentences = [
             sentence.strip()
-            for sentence in re.split(r"(?<=[.!?])\s+", block["text"])
+            for sentence in split_sentences(block["text"])
             if sentence.strip()
         ]
+        mappings = None
+        if facts is not None and len(sentences) > 1:
+            mappings = sentence_citations(block["text"], list(block.get("fact_ids") or []), facts)
+            if mappings is None:
+                # Preserve ambiguous compound claims as a single beat for the
+                # independent verifier; never spread their citation union.
+                sentences = [block["text"]]
         # A payoff block closes on its last sentence (the resolution); every
         # other block leads with its first (the answer, the claim).
         lead = len(sentences) - 1 if block["role"] == "payoff" else 0
@@ -1085,7 +1143,7 @@ def _normalise_blocks(
                 {
                     "role": block["role"] if sentence_index == lead else "detail",
                     "text": sentence,
-                    "fact_ids": list(block.get("fact_ids") or []),
+                    "fact_ids": mappings[sentence_index] if mappings is not None else list(block.get("fact_ids") or []),
                 }
             )
     fitted = _fit_blocks(sentence_blocks, max_duration, wpm, story_arc)
@@ -1105,31 +1163,67 @@ def _refit_hook(state: dict[str, Any], blocks: list[dict[str, Any]], max_words: 
     hook = next(block for block in blocks if _is_hook_block(block))
     body_words = sum(len(_words(block["text"])) for block in blocks if block is not hook)
     budget = max_words - body_words
-    replacement = reselect_verbal(state, exclude={hook["text"]}, max_words=budget) if budget >= 4 else None
+    recovery = (((state.get("script") or {}).get("script_story_quality_v1") or {}).get("generation_recovery")
+                or ((state.get("script") or {}).get("script_story_quality_v1") or {}).get("holistic") or {})
+    excluded = {hook["text"], *(recovery.get("rejected_hooks") or [])}
+    replacement = reselect_verbal(state, exclude=excluded, max_words=budget) if budget >= 4 else None
     if replacement is None or len(replacement["text"].split()) >= len(hook["text"].split()):
         return blocks
     plan = state_plan(state)
     script = state["script"]
-    fitted = _apply_selected_hook(blocks, replacement["text"])
+    fitted = _apply_selected_hook(blocks, replacement["text"], fact_ids=replacement.get("supported_by_fact_ids") or [])
     for index, block in enumerate(fitted, 1):
         block["id"] = f"voice_block_{index:02d}"
     script["selected_hook"] = replacement["text"]
     script["selected_hook_strategy"] = replacement["strategy"]
     if plan is not None:
         plan["verbal_hook"] = replacement["text"]
+        plan["supported_by_fact_ids"] = list(replacement.get("supported_by_fact_ids") or [])
         plan["selected_strategy"] = plan["legacy_strategy"] = replacement["strategy"]
         plan["reason_codes"] = list(dict.fromkeys([*(replacement.get("positive_codes") or []), "reselected_for_duration"]))[:10]
     return fitted
 
 
+def _reverify_current_contract(
+    state: dict[str, Any], settings: Settings, provider: ScriptStoryProvider | None = None,
+) -> None:
+    """Bind one verifier verdict to the final current blocks, without rewriting."""
+    if not state.get("contract"):
+        return
+    script = state["script"]
+    blocks = script.get("blocks") or []
+    rewrite = (script.get("script_story_quality_v1") or {}).get("rewrite") or {}
+    if (rewrite.get("verified_by") == "ai_verifier" and rewrite.get("verified_script_signature") == script_quality_signature(blocks)
+            and rewrite.get("verified_evidence_key") in {None, evidence_key(blocks, state.get("facts") or [])}):
+        return
+    if provider is None and settings.openai_api_key:
+        provider = OpenAIScriptStoryProvider(settings)
+    context = {
+        **state, "question_answer_contract": state["contract"],
+        "research_coverage": state.get("contract_coverage"), "explanation_audit": None,
+        "word_budget": max(12, int(state["duration"]["max_seconds"] * SPEAKING_RATE_WPM * float(state.get("voice", {}).get("speed") or 1.0) / 60)),
+    }
+    previous = script.get("script_story_quality_v1") or {}
+    report = verify_current_script(blocks, context, provider)
+    recovery = previous.get("generation_recovery") or previous.get("holistic")
+    if recovery:
+        report["generation_recovery"] = copy.deepcopy(recovery)
+    script["script_story_quality_v1"] = report
+    audit = (script["script_story_quality_v1"].get("holistic") or {}).get("explanation_audit")
+    state["explanation_audit"] = audit
+    readiness = content_readiness(state)
+    script["readiness"] = {**readiness, "message": None if readiness["ready"] else not_ready_message(readiness)}
+
+
 def _refresh_script_derivatives(
-    state: dict[str, Any], *, old_scenes: list[dict] | None = None
+    state: dict[str, Any], *, old_scenes: list[dict] | None = None,
+    settings: Settings | None = None, script_quality_provider: ScriptStoryProvider | None = None,
 ) -> None:
     max_duration = int(state["duration"]["max_seconds"])
     voice_speed = max(0.7, min(1.4, float(state.get("voice", {}).get("speed") or 1.0)))
     wpm = max(1, round(SPEAKING_RATE_WPM * voice_speed))
     story_arc = state.get("story_arc") if isinstance(state.get("story_arc"), dict) else None
-    blocks = _normalise_blocks(state["script"]["blocks"], max_duration, wpm, story_arc)
+    blocks = _normalise_blocks(state["script"]["blocks"], max_duration, wpm, story_arc, facts=state.get("facts") or [])
     budget = max(12, int(max_duration * wpm / 60))
     if any(_is_hook_block(block) for block in blocks) and sum(len(_words(block["text"])) for block in blocks) > budget:
         blocks = _refit_hook(state, blocks, budget)
@@ -1154,6 +1248,7 @@ def _refresh_script_derivatives(
             "final_scores": refreshed_quality.get("dimensions", {}),
             "refresh_source": "script_derivatives",
             "prior_actions": list((previous_quality or {}).get("actions") or []),
+            "generation_recovery": copy.deepcopy((previous_quality or {}).get("generation_recovery") or (previous_quality or {}).get("holistic") or {}),
             "provider": (previous_quality or {}).get("provider", {"status": "not_requested"}),
         }
     state["duration"]["estimated_seconds"] = duration
@@ -1183,6 +1278,11 @@ def _refresh_script_derivatives(
     annotate_story_roles(state)
     analyze_pacing(state)
     plan_viewer_reactions(state)
+    if state.get("contract"):
+        if settings is None:
+            from .config import get_settings
+            settings = get_settings()
+        _reverify_current_contract(state, settings, script_quality_provider)
 
 
 # One tighter research pass when the first script cannot answer its why/how
@@ -1249,13 +1349,24 @@ def build_initial_state(
     state = _build_initial_state(prompt, options, settings, **kwargs)
     attempts = [{"query": prompt, "readiness": state["script"]["readiness"]["status"], "facts": len(state.get("facts") or [])}]
     if state["research"].get("retry"):
-        # The one retry was already spent strengthening a weak core source.
-        attempts.append({"query": prompt, "focus": "strengthen", "replaced": state["research"]["retry"]["replaced"]})
+        # A targeted coverage or weak-source retry already spent the research budget.
+        attempts.append({
+            "query": prompt, "focus": state["research"]["retry"].get("focus"),
+            "replaced": state["research"]["retry"].get("replaced", False),
+        })
         if not state["script"]["readiness"]["ready"]:
             state["script"]["readiness"]["retry_exhausted"] = True
     for _retry in range(MAX_RESEARCH_RETRIES - (1 if state["research"].get("retry") else 0)):
         readiness = state["script"]["readiness"]
+        if state.get("contract") or state["research"].get("contract_diagnostic") == "error":
+            break
         if readiness["ready"] or not readiness["research_required"] or not state["intent"].get("research_required"):
+            break
+        quality = (state.get("script") or {}).get("script_story_quality_v1") or {}
+        if (
+            (quality.get("holistic") or {}).get("failure_type") == "SUPPORTED_BUT_OMITTED"
+            or (state.get("contract") and (state.get("contract_coverage") or {}).get("is_sufficient"))
+        ):
             break
         query = research_retry_query(state)
         retried = _build_initial_state(
@@ -1266,7 +1377,8 @@ def build_initial_state(
             state = retried
         else:
             state["script"]["readiness"]["retry_exhausted"] = True
-    state["research"]["attempts"] = attempts
+    calls = (state["research"].get("diagnostics") or {}).get("research_calls")
+    state["research"]["attempts"] = calls or attempts
     if len(attempts) > 1:
         # A saved audit must never claim a retry without accounting for it.
         research = state["research"]
@@ -1280,11 +1392,18 @@ def build_initial_state(
 
 
 def research_request(
-    prompt: str, intent: dict[str, Any], research_query: str | None = None, research_focus: str | None = None
+    prompt: str, intent: dict[str, Any], contract: Any = None, research_query: str | None = None, research_focus: str | None = None
 ) -> tuple[str, dict[str, Any]]:
     """The query and context generation researches with (shared with the read-only audit script)."""
     query = research_query or intent_research_query(intent["question_intent"], intent["language"]) or prompt
-    context = {"question": prompt, "content_type": intent["content_type"], "focus": research_focus if research_query else None}
+    context = {"question": prompt, "content_type": intent["content_type"], "focus": research_focus}
+
+    if research_focus and research_focus not in {"broaden", "strengthen", "capability", "mechanism"}:
+        context["search_intents"] = research_focus.split(" | ")
+    if research_focus is None and contract:
+        obligations = [item for item in answer_obligations(contract) if item.is_required]
+        context["focus"] = " | ".join(item.description for item in obligations)
+        context["search_intents"] = [item.description for item in obligations]
     return query, context
 
 
@@ -1313,6 +1432,24 @@ def _build_initial_state(
     # agency, intention, contrast); the planner call confirms or corrects it.
     intent["question_intent"] = interpret_question(prompt, intent["language"])
     resolved_options = options.model_copy(update={"language": intent["language"]})
+
+    question_answer_contract = None
+    contract_coverage = None
+    contract_diagnostic = "unavailable"
+    contract_error = None
+    contract_failure_diagnostics = None
+    if intent["research_required"] and settings.openai_api_key:
+        try:
+            question_answer_contract = generate_contract(prompt, intent["language"], settings)
+            contract_diagnostic = "ai_contract"
+        except Exception as exc:  # noqa: BLE001 - fail closed below
+            contract_diagnostic = "error"
+            contract_error = sanitized(f"{type(exc).__name__}: {exc}", (settings.openai_api_key,))
+            if isinstance(exc, ContractGenerationFailure):
+                contract_failure_diagnostics = exc.diagnostics
+    elif intent["research_required"]:
+        contract_diagnostic = "deterministic_fallback"
+
     sources: list[dict] = []
     facts: list[dict[str, Any]] = []
     research_status = "skipped"
@@ -1321,25 +1458,50 @@ def _build_initial_state(
     research_package: dict[str, Any] | None = None
     research_diagnostics: dict[str, Any] | None = None
     research_retry: dict[str, Any] | None = None
+
     if intent["research_required"]:
         report_progress(progress, "research", "Researching the topic", phase="start")
-        query, context = research_request(prompt, intent, research_query, research_focus)
-        if research_query is None:
-            # First pass: a valid but weak core answer (snippet-only, unknown/low authority)
-            # spends the run's one research retry now, before any script cost.
+        query, context = research_request(prompt, intent, question_answer_contract, research_query, research_focus)
+
+        if question_answer_contract:
+            def retry_request(query, context, focus, descriptions, reason):
+                return query, {
+                    **context, "focus": focus, "search_intents": descriptions,
+                    "strengthening": "strengthen" if reason == "weak_core_source" else "mechanism",
+                }
+
+            result, contract_coverage, research_retry, research_diagnostics = run_contract_research(
+                query, intent["language"], settings, context=context, contract=question_answer_contract,
+                research=research_topic, evaluate=evaluate_research_coverage, request=retry_request,
+            )
+        elif research_query is None:
             result, retry_report = research_with_strengthening(
                 query, intent["language"], settings, context=context, research=research_topic,
             )
-            research_retry = retry_report if retry_report["attempted"] else None
+            research_retry = retry_report if retry_report.get("attempted") else None
         else:
             result = research_topic(query, intent["language"], settings, context=context)
+
         research_status = result.status
         research_provider = result.provider
         research_error = result.error
         sources = result.sources
         facts = result.facts
         research_package = getattr(result, "package", None)
-        research_diagnostics = getattr(result, "diagnostics", None)
+        research_diagnostics = research_diagnostics or getattr(result, "diagnostics", None)
+
+        if question_answer_contract and (contract_coverage is None or not contract_coverage.is_sufficient):
+            research_status = "coverage_unavailable" if contract_coverage is None else "needs_research"
+            research_error = not_ready_message({}, intent["language"])
+        if contract_diagnostic == "error":
+            research_status = "contract_unavailable"
+            research_error = not_ready_message({}, intent["language"])
+            research_diagnostics = {
+                **(research_diagnostics or {}), "failure_type": "CONTRACT_UNAVAILABLE",
+                "contract_failure_reason": contract_error,
+                **({"contract_failure": contract_failure_diagnostics} if contract_failure_diagnostics else {}),
+            }
+
         report_progress(progress, "research", "Researching the topic", phase="complete")
     else:
         report_progress(progress, "research", "Researching the topic", phase="skipped")
@@ -1347,8 +1509,9 @@ def _build_initial_state(
     # The research boundary: a snippet with nothing complete left (page chrome,
     # a cut-off sentence) is no evidence; the rest keeps its own sources.
     for fact in facts:
-        fact["raw_claim"] = str(fact.get("claim") or "")
-        fact["claim"] = clean_research_claim(fact.get("claim"))
+        fact.setdefault("raw_claim", str(fact.get("claim") or ""))
+        if not fact.get("qac_normalized"):
+            fact["claim"] = clean_research_claim(fact.get("claim"))
     facts = [fact for fact in facts if fact["claim"]]
     for index, fact in enumerate(facts, 1):
         fact["id"] = f"fact_{index:02d}"
@@ -1364,6 +1527,7 @@ def _build_initial_state(
             or ("source_attributed" if fact["sources"] else "unverified_model_synthesis")
         )
     link_package_facts(research_package, facts)
+
 
     novelty_plan = safe_novelty_plan(intent, facts)
     report_progress(progress, "script", "Writing the narration", phase="start")
@@ -1470,6 +1634,8 @@ def _build_initial_state(
         provider=script_writer_provider,
         review_provider=script_review_provider,
         story_arc=story_arc,
+        question_answer_contract=question_answer_contract.model_dump() if question_answer_contract else None,
+        research_coverage=contract_coverage.model_dump() if contract_coverage else None,
     )
     raw_blocks, trimmed_post_payoff_fluff = trim_post_payoff_fluff(raw_blocks)
     payoff_plan = _safe_payoff_plan(
@@ -1497,6 +1663,7 @@ def _build_initial_state(
         format_plan,
         novelty_plan,
         story_arc,
+        question_answer_contract=question_answer_contract.model_dump() if question_answer_contract else None,
     )
     # Triple Hook V2 is the one verbal-hook authority: the spoken hook uses a
     # documented strategy supported by the research, selected together with
@@ -1527,20 +1694,22 @@ def _build_initial_state(
         selected_hook_candidate = None
         raw_blocks = body_before_hook
     else:
-        raw_blocks = _hooked_blocks(body_before_hook, selected_hook_candidate.text, story_arc)
+        raw_blocks = _hooked_blocks(body_before_hook, selected_hook_candidate.text, story_arc,
+                                    fact_ids=triple_hook.get("supported_by_fact_ids") or [])
     hook_candidates = [
         {"strategy": item["strategy"], "text": item["verbal_hook"]}
         for item in (triple_hook.get("selection") or {}).get("candidates") or []
         if item.get("strategy") in STRATEGIES and str(item.get("verbal_hook") or "").strip()
     ]
     wpm = max(1, round(SPEAKING_RATE_WPM * float(options.voice_speed or 1.0)))
-    blocks = _normalise_blocks(raw_blocks, max_duration, wpm, story_arc)
+    blocks = _normalise_blocks(raw_blocks, max_duration, wpm, story_arc, facts=facts)
     # Normalization must preserve the authoritative hook intact. Re-apply the
     # pre-normalization selection so duration fitting cannot rewrite the opening.
     if selected_hook_candidate:
         blocks = _apply_selected_hook(blocks, selected_hook_candidate.text)
         for index, block in enumerate(blocks, 1):
             block["id"] = f"voice_block_{index:02d}"
+    triple_hook["supported_by_fact_ids"] = list(next((block.get("fact_ids") or [] for block in blocks if _is_hook_block(block)), []))
     # The sentence after the hook must advance the story (after ordering and fitting).
     blocks, hook_transition = _advance_after_hook(blocks, story_arc)
     # Within-video information gain: what only repeats or fills is removed
@@ -1569,6 +1738,8 @@ def _build_initial_state(
         "prompt": prompt,
         "intent": intent,
         "facts": facts,
+        "question_answer_contract": getattr(question_answer_contract, "model_dump", lambda: None)(),
+        "research_coverage": getattr(contract_coverage, "model_dump", lambda: None)(),
         "story_arc": story_arc,
         "payoff_plan": payoff_plan,
         "format_plan": format_plan,
@@ -1580,22 +1751,34 @@ def _build_initial_state(
     }
     if script_quality_provider is None and settings.openai_api_key and settings.script_holistic_rewrite_enabled:
         script_quality_provider = OpenAIScriptStoryProvider(settings)
-    blocks, script_story_quality = run_script_story_quality(blocks, quality_context, provider=script_quality_provider)
+    finalized_transitions: dict[str, dict[str, Any]] = {}
+
+    def finalize_candidate(candidate):
+        normalized = _normalise_blocks(candidate, max_duration, wpm, story_arc, facts=facts)
+        final, transition = _advance_after_hook(normalized, story_arc)
+        finalized_transitions[script_quality_signature(final)] = transition
+        return final
+
+    blocks, script_story_quality = run_script_story_quality(
+        blocks, quality_context, provider=script_quality_provider, finalize_candidate=finalize_candidate,
+    )
     rewrite = script_story_quality.get("rewrite") if isinstance(script_story_quality.get("rewrite"), dict) else None
     if rewrite is not None:
         # The verified rewrite owns the narration, its hook wording included
         # (the hook intent and reveal contract were verified, not the words).
-        blocks = _normalise_blocks(blocks, max_duration, wpm, story_arc)
-        blocks, hook_transition = _advance_after_hook(blocks, story_arc)
+        # Text-mutating normalization and transitions already ran before the verifier.
+        hook_transition = finalized_transitions.get(script_quality_signature(blocks), hook_transition)
         verified_audit = (script_story_quality.get("holistic") or {}).get("explanation_audit")
         if verified_audit:
-            # Bound to the words that were verified (normalisation only re-splits them).
-            explanation_audit = {
-                **verified_audit,
-                "verified_script": verified_script_key([str(block.get("text") or "") for block in blocks]),
-            }
-    elif selected_hook_candidate:
-        blocks = _apply_selected_hook(blocks, selected_hook_candidate.text)
+            # Preserve the verifier's exact word key; a later mutation must
+            # invalidate it rather than silently rebinding approval.
+            explanation_audit = copy.deepcopy(verified_audit)
+    elif (selected_hook_candidate and (script_story_quality.get("holistic") or {}).get("status") != "needs_fix"
+          and selected_hook_candidate.text not in (script_story_quality.get("holistic") or {}).get("rejected_hooks", [])):
+        # Legacy deterministic editing can move the hook. Restore its position
+        # and actual provenance, never a hook rejected by bounded recovery.
+        blocks = _apply_selected_hook(blocks, selected_hook_candidate.text,
+                                      fact_ids=triple_hook.get("supported_by_fact_ids") or [])
     for index, block in enumerate(blocks, 1):
         block["id"] = f"voice_block_{index:02d}"
     payoff_plan = _safe_payoff_plan(
@@ -1608,12 +1791,9 @@ def _build_initial_state(
     )
     script_story_quality["final_signature"] = script_story_quality["signature"] = script_quality_signature(blocks)
     hook_block = next((block for block in blocks if _is_hook_block(block)), None)
-    if selected_hook_candidate and not (rewrite is not None and hook_block):
-        selected_hook = selected_hook_candidate.text
-    else:
-        # No Triple Hook, or the verified rewrite's own hook wording.
-        selected_hook = str(hook_block.get("text")) if hook_block else None
+    selected_hook = str(hook_block.get("text")) if hook_block else None
     triple_hook["verbal_hook"] = selected_hook or ""
+    triple_hook["supported_by_fact_ids"] = list((hook_block or {}).get("fact_ids") or [])
     # All three hook channels share the same story brief.
     triple_hook["story_brief"] = {
         "primary_question": story_arc.get("primary_question"),
@@ -1652,7 +1832,7 @@ def _build_initial_state(
         total_units=len(scenes),
     )
     width, height = _dimensions(options.aspect_ratio)
-    factual_ready = not intent["research_required"] or bool(facts and sources)
+    factual_ready = (not intent["research_required"] or bool(facts and sources)) and research_status not in {"needs_research", "coverage_unavailable", "contract_unavailable"}
     now = datetime.now(UTC).isoformat()
     state: dict[str, Any] = {
         "version": 1,
@@ -1667,12 +1847,17 @@ def _build_initial_state(
             "status": research_status,
             "provider": research_provider,
             "error": research_error,
+            "contract_diagnostic": contract_diagnostic if 'contract_diagnostic' in locals() else None,
             "sources": sources,
+            **({"contract_minimality": question_answer_contract._minimality_review}
+               if question_answer_contract and question_answer_contract._minimality_review else {}),
             **({"package": research_package} if research_package else {}),
             **({"diagnostics": research_diagnostics} if research_diagnostics else {}),
             **({"retry": research_retry} if research_retry else {}),
         },
         "facts": facts,
+        "contract": getattr(question_answer_contract, "model_dump", lambda: None)() if question_answer_contract else None,
+        "contract_coverage": getattr(contract_coverage, "model_dump", lambda: None)() if contract_coverage else None,
         "information_plan": {
             "must_know": [fact["id"] for fact in facts if fact["priority"] == "MUST_KNOW"],
             "answer_skeleton": [block["role"].upper() for block in blocks],
@@ -1833,15 +2018,17 @@ def _build_initial_state(
         ],
         "edit_history": [],
     }
-    if hook_transition["action"] == "no_safe_reorder" and ensure_hook_advances(state) == "hook_reselected":
-        _refresh_script_derivatives(state, old_scenes=state["scenes"])
+    if (not question_answer_contract or script_story_quality["gate"]["ready"]) and hook_transition["action"] == "no_safe_reorder" and ensure_hook_advances(state) == "hook_reselected":
+        _refresh_script_derivatives(state, old_scenes=state["scenes"], settings=settings, script_quality_provider=script_quality_provider)
     replan_attention(state)
     annotate_story_roles(state)
     analyze_pacing(state)
     plan_viewer_reactions(state, planned_reaction_arc)
     # The success contract, before anything is voiced or rendered.
+    if (state["script"]["script_story_quality_v1"].get("rewrite") or {}).get("verified_by") == "ai_verifier":
+        _reverify_current_contract(state, settings, script_quality_provider)
     readiness = content_readiness(state)
-    state["script"]["readiness"] = {**readiness, "message": None if readiness["ready"] else not_ready_message(readiness)}
+    state["script"]["readiness"] = {**readiness, "message": None if readiness["ready"] else not_ready_message(readiness, intent["language"])}
     if not readiness["ready"]:
         for stage in state["pipeline"]:
             if stage["id"] == "script":
@@ -2055,7 +2242,7 @@ def apply_edit(
         applied.append("researched fact")
 
     if script_changed:
-        _refresh_script_derivatives(state, old_scenes=old_scenes)
+        _refresh_script_derivatives(state, old_scenes=old_scenes, settings=settings)
         for item in state["scenes"]:
             item.pop("media", None)
             item["asset_status"] = "search_required"
@@ -2110,7 +2297,7 @@ def apply_edit(
         state.setdefault("options", {})["max_duration"] = maximum
         blocks[:] = _normalise_blocks(blocks, maximum, story_arc=state.get("story_arc"))
         script_changed = True
-        _refresh_script_derivatives(state, old_scenes=old_scenes)
+        _refresh_script_derivatives(state, old_scenes=old_scenes, settings=settings)
         for item in state["scenes"]:
             item.pop("media", None)
             item["asset_status"] = "search_required"

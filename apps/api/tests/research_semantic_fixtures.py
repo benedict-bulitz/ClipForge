@@ -39,8 +39,8 @@ MICROWAVE = Case(
         "https://www.verbraucherinfo.bund.de/mikrowelle",
         "So funktioniert die Mikrowelle",
         [
-            "Mikrowellen erwärmen Lebensmittel mithilfe von elektromagnetischen Wellen, die die Wassermoleküle im Essen "
-            "in Schwingung versetzen und dadurch Wärme erzeugen.",
+            ("Mikrowellen erwärmen Lebensmittel mithilfe von elektromagnetischen Wellen, die die Wassermoleküle im Essen "
+            "in Schwingung versetzen und dadurch Wärme erzeugen."),
             "In der Mitte des Garraums befindet sich oft eine sogenannte tote Zone, in der die Wellen kaum Energie abgeben.",
         ],
         {"site": "Verbraucherinformation"},
@@ -74,7 +74,7 @@ MARS = Case(
             "https://www.weltraum-wissen.de/mars-atmosphaere",
             "Die Atmosphäre des Mars",
             [
-                "Die dünne Atmosphäre des Mars enthält sehr viel feinen Staub. Weil die schwebenden Staubteilchen das Sonnenlicht streuen, erscheint der Himmel dort tagsüber orangebraun.",
+                "Die dünne Atmosphäre des Mars enthält sehr viel feinen Staub. Weil die schwebenden Staubteilchen das Sonnenlicht streuen, erscheint der Himmel dort tagsüber rötlich orangebraun.",
                 "Die Staubteilchen sind so klein, dass Winde sie monatelang in der Luft halten.",
             ],
             {},
@@ -90,8 +90,8 @@ BERLIN = Case(
             "https://www.berlin-stadtgeschichte.de/ebertstrasse",
             "Die Berliner Mauer an der Ebertstraße",
             # Real Mac shape: construction layout and its result ("sodass"), not why the wall was built.
-            ["Beim Bau der Mauer 1961 zog die DDR die Sperranlagen gerade entlang der Ebertstraße, "
-             "sodass das Gelände als Zipfel Ost-Berlins abgeschnitten wurde."],
+            [("Beim Bau der Mauer 1961 zog die DDR die Sperranlagen gerade entlang der Ebertstraße, "
+             "sodass das Gelände als Zipfel Ost-Berlins abgeschnitten wurde.")],
             {},
         ),
         (
@@ -99,12 +99,12 @@ BERLIN = Case(
             "Die Berliner Mauer",
             [
                 # Real Mac shape: the direct answer refers to the wall only by pronoun.
-                "Die Berliner Mauer trennte fast drei Jahrzehnte lang Ost- und West-Berlin. "
-                "Gebaut wurde sie 1961, um den Flüchtlingsstrom vom Osten in den Westen zu stoppen.",
+                ("Die Berliner Mauer trennte fast drei Jahrzehnte lang Ost- und West-Berlin. "
+                "Gebaut wurde sie 1961, um den Flüchtlingsstrom vom Osten in den Westen zu stoppen."),
                 # A consequence of the wall, with the wall inside the cause clause.
                 # Real Mac shape: a consequence of the building, with the building inside the "weil" clause.
-                "Im Gegenteil: Weil der Mauerbau Freunde und Verwandte in Berlin voneinander getrennt hatte, versuchten besonders "
-                "in Ost-Berlin und im Berliner Umland noch viele Menschen, über die Grenzsperren zu fliehen.",
+                ("Im Gegenteil: Weil der Mauerbau Freunde und Verwandte in Berlin voneinander getrennt hatte, versuchten besonders "
+                "in Ost-Berlin und im Berliner Umland noch viele Menschen, über die Grenzsperren zu fliehen."),
                 # Two different metrics of the same history - not a contradiction.
                 "Über die Berliner Mauer und die innerdeutsche Grenze flohen bis 1961 rund 3,5 Millionen Menschen aus der DDR.",
             ],
@@ -131,8 +131,8 @@ ARGUMENT = Case(
             # Real Mac shape: conflict-prevention advice with an "indem" clause.
             "Trotzdem kann man fiese Streite umgehen: indem man Kleinigkeiten, die einen stören, gleich anspricht, statt sie zu sammeln.",
             # Real Mac shape: the article's own purpose, phrased with "Grund", "warum" and "damit".
-            "Ein weiterer Grund, warum es mir so wichtig ist, dir mit diesem Artikel einen Schritt zur Lösung deiner Konflikte "
-            "und damit Antworten zu liefern. Damit du und dein Partner nicht mehr im Streitkreislauf gefangen bleibt.",
+            ("Ein weiterer Grund, warum es mir so wichtig ist, dir mit diesem Artikel einen Schritt zur Lösung deiner Konflikte "
+            "und damit Antworten zu liefern. Damit du und dein Partner nicht mehr im Streitkreislauf gefangen bleibt."),
         ],
         {},
     )],

@@ -183,6 +183,7 @@ def provider_candidates() -> list[dict]:
     ]
 
 
+@pytest.mark.usefixtures("legacy_without_qac")
 def test_nap_pipeline_selects_by_function_and_the_hook_persists(monkeypatch, tmp_path: pathlib.Path):
     source = {"label": "Quelle", "url": "https://source.test/nap"}
     research = [{**{key: value for key, value in item.items() if key != "id"}, "sources": [source]} for item in FACTS]

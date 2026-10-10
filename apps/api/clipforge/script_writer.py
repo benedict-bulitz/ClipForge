@@ -65,6 +65,7 @@ class ScriptWriterRequest(BaseModel):
     format_plan: dict[str, object] | None = None
     novelty_plan: dict[str, object] | None = None
     story_arc: dict[str, object] | None = None
+    required_answer_evidence: list[dict[str, object]] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def require_normalized_evidence(self):
@@ -126,6 +127,9 @@ SCRIPT_WRITER_V2_INSTRUCTIONS = (
     "Use the supplied format_plan as lightweight structure guidance without adding filler or unsupported claims. "
     "Use the supplied novelty_plan only to prioritize supported explanatory or comparative value; never invent "
     "novelty claims, obscure trivia, or unsupported surprise. "
+    "When story_arc.requirement_authority is question_answer_contract, its required obligations and "
+    "required_answer_evidence define necessary depth. Other facts remain optional; an absent final_payoff_id "
+    "does not require a separate closing fact. Develop the supported answer without inventing a contrast. "
     "Answer story_arc.question_contract.intended_question - what the user actually means - and never one of its "
     "excluded_interpretations, however true. When a story_arc is supplied it is the information backbone: present the facts in its information_order, "
     "make the fact with primary_answer_id the clearly understandable answer (a secondary insight never replaces it), "
@@ -143,6 +147,10 @@ SCRIPT_WRITER_V2_INSTRUCTIONS = (
     "explain why, do not fill the gap with related facts or generic advice, and never write a sentence about "
     "the facts or research themselves ('these facts do not explain ...'). Prefer direct spoken German "
     "('Du bist dieses Bild einfach weniger gewohnt.') over hedged abstract phrasing. "
+    "required_answer_evidence identifies mandatory obligations with supporting claims and existing fact IDs. "
+    "Preserve their actual cause or motive and necessary causal relationships during compression. A related "
+    "precursor is not a substitute for the supported direct explanation. The payoff must deliver the real answer, "
+    "without fabricating steps or padding a short complete explanation. "
     "Use only the supplied facts for "
     "substantive factual claims and attach the corresponding fact IDs to each factual block. "
     "Write natural spoken narration with logical order, short understandable sentences, and concise "
@@ -197,6 +205,7 @@ def _request_for_model(request: ScriptWriterRequest) -> dict:
         "format_plan": request.format_plan,
         "novelty_plan": request.novelty_plan,
         "story_arc": request.story_arc,
+        "required_answer_evidence": request.required_answer_evidence,
     }
 
 

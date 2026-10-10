@@ -133,7 +133,21 @@ def topic_query(text: str) -> str:
     return cleaned.strip(" ?!.,") or str(text or "").strip()
 
 
-def deterministic_sub_questions(question: str, query: str, language: str, *, focus: str | None = None) -> list[SubQuestion]:
+def semantic_search_query(question: str, description: str, language: str) -> str:
+    """Short search terms, never diagnostic labels; foreign prose uses local relation terms."""
+    lang = "de" if str(language).startswith("de") else "en"
+    description = re.sub(r"(?i)(?:primary goal|required detail|missing required answer)\s*:", "", description)
+    if _FOREIGN_QUERY_MARKERS[lang].search(description):
+        return f"{topic_query(question)[:100]} {_MECHANISM_TERMS[lang]}"
+    stop = {"explain", "describe", "supported", "required", "answer", "primary", "goal", "detail",
+            "erkläre", "erklären", "beschreibe", "belegt", "erforderlich", "antwort", "the", "a", "an",
+            "how", "why", "is", "of", "and", "to", "through", "der", "die", "das", "wie", "warum", "und", "ist", "durch"}
+    tokens = [token for token in re.findall(r"[^\W_]+", description) if token.casefold() not in stop]
+    terms = " ".join(tokens[:8])
+    return f"{topic_query(question)[:80]} {terms}".strip()[:160]
+
+
+def deterministic_sub_questions(question: str, query: str, language: str, *, focus: str | None = None, search_intents: list[str] | None = None) -> list[SubQuestion]:
     """core (+ mechanism for why/how questions) - the smallest useful decomposition."""
     lang = "de" if str(language).startswith("de") else "en"
     core_query = topic_query(query)[:160]
@@ -148,6 +162,12 @@ def deterministic_sub_questions(question: str, query: str, language: str, *, foc
         # "Kann X Y?": the retry asks for evidence about X itself doing Y, not about related uses of X.
         core_query = f"{topic_query(question)[:120]} {_CAPABILITY_TERMS[lang]}"
     subs = [SubQuestion("q_core", "core", question, core_query)]
+    for index, description in enumerate(search_intents or [], 1):
+        search = semantic_search_query(question, description, language)
+        if search.casefold() not in {sub.query.casefold() for sub in subs}:
+            subs.append(SubQuestion(f"q_contract_{index}", "mechanism", description, search))
+        if len(subs) >= 3:
+            break
     if is_explanatory_question(question) or focus == "mechanism":
         base = topic_query(question)[:120]
         mechanism_query = f"{base} {_MECHANISM_TERMS[lang]}" if focus != "mechanism" else core_query

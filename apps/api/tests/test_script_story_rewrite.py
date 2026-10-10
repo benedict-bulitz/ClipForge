@@ -10,7 +10,7 @@ import copy
 import pytest
 from test_script_story_quality_v1 import FACTS as VISION_FACTS
 from test_script_story_quality_v1 import context as vision_context
-from test_script_story_quality_v1 import strong_blocks as vision_blocks
+from test_script_story_quality_v1 import strong_blocks as _vision_blocks
 
 import clipforge.services  # noqa: F401 - registers ORM models
 from clipforge import pipeline
@@ -101,9 +101,16 @@ def block(index: int, role: str, text: str, fact_ids: list[str] | None = None) -
     return {"id": f"voice_block_{index:02d}", "role": role, "text": text, "fact_ids": list(fact_ids or [])}
 
 
+def vision_blocks():
+    blocks = _vision_blocks()
+    # These recovery fixtures need an actually citation-free rhetorical hook.
+    blocks[0]["text"] = "What happens inside your body when you stand up fast?"
+    return blocks
+
+
 # The real, technically valid but mediocre German draft (regression example).
 DRAFT_DE = [
-    block(1, "hook", "Ein schweres Flugzeug steigt, obwohl die Schwerkraft es nach unten zieht."),
+    block(1, "hook", "Ein schweres Flugzeug steigt, obwohl die Schwerkraft es nach unten zieht.", ["lift_01", "lift_06"]),
     block(2, "answer", "Ein Flugzeug bleibt trotz seines Gewichts oben, weil der Auftrieb nach oben der Schwerkraft nach unten entgegenwirkt.", ["lift_06"]),
     block(3, "explanation", "Dafür müssen beim Fliegen vier Kräfte im richtigen Verhältnis zusammenwirken.", ["lift_01"]),
     block(4, "support", "Die Tragflächen haben dafür eine passende Form im Querschnitt.", ["lift_02"]),
@@ -111,7 +118,7 @@ DRAFT_DE = [
     block(6, "payoff", "Dadurch kann der nötige Auftrieb entstehen und das Flugzeug trotz seines Gewichts oben bleiben.", ["lift_04", "lift_06"]),
 ]
 DRAFT_EN = [
-    block(1, "hook", "A heavy airplane climbs even though gravity pulls it down."),
+    block(1, "hook", "A heavy airplane climbs even though gravity pulls it down.", ["lift_01", "lift_06"]),
     block(2, "answer", "A plane stays up despite its weight because lift pushing up counters gravity pulling down.", ["lift_06"]),
     block(3, "explanation", "For that, four forces have to work together in the right ratio.", ["lift_01"]),
     block(4, "support", "The wings have a suitable cross-section for this.", ["lift_02"]),
@@ -122,14 +129,14 @@ DRAFT_EN = [
 # A strong holistic rewrite: new hook wording, fewer beats, new order, the
 # omitted pressure-difference fact (lift_03) and a real mechanism.
 REWRITE_DE = [
-    ("hook", "Ein Flugzeug ist richtig schwer – und trotzdem trägt es nur die Luft.", []),
+    ("hook", "Ein Flugzeug ist richtig schwer – und trotzdem trägt es nur die Luft.", ["lift_06"]),
     ("explanation", "Die Triebwerke schieben das Flugzeug nach vorn, damit Luft schnell genug an den Tragflächen vorbeiströmt.", ["lift_05"]),
     ("explanation", "Die Tragflächen sind gewölbt und leicht schräg gestellt: Sie lenken diese Luft nach unten ab, und über ihnen sinkt der Luftdruck unter den Druck darunter.", ["lift_02", "lift_03"]),
     ("answer", "Beides zusammen drückt die Tragfläche nach oben – das ist der Auftrieb.", ["lift_04"]),
     ("payoff", "Sobald dieser Auftrieb so groß ist wie die Gewichtskraft, trägt die Luft das ganze Flugzeug.", ["lift_06"]),
 ]
 REWRITE_EN = [
-    ("hook", "A plane is seriously heavy, and yet only air holds it up.", []),
+    ("hook", "A plane is seriously heavy, and yet only air holds it up.", ["lift_06"]),
     ("explanation", "The engines push the plane forward so air rushes over the wings fast enough.", ["lift_05"]),
     ("explanation", "The wings are curved and tilted slightly up: they bend that air downward, and the pressure above the wing drops below the pressure underneath.", ["lift_02", "lift_03"]),
     ("answer", "Together, that pushes the wing upward. That push is lift.", ["lift_04"]),
@@ -181,6 +188,7 @@ def critic(verdict: str = "rewrite", findings: list[EditorFinding] | None = None
 
 def verdict(beats=None, **overrides) -> VerifierResponse:
     values = {
+        "contract_sufficient": True, "contract_evaluations": [],
         "grounded": True, "answers_question": True, "payoff_fulfilled": True, "premature_reveal": False,
         "hook_promise_kept": True, "answer_payoff_duplicate": False, "better_than_draft": True, "findings": [],
         "answer_sufficiency": ScriptReviewSufficiency(verdict="answered", one_sentence_answer="Wings push air down and lift balances weight."),
@@ -358,7 +366,7 @@ def _vision_rewrite(order: list[str]) -> list[tuple]:
         "f2": ("explanation", "Pressure sensors called baroreceptors react by tightening vessels and speeding up your heart.", ["fact_02"]),
         "f3": ("payoff", "Until that catches up, your brain briefly runs short of oxygen, so your vision can fade to black.", ["fact_03"]),
     }
-    return [("hook", "Stand up too fast and your body has a split second to react.", []), *(beats[key] for key in order)]
+    return [("hook", "What happens inside your body when you stand up fast?", []), *(beats[key] for key in order)]
 
 
 def test_protected_reveal_may_move_later_but_never_earlier():
@@ -589,10 +597,28 @@ class BriefEditor:
 
     def verify(self, brief):
         self.stages.append("verify")
-        return verdict(self.beats(brief))
+        from clipforge.script_story_rewrite import ContractObligationEvaluation
+        return verdict(self.beats(brief), contract_evaluations=[ContractObligationEvaluation(
+            id="primary", status="satisfied", is_primary=True, is_required=True, reasoning="Lift mechanism explained.",
+        )] if brief.get("question_answer_contract") else [])
 
 
 def test_pipeline_adopts_the_verified_rewrite_and_its_hook(monkeypatch):
+    from clipforge.question_answer_contract import (
+        AnswerObligation,
+        ObligationCoverage,
+        QuestionAnswerContract,
+        ResearchCoverageReport,
+    )
+    contract = QuestionAnswerContract(
+        question_type="causal", core_question=DE_QUESTION,
+        primary_answer_obligation=AnswerObligation(id="primary", description="Erkläre den Auftrieb durch Luftdruck und Luftablenkung.", is_primary=True, is_required=True),
+        required_supporting_obligations=[], optional_context=[],
+    )
+    monkeypatch.setattr(pipeline, "generate_contract", lambda *_a: contract)
+    monkeypatch.setattr(pipeline, "evaluate_research_coverage", lambda *_a: ResearchCoverageReport(
+        is_sufficient=True, coverage=[ObligationCoverage(obligation_id="primary", status="satisfied", supporting_fact_ids=["fact_02", "fact_03", "fact_04"], reasoning="Supported mechanism")],
+    ))
     research = [{key: value for key, value in item.items() if key != "id"} for item in DE_FACTS]
     monkeypatch.setattr(
         "clipforge.pipeline.research_topic",

@@ -12,7 +12,8 @@ from typing import Any
 
 from .novelty import current_information_gain
 from .renderer import RenderUnavailable
-from .script_story_quality import current_script_story_quality
+from .script_grounding import evidence_key, hook_semantically_supported
+from .script_story_quality import current_script_story_quality, script_quality_signature
 from .triple_hook import state_context
 from .verbal_hook import narrates_failure, ungrounded_cause
 
@@ -31,6 +32,12 @@ CONTENT_BLOCKERS = {
 # holistic rewrite, the lexical V1 findings are advisory and only hard
 # grounding/reveal failures can appear in its gate.
 QUALITY_CONTENT_BLOCKERS = {
+    "primary_answer_missing",
+    "required_obligation_missing",
+    "answer_circular",
+    "insufficient_causal_depth",
+    "unsupported_required_answer",
+    "contract_insufficient",
     "analogy_repetition",
     "artificial_lengthening",
     "filler",
@@ -97,6 +104,24 @@ def content_readiness(state: dict[str, Any]) -> dict[str, Any]:
                 else "The retrieved sources do not contain a direct answer to the question."
             ),
         })
+    if research.get("contract_diagnostic") == "error":
+        blocking.append({"code": "contract_unavailable", "message": "Question answer contract generation unavailable."})
+    contract_coverage = state.get("contract_coverage") or {}
+    if state.get("contract") and not contract_coverage:
+        blocking.append({"code": "coverage_unavailable", "message": "Independent research coverage unavailable."})
+    if state.get("contract"):
+        script = state.get("script") or {}
+        rewrite = (script.get("script_story_quality_v1") or {}).get("rewrite") or {}
+        signature = script_quality_signature(script.get("blocks") or [])
+        if (rewrite.get("verified_by") != "ai_verifier" or rewrite.get("verified_script_signature") != signature
+                or rewrite.get("verified_evidence_key") not in {None, evidence_key(script.get("blocks") or [], state.get("facts") or [])}):
+            code = "contract_reverify_failed" if rewrite.get("status") == "CONTRACT_REVERIFY_FAILED" else "contract_verification_stale"
+            blocking.append({"code": code, "message": "No independent contract verification for the current script."})
+    if state.get("contract") and contract_coverage.get("is_sufficient") is False:
+        blocking.append({
+            "code": "research_contract_insufficient",
+            "message": "Required research obligations unsupported: " + ", ".join(contract_coverage.get("missing_obligations") or []),
+        })
     hook = _hook_text(state)
     if hook:
         if narrates_failure(hook):
@@ -105,16 +130,34 @@ def content_readiness(state: dict[str, Any]) -> dict[str, Any]:
             cause = ungrounded_cause(hook, state_context(state))
         except Exception:  # noqa: BLE001 - a broken hook context must not hide the other checks
             cause = []
-        if cause:
+        if cause and not hook_semantically_supported((state.get("script") or {}).get("blocks") or [],
+                                                     state.get("facts") or [], state.get("explanation_audit") or {}):
             blocking.append({
                 "code": "hook_unsupported_claim",
                 "message": "The hook asserts a cause no researched fact supports: " + ", ".join(cause[:4]) + ".",
             })
     sufficiency = report.get("answer_sufficiency") if isinstance(report.get("answer_sufficiency"), dict) else {}
-    research_required = (bool(sufficiency.get("research_required")) and any(
-        item["code"] == "information_gain_answer_insufficient" for item in blocking
-    )) or any(item["code"] == "research_insufficient" for item in blocking) or bool(
-        quality.get("research_insufficient") and blocking
+    # Research coverage judges evidence; a script that omitted or miscited
+    # already-supported information must not request another research run.
+    evidence_missing = any(item["code"] in {"research_insufficient", "research_contract_insufficient"} for item in blocking)
+    evidence_sufficient = (bool(state.get("contract")) and contract_coverage.get("is_sufficient") is True) or (
+        not state.get("contract") and package is not None and package.get("status") == "sufficient"
+    )
+    research_required = evidence_missing if evidence_sufficient else evidence_missing or bool(
+        (sufficiency.get("research_required") or quality.get("research_insufficient")) and blocking
+    )
+    recovery = quality.get("generation_recovery") or quality.get("holistic") or {}
+    grounding_failed = any(item["code"] in {"script_story_quality_unsupported_claim", "hook_unsupported_claim"}
+                           for item in blocking) or any(
+        any(token in str(item.get("code") or "").lower()
+            for token in ("ground", "citation", "uncited", "unsupported", "fabricated", "unusable", "contradict"))
+        for item in [*(quality.get("verification_diagnostics") or {}).get("findings", []),
+                     *(item for attempt in recovery.get("attempts") or [] for item in attempt.get("hard") or [])]
+        if item.get("severity") == "hard"
+    )
+    failure_category = None if not blocking else "research_required" if research_required else (
+        "script_recovery_failed" if recovery.get("status") == "needs_fix"
+        else "script_grounding_failed" if grounding_failed else "script_not_ready"
     )
     if not blocking:
         status = "ready"
@@ -123,17 +166,23 @@ def content_readiness(state: dict[str, Any]) -> dict[str, Any]:
     else:
         status = "blocked"
     return {
+        "language": (state.get("intent") or {}).get("language", "en"),
         "ready": not blocking,
         "status": status,
         "research_required": research_required,
+        "failure_category": failure_category,
         "blocking": blocking,
         "answer_sufficiency": sufficiency,
     }
 
 
-def not_ready_message(readiness: dict[str, Any]) -> str:
-    """User-facing reason (no narration of it ever reaches the video)."""
-    if readiness.get("research_required"):
-        return "The research does not explain the question yet, so no video was produced. Retry to research again."
-    first = (readiness.get("blocking") or [{}])[0]
-    return f"The script is not ready to produce: {first.get('message') or first.get('code') or 'quality gate failed'}"[:480]
+def not_ready_message(readiness: dict[str, Any], language: str | None = None) -> str:
+    """Localized user failure; technical reasons stay in readiness.blocking."""
+    script_failed = readiness.get("failure_category") in {"script_grounding_failed", "script_recovery_failed"}
+    if str(language or readiness.get("language") or "en").startswith("de"):
+        if script_failed:
+            return "ClipForge konnte den Text für dieses Video noch nicht zuverlässig prüfen. Bitte versuche es erneut."
+        return "ClipForge konnte für diese Frage noch keine ausreichend belegte Antwort erstellen. Bitte versuche es erneut."
+    if script_failed:
+        return "ClipForge couldn't reliably verify the script for this video yet. Please try again."
+    return "ClipForge couldn't create a sufficiently supported answer for this question yet. Please try again."

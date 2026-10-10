@@ -1,0 +1,724 @@
+{
+  "provenance": {
+    "project_id": "f44ad20f-9c0e-4d2a-8970-ab1520b3b417",
+    "runtime_head": "50efb5954be7239fa6b307779ccce11af1fcf1d0",
+    "source": "read-only persisted project revision"
+  },
+  "prompt": "Warum wurde die Berliner Mauer gebaut?",
+  "facts": [
+    {
+      "id": "fact_01",
+      "claim": "Die Berliner Mauer wurde gebaut, um die Flucht von Menschen aus der DDR und Ost-Berlin nach West-Berlin zu verhindern.",
+      "confidence": 0.9,
+      "importance": 0.93,
+      "priority": "MUST_KNOW",
+      "sources": [
+        {
+          "label": "Berliner Mauer",
+          "url": "https://de.wikipedia.org/wiki/Berliner_Mauer",
+          "source_id": "src_01",
+          "source_type": "reference",
+          "authority": "medium",
+          "published_at": null,
+          "fetched_at": "2026-10-09T18:02:17+00:00"
+        },
+        {
+          "label": "Die Berliner Mauer",
+          "url": "https://www.stiftung-berliner-mauer.de/de/themen/die-berliner-mauer",
+          "source_id": "src_02",
+          "source_type": "institutional",
+          "authority": "high",
+          "published_at": null,
+          "fetched_at": "2026-10-09T18:02:19+00:00"
+        }
+      ],
+      "verification": "supported",
+      "research_key": "syn_01",
+      "research_role": "core_answer",
+      "evidence_ids": [
+        "ev_09",
+        "ev_04",
+        "ev_26"
+      ],
+      "independent_sources": 2,
+      "raw_claim": "Die Berliner Mauer wurde gebaut, um die Flucht von Menschen aus der DDR und Ost-Berlin nach West-Berlin zu verhindern.",
+      "qac_normalized": true,
+      "raw_claims": [
+        "Die Berliner Mauer wurde gebaut, um die Flucht von Menschen aus der DDR und Ost-Berlin nach West-Berlin zu verhindern."
+      ],
+      "research_keys": [
+        "syn_01"
+      ]
+    },
+    {
+      "id": "fact_02",
+      "claim": "Am 13. August 1961 riegelte der Mauerbau Ost-Berlin von den Übergangswegen nach West-Berlin ab und trennte die Stadt.",
+      "confidence": 0.9,
+      "importance": 0.71,
+      "priority": "USEFUL",
+      "sources": [
+        {
+          "label": "Berliner Mauer",
+          "url": "https://de.wikipedia.org/wiki/Berliner_Mauer",
+          "source_id": "src_01",
+          "source_type": "reference",
+          "authority": "medium",
+          "published_at": null,
+          "fetched_at": "2026-10-09T18:02:17+00:00"
+        },
+        {
+          "label": "Bau der Berliner Mauer - Geschichte kompakt",
+          "url": "https://www.geschichte-abitur.de/lexikon/uebersicht-deutsche-teilung/bau-der-berliner-mauer",
+          "source_id": "src_03",
+          "source_type": "specialist_secondary",
+          "authority": "medium",
+          "published_at": "2016-09-07",
+          "fetched_at": "2026-10-09T18:02:22+00:00"
+        }
+      ],
+      "verification": "supported",
+      "research_key": "syn_02",
+      "research_role": "observation",
+      "evidence_ids": [
+        "ev_20",
+        "ev_01"
+      ],
+      "independent_sources": 2,
+      "raw_claim": "Am 13. August 1961 riegelte der Mauerbau Ost-Berlin von den Übergangswegen nach West-Berlin ab und trennte die Stadt.",
+      "qac_normalized": true,
+      "raw_claims": [
+        "Am 13. August 1961 riegelte der Mauerbau Ost-Berlin von den Übergangswegen nach West-Berlin ab und trennte die Stadt."
+      ],
+      "research_keys": [
+        "syn_02"
+      ]
+    },
+    {
+      "id": "fact_03",
+      "claim": "Die Berliner Mauer wurde am 13. August 1961 gebaut und trennte West- und Ost-Berlin bis zum 9. November 1989.",
+      "confidence": 0.78,
+      "importance": 0.64,
+      "priority": "USEFUL",
+      "sources": [
+        {
+          "label": "Bau der Berliner Mauer - Geschichte kompakt",
+          "url": "https://www.geschichte-abitur.de/lexikon/uebersicht-deutsche-teilung/bau-der-berliner-mauer",
+          "source_id": "src_03",
+          "source_type": "specialist_secondary",
+          "authority": "medium",
+          "published_at": "2016-09-07",
+          "fetched_at": "2026-10-09T18:02:22+00:00"
+        }
+      ],
+      "verification": "source_attributed",
+      "research_key": "syn_03",
+      "research_role": "number",
+      "evidence_ids": [
+        "ev_20",
+        "ev_22"
+      ],
+      "independent_sources": 1,
+      "raw_claim": "Die Berliner Mauer wurde am 13. August 1961 gebaut und trennte West- und Ost-Berlin bis zum 9. November 1989.",
+      "qac_normalized": true,
+      "raw_claims": [
+        "Die Berliner Mauer wurde am 13. August 1961 gebaut und trennte West- und Ost-Berlin bis zum 9. November 1989."
+      ],
+      "research_keys": [
+        "syn_03"
+      ]
+    },
+    {
+      "id": "fact_04",
+      "claim": "Die Mauer ergänzte die 1378 Kilometer lange innerdeutsche Grenze.",
+      "confidence": 0.78,
+      "importance": 0.62,
+      "priority": "USEFUL",
+      "sources": [
+        {
+          "label": "Berliner Mauer",
+          "url": "https://de.wikipedia.org/wiki/Berliner_Mauer",
+          "source_id": "src_01",
+          "source_type": "reference",
+          "authority": "medium",
+          "published_at": null,
+          "fetched_at": "2026-10-09T18:02:17+00:00"
+        }
+      ],
+      "verification": "source_attributed",
+      "research_key": "syn_04",
+      "research_role": "number",
+      "evidence_ids": [
+        "ev_03"
+      ],
+      "independent_sources": 1,
+      "raw_claim": "Die Mauer ergänzte die 1378 Kilometer lange innerdeutsche Grenze.",
+      "qac_normalized": true,
+      "raw_claims": [
+        "Die Mauer ergänzte die 1378 Kilometer lange innerdeutsche Grenze."
+      ],
+      "research_keys": [
+        "syn_04"
+      ]
+    },
+    {
+      "id": "fact_05",
+      "claim": "In der DDR-Propaganda wurde der Mauerbau als Notwendigkeit eines „antifaschistischen Schutzwalls“ bezeichnet.",
+      "confidence": 0.9,
+      "importance": 0.6,
+      "priority": "USEFUL",
+      "sources": [
+        {
+          "label": "Berliner Mauer",
+          "url": "https://de.wikipedia.org/wiki/Berliner_Mauer",
+          "source_id": "src_01",
+          "source_type": "reference",
+          "authority": "medium",
+          "published_at": null,
+          "fetched_at": "2026-10-09T18:02:17+00:00"
+        },
+        {
+          "label": "Bau der Berliner Mauer - Geschichte kompakt",
+          "url": "https://www.geschichte-abitur.de/lexikon/uebersicht-deutsche-teilung/bau-der-berliner-mauer",
+          "source_id": "src_03",
+          "source_type": "specialist_secondary",
+          "authority": "medium",
+          "published_at": "2016-09-07",
+          "fetched_at": "2026-10-09T18:02:22+00:00"
+        }
+      ],
+      "verification": "supported",
+      "research_key": "syn_05",
+      "research_role": "supporting",
+      "evidence_ids": [
+        "ev_06",
+        "ev_22"
+      ],
+      "independent_sources": 2,
+      "raw_claim": "In der DDR-Propaganda wurde der Mauerbau als Notwendigkeit eines „antifaschistischen Schutzwalls“ bezeichnet.",
+      "qac_normalized": true,
+      "raw_claims": [
+        "In der DDR-Propaganda wurde der Mauerbau als Notwendigkeit eines „antifaschistischen Schutzwalls“ bezeichnet."
+      ],
+      "research_keys": [
+        "syn_05"
+      ]
+    }
+  ],
+  "contract": {
+    "question_type": "historical_motive",
+    "core_question": "Warum wurde die Berliner Mauer gebaut?",
+    "primary_answer_obligation": {
+      "id": "primary_motive",
+      "description": "Erklären, dass die Berliner Mauer gebaut wurde, um die Flucht von Menschen aus der DDR in den Westen zu verhindern.",
+      "is_primary": true,
+      "is_required": true,
+      "fact_ids": []
+    },
+    "required_supporting_obligations": [],
+    "optional_context": [
+      "Die DDR-Führung veranlasste den Bau; der Bau begann 1961.",
+      "Die anhaltende Abwanderung erfolgte insbesondere über West-Berlin, das zuvor ein vergleichsweise leicht nutzbarer Fluchtweg war.",
+      "Unter den Geflüchteten waren viele junge und qualifizierte Arbeitskräfte; die Abwanderung schwächte die DDR wirtschaftlich und politisch.",
+      "Die Mauer war ein Grenz- und Sperrsystem zur Unterbindung der Ausreise und kein Schutzwall gegen einen Angriff aus dem Westen.",
+      "Die Unterbindung der Flucht wurde gewaltsam durchgesetzt.",
+      "Die offizielle DDR-Bezeichnung und Propaganda vom „antifaschistischen Schutzwall“.",
+      "Der Kontext des Kalten Krieges und der deutschen Teilung nach dem Zweiten Weltkrieg.",
+      "Der Bau begann am 13. August 1961, und die Grenze wurde später massiv ausgebaut."
+    ],
+    "causal_mechanistic_chain": [
+      {
+        "id": "wall_decision",
+        "description": "Die Mauer wurde gebaut, um die Flucht von Menschen aus der DDR in den Westen zu verhindern.",
+        "depth_level": 1
+      }
+    ],
+    "historical_motive": "Die unmittelbare Absicht war, die Flucht von Menschen aus der DDR in den Westen zu verhindern.",
+    "required_mechanism_concepts": [
+      "Verhinderung der Flucht aus der DDR in den Westen"
+    ],
+    "minimum_answer_depth": 1,
+    "unresolved_research_gaps": []
+  },
+  "coverage": {
+    "is_sufficient": true,
+    "missing_obligations": [],
+    "coverage": [
+      {
+        "obligation_id": "primary_motive",
+        "status": "satisfied",
+        "supporting_fact_ids": [
+          "fact_01"
+        ],
+        "reasoning": "Fact 01 erklärt unmittelbar, dass die Berliner Mauer gebaut wurde, um die Flucht von Menschen aus der DDR und Ost-Berlin nach West-Berlin zu verhindern. Damit ist die erforderliche Motiverklärung vollständig erfüllt."
+      }
+    ],
+    "diagnostic_reason": null
+  },
+  "blocks": [
+    {
+      "role": "hook",
+      "text": "Mitten durch Berlin wurden Übergänge geschlossen. Warum riegelte die DDR ihre Stadtseite ab?",
+      "id": "voice_block_01"
+    },
+    {
+      "role": "answer",
+      "text": "Die Berliner Mauer sollte verhindern, dass Menschen aus der DDR und Ost-Berlin nach West-Berlin fliehen.",
+      "fact_ids": [
+        "fact_01"
+      ],
+      "id": "voice_block_02"
+    },
+    {
+      "role": "explanation",
+      "text": "Am 13. August 1961 schnitt ihr Bau Ost-Berlin von den Übergangswegen nach West-Berlin ab.",
+      "fact_ids": [
+        "fact_02"
+      ],
+      "id": "voice_block_03"
+    },
+    {
+      "role": "detail",
+      "text": "Aus einem Weg nach West-Berlin wurde damit eine Grenze, die nicht mehr frei passierbar war.",
+      "fact_ids": [
+        "fact_01",
+        "fact_02"
+      ],
+      "id": "voice_block_04"
+    },
+    {
+      "role": "detail",
+      "text": "Die DDR-Propaganda stellte den Bau als „antifaschistischen Schutzwall“ dar.",
+      "fact_ids": [
+        "fact_01",
+        "fact_05"
+      ],
+      "id": "voice_block_05"
+    },
+    {
+      "role": "payoff",
+      "text": "Tatsächlich sollte diese Sperre vor allem Menschen am Weggehen hindern.",
+      "fact_ids": [
+        "fact_01",
+        "fact_05"
+      ],
+      "id": "voice_block_06"
+    }
+  ],
+  "recovery": {
+    "version": 2,
+    "status": "needs_fix",
+    "provider": "openai",
+    "error": null,
+    "critic": {
+      "verdict": "rewrite",
+      "findings": [
+        {
+          "code": "unsupported_hook_claim",
+          "severity": "hard",
+          "beat_index": 1,
+          "message": "Der Hook enthält die faktische Aussage „Mitten durch Berlin wurden Übergänge geschlossen“, ist aber ohne fact_id. Diese Aussage müsste mindestens durch fact_02 belegt werden. Außerdem suggeriert „ihre Stadtseite“ eine Akteursabsicht, die die angeführten Fakten nicht ausdrücklich belegen."
+        },
+        {
+          "code": "unsupported_agency",
+          "severity": "hard",
+          "beat_index": 3,
+          "message": "„Die DDR ... riegelte die Übergänge ... ab“ schreibt der DDR unmittelbar die Handlung zu. fact_02 belegt nur, dass der Mauerbau Ost-Berlin von den Übergangswegen abriegelte; die konkrete Akteurszuschreibung wird durch die verwendete Evidenz nicht getragen."
+        },
+        {
+          "code": "misstated_propaganda_label",
+          "severity": "hard",
+          "beat_index": 5,
+          "message": "„In der DDR-Propaganda hieß die Mauer ...“ ist stärker und anders formuliert als fact_05. Belegt ist, dass der Mauerbau als Notwendigkeit eines „antifaschistischen Schutzwalls“ bezeichnet wurde, nicht dass dies schlicht der Name der Mauer war."
+        },
+        {
+          "code": "weak_payoff",
+          "severity": "major",
+          "beat_index": 5,
+          "message": "Der Schluss liefert keine eigentliche Auflösung oder Rückbindung an die Frage, warum die Mauer gebaut wurde. Er nennt nur die offizielle Propagandabezeichnung und lässt die zentrale Einsicht – dass die Mauer Fluchten verhindern sollte – im letzten Beat nicht noch einmal klar nachwirken."
+        },
+        {
+          "code": "redundant_progression",
+          "severity": "major",
+          "beat_index": 3,
+          "message": "Der Beat wiederholt die im Hook bereits angekündigte Abriegelung, statt die Erklärung deutlich weiterzuführen. Die Information, dass die Trennung am 13. August 1961 begann, könnte präziser und ohne erneute Wiederholung der Abriegelung eingebaut werden."
+        }
+      ],
+      "missed_fact_ids": [],
+      "research_need": ""
+    },
+    "attempts": [
+      {
+        "attempt": 1,
+        "mode": "normal_rewrite",
+        "failed_obligations": [],
+        "contract_evaluations": [
+          {
+            "id": "primary_motive",
+            "status": "satisfied",
+            "is_primary": true,
+            "is_required": true,
+            "reasoning": "Die Antwort erklärt unmittelbar, dass die Mauer Menschen an der Flucht aus der DDR und Ost-Berlin nach West-Berlin hindern sollte. Das wird durch fact_01 gestützt und in Beat 2 klar formuliert."
+          }
+        ],
+        "status": "verified",
+        "blocks": [
+          {
+            "role": "hook",
+            "text": "Eine Mauer teilte Berlin. Aber ihr eigentliches Ziel war nicht die Stadt selbst: Was sollte sie verhindern?",
+            "fact_ids": [
+              "fact_01",
+              "fact_02"
+            ],
+            "id": "voice_block_01"
+          },
+          {
+            "role": "answer",
+            "text": "Sie sollte Menschen daran hindern, aus der DDR und Ost-Berlin nach West-Berlin zu fliehen.",
+            "fact_ids": [
+              "fact_01"
+            ],
+            "id": "voice_block_02"
+          },
+          {
+            "role": "explanation",
+            "text": "Am 13. August 1961 schnitt der Mauerbau Ost-Berlin von den Übergangswegen nach West-Berlin ab.",
+            "fact_ids": [
+              "fact_02"
+            ],
+            "id": "voice_block_03"
+          },
+          {
+            "role": "detail",
+            "text": "Genau das war der Zweck: Die Mauer machte aus den Wegen nach West-Berlin eine Sperre.",
+            "fact_ids": [
+              "fact_01",
+              "fact_02"
+            ],
+            "id": "voice_block_04"
+          },
+          {
+            "role": "payoff",
+            "text": "So sollte sie Menschen am Weggehen hindern.",
+            "fact_ids": [
+              "fact_01",
+              "fact_02"
+            ],
+            "id": "voice_block_05"
+          }
+        ],
+        "hook_changed": true,
+        "hook_restored": false,
+        "hook_intent_preserved": true,
+        "hook_intent_note": "Der Hook erhält die Neugier darauf, warum Ost-Berlin von West-Berlin abgeschottet wurde, ohne die Antwort vorwegzunehmen.",
+        "reveal_beat_index": 2,
+        "payoff_beat_index": 4,
+        "rationale": "Die Fassung beantwortet die Frage sofort und erklärt anschließend den konkreten Mechanismus: Übergangswege wurden abgeschnitten, damit Flucht nicht mehr möglich sein sollte. Der Schluss bindet diese physische Sperre direkt an das historische Motiv zurück.",
+        "research_insufficiency": "",
+        "better_than_draft": false,
+        "verifier_error": null,
+        "verification_passed": false,
+        "verification_flags": {
+          "grounded": true,
+          "answers_question": true,
+          "payoff_fulfilled": true,
+          "hook_promise_kept": true,
+          "premature_reveal": false
+        },
+        "hard": [
+          {
+            "code": "unsupported_claim",
+            "severity": "hard",
+            "beat_index": 5,
+            "message": "Resolves the question by drawing the established mechanism together.",
+            "source": "deterministic"
+          }
+        ],
+        "major": [
+          {
+            "code": "answer_payoff_duplicate",
+            "severity": "major",
+            "beat_index": 5,
+            "message": "The payoff adds only 33% new meaning beyond the answer beat.",
+            "source": "deterministic"
+          },
+          {
+            "code": "answer_payoff_duplicate",
+            "severity": "major",
+            "beat_index": 5,
+            "message": "Der Payoff wiederholt lediglich den bereits in Beat 2 gegebenen Grund. Zusammen mit Beat 4 wird die zentrale Aussage mehrfach ohne neue Erklärung wiederholt.",
+            "source": "verifier"
+          }
+        ],
+        "minor": []
+      },
+      {
+        "attempt": 2,
+        "mode": "quality_repair",
+        "failed_obligations": [],
+        "contract_evaluations": [
+          {
+            "id": "primary_motive",
+            "status": "satisfied",
+            "is_primary": true,
+            "is_required": true,
+            "reasoning": "Die Antwort in Beat 2 erklärt unmittelbar, dass die Berliner Mauer die Flucht von Menschen aus der DDR und Ost-Berlin nach West-Berlin verhindern sollte. Das wird durch fact_01 gestützt. Die späteren Beats erläutern die Abriegelung und ihre propagandistische Darstellung, ohne die Kernantwort zu widersprechen."
+          }
+        ],
+        "status": "verified",
+        "blocks": [
+          {
+            "role": "hook",
+            "text": "Eine Mauer kann eine Stadt teilen. Aber wen sollte sie eigentlich aufhalten?",
+            "fact_ids": [],
+            "id": "voice_block_01"
+          },
+          {
+            "role": "answer",
+            "text": "Die Berliner Mauer sollte verhindern, dass Menschen aus der DDR und Ost-Berlin nach West-Berlin fliehen.",
+            "fact_ids": [
+              "fact_01"
+            ],
+            "id": "voice_block_02"
+          },
+          {
+            "role": "explanation",
+            "text": "Am 13. August 1961 schnitt ihr Bau Ost-Berlin von den Übergangswegen nach West-Berlin ab.",
+            "fact_ids": [
+              "fact_02"
+            ],
+            "id": "voice_block_03"
+          },
+          {
+            "role": "detail",
+            "text": "Aus einem Weg nach West-Berlin wurde damit eine Grenze, die nicht mehr frei passierbar war.",
+            "fact_ids": [
+              "fact_01",
+              "fact_02"
+            ],
+            "id": "voice_block_04"
+          },
+          {
+            "role": "detail",
+            "text": "Die DDR-Propaganda stellte den Bau als „antifaschistischen Schutzwall“ dar.",
+            "fact_ids": [
+              "fact_01",
+              "fact_05"
+            ],
+            "id": "voice_block_05"
+          },
+          {
+            "role": "payoff",
+            "text": "Tatsächlich sollte diese Sperre vor allem Menschen am Weggehen hindern.",
+            "fact_ids": [
+              "fact_01",
+              "fact_05"
+            ],
+            "id": "voice_block_06"
+          }
+        ],
+        "hook_changed": true,
+        "hook_restored": false,
+        "hook_intent_preserved": true,
+        "hook_intent_note": "Der Hook bewahrt die Neugier darauf, warum Ost-Berlin abgeschottet wurde, ohne die Antwort vorwegzunehmen.",
+        "reveal_beat_index": 2,
+        "payoff_beat_index": 5,
+        "rationale": "Die Antwort kommt sofort und wird anschließend über das Abschneiden der Übergangswege anschaulich erklärt. Der Schluss verbindet die Propagandabezeichnung mit der tatsächlichen unmittelbaren Funktion der Mauer.",
+        "research_insufficiency": "",
+        "better_than_draft": true,
+        "verifier_error": null,
+        "verification_passed": false,
+        "verification_flags": {
+          "grounded": false,
+          "answers_question": true,
+          "payoff_fulfilled": true,
+          "hook_promise_kept": true,
+          "premature_reveal": false
+        },
+        "hard": [
+          {
+            "code": "unsupported_hook_assertion",
+            "severity": "hard",
+            "beat_index": 1,
+            "message": "„Eine Mauer kann eine Stadt teilen“ ist eine faktische Aussage ohne cited fact_ids. Die anschließende rhetorische Frage ist unproblematisch, aber die einleitende Behauptung müsste entweder belegt oder als rein rhetorische Formulierung umgeschrieben werden.",
+            "source": "verifier"
+          },
+          {
+            "code": "ungrounded",
+            "severity": "hard",
+            "beat_index": null,
+            "message": "The verifier found statements the research does not support.",
+            "source": "verifier"
+          }
+        ],
+        "major": [
+          {
+            "code": "answer_payoff_duplicate",
+            "severity": "major",
+            "beat_index": null,
+            "message": "Answer and payoff say the same thing.",
+            "source": "verifier"
+          }
+        ],
+        "minor": [
+          {
+            "code": "answer_payoff_repetition",
+            "severity": "minor",
+            "beat_index": 6,
+            "message": "Der Payoff wiederholt die bereits in Beat 2 gegebene Antwort nahezu vollständig. Er sorgt zwar für einen klaren Abschluss, bringt aber kaum neue Erklärung.",
+            "source": "verifier"
+          }
+        ]
+      },
+      {
+        "attempt": 3,
+        "mode": "fresh_regeneration",
+        "failed_obligations": [],
+        "contract_evaluations": [
+          {
+            "id": "primary_motive",
+            "status": "satisfied",
+            "is_primary": true,
+            "is_required": true,
+            "reasoning": "Beat 2 explicitly explains that the wall was intended to prevent people from fleeing from the GDR and East Berlin to West Berlin, directly matching fact_01 and the required historical motive."
+          }
+        ],
+        "status": "verified",
+        "blocks": [
+          {
+            "role": "hook",
+            "text": "Eine Stadt wurde mitten durchtrennt. Warum schloss die DDR ausgerechnet die Wege nach West-Berlin?",
+            "fact_ids": [],
+            "id": "voice_block_01"
+          },
+          {
+            "role": "answer",
+            "text": "Der entscheidende Grund: Die Mauer sollte Menschen daran hindern, aus der DDR und aus Ost-Berlin nach West-Berlin zu fliehen.",
+            "fact_ids": [
+              "fact_01"
+            ],
+            "id": "voice_block_02"
+          },
+          {
+            "role": "explanation",
+            "text": "Am 13. August 1961 wurden die Übergangswege abgeriegelt.",
+            "fact_ids": [
+              "fact_02"
+            ],
+            "id": "voice_block_03"
+          },
+          {
+            "role": "detail",
+            "text": "So war der direkte Weg von Ost- nach West-Berlin blockiert.",
+            "fact_ids": [
+              "fact_02"
+            ],
+            "id": "voice_block_04"
+          },
+          {
+            "role": "detail",
+            "text": "Die Trennung blieb nicht nur vorübergehend: Bis zum 9. November 1989 teilte die Mauer Ost- und West-Berlin.",
+            "fact_ids": [
+              "fact_03"
+            ],
+            "id": "voice_block_05"
+          },
+          {
+            "role": "detail",
+            "text": "Die DDR nannte sie zwar „antifaschistischen Schutzwall“.",
+            "fact_ids": [
+              "fact_05",
+              "fact_01"
+            ],
+            "id": "voice_block_06"
+          },
+          {
+            "role": "payoff",
+            "text": "Ihre Funktion war aber klar: Sie sollte Menschen am Weggehen hindern.",
+            "fact_ids": [
+              "fact_05",
+              "fact_01"
+            ],
+            "id": "voice_block_07"
+          }
+        ],
+        "hook_changed": true,
+        "hook_restored": false,
+        "hook_intent_preserved": true,
+        "hook_intent_note": "Der Hook erhält die Frage, warum die DDR Ost-Berlin von den Wegen nach West-Berlin abschottete, ohne die Antwort vorwegzunehmen.",
+        "reveal_beat_index": 2,
+        "payoff_beat_index": 5,
+        "rationale": "Die Antwort kommt sofort und wird anschließend über die abgeriegelten Übergänge konkret nachvollziehbar gemacht. Der Schluss kontrastiert die Propagandabezeichnung mit der tatsächlichen Funktion der Mauer.",
+        "research_insufficiency": "",
+        "better_than_draft": true,
+        "verifier_error": null,
+        "verification_passed": false,
+        "verification_flags": {
+          "grounded": false,
+          "answers_question": true,
+          "payoff_fulfilled": true,
+          "hook_promise_kept": true,
+          "premature_reveal": false
+        },
+        "hard": [
+          {
+            "code": "UNSUPPORTED_HOOK_AGENCY",
+            "severity": "hard",
+            "beat_index": 1,
+            "message": "The hook states or presupposes that the GDR closed the routes to West Berlin, including a specific actor and action, but beat 1 cites no fact. The available facts establish the purpose and the blocking effect, not that the GDR itself closed the routes.",
+            "source": "verifier"
+          },
+          {
+            "code": "MISMATCHED_CITATION",
+            "severity": "hard",
+            "beat_index": 6,
+            "message": "fact_01 supports the purpose of preventing escape but does not support the claim that the GDR called the wall an “antifascist protective wall”; that claim is supported by fact_05 alone.",
+            "source": "verifier"
+          },
+          {
+            "code": "MISMATCHED_CITATION",
+            "severity": "hard",
+            "beat_index": 7,
+            "message": "fact_01 supports the wall’s function of preventing people from leaving, but fact_05 does not support that function and should not be cited for this sentence.",
+            "source": "verifier"
+          },
+          {
+            "code": "ungrounded",
+            "severity": "hard",
+            "beat_index": null,
+            "message": "The verifier found statements the research does not support.",
+            "source": "verifier"
+          }
+        ],
+        "major": [
+          {
+            "code": "answer_payoff_duplicate",
+            "severity": "major",
+            "beat_index": null,
+            "message": "Answer and payoff say the same thing.",
+            "source": "verifier"
+          }
+        ],
+        "minor": [
+          {
+            "code": "PAYOFF_REPEATS_ANSWER",
+            "severity": "minor",
+            "beat_index": 7,
+            "message": "The payoff largely repeats the answer from beat 2 instead of adding a distinct final insight, though it still delivers the promised resolution.",
+            "source": "verifier"
+          }
+        ]
+      }
+    ],
+    "rejected_candidate_preserved": {
+      "attempt": 2,
+      "reason": "Required answer retained; hook remains rejected."
+    }
+  },
+  "hook": {
+    "verbal_hook": "Mitten durch Berlin wurden Übergänge geschlossen. Warum riegelte die DDR ihre Stadtseite ab?",
+    "supported_by_fact_ids": [
+      "fact_01",
+      "fact_02"
+    ]
+  }
+}

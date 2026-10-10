@@ -142,6 +142,7 @@ class OfflineReviewer:
         raise RuntimeError("offline")
 
 
+@pytest.mark.usefixtures("legacy_without_qac")
 def test_nap_run_advances_after_the_hook_through_every_stage(monkeypatch, tmp_path: pathlib.Path):
     source = {"label": "Quelle", "url": "https://source.test/nap"}
     research = [{**{key: value for key, value in item.items() if key != "id"}, "sources": [source]} for item in FACTS]

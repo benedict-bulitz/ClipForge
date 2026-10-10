@@ -136,6 +136,7 @@ def assert_reveal_not_immediate(state: dict) -> None:
     ],
     ids=["provider_copy", "deterministic_research_clause"],
 )
+@pytest.mark.usefixtures("legacy_without_qac")
 def test_off_axis_research_sentence_never_opens_and_the_answer_waits(monkeypatch, tmp_path, judge, candidates):
     production(monkeypatch, candidates, judge)
     state = build_initial_state(QUESTION, AdvancedOptions(), settings(tmp_path))

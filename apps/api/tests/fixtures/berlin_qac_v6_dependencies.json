@@ -1,0 +1,350 @@
+{
+  "prompt": "Warum wurde die Berliner Mauer gebaut?",
+  "intent": {
+    "question": "Warum wurde die Berliner Mauer gebaut?",
+    "topic": "Warum wurde die Berliner Mauer gebaut",
+    "language": "de",
+    "research_required": true,
+    "content_type": "factual_explainer"
+  },
+  "facts": [
+    {
+      "id": "fact_01",
+      "claim": "Die DDR ließ die Berliner Mauer bauen, um die Flucht von Menschen aus Ost-Berlin und der DDR in den Westen zu verhindern.",
+      "confidence": 0.85,
+      "importance": 0.93,
+      "verification": "supported",
+      "sources": [
+        {
+          "label": "Die Berliner Mauer",
+          "url": "https://www.stiftung-berliner-mauer.de/de/themen/die-berliner-mauer"
+        }
+      ]
+    },
+    {
+      "id": "fact_02",
+      "claim": "Die Mauer riegelte Ost-Berlin von den Übergangswegen nach West-Berlin ab und trennte Menschen in der Stadt voneinander.",
+      "confidence": 0.9,
+      "importance": 0.71,
+      "verification": "supported",
+      "sources": [
+        {
+          "label": "Die Berliner Mauer",
+          "url": "https://www.stiftung-berliner-mauer.de/de/themen/die-berliner-mauer"
+        },
+        {
+          "label": "Bau der Berliner Mauer - Geschichte kompakt",
+          "url": "https://www.geschichte-abitur.de/lexikon/uebersicht-deutsche-teilung/bau-der-berliner-mauer"
+        }
+      ]
+    },
+    {
+      "id": "fact_03",
+      "claim": "Der Bau begann am 13. August 1961, und die Berliner Mauer bestand bis zum 9. November 1989.",
+      "confidence": 0.78,
+      "importance": 0.64,
+      "verification": "source_attributed",
+      "sources": [
+        {
+          "label": "Bau der Berliner Mauer - Geschichte kompakt",
+          "url": "https://www.geschichte-abitur.de/lexikon/uebersicht-deutsche-teilung/bau-der-berliner-mauer"
+        }
+      ]
+    },
+    {
+      "id": "fact_04",
+      "claim": "Allein im Ostteil Berlins fehlten 45.000 Arbeitskräfte, und die innerdeutsche Grenze war bereits 1378 Kilometer lang befestigt.",
+      "confidence": 0.78,
+      "importance": 0.62,
+      "verification": "source_attributed",
+      "sources": [
+        {
+          "label": "Berliner Mauer",
+          "url": "https://de.wikipedia.org/wiki/Berliner_Mauer"
+        }
+      ]
+    },
+    {
+      "id": "fact_05",
+      "claim": "„Antifaschistischer Schutzwall“ war die politische Bezeichnung der DDR, während die Mauer laut den Belegen dazu diente, die Flucht in den Westen zu verhindern.",
+      "confidence": 0.9,
+      "importance": 0.55,
+      "verification": "supported",
+      "sources": [
+        {
+          "label": "Berliner Mauer",
+          "url": "https://de.wikipedia.org/wiki/Berliner_Mauer"
+        },
+        {
+          "label": "Die Berliner Mauer",
+          "url": "https://www.stiftung-berliner-mauer.de/de/themen/die-berliner-mauer"
+        }
+      ]
+    },
+    {
+      "id": "fact_06",
+      "claim": "Der Mauerbau stoppte die Fluchtbewegung nicht vollständig und trennte zugleich Freunde und Verwandte in Berlin voneinander.",
+      "confidence": 0.85,
+      "importance": 0.5,
+      "verification": "supported",
+      "sources": [
+        {
+          "label": "Die Berliner Mauer",
+          "url": "https://www.stiftung-berliner-mauer.de/de/themen/die-berliner-mauer"
+        }
+      ]
+    }
+  ],
+  "contract": {
+    "question_type": "historical_motive",
+    "core_question": "Warum wurde die Berliner Mauer gebaut?",
+    "primary_answer_obligation": {
+      "id": "primary_motive",
+      "description": "Erklären, dass die Berliner Mauer gebaut wurde, um die Flucht von Menschen aus der DDR in den Westen zu verhindern.",
+      "is_primary": true,
+      "is_required": true,
+      "fact_ids": []
+    },
+    "required_supporting_obligations": [],
+    "optional_context": [
+      "Die Fluchtbewegung als massenhaft bezeichnen.",
+      "West-Berlin als konkreten und bis 1961 wichtigen Fluchtweg aus der DDR in die Bundesrepublik nennen.",
+      "Die Berliner Grenze vor 1961 als offen oder vergleichsweise leicht zugänglich charakterisieren.",
+      "Erläutern, dass die Abwanderung der DDR Arbeitskräfte und Fachkräfte entzog.",
+      "Den Verlust politischer Legitimität durch die Fluchtbewegung erläutern.",
+      "Die wirtschaftliche und politische Schwächung der DDR durch die Abwanderung erklären.",
+      "Die Grenzschließung in Berlin und die Errichtung der Mauer als konkrete Mittel zur Fluchtverhinderung beschreiben.",
+      "Die Stabilisierung beziehungsweise den Fortbestand der SED-Herrschaft als weitergehendes Ziel nennen.",
+      "Das Datum des Beginns des Mauerbaus nennen: 13. August 1961.",
+      "Die anfängliche Bezeichnung der DDR als „antifaschistischer Schutzwall“ einordnen.",
+      "Die Teilung Deutschlands und den Kalten Krieg als breiteren politischen Kontext erwähnen.",
+      "Folgen für getrennte Familien und die Todesopfer an der Grenze erläutern."
+    ],
+    "causal_mechanistic_chain": [
+      {
+        "id": "step_3",
+        "description": "Die Berliner Mauer wurde gebaut, um weitere Fluchten von Menschen aus der DDR in den Westen zu verhindern.",
+        "depth_level": 1
+      }
+    ],
+    "historical_motive": "Die unmittelbare Absicht war, Fluchten von Menschen aus der DDR in den Westen zu verhindern.",
+    "required_mechanism_concepts": [
+      "Fluchtverhinderung aus der DDR in den Westen"
+    ],
+    "minimum_answer_depth": 1,
+    "unresolved_research_gaps": []
+  },
+  "contract_coverage": {
+    "is_sufficient": true,
+    "missing_obligations": [],
+    "coverage": [
+      {
+        "obligation_id": "primary_motive",
+        "status": "satisfied",
+        "supporting_fact_ids": [
+          "fact_01"
+        ],
+        "reasoning": "Fact 01 erklärt unmittelbar, dass die DDR die Berliner Mauer bauen ließ, um die Flucht von Menschen aus Ost-Berlin und der DDR in den Westen zu verhindern."
+      }
+    ],
+    "diagnostic_reason": null
+  },
+  "story_arc": {
+    "primary_question": "Warum wurde die Berliner Mauer gebaut?",
+    "primary_answer_id": "fact_01",
+    "final_payoff_id": "fact_02",
+    "order": [
+      "fact_03",
+      "fact_05",
+      "fact_01",
+      "fact_04",
+      "fact_02",
+      "fact_06"
+    ],
+    "curiosity_gap": {
+      "question": "Warum wurde die Berliner Mauer gebaut?",
+      "planner_text": "Warum wurde eine Mauer mitten durch Berlin gebaut – und was sollte sie tatsächlich verhindern?",
+      "closed_by": "fact_02",
+      "withhold_answer": false,
+      "kind": "why_or_how"
+    },
+    "hook": {
+      "protected_ids": [
+        "fact_02",
+        "fact_03",
+        "fact_04",
+        "fact_06"
+      ],
+      "allowed_ids": [
+        "fact_05",
+        "fact_01"
+      ]
+    },
+    "question_contract": {
+      "intended_question": "Warum ließ die DDR die Berliner Mauer bauen?",
+      "question_type": "causal_why",
+      "expected_explanation_domain": "politische und historische Motive der DDR",
+      "excluded_interpretations": [
+        "Warum die Berliner Mauer fiel",
+        "Wie die Berliner Mauer technisch gebaut wurde",
+        "Welche Folgen die Mauer nach ihrem Bau hatte"
+      ],
+      "explanation_spine": {
+        "explanatory_question": true,
+        "initial_observation": "fact_01",
+        "main_answer": "fact_01",
+        "mechanism": [
+          "fact_02"
+        ],
+        "necessary_support": [
+          "fact_05",
+          "fact_04",
+          "fact_06"
+        ],
+        "final_resolution": "fact_02",
+        "status": "complete",
+        "research_required": false,
+        "source": "planner",
+        "question_terms": [
+          "gebaut",
+          "wurde"
+        ]
+      },
+      "core_question": "Warum wurde die Berliner Mauer gebaut?",
+      "hook_promise": "Warum wurde eine Mauer mitten durch Berlin gebaut – und was sollte sie tatsächlich verhindern?",
+      "primary_answer_id": "fact_01",
+      "final_resolution_id": "fact_02",
+      "final_resolution": "Die Mauer riegelte Ost-Berlin von den Übergangswegen nach West-Berlin ab und trennte Menschen in der Stadt voneinander.",
+      "essential_explanation_chain": [
+        "fact_05",
+        "fact_01",
+        "fact_04",
+        "fact_02",
+        "fact_06"
+      ],
+      "off_question_ids": [
+        "fact_03"
+      ],
+      "subject_terms": [
+        "berliner",
+        "mauer"
+      ],
+      "question_terms": [
+        "gebaut",
+        "wurde"
+      ]
+    },
+    "script_issues": [
+      "required_fact_missing:fact_04",
+      "required_fact_missing:fact_05",
+      "required_fact_missing:fact_06"
+    ],
+    "units": [
+      {
+        "id": "fact_03",
+        "claim": "Der Bau begann am 13. August 1961, und die Berliner Mauer bestand bis zum 9. November 1989.",
+        "role": "supporting_fact",
+        "depends_on": [],
+        "may_be_omitted": true
+      },
+      {
+        "id": "fact_05",
+        "claim": "„Antifaschistischer Schutzwall“ war die politische Bezeichnung der DDR, während die Mauer laut den Belegen dazu diente, die Flucht in den Westen zu verhindern.",
+        "role": "essential_context",
+        "depends_on": [],
+        "may_be_omitted": false
+      },
+      {
+        "id": "fact_01",
+        "claim": "Die DDR ließ die Berliner Mauer bauen, um die Flucht von Menschen aus Ost-Berlin und der DDR in den Westen zu verhindern.",
+        "role": "primary_answer",
+        "depends_on": [
+          "fact_05"
+        ],
+        "may_be_omitted": false
+      },
+      {
+        "id": "fact_04",
+        "claim": "Allein im Ostteil Berlins fehlten 45.000 Arbeitskräfte, und die innerdeutsche Grenze war bereits 1378 Kilometer lang befestigt.",
+        "role": "supporting_fact",
+        "depends_on": [
+          "fact_01"
+        ],
+        "may_be_omitted": false
+      },
+      {
+        "id": "fact_02",
+        "claim": "Die Mauer riegelte Ost-Berlin von den Übergangswegen nach West-Berlin ab und trennte Menschen in der Stadt voneinander.",
+        "role": "explanation",
+        "depends_on": [
+          "fact_01"
+        ],
+        "may_be_omitted": false
+      },
+      {
+        "id": "fact_06",
+        "claim": "Der Mauerbau stoppte die Fluchtbewegung nicht vollständig und trennte zugleich Freunde und Verwandte in Berlin voneinander.",
+        "role": "secondary_insight",
+        "depends_on": [
+          "fact_01",
+          "fact_02"
+        ],
+        "may_be_omitted": false
+      }
+    ]
+  },
+  "blocks": [
+    {
+      "role": "hook",
+      "text": "Die DDR nannte die Mauer einen „antifaschistischen Schutzwall“. Doch was sollte sie wirklich bewirken?",
+      "fact_ids": [
+        "fact_05"
+      ],
+      "id": "voice_block_01"
+    },
+    {
+      "role": "answer",
+      "text": "Die DDR ließ sie bauen, um Fluchten aus Ost-Berlin und der DDR in den Westen zu verhindern.",
+      "fact_ids": [
+        "fact_01"
+      ],
+      "id": "voice_block_02"
+    },
+    {
+      "role": "detail",
+      "text": "Der Bau begann am 13. August 1961.",
+      "fact_ids": [
+        "fact_03"
+      ],
+      "id": "voice_block_03"
+    },
+    {
+      "role": "payoff",
+      "text": "Die Mauer blockierte die Übergänge von Ost- nach West-Berlin. Damit sollte genau dieser Weg in den Westen abgeschnitten werden.",
+      "fact_ids": [
+        "fact_01",
+        "fact_02"
+      ],
+      "id": "voice_block_04"
+    }
+  ],
+  "recorded_order_warnings": [
+    {
+      "issue_type": "poor_fact_ordering",
+      "severity": "warning",
+      "segment_id": "voice_block_02",
+      "segment": "Die DDR ließ sie bauen, um Fluchten aus Ost-Berlin und der DDR in den Westen zu verhindern.",
+      "reason": "This beat appears before required context: fact_05.",
+      "suggested_action": "Move it after its Story Arc dependencies without moving the protected reveal earlier."
+    },
+    {
+      "issue_type": "poor_fact_ordering",
+      "severity": "warning",
+      "segment_id": "voice_block_04",
+      "segment": "Die Mauer blockierte die Übergänge von Ost- nach West-Berlin. Damit sollte genau dieser Weg in den Westen abgeschnitten werden.",
+      "reason": "This beat appears before required context: fact_05.",
+      "suggested_action": "Move it after its Story Arc dependencies without moving the protected reveal earlier."
+    }
+  ],
+  "recorded_verified_signature": "71aa44f3116432e00049"
+}

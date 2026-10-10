@@ -24,6 +24,7 @@ import json
 import re
 from typing import Any
 
+from .script_grounding import contradicts_citation, semantic_entries
 from .story_arc import (
     _families,
     arc_units,
@@ -411,7 +412,8 @@ def _context(state: dict[str, Any]) -> dict[str, Any]:
     plan = state.get("novelty_plan") if isinstance(state.get("novelty_plan"), dict) else {}
     facts = [fact for fact in state.get("facts") or [] if isinstance(fact, dict) and fact.get("id")]
     audit = state.get("explanation_audit") if isinstance(state.get("explanation_audit"), dict) else {}
-    return {"intent": intent, "arc": arc, "plan": plan, "facts": facts, "audit": audit}
+    qac = state.get("question_answer_contract") or state.get("contract") or {}
+    return {"intent": intent, "arc": arc, "plan": plan, "facts": facts, "audit": audit, "qac": qac}
 
 
 def _anchor_ids(arc: dict[str, Any]) -> set[str]:
@@ -436,6 +438,7 @@ def _novelty_class(plan: dict[str, Any], arc: dict[str, Any], fact_ids: list[str
 def _evidence(
     block: dict[str, Any], result: dict[str, Any], grounding: bool,
     facts_by_id: dict[str, dict[str, Any]], supported_words: set[str], supported_claims: list[str],
+    semantic: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     fact_ids = _fact_ids(block)
     sources = sorted({
@@ -447,23 +450,35 @@ def _evidence(
     if not grounding:
         return {**base, "status": "not_applicable", "reason": "No research evidence applies to this project."}
     text = _text(block)
+    unknown = sorted(set(fact_ids) - set(facts_by_id))
+    unusable = [identifier for identifier in fact_ids if identifier in facts_by_id and not fact_is_supported(facts_by_id[identifier])]
+    if unknown or unusable:
+        return {**base, "status": "unsupported", "kind": "invalid_citation", "reason": "Unknown or unusable fact IDs: " + ", ".join([*unknown, *unusable])}
     cited = [fact_id for fact_id in fact_ids if fact_id in facts_by_id and fact_is_supported(facts_by_id[fact_id])]
     cited_claims = [str(facts_by_id[fact_id].get("claim") or "") for fact_id in cited]
-    allowed_numbers = set().union(*(_numbers(claim) for claim in supported_claims)) if supported_claims else set()
+    number_claims = cited_claims if fact_ids else supported_claims
+    allowed_numbers = set().union(*(_numbers(claim) for claim in number_claims)) if number_claims else set()
     unsupported_numbers = sorted(
         number for number in _numbers(text)
-        if number not in allowed_numbers and not any(_rounded_from(text, claim) for claim in supported_claims)
+        if number not in allowed_numbers and not any(_rounded_from(text, claim) for claim in number_claims)
     )
     if unsupported_numbers:
-        return {**base, "status": "unsupported", "reason": f"The figure(s) {', '.join(unsupported_numbers)} appear in no supported fact."}
+        return {**base, "status": "unsupported", "kind": "unsupported_number", "reason": f"The figure(s) {', '.join(unsupported_numbers)} appear in no cited supported fact."}
+    if contradicts_citation(text, cited_claims):
+        return {**base, "status": "unsupported", "kind": "citation_contradiction", "reason": "The claim reverses a proposition in its cited evidence."}
+    if semantic and all(item.get("status") == "supported" and item.get("covers_all_claims")
+                        and set(item.get("supporting_fact_ids") or []) <= set(cited)
+                        and item.get("supporting_fact_ids") for item in semantic):
+        return {**base, "status": "supported", "kind": "semantic", "reason": "Independent claim verification supports the exact cited paraphrase."}
     said = set(result["said_words"])
     new = set(result["new_words"])
     if cited:
         cited_words = set().union(*(proposition_words(claim) for claim in cited_claims))
         if not said or _related(said, cited_words) or _numbers(text) & set().union(*(_numbers(claim) for claim in cited_claims)):
             return {**base, "status": "supported", "reason": "Cites supported research facts."}
-        # A sentence split from a longer block inherits the block's fact IDs;
-        # it is still grounded when the research as a whole says it.
+        # An unrelated citation cannot borrow support elsewhere in the dossier.
+        return {**base, "status": "unsupported", "kind": "lexical_mismatch",
+                "reason": "The wording cannot be established from its cited facts without independent claim verification."}
     if not new:
         return {**base, "status": "derived", "reason": "Adds no new claim beyond what was already said."}
     grounded = _related(new, supported_words)
@@ -471,7 +486,7 @@ def _evidence(
         return {**base, "status": "derived", "reason": "Every new term is found in the supported research."}
     missing = sorted(new - grounded)[:5]
     prefix = "Cites a research fact but states something it does not. " if cited else ""
-    return {**base, "status": "unsupported", "reason": prefix + "New terms not found in any supported fact: " + ", ".join(missing) + "."}
+    return {**base, "status": "unsupported", "kind": "lexical_mismatch", "reason": prefix + "New terms not found in any supported fact: " + ", ".join(missing) + "."}
 
 
 def _question(context: dict[str, Any]) -> str:
@@ -772,14 +787,39 @@ def _answer_sufficiency(units: list[dict[str, Any]], context: dict[str, Any], pa
         and (_REASON.search(unit["text"]) or set(unit["evidence"]["fact_ids"]) & spine_mechanism or unit.get("delta_source") == "ai")
         and not (set(unit["evidence"]["fact_ids"]) <= {primary} and not _REASON.search(unit["text"]))
     ]
+    from .research_v2.answer_relation import entity_coverage, question_frame, relation_issues
+
+    frame = question_frame(question, str(context["intent"].get("language") or "de"))
+    motive = (context.get("qac") or {}).get("question_type") == "historical_motive" or frame.relation == "purpose"
+    # Intentional actions are explained by an immediate purpose. They need
+    # neither a physical mechanism nor repetition of the asked action verb.
+    # Keep evidence and topic linkage; a context/consequence sentence alone
+    # must never become the answer merely because it mentions the subject.
+    if motive:
+        from dataclasses import replace
+
+        frame = replace(frame, relation="purpose")
+        facts = {str(fact["id"]): fact for fact in context["facts"] if fact_is_supported(fact)}
+        mechanisms = []
+        for unit in body:
+            ids = unit["evidence"]["fact_ids"]
+            cited = " ".join(str(facts[identifier].get("claim") or "") for identifier in ids if identifier in facts)
+            if (cited and unit["evidence"]["status"] in {"supported", "derived"}
+                    and not unit.get("open_question") and not unit.get("weak_resolution")
+                    and not relation_issues(frame, unit["text"])
+                    and not relation_issues(frame, cited)
+                    and entity_coverage(frame, unit["text"] + " " + cited)[0]):
+                mechanisms.append(unit)
     # "je älter man wird", "obwohl wir es nicht wollten": a question with a
     # condition asks why the condition changes things - the mechanism must
     # reach the condition, not only the effect.
     condition = _condition_terms(question)
-    linked = [unit for unit in mechanisms if _links_question(unit["text"], condition or terms)]
+    linked = [unit for unit in mechanisms if (
+        motive and not condition or _links_question(unit["text"], condition or terms)
+    )]
     reasons: list[str] = []
     if explanatory and not linked:
-        reasons.append("no_mechanism_linked_to_question")
+        reasons.append("no_supported_motive_linked_to_question" if motive else "no_mechanism_linked_to_question")
         if condition:
             # "je älter", "obwohl wir es nicht wollten": the very thing asked is unexplained.
             reasons.append("condition_not_explained")
@@ -805,10 +845,10 @@ def _answer_sufficiency(units: list[dict[str, Any]], context: dict[str, Any], pa
     alignment = domain_alignment(question_intent, [unit["text"] for unit in body])
     if alignment["status"] == "mismatch":
         reasons.append("answers_excluded_interpretation")
-    missing_research = spine.get("status") == "missing_mechanism"
+    missing_research = not motive and spine.get("status") == "missing_mechanism"
     if explanatory and missing_research:
         reasons.append("research_has_no_mechanism")
-    structural = {"no_mechanism_linked_to_question", "payoff_does_not_resolve"} & set(reasons)
+    structural = {"no_mechanism_linked_to_question", "no_supported_motive_linked_to_question", "payoff_does_not_resolve"} & set(reasons)
     audit = context.get("audit") or {}
     verified = bool(
         ai and ai["verdict"] == "answered" and audit.get("source") == VERIFIED_AUDIT_SOURCE
@@ -839,6 +879,7 @@ def _answer_sufficiency(units: list[dict[str, Any]], context: dict[str, Any], pa
     return {
         "status": status,
         "explanatory_question": explanatory,
+        "answer_relation": "purpose" if motive else "mechanism",
         "reasons": reasons,
         "mechanism_block_ids": [unit["block_id"] for unit in linked],
         "question_terms": sorted(terms),
@@ -850,7 +891,7 @@ def _answer_sufficiency(units: list[dict[str, Any]], context: dict[str, Any], pa
         "missing": (ai or {}).get("missing") or "",
         "research_required": status == "fail" and bool(
             missing_research or {
-                "no_mechanism_linked_to_question", "question_left_open", "condition_not_explained", "review_unanswered",
+                "no_mechanism_linked_to_question", "no_supported_motive_linked_to_question", "question_left_open", "condition_not_explained", "review_unanswered",
                 "answers_excluded_interpretation",
             } & set(reasons)
         ),
@@ -1031,6 +1072,7 @@ def assess_blocks(blocks: list[dict[str, Any]], state: dict[str, Any]) -> list[d
     supported_words = set().union(*(proposition_words(claim) for claim in supported_claims)) if supported_claims else set()
     supported_words |= proposition_words(_question(context))
     grounding = bool(facts) and intent.get("research_required", True) is not False and intent.get("content_type") != "fictional_story"
+    semantic = semantic_entries(blocks, facts, context["audit"])
     anchors = _anchor_ids(arc)
     units: list[dict[str, Any]] = []
     hook_text = ""
@@ -1067,7 +1109,11 @@ def assess_blocks(blocks: list[dict[str, Any]], state: dict[str, Any]) -> list[d
             # repeated statement better than a shared noun.
             repeats = max(earlier, key=lambda unit: _shared_weight(set(result["said_words"]), unit), default=None)
         novelty_class = _novelty_class(plan, arc, fact_ids)
-        evidence = _evidence(block, result, grounding, facts_by_id, supported_words, supported_claims)
+        from .narration import split_sentences
+
+        judged = [semantic.get((index + 1, sentence)) for sentence in split_sentences(text)]
+        evidence = _evidence(block, result, grounding, facts_by_id, supported_words, supported_claims,
+                             judged if judged and all(judged) else None)
         redundancy = "none"
         if category == "filler":
             redundancy = "filler"

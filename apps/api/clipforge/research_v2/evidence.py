@@ -36,7 +36,7 @@ _STOP = {
 }
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+(?=[A-ZÄÖÜ0-9\"„“(])")
 _ANAPHOR = re.compile(
-    r"^(?:dies\w*|das|diese[rsmn]?|er|sie|es|dabei|dadurch|deshalb|daher|damit|dafür|darum|dazu|so|hierbei|this|that|these|those|it|they|he|she|"
+    r"^(?:(?:die|der|das)\s+(?:dabei|dadurch)|dies\w*|das|diese[rsmn]?|er|sie|es|dabei|dadurch|deshalb|daher|damit|dafür|darum|dazu|so|hierbei|this|that|these|those|it|they|he|she|"
     r"thus|hence|as a result|im gegensatz dazu|demgegenüber|dagegen|in contrast|by contrast|(?:trotz|wegen|aufgrund|neben|bei|mit|nach|despite|because of|with) (?:dies\w*|dessen|deren|this|that|these))\b",
     re.IGNORECASE,
 )
@@ -44,6 +44,29 @@ _ANAPHOR = re.compile(
 _PRONOUN = re.compile(r"(?i)\b(?:sie|er|es|ihn|ihm|ihre[nmrs]?|seine[nmrs]?|diese[rsmn]?|it|its|they|them|their)\b")
 # A place/thing named only in the previous sentence ("erscheint der Himmel dort ...").
 _BACK_REFERENCE = re.compile(r"(?i)\b(?:dort|dorthin|ebendort|there)\b")
+PROCESS_PATTERN = re.compile(
+    r"\b(?:react\w*|forms?|form(?:ed|ing)|produc\w*|creat\w*|oxidi[sz]\w*|comes? from|results? from|is due to|are due to|"
+    r"reagier\w*|bildet|bilden|gebildet|erzeug\w*|oxidier\w*|(?:kommt|kommen|stammt|stammen) von|"
+    r"(?:ist|sind) (?:auf [^.;]{1,80} zurückzuführen|zurückzuführen auf)|liegt an|liegen an|"
+    r"(?:farbe|färbung|eigenschaft|zustand)\b[^.;]{0,50}\bhat\b[^.;]{1,80}\bvon|"
+    r"absorb\w*|scatter\w*|reflect\w*|convert\w*|transfer\w*|absorbier\w*|streu\w*|reflektier\w*|"
+    r"umgewandelt|wandelt|überträgt|übertragen|erwärm\w*|erhitz\w*|entsteh\w*|"
+    r"bind\w*|lagern?\b[^.;]{0,60}\bein|abbrechen|zer(?:setzt|setzen|fallen)|"
+    r"überlager\w*|auslösch\w*|verstärk\w*|veränder\w*|beeinfluss\w*|lösen\b[^.;]{0,60}\baus|"
+    r"bewegt|bewegen|erzeug\w*|bestimm\w*|detektier\w*|erkenn\w*|"
+    r"decompos\w*|degrad\w*|trap\w*|bind\w*|cancel\w*|interfer\w*|"
+    r"chang\w*|generat\w*|trigger\w*|determin\w*|detect\w*|measur\w*)\b",
+    re.IGNORECASE,
+)
+INHIBITION_PATTERN = re.compile(
+    r"\b(?:hemm\w*|verhindert|verhindern|unterbind\w*|schützt|schützen|inhibit\w*|suppress\w*|prevent\w*|"
+    r"cannot (?:survive|grow|reproduce)|(?:nicht|kein\w*)\s+(?:überleben|wachsen|vermehren)|"
+    r"(?:nicht|kein\w*)\s+\w+\s+(?:überleben|wachsen|vermehren))\b", re.IGNORECASE,
+)
+FORCE_PATTERN = re.compile(
+    r"\b(?:hebt|heben|hob|angehoben|anheben|uplift\w*|lifts?|raises?|"
+    r"drückt|drücken|schiebt|schieben|push\w*|reduzier\w*|reduces?)\b", re.IGNORECASE,
+)
 KIND_PATTERNS: dict[str, re.Pattern[str]] = {
     "misconception": re.compile(
         r"(?i)\b(?:myth\w*|misconception\w*|misunderstand\w*|common belief|widely believed|contrary to|"
@@ -57,7 +80,10 @@ KIND_PATTERNS: dict[str, re.Pattern[str]] = {
         r"weil|denn|dadurch|deshalb|daher|darum|deswegen|sodass|so dass|führt zu|führen zu|verursach\w*|bewirk\w*|"
         r"entsteh\w*|indem|wodurch|aufgrund|wegen|absorbier\w*|streu\w*|reflektier\w*|umgewandelt|wandelt|"
         r"überträgt|übertragen|erwärm\w*|erhitz\w*|damit|um\b[^.,;]{1,80}\bzu\s+\w+|ziel war|grund dafür|"
-        r"aus angst|reason\w*|motiv\w*|fear of|to (?:stop|prevent|keep))\b"
+        r"aus angst|reason\w*|motiv\w*|fear of|to (?:stop|prevent|keep)|"
+        r"da\s+(?:sie|er|es|die|der|das)\b|(?:ursache|grund)\b[^.;]{0,100}\b(?:ist|sind)|"
+        r"liegt daran|durch\b[^.;]{1,80}\b(?:druck|unterschied|änderung)\w*)\b|" + PROCESS_PATTERN.pattern
+        + "|" + INHIBITION_PATTERN.pattern + "|" + FORCE_PATTERN.pattern
     ),
     "number": re.compile(r"(?i)\b\d[\d.,]*\s*(?:%|prozent|percent|°c|grad|kelvin|k\b|km|m\b|cm|mm|nm|kg|g\b|"
                          r"ghz|mhz|hz|watt|w\b|kw|millionen|milliarden|million|billion|tausend|thousand|mal\b|times\b)|"
@@ -177,6 +203,9 @@ class EvidenceUnit:
     # pronoun in this sentence may refer to.
     antecedent: str = ""
     paragraph_initial: bool = False
+    # The source's opening subject paragraph, when it names the asked entity.
+    # Resolves component references across paragraphs; never supplies a cause.
+    subject_context: str = ""
 
     @property
     def kind(self) -> str:
@@ -190,7 +219,8 @@ class EvidenceUnit:
         return {
             "id": self.id,
             "text": self.text[:400],
-            "excerpt": self.excerpt[:400],
+            "excerpt": self.excerpt[:800],
+            "subject_context": self.subject_context[:400],
             "source_id": self.source_id,
             "sub_question": self.sub_question,
             "kind": self.kind,
@@ -235,7 +265,27 @@ def units_from_paragraphs(
     title: str = "",
 ) -> list[EvidenceUnit]:
     """Relevant evidence units of one source (at most MAX_UNITS_PER_SOURCE)."""
+    # Local import: answer_relation shares the kind patterns defined in this module.
+    from .answer_relation import (
+        core_issues,
+        entity_coverage,
+        mechanism_issues,
+        question_frame,
+        relation_hits,
+        topical_issues,
+    )
+
+    frame = None
+    if sub_questions:
+        question = sub_questions[0].question
+        german = re.match(r"(?i)^\s*(?:warum|wie|wieso|weshalb|weswegen|wodurch|was|wann|wo|wer|welche\w*|kann|können|ist|sind)\b", question)
+        frame = question_frame(question, "de" if german else "en")
     sub_terms = {sub.id: words(sub.question) | words(sub.query) for sub in sub_questions}
+    subject_context = ""
+    if frame is not None and frame.entities and paragraphs:
+        opening = paragraphs[0][:400]
+        if not opening.rstrip().endswith("?") and frame.entities[0].name in entity_coverage(frame, opening)[1]:
+            subject_context = opening
     # A "why" question is not answered by advice ("Wer umrührt, ...").
     explanation_only = answer_mode(sub_questions[0].question) == "explanation" if sub_questions else False
     candidates: list[tuple[float, EvidenceUnit]] = []
@@ -251,7 +301,9 @@ def units_from_paragraphs(
                 text = f"{parts[index - 1]} {sentence}"  # the claim keeps the context it refers to
                 antecedent = ""
             count = len(text.split())
-            if count < MIN_WORDS or count > MAX_WORDS or "?" in text[-2:] or _CHROME.search(text):
+            kinds = kinds_of(text)
+            short_process = count >= 4 and PROCESS_PATTERN.search(text)
+            if (count < MIN_WORDS and not short_process) or count > MAX_WORDS or "?" in text[-2:] or _CHROME.search(text):
                 continue
             if explanation_only and (gives_advice(text) or _ADVICE.search(text)):
                 continue
@@ -267,6 +319,8 @@ def units_from_paragraphs(
             for sub in sub_questions:
                 score, hits = _relevance(text_words, core_terms, sub, sub_terms[sub.id], paragraph_words)
                 kinds = kinds_of(text)
+                if "mechanism" in kinds and not hits:
+                    hits = matched_terms(core_terms, paragraph_words)
                 if sub.kind == "mechanism" and "mechanism" in kinds:
                     score += 0.1
                 if sub.kind == "misconception" and "misconception" in kinds:
@@ -278,7 +332,11 @@ def units_from_paragraphs(
             seen.add(key)
             score, sub, hits = best
             kinds = kinds_of(text)
-            excerpt = paragraph if len(paragraph) <= 400 else paragraph[max(0, paragraph.find(sentence) - 120):][:400]
+            # Keep the local relationship as well as its effect. Cropping a
+            # paragraph between a property and its cause makes a valid step
+            # appear unsupported at the package boundary. This is context,
+            # never a substitute for a causal statement in the unit itself.
+            excerpt = paragraph if len(paragraph) <= 800 else paragraph[max(0, paragraph.find(sentence) - 240):][:800]
             unit = EvidenceUnit(
                 id="",
                 text=text,
@@ -294,9 +352,13 @@ def units_from_paragraphs(
                 time_sensitive=is_time_sensitive(text),
                 antecedent=antecedent,
                 paragraph_initial=index == 0,
+                subject_context=subject_context,
             )
             # Prefer explanatory and specific sentences within a source.
-            weight = score + (0.2 if "mechanism" in kinds else 0) + (0.1 if {"number", "misconception"} & set(kinds) else 0)
+            direct = frame is not None and not core_issues(frame, text, antecedent or (title if index == 0 else ""), context=f"{paragraph} {subject_context}")
+            process = frame is not None and "mechanism" in kinds and not mechanism_issues(frame, text, paragraph)
+            property_support = frame is not None and relation_hits(frame, text) and not topical_issues(frame, text, paragraph)
+            weight = (2 if direct else 1 if process or property_support else 0) + score + (0.2 if "mechanism" in kinds else 0) + (0.1 if {"number", "misconception"} & set(kinds) else 0)
             candidates.append((weight, unit))
     candidates.sort(key=lambda item: -item[0])
     # A sentence that also appears inside a unit carrying its follow-up

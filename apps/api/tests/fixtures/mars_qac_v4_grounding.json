@@ -1,0 +1,508 @@
+{
+  "prompt": "Warum ist der Mars rot?",
+  "contract": {
+    "question_type": "causal",
+    "core_question": "Warum erscheint der Mars rot?",
+    "primary_answer_obligation": {
+      "id": "primary_cause",
+      "description": "Erklären, dass der Mars rot erscheint, weil seine sichtbaren oberflächennahen Materialien Eisenoxide enthalten, die eine rötliche Färbung erzeugen.",
+      "is_primary": true,
+      "is_required": true,
+      "fact_ids": []
+    },
+    "required_supporting_obligations": [],
+    "optional_context": [
+      "Hämatit als besonderes Eisenoxid nennen.",
+      "Erläutern, dass sowohl Oberfläche als auch Staub eisenoxidhaltig sind.",
+      "Erläutern, dass Eisen in marsianischem Gestein und Staub mit Sauerstoff zu Eisenoxiden reagierte und so rostähnlicher Staub entstand.",
+      "Dass feiner, eisenoxidhaltiger Staub durch Winde großflächig verteilt wird und daher den Planeten auch aus dem All rot erscheinen lässt.",
+      "Details dazu, woher der Sauerstoff für die Oxidation auf dem frühen Mars kam.",
+      "Optische Erklärung, welche Wellenlängen Eisenoxide bevorzugt reflektieren.",
+      "Dass Marsgestein Eisen enthält.",
+      "Dass Eisenoxide feinen Marsstaub rötlich färben bzw. bilden.",
+      "Dass Staub große Teile der Oberfläche bedeckt und dadurch die globale rote Erscheinung verstärkt."
+    ],
+    "causal_mechanistic_chain": [
+      {
+        "id": "ironoxides_red_appearance",
+        "description": "Eisenoxide in den sichtbaren oberflächennahen Materialien erzeugen die rötliche Erscheinung des Mars.",
+        "depth_level": 1
+      }
+    ],
+    "historical_motive": null,
+    "required_mechanism_concepts": [
+      "Eisenoxide"
+    ],
+    "minimum_answer_depth": 1,
+    "unresolved_research_gaps": []
+  },
+  "contract_coverage": {
+    "is_sufficient": true,
+    "missing_obligations": [],
+    "coverage": [
+      {
+        "obligation_id": "primary_cause",
+        "status": "satisfied",
+        "supporting_fact_ids": [
+          "fact_01",
+          "fact_09"
+        ],
+        "reasoning": "Fact_01 erklärt direkt, dass Mars wegen Eisenoxid im Boden rot erscheint. Fact_09 ergänzt, dass feiner Eisenoxidstaub weite Landschaften bedeckt und den Planeten aus der Ferne rötlich wirken lässt. Damit sind Eisenoxide in sichtbaren oberflächennahen Materialien und ihre rötliche Wirkung belegt."
+      }
+    ],
+    "diagnostic_reason": null
+  },
+  "facts": [
+    {
+      "id": "fact_01",
+      "claim": "Am Himmel erscheint der Planet Mars als roter Stern. Diese Farbe ist auf die Tatsache zurückzuführen, dass sein Boden hauptsächlich aus Eisenoxid besteht.",
+      "confidence": 0.7,
+      "priority": "MUST_KNOW",
+      "sources": [
+        {
+          "label": "Warum ist der Mars rot? - Mars ist mehr rötlich als rot",
+          "url": "https://www.futura-sciences.com/de/warum-ist-der-mars-rot_31472/",
+          "source_id": "run1_src_06",
+          "source_type": "specialist_secondary",
+          "authority": "medium",
+          "published_at": null,
+          "fetched_at": "2026-10-09T12:04:52+00:00"
+        }
+      ],
+      "verification": "source_snippet"
+    },
+    {
+      "id": "fact_02",
+      "claim": "Vereinfacht gesagt ist der Mars aus demselben grundlegenden Grund rot, aus dem ein altes Fahrrad, das im Regen steht, rötlich-braun wird: Eisen reagiert und bildet Oxide.",
+      "confidence": 0.9,
+      "priority": "MUST_KNOW",
+      "sources": [
+        {
+          "label": "Warum der Mars rot ist – und seine Sonnenuntergänge blau leuchten",
+          "url": "https://www.spaceunpacked.com/de/erklarungen/warum-der-mars-rot-ist-und-seine-sonnenuntergange-blau-leuchten",
+          "source_id": "run1_src_02",
+          "source_type": "specialist_secondary",
+          "authority": "medium",
+          "published_at": "2026-05-20",
+          "fetched_at": "2026-10-09T12:04:52+00:00"
+        },
+        {
+          "label": "Warum der Mars rot ist – und seine Sonnenuntergänge blau leuchten",
+          "url": "https://www.spaceunpacked.com/de/erklarungen/warum-der-mars-rot-ist-und-seine-sonnenuntergange-blau-leuchten",
+          "source_id": "run2_src_05",
+          "source_type": "specialist_secondary",
+          "authority": "medium",
+          "published_at": "2026-05-20",
+          "fetched_at": "2026-10-09T12:04:52+00:00"
+        }
+      ],
+      "verification": "supported"
+    },
+    {
+      "id": "fact_03",
+      "claim": "Rot ist der Mars wegen seines eisenhaltigen Gesteins, welches zum Beispiel das Mineral Hämatit enthält.",
+      "confidence": 0.78,
+      "priority": "MUST_KNOW",
+      "sources": [
+        {
+          "label": "Der rote Planet",
+          "url": "https://www.simplyscience.ch/teens/wissen/der-rote-planet",
+          "source_id": "run2_src_06",
+          "source_type": "specialist_secondary",
+          "authority": "medium",
+          "published_at": "2021-02-01",
+          "fetched_at": "2026-10-09T12:05:04+00:00"
+        }
+      ],
+      "verification": "source_attributed"
+    },
+    {
+      "id": "fact_04",
+      "claim": "Und vielleicht ist das die hilfreichste Perspektive auf den Mars insgesamt: Seine Röte ist real, aber nicht simpel. Sie entsteht aus eisenreichem vulkanischem Gestein, oxidierten Mineralen und staubigen Hüllen, die den ganzen Planeten einnehmen können.",
+      "confidence": 0.9,
+      "priority": "MUST_KNOW",
+      "sources": [
+        {
+          "label": "Warum der Mars rot ist – und seine Sonnenuntergänge blau leuchten",
+          "url": "https://www.spaceunpacked.com/de/erklarungen/warum-der-mars-rot-ist-und-seine-sonnenuntergange-blau-leuchten",
+          "source_id": "run1_src_02",
+          "source_type": "specialist_secondary",
+          "authority": "medium",
+          "published_at": "2026-05-20",
+          "fetched_at": "2026-10-09T12:04:52+00:00"
+        },
+        {
+          "label": "Warum der Mars rot ist – und seine Sonnenuntergänge blau leuchten",
+          "url": "https://www.spaceunpacked.com/de/erklarungen/warum-der-mars-rot-ist-und-seine-sonnenuntergange-blau-leuchten",
+          "source_id": "run2_src_05",
+          "source_type": "specialist_secondary",
+          "authority": "medium",
+          "published_at": "2026-05-20",
+          "fetched_at": "2026-10-09T12:04:52+00:00"
+        }
+      ],
+      "verification": "supported"
+    },
+    {
+      "id": "fact_05",
+      "claim": "Dass der Mars rot erscheint, hat einen konkreten Grund – doch der geläufige Spitzname verdeckt eine spannendere Realität.",
+      "confidence": 0.9,
+      "priority": "USEFUL",
+      "sources": [
+        {
+          "label": "Warum der Mars rot ist – und seine Sonnenuntergänge blau leuchten",
+          "url": "https://www.spaceunpacked.com/de/erklarungen/warum-der-mars-rot-ist-und-seine-sonnenuntergange-blau-leuchten",
+          "source_id": "run1_src_02",
+          "source_type": "specialist_secondary",
+          "authority": "medium",
+          "published_at": "2026-05-20",
+          "fetched_at": "2026-10-09T12:04:52+00:00"
+        },
+        {
+          "label": "Warum der Mars rot ist – und seine Sonnenuntergänge blau leuchten",
+          "url": "https://www.spaceunpacked.com/de/erklarungen/warum-der-mars-rot-ist-und-seine-sonnenuntergange-blau-leuchten",
+          "source_id": "run2_src_05",
+          "source_type": "specialist_secondary",
+          "authority": "medium",
+          "published_at": "2026-05-20",
+          "fetched_at": "2026-10-09T12:04:52+00:00"
+        }
+      ],
+      "verification": "supported"
+    },
+    {
+      "id": "fact_06",
+      "claim": "In der Tat erlebte der Planet vor mehr als 3 Milliarden Jahren, als er noch gar nicht rot war, ein Sonnenereignis, das seine Atmosphäre buchstäblich weg blies.",
+      "confidence": 0.7,
+      "priority": "USEFUL",
+      "sources": [
+        {
+          "label": "Warum ist der Mars rot? - Mars ist mehr rötlich als rot",
+          "url": "https://www.futura-sciences.com/de/warum-ist-der-mars-rot_31472/",
+          "source_id": "run1_src_06",
+          "source_type": "specialist_secondary",
+          "authority": "medium",
+          "published_at": null,
+          "fetched_at": "2026-10-09T12:04:52+00:00"
+        }
+      ],
+      "verification": "source_snippet"
+    },
+    {
+      "id": "fact_07",
+      "claim": "Der Mars ist der vierte Planet im Sonnensystem. Er umkreist die Sonne in einer durchschnittlichen Entfernung von 228 Millionen km.",
+      "confidence": 0.85,
+      "priority": "USEFUL",
+      "sources": [
+        {
+          "label": "ESA - Space for Kids - Warum ist der Mars rot?",
+          "url": "https://www.esa.int/kids/de/lernen/Unterricht/Warum_ist_der_Mars_rot",
+          "source_id": "run1_src_01",
+          "source_type": "government",
+          "authority": "high",
+          "published_at": null,
+          "fetched_at": "2026-10-09T12:04:50+00:00"
+        },
+        {
+          "label": "ESA - Space for Kids - Warum ist der Mars rot?",
+          "url": "https://www.esa.int/kids/de/lernen/Unterricht/Warum_ist_der_Mars_rot",
+          "source_id": "run2_src_01",
+          "source_type": "government",
+          "authority": "high",
+          "published_at": null,
+          "fetched_at": "2026-10-09T12:04:50+00:00"
+        }
+      ],
+      "verification": "supported"
+    },
+    {
+      "id": "fact_08",
+      "claim": "Ein Marsjahr dauert allerdings um einiges länger, nämlich doppelt so lange wie ein Erdenjahr. So lange braucht der Mars, um die Sonne zu umkreisen.",
+      "confidence": 0.78,
+      "priority": "USEFUL",
+      "sources": [
+        {
+          "label": "Der rote Planet",
+          "url": "https://www.simplyscience.ch/teens/wissen/der-rote-planet",
+          "source_id": "run2_src_06",
+          "source_type": "specialist_secondary",
+          "authority": "medium",
+          "published_at": "2021-02-01",
+          "fetched_at": "2026-10-09T12:05:04+00:00"
+        }
+      ],
+      "verification": "source_attributed"
+    },
+    {
+      "id": "fact_09",
+      "claim": "Feiner Eisenoxidstaub bedeckt weite Landschaften und schwebt in der dünnen Atmosphäre – dadurch wirkt der ganze Planet aus der Ferne rötlich.",
+      "confidence": 0.78,
+      "priority": "MUST_KNOW",
+      "sources": [
+        {
+          "label": "Warum der Mars rot ist – und seine Sonnenuntergänge blau leuchten",
+          "url": "https://www.spaceunpacked.com/de/erklarungen/warum-der-mars-rot-ist-und-seine-sonnenuntergange-blau-leuchten",
+          "source_id": "run1_src_02",
+          "source_type": "specialist_secondary",
+          "authority": "medium",
+          "published_at": "2026-05-20",
+          "fetched_at": "2026-10-09T12:04:52+00:00"
+        },
+        {
+          "label": "Warum der Mars rot ist – und seine Sonnenuntergänge blau leuchten",
+          "url": "https://www.spaceunpacked.com/de/erklarungen/warum-der-mars-rot-ist-und-seine-sonnenuntergange-blau-leuchten",
+          "source_id": "run2_src_05",
+          "source_type": "specialist_secondary",
+          "authority": "medium",
+          "published_at": "2026-05-20",
+          "fetched_at": "2026-10-09T12:04:52+00:00"
+        }
+      ],
+      "verification": "source_attributed"
+    },
+    {
+      "id": "fact_10",
+      "claim": "Eine Theorie besagt, dass in einer früheren Zeit sehr viel Wasser auf dem Planeten Mars vorlag und dieses im Verlauf das Eisen aus den Gesteinsschichten löste, was zum Verrosten führte.",
+      "confidence": 0.7,
+      "priority": "USEFUL",
+      "sources": [
+        {
+          "label": "Warum ist der Planet Mars rot? | AstronomieFans",
+          "url": "https://astronomiefans.de/warum-ist-der-planet-mars-rot/",
+          "source_id": "run1_src_03",
+          "source_type": "specialist_secondary",
+          "authority": "medium",
+          "published_at": null,
+          "fetched_at": "2026-10-09T12:04:52+00:00"
+        }
+      ],
+      "verification": "source_snippet"
+    },
+    {
+      "id": "fact_11",
+      "claim": "Der Mars wird häufig als der „rote Planet“ bezeichnet, weil er am Nachthimmel wie ein orangeroter Stern erscheint.",
+      "confidence": 0.85,
+      "priority": "USEFUL",
+      "sources": [
+        {
+          "label": "ESA - Space for Kids - Warum ist der Mars rot?",
+          "url": "https://www.esa.int/kids/de/lernen/Unterricht/Warum_ist_der_Mars_rot",
+          "source_id": "run2_src_01",
+          "source_type": "government",
+          "authority": "high",
+          "published_at": null,
+          "fetched_at": "2026-10-09T12:04:50+00:00"
+        }
+      ],
+      "verification": "supported"
+    }
+  ],
+  "attempts": [
+    {
+      "attempt": 1,
+      "mode": "normal_rewrite",
+      "contract_evaluations": [
+        {
+          "id": "primary_cause",
+          "status": "satisfied",
+          "is_primary": true,
+          "is_required": true,
+          "reasoning": "Die Antwort erklärt direkt, dass der Mars rot erscheint, weil sein Boden hauptsächlich aus Eisenoxid besteht. Das wird durch fact_01 gestützt und beantwortet die kausale Frage."
+        }
+      ],
+      "blocks": [
+        {
+          "id": "voice_block_01",
+          "role": "hook",
+          "text": "Was färbt einen ganzen Planeten so, dass er am Himmel rot leuchtet?",
+          "fact_ids": []
+        },
+        {
+          "id": "voice_block_02",
+          "role": "answer",
+          "text": "Der Mars erscheint rot, weil sein Boden hauptsächlich aus Eisenoxid besteht.",
+          "fact_ids": [
+            "fact_01"
+          ]
+        },
+        {
+          "id": "voice_block_03",
+          "role": "explanation",
+          "text": "Eisen reagiert und bildet Oxide – ähnlich wie ein altes Fahrrad im Regen rötlich-braun wird.",
+          "fact_ids": [
+            "fact_02"
+          ]
+        },
+        {
+          "id": "voice_block_04",
+          "role": "payoff",
+          "text": "Dieser feine Eisenoxidstaub bedeckt weite Landschaften und schwebt in der dünnen Atmosphäre. Deshalb wirkt der Mars selbst aus der Ferne als ganze Welt rötlich.",
+          "fact_ids": [
+            "fact_09"
+          ]
+        }
+      ],
+      "hard": [
+        {
+          "code": "missing_fact_citation",
+          "severity": "hard",
+          "beat_index": 1,
+          "message": "Der Hook enthält mit „am Himmel rot leuchtet“ eine faktische Aussage beziehungsweise Voraussetzung, weist aber keine fact_id aus. Die Aussage wäre durch fact_01 oder fact_11 belegbar.",
+          "source": "verifier"
+        },
+        {
+          "code": "ungrounded",
+          "severity": "hard",
+          "beat_index": null,
+          "message": "The verifier found statements the research does not support.",
+          "source": "verifier"
+        }
+      ]
+    },
+    {
+      "attempt": 2,
+      "mode": "quality_repair",
+      "contract_evaluations": [
+        {
+          "id": "primary_cause",
+          "status": "satisfied",
+          "is_primary": true,
+          "is_required": true,
+          "reasoning": "Der Kandidat beantwortet die Frage direkt: Der Mars erscheint rot, weil sein Boden hauptsächlich aus Eisenoxid besteht. Damit werden Eisenoxide als Ursache der sichtbaren rötlichen Färbung genannt; fact_01 stützt diese Aussage unmittelbar."
+        }
+      ],
+      "blocks": [
+        {
+          "id": "voice_block_01",
+          "role": "hook",
+          "text": "Wie kann Staub eine ganze Welt aus der Ferne rötlich wirken lassen?",
+          "fact_ids": []
+        },
+        {
+          "id": "voice_block_02",
+          "role": "answer",
+          "text": "Der Mars erscheint rot, weil sein Boden hauptsächlich aus Eisenoxid besteht.",
+          "fact_ids": [
+            "fact_01"
+          ]
+        },
+        {
+          "id": "voice_block_03",
+          "role": "explanation",
+          "text": "Eisen reagiert und bildet Oxide – nach demselben Grundprinzip wird auch ein altes Fahrrad im Regen rötlich-braun.",
+          "fact_ids": [
+            "fact_02"
+          ]
+        },
+        {
+          "id": "voice_block_04",
+          "role": "payoff",
+          "text": "Feiner Eisenoxidstaub bedeckt weite Landschaften und schwebt in der dünnen Atmosphäre. So wirkt der ganze Mars aus der Ferne rötlich.",
+          "fact_ids": [
+            "fact_09"
+          ]
+        }
+      ],
+      "hard": [
+        {
+          "code": "missing_hook_citation",
+          "severity": "hard",
+          "beat_index": 1,
+          "message": "Der Hook enthält die faktische Prämisse, dass Staub eine ganze Welt aus der Ferne rötlich wirken lässt, aber keine fact_id. Diese Aussage ist durch fact_09 gedeckt und sollte mit fact_09 zitiert werden.",
+          "source": "verifier"
+        },
+        {
+          "code": "ungrounded",
+          "severity": "hard",
+          "beat_index": null,
+          "message": "The verifier found statements the research does not support.",
+          "source": "verifier"
+        }
+      ]
+    },
+    {
+      "attempt": 3,
+      "mode": "fresh_regeneration",
+      "contract_evaluations": [
+        {
+          "id": "primary_cause",
+          "status": "satisfied",
+          "is_primary": true,
+          "is_required": true,
+          "reasoning": "Der Kandidat erklärt direkt, dass Eisenoxid im Marsboden die rote Erscheinung verursacht. Beat 2 stützt dies mit fact_01; die nachfolgenden Beats erklären Oxidbildung und die Verteilung des Eisenoxidstaubs mit fact_02, fact_03 und fact_09."
+        }
+      ],
+      "blocks": [
+        {
+          "id": "voice_block_01",
+          "role": "hook",
+          "text": "Der Mars sieht aus der Ferne rot aus – dabei ist er vor allem Gestein und Staub.",
+          "fact_ids": []
+        },
+        {
+          "id": "voice_block_02",
+          "role": "answer",
+          "text": "Der Grund steckt in Eisenoxid: Der Marsboden besteht hauptsächlich aus diesem rötlichen Material.",
+          "fact_ids": [
+            "fact_01"
+          ]
+        },
+        {
+          "id": "voice_block_03",
+          "role": "explanation",
+          "text": "Eisen kann reagieren und Oxide bilden – ähnlich wie ein altes Fahrrad im Regen rötlich-braun wird.",
+          "fact_ids": [
+            "fact_02"
+          ]
+        },
+        {
+          "id": "voice_block_04",
+          "role": "detail",
+          "text": "Marsgestein enthält Eisen; dazu gehört etwa das Mineral Hämatit.",
+          "fact_ids": [
+            "fact_03"
+          ]
+        },
+        {
+          "id": "voice_block_05",
+          "role": "payoff",
+          "text": "Entscheidend ist der Staub: Feiner Eisenoxidstaub bedeckt weite Landschaften und schwebt sogar in der dünnen Atmosphäre. Deshalb sehen wir aus der Ferne nicht nur rote Steine, sondern einen ganzen rötlichen Planeten.",
+          "fact_ids": [
+            "fact_09"
+          ]
+        }
+      ],
+      "hard": [
+        {
+          "code": "GROUNDED_UNCITED_HOOK",
+          "severity": "hard",
+          "beat_index": 1,
+          "message": "Der Hook enthält mehrere faktische Aussagen – dass der Mars aus der Ferne rot aussieht und vor allem aus Gestein und Staub besteht –, weist aber keine fact_ids aus. Diese Aussagen wären mit fact_04 und fact_09 belegbar, sind im Kandidaten jedoch nicht zitiert.",
+          "source": "verifier"
+        },
+        {
+          "code": "ungrounded",
+          "severity": "hard",
+          "beat_index": null,
+          "message": "The verifier found statements the research does not support.",
+          "source": "verifier"
+        }
+      ]
+    }
+  ],
+  "writer_diagnostics": {
+    "attempted": true,
+    "status": "legacy_fallback",
+    "provider": null,
+    "error": "List should have at most 10 items after validation, not 11",
+    "fact_ids": [],
+    "writer_draft": null,
+    "reviewed_draft": null,
+    "review": {
+      "status": "not_run",
+      "issues": [],
+      "error": null
+    },
+    "reason": "request_validation_failed"
+  }
+}

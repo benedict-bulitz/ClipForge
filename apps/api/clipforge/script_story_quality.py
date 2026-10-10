@@ -23,6 +23,7 @@ from .novelty import (
     prune_redundant_information,
 )
 from .payoff import reveals_protected_payoff, trim_post_payoff_fluff
+from .script_grounding import hook_has_assertion, narrated_fact_ids
 from .story_arc import arc_units, is_explanatory_question, order_blocks_for_reveal
 from .verbal_hook import information_gain, proposition_words
 
@@ -271,18 +272,27 @@ def _issue(
     }
 
 
-def _dependency_violations(blocks: list[dict[str, Any]], arc: dict[str, Any]) -> list[dict[str, Any]]:
+def _dependency_violations(
+    blocks: list[dict[str, Any]], arc: dict[str, Any],
+    question_answer_contract: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     units = arc_units(arc)
+    # A hook citation can support just one part of a compound source fact.
+    # Count only facts actually narrated, not everything a cited source says.
+    narrated = [set(narrated_fact_ids(block, list(units.values()))) for block in blocks]
+    present = set().union(*narrated) if narrated else set()
     seen: set[str] = set()
     violations: list[dict[str, Any]] = []
     for index, block in enumerate(blocks):
+        own = narrated[index]
         if str(block.get("role") or "").casefold() == "hook":
+            seen |= own
             continue
-        own = {str(item) for item in block.get("fact_ids") or []}
         missing = {
             str(dependency)
             for fact_id in own
             for dependency in units.get(fact_id, {}).get("depends_on") or []
+            if not question_answer_contract or str(dependency) in present
             if str(dependency) not in seen and str(dependency) not in own
         }
         if missing:
@@ -315,7 +325,9 @@ def _quality_scores(
     redundant_ids = {
         str(unit.get("block_id") or "") for unit in body if unit.get("redundancy") != "none"
     } | set(semantic["tautological_answers"]) | semantic["analogy_repetitions"]
-    order_violations = _dependency_violations(blocks, context.get("story_arc") or {})
+    order_violations = _dependency_violations(
+        blocks, context.get("story_arc") or {}, context.get("question_answer_contract") or context.get("contract"),
+    )
     payoff = report.get("payoff") or {}
     payoff_score = 100 if payoff.get("result") == "strong" else 75 if payoff.get("status") == "pass" else 25
     payoff_indexes = [index for index, block in enumerate(blocks) if str(block.get("role") or "").casefold() == "payoff"]
@@ -354,12 +366,12 @@ def _premature_reveal(blocks: list[dict[str, Any]], context: dict[str, Any]) -> 
     found: list[dict[str, Any]] = []
     for index, block in enumerate(blocks):
         role = str(block.get("role") or "").casefold()
-        fact_ids = {str(item) for item in block.get("fact_ids") or []}
+        fact_ids = {str(item) for item in narrated_fact_ids(block, list(units.values()))}
         # Fact identity is authoritative. A provider's broad ``answer`` role
         # can contain setup, while Triple Hook/payoff validators already own
         # lexical hook-spoiler detection.
         states_answer = primary in fact_ids if primary else role == "answer"
-        if role == "hook" and fact_ids & {str(item) for item in (arc.get("hook") or {}).get("protected_ids") or []}:
+        if role == "hook" and hook_has_assertion(str(block.get("text") or "")) and set(block.get("fact_ids") or []) & {str(item) for item in (arc.get("hook") or {}).get("protected_ids") or []}:
             found.append({"index": index, "block": block, "reason": "The hook carries a protected payoff fact."})
         elif states_answer and required_here - seen - fact_ids:
             found.append({
@@ -483,7 +495,9 @@ def assess_script_story_quality(
                 unit,
             ))
 
-    for violation in _dependency_violations(blocks, context.get("story_arc") or {}):
+    for violation in _dependency_violations(
+        blocks, context.get("story_arc") or {}, context.get("question_answer_contract") or context.get("contract"),
+    ):
         unit = by_id.get(str(violation["block"].get("id") or ""))
         issues.append(_issue(
             "poor_fact_ordering",
@@ -531,10 +545,11 @@ def assess_script_story_quality(
     has_supported_fact = any(
         isinstance(fact, dict) and fact_is_supported(fact) for fact in context.get("facts") or []
     )
-    research_insufficient = any(
-        item["issue_type"] in {"unsupported_claim", "too_thin"} and item["severity"] == "error"
-        for item in issues
-    ) or (not has_supported_fact and any(item["issue_type"] == "generic_statement" for item in issues))
+    coverage = context.get("research_coverage") or context.get("contract_coverage") or {}
+    research_insufficient = coverage.get("is_sufficient") is False or (
+        coverage.get("is_sufficient") is not True and not has_supported_fact
+        and any(item["severity"] == "error" for item in issues)
+    )
     blockers = sorted({item["issue_type"] for item in issues if item["severity"] == "error"})
     return {
         "version": QUALITY_VERSION,

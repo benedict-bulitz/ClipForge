@@ -913,6 +913,12 @@ def verbal_still_valid(state: dict[str, Any], text: str, strategy: object) -> bo
     plan = state_plan(state) or {}
     emergency = plan.get("verbal_origin") == "emergency" and _clean(text) == _clean(plan.get("verbal_hook"))
     hard = assess_verbal(text, canonical_strategy(strategy) or "evidence_insight", state_context(state), emergency=emergency)["hard_fail"]
+    from .script_grounding import hook_semantically_supported
+
+    blocks = (state.get("script") or {}).get("blocks") or []
+    current = next((block.get("text") for block in blocks if block.get("role") == "hook"), None)
+    if text == current and hook_semantically_supported(blocks, state.get("facts") or [], state.get("explanation_audit") or {}):
+        hard = [code for code in hard if code != "unsupported_cause"]
     return not any(code in _INVALIDATING or code.endswith(REVEAL_CODES) for code in hard)
 
 

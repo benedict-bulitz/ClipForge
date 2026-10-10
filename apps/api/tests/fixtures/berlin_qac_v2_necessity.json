@@ -1,0 +1,479 @@
+{
+  "prompt": "Warum wurde die Berliner Mauer gebaut?",
+  "contract": {
+    "question_type": "historical_motive",
+    "core_question": "Warum wurde die Berliner Mauer gebaut?",
+    "primary_answer_obligation": {
+      "id": "primary_motive",
+      "description": "Erklären, dass die DDR-Führung die Berliner Mauer vor allem bauen ließ, um die massenhafte Flucht von DDR-Bürgerinnen und DDR-Bürgern über West-Berlin in den Westen zu stoppen und damit die SED-Herrschaft sowie den Fortbestand der DDR zu sichern.",
+      "is_primary": true,
+      "is_required": true,
+      "fact_ids": []
+    },
+    "required_supporting_obligations": [
+      {
+        "id": "escape_route_context",
+        "description": "Nennen, dass West-Berlin der entscheidende verbliebene Fluchtweg aus der DDR in den Westen war.",
+        "is_primary": false,
+        "is_required": true,
+        "fact_ids": []
+      }
+    ],
+    "optional_context": [
+      "Die Abwanderung entzog der DDR Arbeitskräfte, darunter qualifizierte Fachkräfte, und schwächte ihre wirtschaftliche sowie politische Stabilität.",
+      "Die offene beziehungsweise vergleichsweise leicht passierbare Grenze in Berlin bis 1961 erleichterte die Flucht.",
+      "Datum des Mauerbaus: Beginn am 13. August 1961.",
+      "Die Mauer war Teil der innerdeutschen Grenzsperren und wurde von der DDR als „antifaschistischer Schutzwall“ propagandistisch bezeichnet.",
+      "Die Rolle der Sowjetunion und der Zuspitzung der Berlin-Krise im Kalten Krieg.",
+      "Folgen für getrennte Familien, Todesopfer an der Grenze und der Fall der Mauer 1989."
+    ],
+    "causal_mechanistic_chain": [
+      {
+        "id": "step_1",
+        "description": "Viele Menschen verließen die DDR; West-Berlin war der entscheidende verbliebene Fluchtweg in den Westen.",
+        "depth_level": 1
+      },
+      {
+        "id": "step_3",
+        "description": "Die DDR-Führung riegelte die Grenze in Berlin ab, um diesen Fluchtweg zu schließen und ihre Herrschaft sowie den Fortbestand der DDR zu sichern.",
+        "depth_level": 2
+      }
+    ],
+    "historical_motive": "Die unmittelbare Absicht der DDR-Führung war, die Fluchtbewegung über West-Berlin zu unterbinden und dadurch die Herrschaft der SED sowie den Fortbestand der DDR zu sichern.",
+    "required_mechanism_concepts": [
+      "Massenflucht aus der DDR",
+      "West-Berlin als Fluchtweg",
+      "Abriegelung der Grenze",
+      "Sicherung der SED-Herrschaft"
+    ],
+    "minimum_answer_depth": 2,
+    "unresolved_research_gaps": []
+  },
+  "contract_coverage": {
+    "is_sufficient": false,
+    "missing_obligations": [
+      "primary_motive",
+      "escape_route_context"
+    ],
+    "coverage": [
+      {
+        "obligation_id": "primary_motive",
+        "status": "partially_satisfied",
+        "supporting_fact_ids": [
+          "fact_01",
+          "fact_09",
+          "fact_10",
+          "fact_13"
+        ],
+        "reasoning": "Die Fakten belegen, dass die Mauer gebaut wurde, um die massenhafte Flucht aus der DDR in den Westen zu stoppen (insbesondere fact_01 und fact_09). Sie belegen außerdem die Größenordnung der Abwanderung (fact_13) und wirtschaftliche Belastungen (fact_09). Nicht belegt ist jedoch der erforderliche Teil, dass dies der Sicherung der SED-Herrschaft und des Fortbestands der DDR dienen sollte."
+      },
+      {
+        "obligation_id": "escape_route_context",
+        "status": "partially_satisfied",
+        "supporting_fact_ids": [
+          "fact_06",
+          "fact_09",
+          "fact_11"
+        ],
+        "reasoning": "Die Fakten zeigen, dass die Flucht über Berlin beziehungsweise über Übergangswege nach West-Berlin erfolgte und dass diese Wege abgeriegelt wurden. Sie sagen aber nicht ausdrücklich, dass West-Berlin der entscheidende verbliebene Fluchtweg aus der DDR in den Westen war."
+      }
+    ],
+    "diagnostic_reason": "Die zentrale Fluchtverhinderungsabsicht ist gut belegt. Für eine vollständige Vertragserfüllung fehlen jedoch explizite Belege zur Sicherung der SED-Herrschaft beziehungsweise des Fortbestands der DDR sowie dazu, dass West-Berlin der entscheidende verbliebene Fluchtweg war."
+  },
+  "minimality": {
+    "audit": {
+      "minimally_sufficient": false,
+      "minimal_answer": "Die DDR-Führung ließ die Berliner Mauer bauen, um die massenhafte Flucht von DDR-Bürgerinnen und -Bürgern über West-Berlin in den Westen zu stoppen. Damit wollte sie den wichtigsten Fluchtweg schließen und ihre Herrschaft sowie den Fortbestand der DDR sichern.",
+      "components": [
+        {
+          "id": "mass_flucht_als_ausloeser",
+          "source_requirement_ids": [
+            "chain:step_1",
+            "concept:0",
+            "historical_motive",
+            "obligation:primary_motive"
+          ],
+          "description": "Die Mauer sollte die massenhafte Flucht aus der DDR stoppen.",
+          "strictly_necessary": true,
+          "reason": "Ohne den Fluchtanlass bliebe die zentrale unmittelbare Ursache für den Mauerbau unbeantwortet."
+        },
+        {
+          "id": "west_berlin_als_fluchtweg",
+          "source_requirement_ids": [
+            "chain:step_1",
+            "concept:1",
+            "obligation:escape_route_context",
+            "obligation:primary_motive"
+          ],
+          "description": "West-Berlin war der entscheidende verbliebene Fluchtweg in den Westen.",
+          "strictly_necessary": true,
+          "reason": "Ohne diesen Bezug würde zwar der allgemeine Grund für eine Grenzsperre genannt, aber nicht verständlich, warum die Sperranlage gerade in Berlin errichtet wurde."
+        },
+        {
+          "id": "abriegelung_zur_schliessung_des_fluchtwegs",
+          "source_requirement_ids": [
+            "chain:step_3",
+            "concept:2",
+            "obligation:primary_motive"
+          ],
+          "description": "Die DDR-Führung riegelte die Grenze in Berlin ab, um diesen Fluchtweg zu schließen.",
+          "strictly_necessary": true,
+          "reason": "Dies verbindet den Anlass unmittelbar mit der Maßnahme und erklärt die Funktion der Mauer ohne Zirkelschluss."
+        },
+        {
+          "id": "sicherung_der_sed_herrschaft",
+          "source_requirement_ids": [
+            "chain:step_3",
+            "concept:3",
+            "historical_motive",
+            "obligation:primary_motive"
+          ],
+          "description": "Durch das Stoppen der Flucht sollte die Herrschaft der SED und damit der Fortbestand der DDR gesichert werden.",
+          "strictly_necessary": true,
+          "reason": "Die Fluchtunterbindung allein beschreibt die unmittelbare Maßnahme; die Sicherung der Herrschaft benennt das übergeordnete politische Motiv."
+        },
+        {
+          "id": "verlust_von_arbeitskraeften",
+          "source_requirement_ids": [
+            "chain:step_2",
+            "obligation:consequences_for_ddr"
+          ],
+          "description": "Die Abwanderung entzog der DDR Arbeitskräfte.",
+          "strictly_necessary": false,
+          "reason": "Dieser konkrete wirtschaftliche Effekt stützt das Motiv, ist aber für eine genaue, nicht zirkuläre Antwort auf die Warum-Frage nicht erforderlich, wenn Fluchtunterbindung und Herrschaftssicherung genannt sind."
+        },
+        {
+          "id": "verlust_qualifizierter_fachkraefte",
+          "source_requirement_ids": [
+            "chain:step_2",
+            "obligation:consequences_for_ddr"
+          ],
+          "description": "Unter den Auswandernden waren besonders qualifizierte Fachkräfte.",
+          "strictly_necessary": false,
+          "reason": "Die besondere Qualifikation der Geflohenen ist eine vertiefende Einordnung und kann entfallen, ohne die Ursache des Mauerbaus zu verlieren."
+        },
+        {
+          "id": "wirtschaftliche_und_politische_schwaechung",
+          "source_requirement_ids": [
+            "chain:step_2",
+            "obligation:consequences_for_ddr"
+          ],
+          "description": "Die Abwanderung gefährdete die wirtschaftliche und politische Stabilität der DDR.",
+          "strictly_necessary": false,
+          "reason": "Dies erläutert, weshalb die Flucht für die DDR-Führung problematisch war, wiederholt aber inhaltlich die bereits notwendige Aussage zur Sicherung von Herrschaft und Staat."
+        },
+        {
+          "id": "dreistufige_mindesttiefe",
+          "source_requirement_ids": [
+            "minimum_answer_depth"
+          ],
+          "description": "Die Antwort muss zwingend drei getrennte kausale Tiefenstufen enthalten: Fluchtweg, Schwächung der DDR und Abriegelung zur Stabilisierung.",
+          "strictly_necessary": false,
+          "reason": "Für die Frage genügt die knappe Kausalkette aus Flucht über West-Berlin, Abriegelung und Herrschaftssicherung. Die detaillierte Zwischenstufe mit personellen, wirtschaftlichen und politischen Folgen ist nicht zwingend."
+        }
+      ],
+      "primary_contains_unnecessary_conjunction": false,
+      "correction_required": true,
+      "minimum_necessary_depth": 2,
+      "preserves_question_semantics": true,
+      "preserves_explicit_constraints": true
+    },
+    "repaired": true,
+    "repair_check": {
+      "minimally_sufficient": true,
+      "preserves_question_semantics": true,
+      "preserves_explicit_constraints": true,
+      "preserves_primary_cause_or_motive": true,
+      "preserves_necessary_chain": true,
+      "components": [
+        {
+          "component_id": "mass_flucht_als_ausloeser",
+          "correctly_required_or_optional": true,
+          "reason": "Als strikt notwendiger Auslöser bleibt die massenhafte Flucht aus der DDR in der erforderlichen primären Antwortpflicht und der Kausalkette enthalten."
+        },
+        {
+          "component_id": "west_berlin_als_fluchtweg",
+          "correctly_required_or_optional": true,
+          "reason": "West-Berlin als entscheidender Fluchtweg bleibt ausdrücklich als erforderliche unterstützende Pflicht, als Mechanismuskonzept und in Schritt 1 der Kausalkette erhalten."
+        },
+        {
+          "component_id": "abriegelung_zur_schliessung_des_fluchtwegs",
+          "correctly_required_or_optional": true,
+          "reason": "Die Abriegelung der Berliner Grenze zum Schließen dieses Fluchtwegs bleibt in der Kausalkette und in der primären Erklärung der Funktion des Mauerbaus erforderlich enthalten."
+        },
+        {
+          "component_id": "sicherung_der_sed_herrschaft",
+          "correctly_required_or_optional": true,
+          "reason": "Das übergeordnete politische Motiv, die SED-Herrschaft und den Fortbestand der DDR zu sichern, bleibt in der primären Antwortpflicht, dem historischen Motiv und der Kausalkette zwingend enthalten."
+        },
+        {
+          "component_id": "verlust_von_arbeitskraeften",
+          "correctly_required_or_optional": true,
+          "reason": "Der Verlust von Arbeitskräften ist ausschließlich als optionaler Kontext geführt und wird nicht durch eine erforderliche Pflicht, ein erforderliches Konzept oder einen Kettenschritt erneut verlangt."
+        },
+        {
+          "component_id": "verlust_qualifizierter_fachkraefte",
+          "correctly_required_or_optional": true,
+          "reason": "Der Abfluss qualifizierter Fachkräfte ist ausschließlich optionaler Kontext und keine versteckte erforderliche Bedingung."
+        },
+        {
+          "component_id": "wirtschaftliche_und_politische_schwaechung",
+          "correctly_required_or_optional": true,
+          "reason": "Die wirtschaftliche und politische Schwächung ist zutreffend optionalisiert; die notwendige Herrschaftssicherung bleibt davon unabhängig ausdrücklich erforderlich."
+        },
+        {
+          "component_id": "dreistufige_mindesttiefe",
+          "correctly_required_or_optional": true,
+          "reason": "Die nicht strikt notwendige dreistufige Mindesttiefe wurde korrekt auf zwei notwendige Kausalschritte reduziert; die entfallene Zwischenstufe ist nur optionaler Kontext."
+        }
+      ],
+      "reason": "Der reparierte Vertrag bewahrt alle vier strikt notwendigen Elemente als verbindliche Anforderungen: Massenflucht, West-Berlin als Fluchtweg, Abriegelung zur Schließung dieses Wegs sowie Sicherung der SED-Herrschaft und des DDR-Fortbestands. Die vom Audit als entbehrlich bewerteten wirtschaftlichen und personellen Detailfolgen sind ausschließlich optional. Die zweistufige Kausalkette ist für die historische Warum-Frage ausreichend, ohne neue Anforderungen einzuführen."
+    }
+  },
+  "facts": [
+    {
+      "id": "fact_01",
+      "claim": "Die Berliner Mauer ging in die Geschichte ein als Symbol des Kalten Krieges und der Teilung Deutschlands. Gebaut wurde sie 1961, um den Flüchtlingsstrom vom Osten in den Westen zu stoppen.",
+      "confidence": 0.78,
+      "sources": [
+        {
+          "label": "DDR | Berliner Mauer",
+          "url": "https://www.planet-wissen.de/geschichte/deutsche_geschichte/die_berliner_mauer/index.html"
+        }
+      ],
+      "verification": "source_attributed"
+    },
+    {
+      "id": "fact_02",
+      "claim": "Sie trennte nicht nur die Verbindungen im Gebiet Groß-Berlins zwischen dem Ostteil („Hauptstadt der DDR“) und dem Westteil der Stadt, sondern umschloss alle drei Sektoren des Westteils vollständig und unterbrach damit auch seine Verbindungen zum sonstigen Umland, das im DDR-Bezirk Potsdam lag.",
+      "confidence": 0.78,
+      "sources": [
+        {
+          "label": "Berliner Mauer",
+          "url": "https://de.wikipedia.org/wiki/Berliner_Mauer"
+        },
+        {
+          "label": "Berliner Mauer",
+          "url": "https://de.wikipedia.org/wiki/Berliner_Mauer"
+        }
+      ],
+      "verification": "source_attributed"
+    },
+    {
+      "id": "fact_03",
+      "claim": "Sie wurde aufgrund eines Beschlusses der politischen Führung der Sowjetunion Anfang August 1961 und einer wenige Tage später ergehenden Weisung der DDR-Regierung errichtet.",
+      "confidence": 0.78,
+      "sources": [
+        {
+          "label": "Berliner Mauer",
+          "url": "https://de.wikipedia.org/wiki/Berliner_Mauer"
+        },
+        {
+          "label": "Berliner Mauer",
+          "url": "https://de.wikipedia.org/wiki/Berliner_Mauer"
+        }
+      ],
+      "verification": "source_attributed"
+    },
+    {
+      "id": "fact_04",
+      "claim": "Die Berliner Mauer ergänzte die 1378 Kilometer lange innerdeutsche Grenze zwischen der DDR und der Bundesrepublik, die bereits mehr als neun Jahre vorher „befestigt“ worden war, um den Flüchtlingsstrom zu stoppen.",
+      "confidence": 0.78,
+      "sources": [
+        {
+          "label": "Berliner Mauer",
+          "url": "https://de.wikipedia.org/wiki/Berliner_Mauer"
+        },
+        {
+          "label": "Berliner Mauer",
+          "url": "https://de.wikipedia.org/wiki/Berliner_Mauer"
+        }
+      ],
+      "verification": "source_attributed"
+    },
+    {
+      "id": "fact_05",
+      "claim": "Um die Mitte der 1960er Jahre waren andere Bezeichnungen, zu denen auch „die Mauer“ gehört hatte, aus der öffentlichen Sprache verschwunden, dagegen galt gesellschaftlich die Bezeichnung „antifaschistischer Schutzwall“ als Zeichen politischen Wohlverhaltens.",
+      "confidence": 0.78,
+      "sources": [
+        {
+          "label": "Berliner Mauer",
+          "url": "https://de.wikipedia.org/wiki/Berliner_Mauer"
+        },
+        {
+          "label": "Berliner Mauer",
+          "url": "https://de.wikipedia.org/wiki/Berliner_Mauer"
+        }
+      ],
+      "verification": "source_attributed"
+    },
+    {
+      "id": "fact_06",
+      "claim": "Der Bau der Berliner Mauer am 13. August 1961 riegelte Ostberlin von allen Übergangswegen zu Westberlin ab.",
+      "confidence": 0.78,
+      "sources": [
+        {
+          "label": "Bau der Berliner Mauer - Geschichte kompakt",
+          "url": "https://www.geschichte-abitur.de/lexikon/uebersicht-deutsche-teilung/bau-der-berliner-mauer"
+        }
+      ],
+      "verification": "source_attributed"
+    },
+    {
+      "id": "fact_07",
+      "claim": "Der Mangel an Arbeitskräften war inzwischen so schwerwiegend, dass die DDR gefährdet war, ihre Wirtschaft nicht mehr aufrechterhalten zu können, denn allein im Ostteil Berlins fehlten 45.000 Arbeitskräfte.",
+      "confidence": 0.78,
+      "sources": [
+        {
+          "label": "Berliner Mauer",
+          "url": "https://de.wikipedia.org/wiki/Berliner_Mauer"
+        },
+        {
+          "label": "Berliner Mauer",
+          "url": "https://de.wikipedia.org/wiki/Berliner_Mauer"
+        }
+      ],
+      "verification": "source_attributed"
+    },
+    {
+      "id": "fact_08",
+      "claim": "Die gemeinsame Politik über die ehemalige Reichshauptstadt scheiterte jedoch, weil es in West- und Ostberlin zur Entwicklung zweier verschiedener politischer Systeme kam.",
+      "confidence": 0.78,
+      "sources": [
+        {
+          "label": "Bau der Berliner Mauer - Geschichte kompakt",
+          "url": "https://www.geschichte-abitur.de/lexikon/uebersicht-deutsche-teilung/bau-der-berliner-mauer"
+        }
+      ],
+      "verification": "source_attributed"
+    },
+    {
+      "id": "fact_09",
+      "claim": "Die Berliner Mauer wurde 1961 vor allem errichtet, um die massenhafte Flucht aus der DDR über Berlin in den Westen zu stoppen und die dadurch gefährdete DDR-Wirtschaft zu entlasten.",
+      "confidence": 0.9,
+      "sources": [
+        {
+          "label": "Berliner Mauer",
+          "url": "https://de.wikipedia.org/wiki/Berliner_Mauer"
+        },
+        {
+          "label": "Historischer Hintergrund: Geschichte von Flucht, Fluchthilfe und Freikauf | Bundesstiftung zur Aufarbeitung der SED-Diktatur",
+          "url": "https://www.bundesstiftung-aufarbeitung.de/de/recherche/dossiers/flucht-fluchthilfe-und-freikauf/geschichte"
+        }
+      ],
+      "verification": "supported"
+    },
+    {
+      "id": "fact_10",
+      "claim": "Die politische Führung der Sowjetunion beschloss Anfang August 1961 Maßnahmen, und die DDR-Regierung erteilte wenige Tage später die Weisung zur Errichtung der Mauer, um den Flüchtlingsstrom zu stoppen.",
+      "confidence": 0.78,
+      "sources": [
+        {
+          "label": "Berliner Mauer",
+          "url": "https://de.wikipedia.org/wiki/Berliner_Mauer"
+        }
+      ],
+      "verification": "source_attributed"
+    },
+    {
+      "id": "fact_11",
+      "claim": "Die Mauer riegelte Ost-Berlin von den Übergangswegen nach West-Berlin ab, trennte die Stadt und unterbrach Verbindungen zum DDR-Umland.",
+      "confidence": 0.9,
+      "sources": [
+        {
+          "label": "Berliner Mauer",
+          "url": "https://de.wikipedia.org/wiki/Berliner_Mauer"
+        },
+        {
+          "label": "Bau der Berliner Mauer - Geschichte kompakt",
+          "url": "https://www.geschichte-abitur.de/lexikon/uebersicht-deutsche-teilung/bau-der-berliner-mauer"
+        }
+      ],
+      "verification": "supported"
+    },
+    {
+      "id": "fact_12",
+      "claim": "Der Bau begann am 13. August 1961.",
+      "confidence": 0.9,
+      "sources": [
+        {
+          "label": "Historischer Hintergrund: Geschichte von Flucht, Fluchthilfe und Freikauf | Bundesstiftung zur Aufarbeitung der SED-Diktatur",
+          "url": "https://www.bundesstiftung-aufarbeitung.de/de/recherche/dossiers/flucht-fluchthilfe-und-freikauf/geschichte"
+        },
+        {
+          "label": "Bau der Berliner Mauer - Geschichte kompakt",
+          "url": "https://www.geschichte-abitur.de/lexikon/uebersicht-deutsche-teilung/bau-der-berliner-mauer"
+        }
+      ],
+      "verification": "supported"
+    },
+    {
+      "id": "fact_13",
+      "claim": "Bis dahin waren über 3 Millionen Menschen aus der DDR geflohen.",
+      "confidence": 0.7,
+      "sources": [
+        {
+          "label": "Historischer Hintergrund: Geschichte von Flucht, Fluchthilfe und Freikauf | Bundesstiftung zur Aufarbeitung der SED-Diktatur",
+          "url": "https://www.bundesstiftung-aufarbeitung.de/de/recherche/dossiers/flucht-fluchthilfe-und-freikauf/geschichte"
+        }
+      ],
+      "verification": "source_snippet"
+    },
+    {
+      "id": "fact_14",
+      "claim": "Die Mauer ergänzte die bereits befestigte 1378 Kilometer lange innerdeutsche Grenze zwischen der DDR und der Bundesrepublik.",
+      "confidence": 0.78,
+      "sources": [
+        {
+          "label": "Berliner Mauer",
+          "url": "https://de.wikipedia.org/wiki/Berliner_Mauer"
+        }
+      ],
+      "verification": "source_attributed"
+    },
+    {
+      "id": "fact_15",
+      "claim": "Die Bezeichnung „antifaschistischer Schutzwall“ war die offizielle DDR-Propaganda, während die Mauer laut den Quellen die Flucht von Ost-Berlin in den Westen verhindern sollte.",
+      "confidence": 0.9,
+      "sources": [
+        {
+          "label": "Berliner Mauer",
+          "url": "https://de.wikipedia.org/wiki/Berliner_Mauer"
+        },
+        {
+          "label": "Die Berliner Mauer",
+          "url": "https://www.stiftung-berliner-mauer.de/de/themen/die-berliner-mauer"
+        },
+        {
+          "label": "Bau der Berliner Mauer - Geschichte kompakt",
+          "url": "https://www.geschichte-abitur.de/lexikon/uebersicht-deutsche-teilung/bau-der-berliner-mauer"
+        }
+      ],
+      "verification": "supported"
+    },
+    {
+      "id": "fact_16",
+      "claim": "In Berlin selbst sind nur noch 1,5 Kilometer Mauerreste zu finden, der Rest wurde in alle Welt verkauft.",
+      "confidence": 0.78,
+      "sources": [
+        {
+          "label": "DDR | Berliner Mauer",
+          "url": "https://www.planet-wissen.de/geschichte/deutsche_geschichte/die_berliner_mauer/index.html"
+        }
+      ],
+      "verification": "source_attributed"
+    },
+    {
+      "id": "fact_17",
+      "claim": "Ulbricht war damit der Erste, der den Begriff „Mauer“ in diesem Bezug öffentlich verwendete – zwei Monate, bevor sie überhaupt stand.",
+      "confidence": 0.78,
+      "sources": [
+        {
+          "label": "Berliner Mauer",
+          "url": "https://de.wikipedia.org/wiki/Berliner_Mauer"
+        }
+      ],
+      "verification": "source_attributed"
+    }
+  ]
+}

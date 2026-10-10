@@ -76,7 +76,8 @@ M_PAYOFF = "Darum wirkt das Foto schlechter: Dein Gehirn kennt dein Spiegelbild 
 MIRROR_SCRIPT = [M_ANSWER, M_DIFFERENT, M_STRANGE, M_REVERSED, M_UNMIRRORED, M_OTHERS, M_VOICE, M_VOICE_MORE, M_PAYOFF]
 MIRROR_BLOCKS = [
     {"role": "answer", "text": f"{M_ANSWER} {M_DIFFERENT} {M_STRANGE}", "fact_ids": ["fact_01"]},
-    {"role": "explanation", "text": f"{M_REVERSED} {M_UNMIRRORED} {M_OTHERS}", "fact_ids": ["fact_02"]},
+    {"role": "explanation", "text": f"{M_REVERSED} {M_UNMIRRORED}", "fact_ids": ["fact_02"]},
+    {"role": "explanation", "text": M_OTHERS, "fact_ids": ["fact_01", "fact_02"]},
     {"role": "support", "text": f"{M_VOICE} {M_VOICE_MORE}", "fact_ids": ["fact_03"]},
     {"role": "payoff", "text": M_PAYOFF, "fact_ids": ["fact_04"]},
 ]
@@ -150,11 +151,17 @@ def body(blocks: list[dict]) -> list[str]:
 # PHOTO: valid, duplicated analogy compressed
 # ---------------------------------------------------------------------------
 
-def test_photo_drops_the_voice_analogy_the_hook_already_spent():
+def test_photo_drops_spent_analogy_and_unverified_paraphrase():
     pruned, repairs, state = repaired("mirror")
-    assert [repair["action"] for repair in repairs] == ["remove_hook_analogy_reuse", "remove_hook_analogy_reuse"]
-    assert {repair["text"] for repair in repairs} == {M_VOICE, M_VOICE_MORE}
-    assert body(pruned) == [M_ANSWER, M_DIFFERENT, M_STRANGE, M_REVERSED, M_UNMIRRORED, M_OTHERS, M_PAYOFF]
+    assert [repair["action"] for repair in repairs] == ["remove_hook_analogy_reuse", "remove_weak_tail", "remove_hook_analogy_reuse"]
+    assert {repair["text"] for repair in repairs} == {M_VOICE, M_VOICE_MORE, M_OTHERS}
+    # The reconstructed facts do not lexically establish this paraphrase.
+    # No independent claim assessment exists, so it cannot borrow support
+    # from question wording or another beat instead of its actual citations.
+    _, original_state = real("mirror")
+    disputed = next(unit for unit in assess_information_gain(original_state)["units"] if unit["text"] == M_OTHERS)
+    assert disputed["evidence"]["kind"] == "lexical_mismatch"
+    assert body(pruned) == [M_ANSWER, M_DIFFERENT, M_STRANGE, M_REVERSED, M_UNMIRRORED, M_PAYOFF]
     assert set(body(pruned)) <= set(MIRROR_SCRIPT)  # nothing invented or rewritten
     readiness = content_readiness(state)
     assert readiness["ready"] and readiness["status"] == "ready"
@@ -336,6 +343,7 @@ SETTINGS = {"clipforge_ai_mode": "openai", "openai_api_key": "test-key"}
 
 
 @pytest.mark.parametrize("name", ["tiktok", "time"])
+@pytest.mark.usefixtures("legacy_without_qac")
 def test_generation_job_stops_before_tts_and_render(db, monkeypatch, tmp_path, name):
     calls = Calls()
     _wire(monkeypatch, name, calls)
@@ -347,7 +355,7 @@ def test_generation_job_stops_before_tts_and_render(db, monkeypatch, tmp_path, n
     failed = db.get(GenerationJob, job.id)
     project = db.get(Project, job.project_id)
     assert failed.status == "failed" and failed.failure_category == "research_required"
-    assert "research" in failed.failure_message
+    assert failed.failure_message == "ClipForge konnte für diese Frage noch keine ausreichend belegte Antwort erstellen. Bitte versuche es erneut."
     # No TTS, no media, no render: only the blocked initial revision exists.
     assert calls.render == calls.media == calls.voice == 0
     assert project.status == "needs_attention" and project.current_revision == 1
@@ -374,6 +382,7 @@ def test_render_state_refuses_a_blocked_script(monkeypatch, tmp_path):
     assert gate["ready"] is False and "information_gain_answer_insufficient" in gate["blocking_issues"]
 
 
+@pytest.mark.usefixtures("legacy_without_qac")
 def test_a_successful_research_retry_produces_a_ready_script(monkeypatch, tmp_path):
     calls = Calls()
     mechanism = fact(4, "Mit dem Alter gibt es weniger neue Erlebnisse, deshalb bleiben weniger Erinnerungen hängen und Jahre wirken kürzer.")

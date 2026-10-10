@@ -16,6 +16,7 @@ from .answer_relation import (
     QuestionFrame,
     answer_fit,
     core_issues,
+    covers_predicate,
     entity_coverage,
     mechanism_issues,
     resolves_pronoun,
@@ -168,6 +169,10 @@ def _antecedent(unit: EvidenceUnit, sources: dict[str, dict[str, Any]]) -> str:
     return str(sources.get(unit.source_id, {}).get("title") or "") if unit.paragraph_initial else ""
 
 
+def _unit_context(unit: EvidenceUnit, sources: dict[str, dict[str, Any]]) -> str:
+    return f"{unit.excerpt} {unit.subject_context} {sources.get(unit.source_id, {}).get('title') or ''}"
+
+
 def _answering_unit(group: ClaimGroup, frame: QuestionFrame, sources: dict[str, dict[str, Any]], route: RoutePlan) -> EvidenceUnit | None:
     """The best-sourced wording of this claim that passes core-answer eligibility, if any."""
     ordered = sorted(group.units, key=lambda unit: (
@@ -175,7 +180,9 @@ def _answering_unit(group: ClaimGroup, frame: QuestionFrame, sources: dict[str, 
         TIER_RANK.get(str(sources.get(unit.source_id, {}).get("authority")), 3),
         route.preference(str(sources.get(unit.source_id, {}).get("source_type"))),
     ))
-    return next((unit for unit in ordered if not core_issues(frame, unit.text, _antecedent(unit, sources))), None)
+    return next((unit for unit in ordered if not core_issues(
+        frame, unit.text, _antecedent(unit, sources), context=_unit_context(unit, sources)
+    )), None)
 
 
 def _answering_units(
@@ -187,13 +194,20 @@ def _answering_units(
         TIER_RANK.get(str(sources.get(unit.source_id, {}).get("authority")), 3),
         route.preference(str(sources.get(unit.source_id, {}).get("source_type"))),
     ))
-    return [unit for unit in ordered if not core_issues(frame, unit.text, _antecedent(unit, sources))]
+    return [unit for unit in ordered if not core_issues(
+        frame, unit.text, _antecedent(unit, sources), context=_unit_context(unit, sources)
+    )]
 
 
-def _answer_text(unit: EvidenceUnit, frame: QuestionFrame) -> str:
+def _answer_text(unit: EvidenceUnit, frame: QuestionFrame, sources: dict[str, dict[str, Any]]) -> str:
     """The answer as handed downstream: a pronoun answer keeps the sentence that names its referent."""
-    if unit.antecedent and resolves_pronoun(frame, unit.text, unit.antecedent):
-        return f"{unit.antecedent} {unit.text}"
+    antecedent = _antecedent(unit, sources)
+    if antecedent and (resolves_pronoun(frame, unit.text, antecedent) or (
+        not covers_predicate(frame, unit.text) and covers_predicate(frame, unit.text, antecedent)
+    )):
+        if not unit.antecedent:
+            antecedent = antecedent.rstrip(".?!") + "."
+        return f"{antecedent} {unit.text}"
     return unit.text
 
 
@@ -219,7 +233,8 @@ def select_claims(
     eligible.sort(key=lambda group: _group_rank(group, sources, route))
     # Low-quality / user-generated evidence needs more caution: it is used only
     # when nothing better was found (the package then reports the gap).
-    if any(_group_rank(group, sources, route)[2] <= TIER_RANK["medium"] for group in eligible):
+    if any(_group_rank(group, sources, route)[2] <= TIER_RANK["medium"]
+           and _answering_unit(group, frame, sources, route) is not None for group in eligible):
         eligible = [group for group in eligible if _group_rank(group, sources, route)[2] < TIER_RANK["low"]]
     chosen: list[PackageClaim] = []
     used: set[str] = set()
@@ -229,7 +244,7 @@ def select_claims(
 
     def context(unit: EvidenceUnit) -> str:
         # The paragraph and the page title: a sentence on a page titled with the asked entity is about it.
-        return f"{unit.excerpt} {sources.get(unit.source_id, {}).get('title') or ''}"
+        return _unit_context(unit, sources)
 
     def topical(group: ClaimGroup) -> bool:
         return not topical_issues(frame, lead(group).text, context(lead(group)))
@@ -262,7 +277,7 @@ def select_claims(
             # Every lexically close or entity-naming candidate is recorded with why it does not answer.
             rejected.append({
                 "text": lead(group).text[:200], "reason": "not_a_core_answer",
-                "issues": core_issues(frame, lead(group).text, _antecedent(lead(group), sources)),
+                "issues": core_issues(frame, lead(group).text, _antecedent(lead(group), sources), context=context(lead(group))),
                 "evidence_ids": [unit.id for unit in group.units][:4],
             })
     answering.sort(key=lambda item: _authority_rank(
@@ -272,7 +287,7 @@ def select_claims(
         group, unit = answering[0]
         accepted_units = _answering_units(group, frame, sources, route)
         claim = _claim_from_units(group, "core_answer", accepted_units, sources, route)
-        claim.text, claim.kinds = _answer_text(unit, frame), list(unit.kinds)
+        claim.text, claim.kinds = _answer_text(unit, frame, sources), list(unit.kinds)
         used.add(group.key)
         chosen.append(claim)
     if explanatory:
@@ -281,6 +296,9 @@ def select_claims(
             if lead(group).kind == "mechanism" and not mechanism_issues(frame, lead(group).text, context(lead(group)))
         ], "mechanism", 3)
     on_topic = [group for group in eligible if topical(group)]
+    # Asked-property observations/support must survive before entity-only
+    # background, even when the background source has greater authority.
+    on_topic.sort(key=lambda group: (-answer_fit(frame, lead(group).text), _group_rank(group, sources, route)))
     take([group for group in on_topic if lead(group).kind in {"observation", "definition"}], "observation", 1)
     take([group for group in on_topic if {"number", "date"} & set(lead(group).kinds)], "number", 2)
     take([group for group in on_topic if "misconception" in lead(group).kinds], "misconception", 1)
@@ -304,6 +322,18 @@ def validate_synthesized(text: str, evidence_ids: list[str], evidence: dict[str,
         return "unknown_evidence_ids"
     cited = [evidence[item] for item in evidence_ids]
     cited_text = " ".join(unit.text for unit in cited)
+    # An ongoing process does not prove a measured change in every interval.
+    # Check cadence against the cited statement, never the user's question or
+    # a page title. Keep the source's own quantified/qualified wording intact.
+    for period, adverb in (("Jahr|year", "jährlich|annually|yearly"),
+                           ("Monat|month", "monatlich|monthly"),
+                           ("Tag|day", "täglich|daily")):
+        cadence = rf"(?i)\b(?:(?:jedes|jeden|jede|pro|every|each|per)\s+(?:single\s+)?(?:{period})|{adverb})\b"
+        if re.search(cadence, text) and not re.search(cadence, cited_text):
+            return "recurrence_not_in_evidence"
+    certainty = r"(?i)\b(?:garantiert|ausnahmslos|guaranteed|necessarily|without exception|every single)\b"
+    if re.search(certainty, text) and not re.search(certainty, cited_text):
+        return "certainty_not_in_evidence"
     missing_numbers = numbers_in(text) - numbers_in(cited_text)
     if missing_numbers:
         return "number_not_in_evidence:" + ",".join(sorted(missing_numbers))[:40]
@@ -346,8 +376,8 @@ def claims_from_synthesis(
             ids = [str(value) for value in (item or {}).get("evidence_ids") or []][:6]
             reason = validate_synthesized(text, ids, evidence)
             if reason is None and frame is not None and role in {"core_answer", "mechanism"}:
-                context = " ".join(evidence[item_id].excerpt for item_id in ids if item_id in evidence)
-                issues = core_issues(frame, text) if role == "core_answer" else mechanism_issues(frame, text, context)
+                context = " ".join(_unit_context(evidence[item_id], sources) for item_id in ids if item_id in evidence)
+                issues = core_issues(frame, text, context=context) if role == "core_answer" else mechanism_issues(frame, text, context)
                 if issues:
                     reason = f"{'core_answer_not_entailed' if role == 'core_answer' else 'mechanism_off_question'}:{','.join(issues)}"
             if reason:
@@ -377,7 +407,17 @@ def claims_from_synthesis(
 # Sufficiency, package and legacy facts
 # ---------------------------------------------------------------------------
 
-def sufficiency(claims: list[PackageClaim], *, frame: QuestionFrame) -> dict[str, Any]:
+def _core_eligible(claim: PackageClaim, frame: QuestionFrame, evidence: dict[str, EvidenceUnit],
+                   sources: dict[str, dict[str, Any]]) -> bool:
+    # Reconstruct context only from the IDs actually cited by this claim.
+    context = " ".join(_unit_context(evidence[item], sources)
+                       for item in claim.evidence_ids if item in evidence)
+    return not core_issues(frame, claim.text, context=context)
+
+
+def sufficiency(claims: list[PackageClaim], *, frame: QuestionFrame,
+                evidence: dict[str, EvidenceUnit] | None = None,
+                sources: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
     """Does the package answer the original question? (not: are the fields filled)
 
     The core answer exists only if it passed ``core_issues`` - for why/how it
@@ -387,7 +427,7 @@ def sufficiency(claims: list[PackageClaim], *, frame: QuestionFrame) -> dict[str
     """
     explanatory = frame.qtype in {"why", "how"}
     roles = {claim.role for claim in claims}
-    core = next((claim for claim in claims if claim.role == "core_answer"), None)
+    core = next((claim for claim in claims if claim.role == "core_answer" and _core_eligible(claim, frame, evidence or {}, sources or {})), None)
     mechanism = ([core] if core is not None and explanatory else []) + [claim for claim in claims if claim.role == "mechanism"]
     checks = {
         "direct_answer": core is not None,
@@ -395,7 +435,7 @@ def sufficiency(claims: list[PackageClaim], *, frame: QuestionFrame) -> dict[str
         "mechanism": (bool(mechanism) if explanatory else None),
         "supporting_detail": bool(roles & {"supporting", "number", "observation"}) or len(mechanism) >= 2,
         "misconception_or_caveat": bool(roles & {"misconception", "caveat"}),
-        "payoff": len(claims) >= 2,
+        "payoff": core is not None,
     }
     gaps: list[str] = []
     if core is None:
@@ -404,7 +444,7 @@ def sufficiency(claims: list[PackageClaim], *, frame: QuestionFrame) -> dict[str
         gaps.append("no_mechanism_evidence")
     if explanatory and mechanism and all(claim.support < 2 and claim.best_tier > TIER_RANK["high"] for claim in mechanism):
         gaps.append("mechanism_single_secondary_source")
-    if not checks["supporting_detail"]:
+    if core is None and not checks["supporting_detail"]:
         gaps.append("no_supporting_detail")
     weak_core = core is not None and (core.basis == "snippet" or core.best_tier >= TIER_RANK["unknown"])
     if core is not None and core.basis == "snippet":
@@ -413,7 +453,7 @@ def sufficiency(claims: list[PackageClaim], *, frame: QuestionFrame) -> dict[str
         gaps.append("core_answer_low_authority_source")
     if core is None:
         status = "missing_mechanism" if explanatory and roles & {"observation", "supporting", "number"} else "insufficient"
-    elif weak_core or not checks["supporting_detail"]:
+    elif weak_core:
         status = "partial"
     else:
         status = "sufficient"
@@ -443,6 +483,9 @@ def build_package(
     synthesis_mode: str,
     takeaway: str = "",
 ) -> dict[str, Any]:
+    # Re-check at the package boundary as well as selection/synthesis: a role
+    # label and high authority cannot certify an off-question core answer.
+    claims = [claim for claim in claims if claim.role != "core_answer" or _core_eligible(claim, frame, evidence, sources)]
     by_role: dict[str, list[dict[str, Any]]] = {}
     for claim in claims:
         by_role.setdefault(claim.role, []).append(claim.ref())
@@ -461,7 +504,7 @@ def build_package(
     for source_id in used_sources:
         kind = str(sources.get(source_id, {}).get("source_type") or "unknown")
         types[kind] = types.get(kind, 0) + 1
-    state = sufficiency(claims, frame=frame)
+    state = sufficiency(claims, frame=frame, evidence=evidence, sources=sources)
     if any(record["resolution"].startswith("unresolved") for record in contradictions):
         state["gaps"].append("unresolved_contradiction")
     return {

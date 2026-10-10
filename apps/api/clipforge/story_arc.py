@@ -15,6 +15,7 @@ real TTS durations still decide how long it takes.
 """
 from __future__ import annotations
 
+import copy
 import re
 from itertools import pairwise
 from typing import Any
@@ -882,16 +883,27 @@ def omittable_fact_ids(arc: dict[str, Any] | None) -> set[str]:
     return {fact_id for fact_id, unit in arc_units(arc).items() if unit.get("may_be_omitted")}
 
 
-def essential_fact_ids(arc: dict[str, Any] | None) -> set[str]:
+def essential_fact_ids(
+    arc: dict[str, Any] | None, *, question_answer_contract: dict[str, Any] | None = None,
+) -> set[str]:
+    if question_answer_contract:
+        # QAC verifies required meanings and their supporting citations. A
+        # legacy fact-presence list must not add a second set of obligations.
+        primary = (arc or {}).get("primary_answer_id")
+        return {str(primary)} if primary else set()
     return {fact_id for fact_id, unit in arc_units(arc).items() if not unit.get("may_be_omitted")}
 
 
-def story_brief(arc: dict[str, Any] | None) -> dict[str, Any]:
+def story_brief(
+    arc: dict[str, Any] | None, *, question_answer_contract: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Compact arc view for providers (writer, hook) and the triple hook."""
-    if not isinstance(arc, dict) or not arc.get("units"):
+    if not isinstance(arc, dict):
+        arc = {}
+    if not arc.get("units") and not question_answer_contract:
         return {}
     units = arc_units(arc)
-    return {
+    brief = {
         "structure": arc.get("structure"),
         "format": arc.get("format"),
         "primary_question": arc.get("primary_question"),
@@ -921,6 +933,48 @@ def story_brief(arc: dict[str, Any] | None) -> dict[str, Any]:
             if fact_id in units
         ],
     }
+    if question_answer_contract:
+        # A legacy planner's final fact/spine is editorial guidance, not a
+        # second answer contract. In particular it may describe another event.
+        contract = copy.deepcopy(question_answer_contract)
+        question = contract["core_question"]
+        brief["primary_question"] = question
+        brief["question_contract"] = {
+            **contract, "intended_question": question,
+            "excluded_interpretations": copy.deepcopy((arc.get("question_contract") or {}).get("excluded_interpretations") or []),
+        }
+        brief["requirement_authority"] = "question_answer_contract"
+        brief["dependency_policy"] = (
+            "QAC required obligations determine essential content. order_after_if_included preserves "
+            "causal and chronological ordering only when both facts are narrated; it does not require optional context."
+        )
+        brief["final_payoff_id"] = None
+        brief["curiosity_gap"] = {
+            "question": question, "withhold_answer": bool((arc.get("curiosity_gap") or {}).get("withhold_answer")),
+        }
+        for item in brief["information_order"]:
+            # The obligation descriptions decide what must be explained. A
+            # source's full contents do not become mandatory by citation.
+            item["may_be_omitted"] = item["fact_id"] != brief["primary_answer_id"]
+            # Preserve chronological/causal ordering when both facts are
+            # included, without requiring optional setup to be added.
+            item["order_after_if_included"] = item["depends_on"]
+            item["depends_on"] = []
+    return brief
+
+
+def editorial_payoff_plan(plan: dict[str, Any] | None, contract: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Keep reveal protections, but do not prescribe unverified closing prose."""
+    if not contract:
+        return copy.deepcopy(plan)
+    result = {key: copy.deepcopy(value) for key, value in (plan or {}).items()
+              if key in {"reveal_policy", "hook_must_not_reveal", "primary_answer_id", "protected_visual_target"}}
+    result.update(
+        payoff=contract["primary_answer_obligation"]["description"],
+        question_answer_contract=copy.deepcopy(contract),
+        desired_viewer_reaction="Understand the supported answer to the original question.",
+    )
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -928,7 +982,9 @@ def story_brief(arc: dict[str, Any] | None) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 def _block_units(block: dict[str, Any], units: dict[str, dict[str, Any]]) -> list[str]:
-    return [fact_id for fact_id in block.get("fact_ids") or [] if fact_id in units]
+    from .script_grounding import narrated_fact_ids
+
+    return [fact_id for fact_id in narrated_fact_ids(block, list(units.values())) if fact_id in units]
 
 
 def _dominant_role(unit_ids: list[str], units: dict[str, dict[str, Any]], arc: dict[str, Any]) -> str | None:
@@ -984,7 +1040,8 @@ def annotate_story_roles(state: dict[str, Any]) -> dict[str, Any] | None:
         arc["block_units"] = {block_id: unit_ids for block_id, unit_ids in block_units.items() if unit_ids}
         arc["script_issues"] = story_script_issues(state)
         covered = {fact_id for unit_ids in block_units.values() for fact_id in unit_ids}
-        missing = sorted(essential_fact_ids(arc) - covered) if covered else []
+        contract = state.get("question_answer_contract") or state.get("contract")
+        missing = sorted(essential_fact_ids(arc, question_answer_contract=contract) - covered) if covered else []
         arc["completeness"] = {
             "mapped": bool(covered),
             "complete": bool(covered) and not missing and arc.get("primary_answer_id") in covered,
@@ -1066,7 +1123,7 @@ def order_blocks_for_reveal(blocks: list[dict[str, Any]], arc: dict[str, Any] | 
     def states_answer(block: dict[str, Any]) -> bool:
         # By fact identity, or the writer's own answer statement: a
         # synthesized conclusion may cite other facts, or none.
-        return primary in (block.get("fact_ids") or []) or str(block.get("role") or "").casefold() == "answer"
+        return primary in _block_units(block, units) or str(block.get("role") or "").casefold() == "answer"
 
     answer = [index for index, block in enumerate(blocks) if states_answer(block)]
     needed = [
@@ -1173,7 +1230,8 @@ def story_script_issues(state: dict[str, Any]) -> list[str]:
     for index, (_block, unit_ids) in enumerate(mapped):
         for fact_id in unit_ids:
             first_seen.setdefault(fact_id, index)
-    for fact_id in sorted(essential_fact_ids(arc)):
+    contract = state.get("question_answer_contract") or state.get("contract")
+    for fact_id in sorted(essential_fact_ids(arc, question_answer_contract=contract)):
         if fact_id not in first_seen:
             issues.append(f"required_fact_missing:{fact_id}")
     if primary and primary not in first_seen:
@@ -1184,8 +1242,15 @@ def story_script_issues(state: dict[str, Any]) -> list[str]:
                 issues.append(f"fact_before_dependency:{fact_id}")
     withhold = bool(arc.get("curiosity_gap", {}).get("withhold_answer"))
     for block, unit_ids in mapped:
-        if str(block.get("role") or "").casefold() == "hook" and withhold and set(unit_ids) & set(arc.get("hook", {}).get("protected_ids") or []):
+        if str(block.get("role") or "").casefold() == "hook" and withhold and set(block.get("fact_ids") or []) & set(arc.get("hook", {}).get("protected_ids") or []):
+            from .script_grounding import hook_has_assertion
+
+            if not hook_has_assertion(str(block.get("text") or "")):
+                continue
             issues.append("protected_reveal_in_hook")
+            for identifier in block.get("fact_ids") or []:
+                if any(first_seen.get(dep, -1) > 0 for dep in units.get(identifier, {}).get("depends_on") or []):
+                    issues.append(f"fact_before_dependency:{identifier}")
     answer_block = next((unit_ids for block, unit_ids in mapped if str(block.get("role") or "").casefold() == "answer" and unit_ids), None)
     if answer_block and primary not in answer_block and any(units[fact_id]["role"] == "secondary_insight" for fact_id in answer_block):
         issues.append("secondary_insight_presented_as_answer")
@@ -1198,8 +1263,9 @@ def story_script_issues(state: dict[str, Any]) -> list[str]:
             issues.append(f"duplicate_information_block:{block.get('id') or ''}")
         covered |= set(unit_ids)
         previous = key if key else previous
-    if final and final in first_seen:
-        tail = mapped[max(index for index, (_b, unit_ids) in enumerate(mapped) if final in unit_ids) + 1:]
+    final_positions = [index for index, (_b, unit_ids) in enumerate(mapped) if final in unit_ids]
+    if final and final_positions:
+        tail = mapped[max(final_positions) + 1:]
         for block, unit_ids in tail:
             new = [fact_id for fact_id in unit_ids if fact_id != final]
             if _OUTRO.search(str(block.get("text") or "")) or (not new and str(block.get("role") or "").casefold() != "detail"):

@@ -10,7 +10,7 @@ external failure becomes a diagnostic record, never an exception.
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -49,6 +49,7 @@ class ResearchRun:
     error: str | None
     package: dict[str, Any]
     diagnostics: dict[str, Any] = field(default_factory=dict)
+    evidence_bundle: dict[str, Any] | None = None
 
 
 def _normalise_url(url: str) -> str:
@@ -179,7 +180,9 @@ def run_research(
     started = time.monotonic()
     context = context or {}
     question = str(context.get("question") or query).strip()
-    focus = context.get("focus")
+    diagnostic_focus = context.get("focus")
+    focus = context.get("strengthening") or (diagnostic_focus if diagnostic_focus in {"broaden", "strengthen", "capability", "mechanism"} else None)
+    search_intents = context.get("search_intents") or []
     language = "de" if str(language).startswith("de") else "en"
     budget = ResearchBudget(
         max_searches=settings.research_max_searches,
@@ -193,9 +196,9 @@ def run_research(
 
     # 1. Decomposition (bounded; deterministic fallback).
     decomposition = "deterministic"
-    sub_questions = deterministic_sub_questions(question, query, language, focus=focus)
+    sub_questions = deterministic_sub_questions(question, query, language, focus=focus, search_intents=search_intents)
     domain_hint = None
-    if provider is not None and focus is None and budget.take("llm_calls"):
+    if provider is not None and focus is None and not search_intents and budget.take("llm_calls"):
         out = provider.decompose(question, language)
         if out is not None:
             sub_questions, domain_hint = sub_questions_from_llm(out, question, query, language)
@@ -334,7 +337,7 @@ def run_research(
         "version": 1,
         "elapsed_ms": int((time.monotonic() - started) * 1000),
         "query": query[:200],
-        "focus": focus,
+        "focus": diagnostic_focus,
         "decomposition": decomposition,
         "route": route.as_dict(),
         "sub_questions": [sub.as_dict() for sub in sub_questions],
@@ -373,4 +376,5 @@ def run_research(
         status, error = "unavailable", "No source could be discovered"
     else:
         status, error = "unavailable", "No relevant evidence could be retrieved"
-    return ResearchRun(facts, legacy_sources, status, error, package, diagnostics)
+    return ResearchRun(facts, legacy_sources, status, error, package, diagnostics,
+                       {"evidence": [asdict(unit) for unit in fresh_units], "sources": list(sources.values())})
